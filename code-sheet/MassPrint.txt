@@ -1,0 +1,1493 @@
+/****************************************************
+ * V1.6 - PRINT LAYOUT GENERATOR
+ * --------------------------------------------------
+ * Tujuan:
+ * - Membuat PDF cetak massal ID Card.
+ * - Template A4 portrait.
+ * - 1 halaman berisi 10 kartu.
+ * - Setiap batch 10 karyawan menghasilkan:
+ *   Slide depan + slide belakang.
+ *
+ * Catatan keamanan:
+ * - Tidak mengubah scanner v1.3.
+ * - Tidak mengubah LOG_SCAN.
+ * - Tidak mengubah ABSENSI_HARIAN.
+ * - Tidak mengubah generate ID Card v1.5.
+ ****************************************************/
+
+var MASSPRINT_TEMPLATE_SLIDES_ID = "1Cexcfz5dHVaCvhCOwQJOCuspbKbV4qXnzOwIFrpL0y0";
+var MASSPRINT_OUTPUT_FOLDER_ID = "1IaXuaVB6xiFiizIcOXTZ54gYBOmNvgzI";
+
+var MASSPRINT_JUMLAH_KARTU_PER_HALAMAN = 9;
+
+var MASSPRINT_COL_STATUS = 11;        // K
+var MASSPRINT_COL_PDF_URL = 12;       // L
+var MASSPRINT_COL_LAST_GENERATE = 13; // M
+var MASSPRINT_COL_CATATAN = 14;       // N
+
+/****************************************************
+ * BLOK 1 - MENU UTAMA MASSPRINT
+ ****************************************************/
+
+/**
+ * Generate 10 karyawan aktif pertama.
+ * Fungsi ini tetap dipertahankan untuk test cepat.
+ */
+function massPrintGenerate10Siswa() {
+  try {
+    var daftarSiswa = massPrintAmbilSiswaAktifPertama(10);
+
+    if (daftarSiswa.length === 0) {
+      SpreadsheetApp.getUi().alert("Gagal: tidak ada karyawan aktif dengan token absensi valid.");
+      return;
+    }
+
+    var hasil = massPrintBuatPdfBatchSiswa(daftarSiswa, "10 Karyawan Pertama");
+
+    SpreadsheetApp.getUi().alert(
+      "Generate Mass Print 10 Karyawan berhasil.\n\n" +
+      "Jumlah siswa: " + daftarSiswa.length + "\n" +
+      "Jumlah batch: " + hasil.jumlahBatch + "\n" +
+      "Jumlah slide: " + hasil.jumlahSlide + "\n\n" +
+      "PDF:\n" + hasil.pdfUrl
+    );
+
+  } catch (error) {
+    SpreadsheetApp.getUi().alert(
+      "Generate Mass Print 10 Siswa gagal.\n\n" +
+      "Error: " + error.message
+    );
+  }
+}
+
+/**
+ * Generate Mass Print berdasarkan input ID.
+ * Bisa lebih dari 10 ID.
+ *
+ * Contoh:
+ * USR001, USR003, USR005, USR010, USR020
+ */
+function massPrintGenerateByInputId() {
+  var ui = SpreadsheetApp.getUi();
+
+  var input = ui.prompt(
+    "Generate Mass Print by ID",
+    "Masukkan ID siswa, pisahkan dengan koma.\n\n" +
+    "Contoh:\nUSR001, USR003, USR005, USR010, USR020",
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (input.getSelectedButton() !== ui.Button.OK) {
+    ui.alert("Generate Mass Print dibatalkan.");
+    return;
+  }
+
+  var teksInput = String(input.getResponseText() || "").trim();
+
+  if (!teksInput) {
+    ui.alert("Gagal: daftar ID tidak boleh kosong.");
+    return;
+  }
+
+  var daftarId = teksInput
+    .split(",")
+    .map(function(id) {
+      return String(id || "").trim();
+    })
+    .filter(function(id) {
+      return id !== "";
+    });
+
+  if (daftarId.length === 0) {
+    ui.alert("Gagal: tidak ada ID valid.");
+    return;
+  }
+
+  try {
+    var hasilAmbil = massPrintAmbilSiswaByDaftarId(daftarId);
+
+    if (hasilAmbil.daftarSiswa.length === 0) {
+      massPrintCatatLog(
+        "By ID",
+        0,
+        0,
+        0,
+        "",
+        "Gagal",
+        "Tidak ada karyawan valid dari input ID."
+      );
+
+      ui.alert("Gagal: tidak ada karyawan valid yang bisa diproses.");
+      return;
+    }
+
+    var hasil = massPrintBuatPdfBatchSiswa(hasilAmbil.daftarSiswa, "By ID");
+
+    massPrintUpdateStatusMasterBatch(
+      hasilAmbil.daftarSiswa,
+      "Berhasil",
+      hasil.pdfUrl,
+      "Berhasil dibuat melalui Generate ID Card by ID."
+    );
+
+    massPrintCatatLog(
+      "By ID",
+      hasilAmbil.daftarSiswa.length,
+      hasil.jumlahBatch,
+      hasil.jumlahSlide,
+      hasil.pdfUrl,
+      "Berhasil",
+      "Generate mass print by ID berhasil. ID input: " + daftarId.length
+    );
+
+    var pesan =
+      "Generate Mass Print by ID berhasil.\n\n" +
+      "ID diinput: " + daftarId.length + "\n" +
+      "Siswa masuk PDF: " + hasilAmbil.daftarSiswa.length + "\n" +
+      "Gagal/dilewati: " + hasilAmbil.daftarGagal.length + "\n" +
+      "Jumlah batch: " + hasil.jumlahBatch + "\n" +
+      "Jumlah slide: " + hasil.jumlahSlide + "\n\n" +
+      "PDF:\n" + hasil.pdfUrl;
+
+    if (hasilAmbil.daftarGagal.length > 0) {
+      pesan += "\n\nDaftar gagal/dilewati:\n" + hasilAmbil.daftarGagal.join("\n");
+    }
+
+    ui.alert(pesan);
+
+  } catch (error) {
+    massPrintCatatLog(
+      "By ID",
+      0,
+      0,
+      0,
+      "",
+      "Gagal",
+      error.message
+    );
+
+    ui.alert(
+      "Generate Mass Print by ID gagal.\n\n" +
+      "Error: " + error.message
+    );
+  }
+}
+
+/**
+ * Generate Mass Print semua karyawan aktif.
+ */
+function massPrintGenerateSemuaAktif() {
+  var ui = SpreadsheetApp.getUi();
+
+  var konfirmasi = ui.alert(
+    "Generate Mass Print Semua Siswa Aktif",
+    "Sistem akan membuat 1 PDF cetak massal untuk semua karyawan Aktif yang memiliki Token_Absensi.\n\n" +
+    "Setiap 10 karyawan akan dibuat 2 slide:\n" +
+    "- Slide depan\n" +
+    "- Slide belakang\n\n" +
+    "Lanjutkan?",
+    ui.ButtonSet.YES_NO
+  );
+
+  if (konfirmasi !== ui.Button.YES) {
+    ui.alert("Generate Mass Print semua karyawan dibatalkan.");
+    return;
+  }
+
+  try {
+    var hasilAmbil = massPrintAmbilSemuaSiswaAktif();
+
+    if (hasilAmbil.daftarSiswa.length === 0) {
+      massPrintCatatLog(
+        "Semua Siswa Aktif",
+        0,
+        0,
+        0,
+        "",
+        "Gagal",
+        "Tidak ada karyawan aktif dengan token absensi valid."
+      );
+
+      ui.alert("Gagal: tidak ada karyawan aktif dengan token absensi valid.");
+      return;
+    }
+
+    var hasil = massPrintBuatPdfBatchSiswa(hasilAmbil.daftarSiswa, "Semua Siswa Aktif");
+
+    massPrintCatatLog(
+      "Semua Status Aktif/Belum Berhasil",
+      hasilAmbil.daftarSiswa.length,
+      hasil.jumlahBatch,
+      hasil.jumlahSlide,
+      hasil.pdfUrl,
+      "Berhasil",
+      "Generate ID Card semua karyawan aktif berhasil atau belum berhasil."
+    );
+
+    var pesan =
+      "Generate Mass Print semua karyawan berhasil.\n\n" +
+      "Siswa masuk PDF: " + hasilAmbil.daftarSiswa.length + "\n" +
+      "Dilewati/gagal: " + hasilAmbil.daftarGagal.length + "\n" +
+      "Jumlah batch: " + hasil.jumlahBatch + "\n" +
+      "Jumlah slide: " + hasil.jumlahSlide + "\n\n" +
+      "PDF:\n" + hasil.pdfUrl;
+
+    if (hasilAmbil.daftarGagal.length > 0) {
+      pesan += "\n\nDaftar dilewati/gagal:\n" + hasilAmbil.daftarGagal.join("\n");
+    }
+
+    ui.alert(pesan);
+
+  } catch (error) {
+    massPrintCatatLog(
+      "Semua Siswa Aktif",
+      0,
+      0,
+      0,
+      "",
+      "Gagal",
+      error.message
+    );
+
+    ui.alert(
+      "Generate Mass Print semua karyawan gagal.\n\n" +
+      "Error: " + error.message
+    );
+  }
+}
+
+/****************************************************
+ * BLOK 2 - AMBIL DATA SISWA
+ ****************************************************/
+
+/**
+ * Ambil karyawan aktif pertama dari MASTER_DATA.
+ *
+ * Struktur kolom:
+ * A = ID_Unik
+ * B = NIS_NIK
+ * C = Nama
+ * D = Kelas_Divisi
+ * G = Status_Aktif
+ * J = Token_Absensi
+ */
+function massPrintAmbilSiswaAktifPertama(jumlah) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_MASTER_DATA);
+  var data = sheet.getDataRange().getValues();
+
+  var daftarSiswa = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var siswa = massPrintBuatObjekSiswa(data[i], i + 1);
+
+    if (!massPrintSiswaValidUntukCetak(siswa)) {
+      continue;
+    }
+
+    daftarSiswa.push(siswa);
+
+    if (daftarSiswa.length >= jumlah) {
+      break;
+    }
+  }
+
+  return daftarSiswa;
+}
+
+/**
+ * Ambil semua karyawan aktif dari MASTER_DATA.
+ */
+function massPrintAmbilSemuaSiswaAktif() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_MASTER_DATA);
+  var data = sheet.getDataRange().getValues();
+
+  var daftarSiswa = [];
+  var daftarGagal = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var siswa = massPrintBuatObjekSiswa(data[i], i + 1);
+
+    if (!siswa.id) {
+      continue;
+    }
+
+    if (siswa.statusAktif !== "Aktif") {
+      continue;
+    }
+
+    if (!siswa.tokenAbsensi) {
+      daftarGagal.push(siswa.id + " - " + siswa.nama + " | Token kosong");
+      continue;
+    }
+
+    daftarSiswa.push(siswa);
+  }
+
+  return {
+    daftarSiswa: daftarSiswa,
+    daftarGagal: daftarGagal
+  };
+}
+
+/**
+ * Ambil data karyawan berdasarkan daftar ID.
+ * Urutan karyawan mengikuti urutan ID yang diinput admin.
+ */
+function massPrintAmbilSiswaByDaftarId(daftarId) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_MASTER_DATA);
+  var data = sheet.getDataRange().getValues();
+
+  var daftarSiswa = [];
+  var daftarGagal = [];
+
+  for (var x = 0; x < daftarId.length; x++) {
+    var idDicari = String(daftarId[x] || "").trim();
+    var ditemukan = false;
+
+    for (var i = 1; i < data.length; i++) {
+      var siswa = massPrintBuatObjekSiswa(data[i], i + 1);
+
+      if (siswa.id !== idDicari) {
+        continue;
+      }
+
+      ditemukan = true;
+
+      if (siswa.statusAktif !== "Aktif") {
+        daftarGagal.push(idDicari + " | Nonaktif");
+        break;
+      }
+
+      if (!siswa.tokenAbsensi) {
+        daftarGagal.push(idDicari + " | Token kosong");
+        break;
+      }
+
+      daftarSiswa.push(siswa);
+      break;
+    }
+
+    if (!ditemukan) {
+      daftarGagal.push(idDicari + " | ID tidak ditemukan");
+    }
+  }
+
+  return {
+    daftarSiswa: daftarSiswa,
+    daftarGagal: daftarGagal
+  };
+}
+
+/**
+ * Membuat object karyawan dari 1 baris MASTER_DATA.
+ */
+function massPrintBuatObjekSiswa(row, rowNumber) {
+  return {
+    rowNumber: rowNumber,
+    id: String(row[0] || "").trim(),
+    nis: String(row[1] || "").trim(),
+    nama: String(row[2] || "").trim(),
+    kelasDivisi: String(row[3] || "").trim(),
+    jabatan: String(row[4] || "").trim(),
+    statusAktif: String(row[6] || "").trim(),
+    tokenAbsensi: String(row[9] || "").trim(),
+    jenisKelamin: String(row[14] || "").trim()
+  };
+}
+
+/**
+ * Validasi dasar karyawan yang bisa masuk PDF.
+ */
+function massPrintSiswaValidUntukCetak(siswa) {
+  if (!siswa.id) {
+    return false;
+  }
+
+  if (siswa.statusAktif !== "Aktif") {
+    return false;
+  }
+
+  if (!siswa.tokenAbsensi) {
+    return false;
+  }
+
+  return true;
+}
+
+/****************************************************
+ * BLOK 3 - MESIN PDF BATCH
+ ****************************************************/
+
+/**
+ * Membuat 1 PDF berisi daftar siswa.
+ * Setiap 9 siswa:
+ * - 1 slide depan
+ * - 1 slide belakang
+ */
+function massPrintBuatPdfBatchSiswa(daftarSiswa, jenisGenerate) {
+  if (!MASSPRINT_TEMPLATE_SLIDES_ID) {
+    throw new Error("MASSPRINT_TEMPLATE_SLIDES_ID belum diisi.");
+  }
+
+  if (!MASSPRINT_OUTPUT_FOLDER_ID) {
+    throw new Error("MASSPRINT_OUTPUT_FOLDER_ID belum diisi.");
+  }
+
+  if (!daftarSiswa || daftarSiswa.length === 0) {
+    throw new Error("Daftar karyawan kosong.");
+  }
+
+  var templateFile = DriveApp.getFileById(MASSPRINT_TEMPLATE_SLIDES_ID);
+  var outputFolder = DriveApp.getFolderById(MASSPRINT_OUTPUT_FOLDER_ID);
+
+  var timestamp = Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    "yyyyMMdd-HHmmss"
+  );
+
+  var namaFileSlides = "Mass Print ID Card - " + jenisGenerate + " - " + timestamp;
+  var copyFile = templateFile.makeCopy(namaFileSlides, outputFolder);
+
+  try {
+    var presentation = SlidesApp.openById(copyFile.getId());
+    var slides = presentation.getSlides();
+
+    if (slides.length < 2) {
+      throw new Error("Template Mass Print wajib memiliki minimal 2 slide: slide depan dan slide belakang.");
+    }
+
+    var templateSlideDepan = slides[0];
+    var templateSlideBelakang = slides[1];
+
+    var jumlahBatch = Math.ceil(daftarSiswa.length / MASSPRINT_JUMLAH_KARTU_PER_HALAMAN);
+
+    for (var batchIndex = 0; batchIndex < jumlahBatch; batchIndex++) {
+      var awal = batchIndex * MASSPRINT_JUMLAH_KARTU_PER_HALAMAN;
+      var akhir = awal + MASSPRINT_JUMLAH_KARTU_PER_HALAMAN;
+      var siswaBatch = daftarSiswa.slice(awal, akhir);
+
+      var slideDepanBatch = templateSlideDepan.duplicate();
+      var slideBelakangBatch = templateSlideBelakang.duplicate();
+
+      massPrintIsiSlideDepanBatch(slideDepanBatch, siswaBatch);
+      massPrintIsiSlideBelakangBatch(slideBelakangBatch, siswaBatch);
+    }
+
+    templateSlideDepan.remove();
+    templateSlideBelakang.remove();
+
+    presentation.saveAndClose();
+
+    var jumlahSlide = jumlahBatch * 2;
+
+    var pdfFile = idCardExportPdf(
+      copyFile.getId(),
+      namaFileSlides + ".pdf",
+      outputFolder
+    );
+
+    copyFile.setTrashed(true);
+
+    return {
+      sukses: true,
+      pdfUrl: pdfFile.getUrl(),
+      jumlahBatch: jumlahBatch,
+      jumlahSlide: jumlahSlide
+    };
+
+  } catch (error) {
+    try {
+      copyFile.setTrashed(true);
+    } catch (hapusError) {
+      // Abaikan error hapus file sementara.
+    }
+
+    throw error;
+  }
+}
+
+/****************************************************
+ * BLOK 4 - ISI TEMPLATE SLIDE
+ ****************************************************/
+
+/**
+ * Isi 1 slide depan untuk maksimal 9 siswa.
+ */
+function massPrintIsiSlideDepanBatch(slide, siswaBatch) {
+  for (var slot = 1; slot <= MASSPRINT_JUMLAH_KARTU_PER_HALAMAN; slot++) {
+    var nomor = massPrintFormatNomorSlot(slot);
+    var siswa = siswaBatch[slot - 1];
+
+    if (siswa) {
+      var dataPlaceholder = {};
+
+      dataPlaceholder["{{A" + nomor + "_NAMA}}"] = siswa.nama;
+      dataPlaceholder["{{A" + nomor + "_KODE}}"] = siswa.nis;
+      dataPlaceholder["{{A" + nomor + "_JABATAN}}"] = siswa.kelasDivisi;
+      dataPlaceholder["{{A" + nomor + "_JK}}"] = siswa.jenisKelamin;
+
+      massPrintGantiPlaceholderTextDiSlide(slide, dataPlaceholder);
+
+    } else {
+      massPrintTutupSlotKosongDiSlide(slide, nomor);
+    }
+  }
+}
+
+/**
+ * Isi 1 slide belakang untuk maksimal 10 siswa.
+ */
+function massPrintIsiSlideBelakangBatch(slide, siswaBatch) {
+
+  var alamat = SpreadsheetApp.getActive().getSheetByName("SETTING").getRange("B14").getValue();
+  var unit =
+  SpreadsheetApp
+    .getActive()
+    .getSheetByName("SETTING")
+    .getRange("B15")
+    .getValue();
+
+  var daftarQr = {};
+
+  for (var slot = 1; slot <= MASSPRINT_JUMLAH_KARTU_PER_HALAMAN; slot++) {
+    var nomor = massPrintFormatNomorSlot(slot);
+    var siswa = siswaBatch[slot - 1];
+
+    if (siswa) {
+      var dataPlaceholder = {};
+
+      dataPlaceholder["{{B" + nomor + "_KODE}}"] = siswa.id;
+      dataPlaceholder["{{B"+nomor+"_UNIT}}"] = unit;
+      dataPlaceholder["{{B"+nomor+"_ALAMAT}}"] = alamat;
+
+      massPrintGantiPlaceholderTextDiSlide(slide, dataPlaceholder);
+
+      var payloadQr =
+        idCardBuatPayloadQr(siswa);
+
+
+      var qrBlob =
+        idCardBuatQrBlob(payloadQr);
+
+
+      daftarQr[
+        "{{B" + nomor + "_QR}}"
+      ] = qrBlob;
+
+    } else {
+      massPrintTutupSlotKosongDiSlide(slide, nomor);
+    }
+  }
+
+  if (Object.keys(daftarQr).length > 0) {
+
+    massPrintGantiSemuaPlaceholderQrDiSlide(
+      slide,
+      daftarQr
+    );
+
+  }
+}
+
+/**
+ * Replace placeholder text hanya pada 1 slide.
+ */
+function massPrintGantiPlaceholderTextDiSlide(slide, dataPlaceholder) {
+  var elements = slide.getPageElements();
+
+  for (var i = 0; i < elements.length; i++) {
+    var element = elements[i];
+
+    try {
+      if (element.getPageElementType() === SlidesApp.PageElementType.SHAPE) {
+        var shape = element.asShape();
+        var textRange = shape.getText();
+        var teks = textRange.asString();
+
+        for (var placeholder in dataPlaceholder) {
+          if (teks.indexOf(placeholder) !== -1) {
+            textRange.replaceAllText(placeholder, dataPlaceholder[placeholder]);
+            teks = textRange.asString();
+          }
+        }
+      }
+    } catch (error) {
+      // Element bukan text box, dilewati.
+    }
+  }
+}
+
+/**
+ * Ganti placeholder QR hanya pada 1 slide.
+ */
+function massPrintGantiPlaceholderQrDiSlide(slide, placeholderQr, qrBlob) {
+  var elements = slide.getPageElements();
+
+  for (var i = 0; i < elements.length; i++) {
+    var element = elements[i];
+
+    try {
+      if (element.getPageElementType() === SlidesApp.PageElementType.SHAPE) {
+        var shape = element.asShape();
+        var teks = shape.getText().asString();
+
+        if (teks.indexOf(placeholderQr) !== -1) {
+          var left = shape.getLeft();
+          var top = shape.getTop();
+          var width = shape.getWidth();
+          var height = shape.getHeight();
+
+          shape.remove();
+          slide.insertImage(qrBlob, left, top, width, height);
+
+          return true;
+        }
+      }
+    } catch (error) {
+      // Element bukan text box yang bisa dibaca, dilewati.
+    }
+  }
+
+  throw new Error("Placeholder QR " + placeholderQr + " tidak ditemukan pada slide.");
+}
+
+/**
+ * Mengganti seluruh QR dalam 1 slide.
+ *
+ * Menghindari scan slide berulang.
+ */
+function massPrintGantiSemuaPlaceholderQrDiSlide(
+  slide,
+  daftarQr
+) {
+
+
+  var indexQr =
+    massPrintBuatIndexPlaceholderQr(slide);
+
+  for (
+    var placeholder in daftarQr
+  ) {
+
+
+    var qrBlob =
+      daftarQr[placeholder];
+
+
+    var shape =
+      indexQr[placeholder];
+
+
+    if (!shape) {
+
+      throw new Error(
+        "Placeholder QR tidak ditemukan: "
+        + placeholder
+      );
+
+    }
+
+
+    var left =
+      shape.getLeft();
+
+
+    var top =
+      shape.getTop();
+
+
+    var width =
+      shape.getWidth();
+
+
+    var height =
+      shape.getHeight();
+
+
+    shape.remove();
+
+
+    slide.insertImage(
+      qrBlob,
+      left,
+      top,
+      width,
+      height
+    );
+
+  }
+
+}
+
+/**
+ * Kosongkan slot depan pada slide tertentu.
+ */
+function massPrintKosongkanSlotDepanDiSlide(slide, nomor) {
+  var dataPlaceholder = {};
+
+  dataPlaceholder["{{A" + nomor + "_NAMA}}"] = "";
+  dataPlaceholder["{{A" + nomor + "_KODE}}"] = "";
+  dataPlaceholder["{{A" + nomor + "_JABATAN}}"] = "";
+  dataPlaceholder["{{A" + nomor + "_JK}}"] = "";
+
+  massPrintGantiPlaceholderTextDiSlide(slide, dataPlaceholder);
+  massPrintTutupSlotKosongDiSlide(slide, nomor);
+}
+
+/**
+ * Kosongkan slot belakang pada slide tertentu.
+ */
+function massPrintKosongkanSlotBelakangDiSlide(slide, nomor) {
+  var dataPlaceholder = {};
+
+  dataPlaceholder[
+    "{{B"+nomor+"_KODE}}"
+  ] = "";
+
+
+
+  dataPlaceholder[
+    "{{B"+nomor+"_UNIT}}"
+  ] = "";
+
+
+
+  dataPlaceholder[
+    "{{B"+nomor+"_ALAMAT}}"
+  ] = "";
+
+  dataPlaceholder["{{B" + nomor + "_QR}}"] = "";
+
+  massPrintGantiPlaceholderTextDiSlide(slide, dataPlaceholder);
+  massPrintTutupSlotKosongDiSlide(slide, nomor);
+}
+
+/**
+ * Tutup slot kosong dengan kotak putih pada slide tertentu.
+ */
+function massPrintTutupSlotKosongDiSlide(slide, nomor){
+
+  var slot = parseInt(nomor,10);
+
+  var posisi =
+    massPrintHitungPosisiSlotTemplate(slot);
+
+
+  // bleed khusus bagian bawah
+  var bleedBawah =
+    massPrintCmToPt(0.08);
+
+
+  var bleedSamping = massPrintCmToPt(0.05);
+
+  var kotakPutih =
+    slide.insertShape(
+      SlidesApp.ShapeType.RECTANGLE,
+
+      posisi.left - bleedSamping,
+      posisi.top,
+
+      posisi.width + (bleedSamping * 2),
+      posisi.height
+    );
+
+
+  kotakPutih
+    .getFill()
+    .setSolidFill("#FFFFFF");
+
+
+  kotakPutih
+    .getBorder()
+    .setTransparent();
+
+
+  kotakPutih
+    .bringToFront();
+
+}
+
+/****************************************************
+ * BLOK 5 - LOG MASSPRINT
+ ****************************************************/
+
+/**
+ * Membuat sheet MASS_PRINT_LOG jika belum ada.
+ */
+function massPrintSetupLogSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_MASS_PRINT_LOG);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_MASS_PRINT_LOG);
+  }
+
+  var header = [
+    "Timestamp",
+    "Jenis_Generate",
+    "Jumlah_Siswa",
+    "Jumlah_Batch",
+    "Jumlah_Slide",
+    "PDF_URL",
+    "Status",
+    "Catatan"
+  ];
+
+  var rangeHeader = sheet.getRange(1, 1, 1, header.length);
+  var nilaiHeader = rangeHeader.getValues()[0];
+
+  var headerKosong = nilaiHeader.every(function(value) {
+    return String(value || "").trim() === "";
+  });
+
+  if (headerKosong) {
+    rangeHeader.setValues([header]);
+    rangeHeader.setFontWeight("bold");
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, header.length);
+  }
+
+  return sheet;
+}
+
+/**
+ * Mencatat hasil generate mass print ke MASS_PRINT_LOG.
+ */
+function massPrintCatatLog(jenisGenerate, jumlahSiswa, jumlahBatch, jumlahSlide, pdfUrl, status, catatan) {
+  var sheet = massPrintSetupLogSheet();
+
+  sheet.appendRow([
+    new Date(),
+    jenisGenerate || "",
+    jumlahSiswa || 0,
+    jumlahBatch || 0,
+    jumlahSlide || 0,
+    pdfUrl || "",
+    status || "",
+    catatan || ""
+  ]);
+}
+
+/****************************************************
+ * BLOK 6 - HELPER UMUM MASSPRINT
+ ****************************************************/
+
+/**
+ * Format angka slot:
+ * 1  -> 01
+ * 2  -> 02
+ * 10 -> 10
+ */
+function massPrintFormatNomorSlot(slot) {
+  if (slot < 10) {
+    return "0" + slot;
+  }
+
+  return String(slot);
+}
+
+/**
+ * Menghitung posisi 10 slot kartu di template A4.
+ *
+ * Data posisi berdasarkan template kamu:
+ * Kartu 1 = X 1.02, Y 0.33
+ * Kartu 2 = X 10.84, Y 0.33
+ * Kartu 3 = X 1.02, Y 6.15
+ *
+ * Ukuran kartu:
+ * Lebar  = 9.1 cm
+ * Tinggi = 5.4 cm
+ */
+function massPrintHitungPosisiSlotTemplate(slot){
+
+  var cardWidth =
+    massPrintCmToPt(5.4);
+
+
+  var cardHeight =
+    massPrintCmToPt(8.56);
+
+
+
+  var posisiX = [
+    0.20,
+    7.57,
+    15.05
+  ];
+
+  var posisiY = [
+    0.21,
+    8.95,
+    18.19
+  ];
+
+
+
+  var index = slot - 1;
+
+
+  var kolom =
+    index % 3;
+
+
+  var baris =
+    Math.floor(index / 3);
+
+
+
+  return {
+
+    left:
+      massPrintCmToPt(
+        posisiX[kolom]
+      ),
+
+
+    top:
+      massPrintCmToPt(
+        posisiY[baris]
+      ),
+
+
+    width:
+      cardWidth,
+
+
+    height:
+      cardHeight
+
+  };
+
+}
+
+/**
+ * Konversi cm ke point.
+ */
+function massPrintCmToPt(cm) {
+  return cm * 72 / 2.54;
+}
+
+/**
+ * Update status ID Card di MASTER_DATA.
+ * Kolom:
+ * K = IDCard_Status
+ * L = IDCard_PDF_URL
+ * M = IDCard_Last_Generate
+ * N = IDCard_Catatan
+ */
+function massPrintUpdateStatusMaster(rowNumber, status, pdfUrl, catatan) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_MASTER_DATA);
+
+  sheet.getRange(rowNumber, MASSPRINT_COL_STATUS).setValue(status || "");
+  sheet.getRange(rowNumber, MASSPRINT_COL_PDF_URL).setValue(pdfUrl || "");
+  sheet.getRange(rowNumber, MASSPRINT_COL_LAST_GENERATE).setValue(new Date());
+  sheet.getRange(rowNumber, MASSPRINT_COL_CATATAN).setValue(catatan || "");
+}
+
+/**
+ * Ambil karyawan aktif yang belum berhasil dibuat ID Card.
+ *
+ * Diproses:
+ * - Status kosong
+ * - Belum Berhasil
+ *
+ * Dilewati:
+ * - Berhasil
+ * - Gagal
+ * - Nonaktif
+ * - Token kosong
+ */
+function massPrintAmbilSiswaBelumBerhasil() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_MASTER_DATA);
+  var data = sheet.getDataRange().getValues();
+
+  var daftarSiswa = [];
+  var daftarDilewati = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var siswa = massPrintBuatObjekSiswa(data[i], i + 1);
+    var statusIdCard = String(data[i][10] || "").trim();
+
+    if (!siswa.id) {
+      continue;
+    }
+
+    if (siswa.statusAktif !== "Aktif") {
+      continue;
+    }
+
+    if (statusIdCard === "Berhasil") {
+      continue;
+    }
+
+    if (statusIdCard === "Gagal") {
+      daftarDilewati.push(siswa.id + " - " + siswa.nama + " | Status Gagal, perlu dicek admin/operator");
+      continue;
+    }
+
+    if (!siswa.tokenAbsensi) {
+      massPrintUpdateStatusMaster(
+        siswa.rowNumber,
+        "Gagal",
+        "",
+        "Token absensi kosong. Hubungi admin/operator."
+      );
+
+      daftarDilewati.push(siswa.id + " - " + siswa.nama + " | Token kosong");
+      continue;
+    }
+
+    // Status kosong atau Belum Berhasil akan masuk ke sini.
+    daftarSiswa.push(siswa);
+  }
+
+  return {
+    daftarSiswa: daftarSiswa,
+    daftarDilewati: daftarDilewati
+  };
+}
+
+/**
+ * Generate Mass Print hanya untuk karyawan yang belum berhasil.
+ */
+function massPrintGenerateBelumBerhasil() {
+  var ui = SpreadsheetApp.getUi();
+
+  var konfirmasi = ui.alert(
+    "Generate Mass Print Belum Berhasil",
+    "Sistem hanya akan membuat ID Card untuk karyawan Aktif dengan status kosong atau Belum Berhasil.\n\n" +
+    "Status Berhasil akan dilewati.\n" +
+    "Status Gagal akan dilewati dan perlu dicek admin/operator.\n\n" +
+    "Lanjutkan?",
+    ui.ButtonSet.YES_NO
+  );
+
+  if (konfirmasi !== ui.Button.YES) {
+    ui.alert("Generate Mass Print Belum Berhasil dibatalkan.");
+    return;
+  }
+
+  try {
+    var hasilAmbil = massPrintAmbilSiswaBelumBerhasil();
+
+    if (hasilAmbil.daftarSiswa.length === 0) {
+      ui.alert(
+        "Tidak ada karyawan yang perlu dibuat ID Card.\n\n" +
+        "Semua karyawan aktif kemungkinan sudah Berhasil atau ada yang berstatus Gagal."
+      );
+      return;
+    }
+
+    var hasil = massPrintBuatPdfBatchSiswa(
+      hasilAmbil.daftarSiswa,
+      "Belum Berhasil"
+    );
+
+    massPrintUpdateStatusMasterBatch(
+      hasilAmbil.daftarSiswa,
+      "Berhasil",
+      hasil.pdfUrl,
+      "Berhasil dibuat melalui Generate ID Card Semua Aktif/Belum Berhasil."
+    );
+
+    var pesan =
+      "Generate Mass Print Belum Berhasil selesai.\n\n" +
+      "Siswa masuk PDF: " + hasilAmbil.daftarSiswa.length + "\n" +
+      "Dilewati: " + hasilAmbil.daftarDilewati.length + "\n" +
+      "Jumlah batch: " + hasil.jumlahBatch + "\n" +
+      "Jumlah slide: " + hasil.jumlahSlide + "\n\n" +
+      "PDF:\n" + hasil.pdfUrl;
+
+    if (hasilAmbil.daftarDilewati.length > 0) {
+      pesan += "\n\nDilewati, contoh maksimal 10:\n" +
+        hasilAmbil.daftarDilewati.slice(0, 10).join("\n");
+
+      if (hasilAmbil.daftarDilewati.length > 10) {
+        pesan += "\n...dan " + (hasilAmbil.daftarDilewati.length - 10) + " lainnya.";
+      }
+    }
+
+    ui.alert(pesan);
+
+  } catch (error) {
+    ui.alert(
+      "Generate Mass Print Belum Berhasil gagal.\n\n" +
+      "Error: " + error.message
+    );
+  }
+}
+
+/**
+ * Fungsi menu nomor 8.
+ * Nama dibuat tetap massPrintGenerateSemuaAktif agar cocok dengan onOpen.
+ * Logika sebenarnya: hanya generate yang belum berhasil.
+ */
+function massPrintGenerateSemuaAktif() {
+  massPrintGenerateBelumBerhasil();
+}
+
+/**
+ * Update status ID Card banyak karyawan sekaligus.
+ * Lebih cepat daripada update per karyawan satu-satu.
+ *
+ * Kolom:
+ * K = IDCard_Status
+ * L = IDCard_PDF_URL
+ * M = IDCard_Last_Generate
+ * N = IDCard_Catatan
+ */
+/**
+ * Update status ID Card banyak karyawan sekaligus.
+ *
+ * Optimasi:
+ * - Membuat array di memory
+ * - 1x setValues()
+ *
+ * Kolom:
+ * K = IDCard_Status
+ * L = IDCard_PDF_URL
+ * M = IDCard_Last_Generate
+ * N = IDCard_Catatan
+ */
+function massPrintUpdateStatusMasterBatch(
+  daftarSiswa,
+  status,
+  pdfUrl,
+  catatan
+) {
+
+  if (
+    !daftarSiswa ||
+    daftarSiswa.length === 0
+  ) {
+    return;
+  }
+
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+
+  var sheet =
+    ambilSheet(
+      ss,
+      SHEET_MASTER_DATA
+    );
+
+
+  var sekarang =
+    new Date();
+
+
+  /**
+   * Kelompok berdasarkan baris.
+   *
+   * Karena row karyawan bisa tidak berurutan,
+   * kita buat update per blok.
+   */
+  var updateData = [];
+
+
+  for (
+    var i = 0;
+    i < daftarSiswa.length;
+    i++
+  ) {
+
+    var siswa =
+      daftarSiswa[i];
+
+
+    updateData.push({
+      row:
+        siswa.rowNumber,
+
+      values:
+      [
+        status || "",
+        pdfUrl || "",
+        sekarang,
+        catatan || ""
+      ]
+    });
+
+  }
+
+
+  /**
+   * Kelompokkan row berurutan.
+   *
+   * Contoh:
+   *
+   * 2
+   * 3
+   * 4
+   *
+   * menjadi satu setValues.
+   *
+   * 2
+   * 10
+   *
+   * tetap terpisah.
+   */
+  var blok =
+    [];
+
+
+  var current =
+    null;
+
+
+  for (
+    var x = 0;
+    x < updateData.length;
+    x++
+  ) {
+
+    var item =
+      updateData[x];
+
+
+    if (!current) {
+
+      current = {
+        startRow: item.row,
+        rows: [
+          item.values
+        ]
+      };
+
+      continue;
+    }
+
+
+    var expectedRow =
+      current.startRow +
+      current.rows.length;
+
+
+    if (
+      item.row === expectedRow
+    ) {
+
+      current.rows.push(
+        item.values
+      );
+
+    } else {
+
+      blok.push(current);
+
+      current = {
+        startRow: item.row,
+        rows: [
+          item.values
+        ]
+      };
+
+    }
+
+  }
+
+
+  if (current) {
+    blok.push(current);
+  }
+
+
+  /**
+   * Tulis per blok.
+   *
+   * Mayoritas kasus:
+   * hanya 1-5 write.
+   *
+   * Bukan ratusan.
+   */
+  for (
+    var b = 0;
+    b < blok.length;
+    b++
+  ) {
+
+    var bagian =
+      blok[b];
+
+
+    sheet
+      .getRange(
+        bagian.startRow,
+        MASSPRINT_COL_STATUS,
+        bagian.rows.length,
+        4
+      )
+      .setValues(
+        bagian.rows
+      );
+
+  }
+
+
+  SpreadsheetApp.flush();
+
+}
+
+/**
+ * Membuat cache semua text element pada slide.
+ *
+ * Tujuan:
+ * Menghindari getPageElements berulang.
+ */
+function massPrintAmbilTextElementCache(slide) {
+
+  var slideId =
+    slide.getObjectId();
+
+
+  if (
+    MASSPRINT_ELEMENT_CACHE[slideId]
+  ) {
+    return MASSPRINT_ELEMENT_CACHE[slideId];
+  }
+
+
+  var cache = [];
+
+
+  var elements =
+    slide.getPageElements();
+
+
+  for (
+    var i = 0;
+    i < elements.length;
+    i++
+  ) {
+
+    var element =
+      elements[i];
+
+
+    try {
+
+      if (
+        element.getPageElementType() ===
+        SlidesApp.PageElementType.SHAPE
+      ) {
+
+        var shape =
+          element.asShape();
+
+
+        cache.push({
+          shape: shape,
+          text: shape.getText()
+        });
+
+      }
+
+    } catch(e){
+
+      // Skip element non-text
+
+    }
+
+  }
+
+
+  MASSPRINT_ELEMENT_CACHE[slideId] =
+    cache;
+
+
+  return cache;
+
+}
+
+/**
+ * Membuat index QR placeholder pada 1 slide.
+ *
+ * Cache hanya selama fungsi berjalan.
+ * Tidak menyimpan object antar duplicate slide.
+ */
+function massPrintBuatIndexPlaceholderQr(slide) {
+
+  var index = {};
+
+  var elements =
+    slide.getPageElements();
+
+
+  for (
+    var i = 0;
+    i < elements.length;
+    i++
+  ) {
+
+    var element =
+      elements[i];
+
+
+    try {
+
+      if (
+        element.getPageElementType() ===
+        SlidesApp.PageElementType.SHAPE
+      ) {
+
+
+        var shape =
+          element.asShape();
+
+
+        var teks =
+          shape.getText().asString();
+
+
+        for (
+          var slot = 1;
+          slot <= 9;
+          slot++
+        ) {
+
+          var nomor =
+            slot < 10
+              ? "0" + slot
+              : String(slot);
+
+
+          var placeholder =
+            "{{B" +
+            nomor +
+            "_QR}}";
+
+
+          if (
+            teks.indexOf(placeholder) !== -1
+          ) {
+
+            index[placeholder] =
+              shape;
+
+          }
+
+        }
+
+      }
+
+    } catch(error) {
+
+      // skip
+
+    }
+
+  }
+
+
+  return index;
+
+}

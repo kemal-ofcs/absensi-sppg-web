@@ -1,0 +1,231 @@
+/****************************************************
+ * 13_Shift_Settings.gs
+ * SETTING DATA SHIFT
+ * --------------------------------------------------
+ * Fungsi:
+ * - Membaca data tblShift dari sheet SETTING.
+ * - Mengambil aturan shift berdasarkan Kode_Shift.
+ *
+ * Belum terhubung ke mesin absensi.
+ ****************************************************/
+
+
+function bacaDataShift(kodeShift) {
+
+  var dataShift =
+    bacaShiftDariTblShift(kodeShift);
+
+
+  if(!dataShift.ditemukan){
+
+    return null;
+
+  }
+
+
+  return dataShift;
+
+}
+
+/****************************************************
+ * HELPER SHIFT DINAMIS
+ * --------------------------------------------------
+ * Membaca seluruh data shift dari sheet SETTING.
+ *
+ * Header : SETTING!I10:U10
+ * Data   : SETTING!I11:U
+ *
+ * Tidak membatasi jumlah shift.
+ ****************************************************/
+
+function ambilSemuaDataShift() {
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var settingSheet = ambilSheet(
+    ss,
+    "SETTING"
+  );
+
+  var barisAwal = 11;
+  var kolomAwal = 9;   // Kolom I
+  var jumlahKolom = 13; // I sampai U
+
+  var barisTerakhirSheet = settingSheet.getLastRow();
+
+  if (barisTerakhirSheet < barisAwal) {
+    return [];
+  }
+
+  // Membaca Kode_Shift pada kolom I
+  var dataKodeShift = settingSheet
+    .getRange(
+      barisAwal,
+      kolomAwal,
+      barisTerakhirSheet - barisAwal + 1,
+      1
+    )
+    .getValues();
+
+  var indeksTerakhir = -1;
+
+  for (var i = dataKodeShift.length - 1; i >= 0; i--) {
+
+    if (String(dataKodeShift[i][0] || "").trim() !== "") {
+      indeksTerakhir = i;
+      break;
+    }
+  }
+
+  if (indeksTerakhir === -1) {
+    return [];
+  }
+
+  var jumlahBaris = indeksTerakhir + 1;
+
+  var data = settingSheet
+    .getRange(
+      barisAwal,
+      kolomAwal,
+      jumlahBaris,
+      jumlahKolom
+    )
+    .getValues();
+
+  return data.filter(function(row) {
+    return String(row[0] || "").trim() !== "";
+  });
+}
+
+function cekShiftFleksibel(kodeShift){
+
+  return String(kodeShift || "")
+    .trim()
+    .toUpperCase()
+    ==
+    SHIFT_FLEKSIBEL;
+
+}
+
+/****************************************************
+ * HELPER SHIFT
+ * --------------------------------------------------
+ * Fungsi:
+ * - Membaca konfigurasi shift dari tblShift.
+ * - Mengambil jam masuk shift.
+ * - Mengambil jam pulang shift.
+ * - Mengambil jam kerja normal.
+ * - Mengambil waktu istirahat.
+ *
+ * Sumber:
+ * Sheet SETTING
+ * Tabel: tblShift
+ *
+ * Dipakai oleh:
+ * - Absensi Harian
+ * - Perhitungan Jam Kerja
+ * - Lembur
+ ****************************************************/
+
+function bacaShiftDariTblShift(kodeShift) {
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var settingSheet = ambilSheet(ss, "SETTING");
+
+  var dataShift = ambilSemuaDataShift();
+
+  for (var i = 0; i < dataShift.length; i++) {
+
+    var kode = String(dataShift[i][0] || "").trim();
+
+    if (
+      kode &&
+      kode == String(kodeShift).trim()
+    ) {
+
+      var jamMasuk = dataShift[i][2];
+      var jamPulang = dataShift[i][3];
+      var batasMasuk = Number(dataShift[i][5] || 0);
+      var istirahat = Number(dataShift[i][8] || 0);
+
+      // Hitung sesuai rumus: (jamMasuk + batasMasuk + istirahat) - jamPulang
+      var jamKerjaNormalHitung = kalkulasiJamKerjaNormalMenit(
+        jamMasuk,
+        jamPulang,
+        istirahat,
+        batasMasuk
+      );
+
+      return {
+        ditemukan: true,
+
+        kodeShift: dataShift[i][0],
+
+        namaShift: dataShift[i][1],
+
+        jamMasukShift: jamMasuk,
+
+        jamPulangShift: jamPulang,
+
+        batasDatangAwalMenit:
+          Number(dataShift[i][4] || 0),
+
+        batasMasukMenit: batasMasuk,
+
+        toleransiMasukMenit:
+          Number(dataShift[i][6] || 0),
+
+        // Nilai jamKerjaNormal menggunakan hasil kalkulasi rumus kamu
+        jamKerjaNormal: jamKerjaNormalHitung,
+
+        istirahatMenit: istirahat,
+
+        batasPulangMenit:
+          Number(dataShift[i][9] || 0),
+
+        offsetIstirahatMulai:
+          Number(dataShift[i][10] || 0),
+        
+        offsetGenerateAlfa:
+          Number(dataShift[i][11] || 0),
+
+        bufferDeteksiShiftMalamMenit:
+          Number(dataShift[i][12] || 0)
+      };
+
+    }
+  }
+
+  return {
+    ditemukan: false,
+
+    kodeShift: kodeShift,
+
+    namaShift: "",
+
+    jamMasukShift: "",
+
+    jamPulangShift: "",
+
+    batasDatangAwalMenit: 0,
+
+    batasMasukMenit: 0,
+
+    toleransiMasukMenit: 0,
+
+    jamKerjaNormal: 0,
+
+    istirahatMenit: 0
+  };
+
+}
+
+function testBacaShift() {
+
+  var shift =
+    bacaDataShift("3");
+
+
+  Logger.log(shift);
+
+}

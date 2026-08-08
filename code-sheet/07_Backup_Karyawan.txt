@@ -1,0 +1,765 @@
+/****************************************************
+ * 07_Backup_Karyawan.gs
+ * BACKUP KARYAWAN & PENUGASAN
+ ****************************************************/
+
+function ambilDataShiftBackup_(kodeShift) {
+  var kodeDicari = String(kodeShift || "").trim().toUpperCase();
+
+  if (!kodeDicari) {
+    return null;
+  }
+
+  var semuaShift = ambilSemuaDataShift();
+
+  for (var i = 0; i < semuaShift.length; i++) {
+    var row = semuaShift[i];
+    var kodeDalamTabel = String(row[0] || "").trim().toUpperCase();
+
+    if (kodeDalamTabel !== kodeDicari) {
+      continue;
+    }
+
+    var menitMasuk = ubahJamShiftKeMenit_(row[2]);
+    var menitPulang = ubahJamShiftKeMenit_(row[3]);
+
+    return {
+      kodeShift: String(row[0] || "").trim(),
+      namaShift: String(row[1] || "").trim(),
+      jamMasukShift: row[2],
+      jamPulangShift: row[3],
+      menitMasukShift: menitMasuk,
+      menitPulangShift: menitPulang,
+      awalAbsen: Number(row[4]) || 0,
+      batasMasukMenit: Number(row[5]) || 0,
+      toleransiMasukMenit: Number(row[6]) || 0,
+      jamKerjaNormal: Number(row[7]) || 0,
+      istirahatMenit: Number(row[8]) || 0,
+      batasPulangMenit: Number(row[9]) || 0,
+      offsetIstirahatMulai: Number(row[10]) || 0,
+      offsetGenerateAlfa: Number(row[11]) || 0,
+      bufferDeteksiShiftMalamMenit: Number(row[12]) || 0,
+      shiftMalam: menitMasuk !== null && menitPulang !== null && menitPulang < menitMasuk
+    };
+  }
+
+  return null;
+}
+
+function ubahJamShiftKeMenit_(nilaiJam) {
+  if (nilaiJam === null || nilaiJam === "") {
+    return null;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var zonaWaktu = ss.getSpreadsheetTimeZone();
+
+  if (Object.prototype.toString.call(nilaiJam) === "[object Date]" && !isNaN(nilaiJam.getTime())) {
+    var teksJam = Utilities.formatDate(nilaiJam, zonaWaktu, "HH:mm:ss");
+    var bagian = teksJam.split(":");
+    return Number(bagian[0]) * 60 + Number(bagian[1]) + Number(bagian[2] || 0) / 60;
+  }
+
+  var teks = String(nilaiJam).trim();
+  var cocok = teks.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+
+  if (!cocok) {
+    return null;
+  }
+
+  return Number(cocok[1]) * 60 + Number(cocok[2]) + Number(cocok[3] || 0) / 60;
+}
+
+function ambilDataKaryawanBackup_(idKaryawan) {
+  var idDicari = String(idKaryawan || "").trim().toUpperCase();
+
+  if (!idDicari) {
+    return null;
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var masterSheet = ambilSheet(ss, SHEET_MASTER_DATA);
+  var barisAwal = 2;
+  var barisTerakhir = masterSheet.getLastRow();
+
+  if (barisTerakhir < barisAwal) {
+    return null;
+  }
+
+  var jumlahBaris = barisTerakhir - barisAwal + 1;
+  var maxKolom = Math.min(masterSheet.getLastColumn(), COL_MASTER_DATA.STATUS_BACKUP);
+
+  var data = masterSheet.getRange(barisAwal, 1, jumlahBaris, maxKolom).getValues();
+  var hasilDitemukan = [];
+
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+
+    var idMaster = String(row[COL_MASTER_DATA.ID - 1] || "").trim().toUpperCase();
+    var kodeKaryawan = String(row[COL_MASTER_DATA.KODE_KARYAWAN - 1] || "").trim().toUpperCase();
+
+    if (idMaster !== idDicari && kodeKaryawan !== idDicari) {
+      continue;
+    }
+
+    hasilDitemukan.push({
+      nomorBaris: barisAwal + i,
+      id: String(row[COL_MASTER_DATA.ID - 1] || "").trim(),
+      kodeKaryawan: String(row[COL_MASTER_DATA.KODE_KARYAWAN - 1] || "").trim(),
+      nama: String(row[COL_MASTER_DATA.NAMA - 1] || "").trim(),
+      divisi: String(row[COL_MASTER_DATA.DIVISI - 1] || "").trim(),
+      jabatanStatus: String(row[COL_MASTER_DATA.JABATAN_STATUS - 1] || "").trim(),
+      statusAktif: String(row[COL_MASTER_DATA.STATUS_AKTIF - 1] || "").trim(),
+      shift: String(row[COL_MASTER_DATA.SHIFT - 1] || "").trim(),
+      jenisPersonil: String(row[COL_MASTER_DATA.JENIS_PERSONIL - 1] || "").trim(),
+      tanggalMulaiAktif: row[COL_MASTER_DATA.TANGGAL_MULAI_AKTIF - 1],
+      tanggalSelesaiAktif: row[COL_MASTER_DATA.TANGGAL_SELESAI_AKTIF - 1],
+      statusBackup: String(row[COL_MASTER_DATA.STATUS_BACKUP - 1] || "").trim(),
+      ditemukanDengan: idMaster === idDicari ? "ID" : "KODE_KARYAWAN"
+    });
+  }
+
+  if (hasilDitemukan.length === 0) {
+    return null;
+  }
+
+  if (hasilDitemukan.length > 1) {
+    throw new Error("ID/Kode Karyawan '" + idKaryawan + "' ditemukan lebih dari satu kali di MASTER_DATA.");
+  }
+
+  return hasilDitemukan[0];
+}
+
+function validasiPenugasanBackup_(tanggalTugas, idKaryawanAsal, idKaryawanPengganti, kodeShiftBackup) {
+  if (Object.prototype.toString.call(tanggalTugas) !== "[object Date]" || isNaN(tanggalTugas.getTime())) {
+    throw new Error("Tanggal tugas belum diisi atau format tanggal tidak valid.");
+  }
+
+  var karyawanAsal = ambilDataKaryawanBackup_(idKaryawanAsal);
+  if (!karyawanAsal) {
+    throw new Error("Karyawan asal tidak ditemukan: " + idKaryawanAsal);
+  }
+
+  var karyawanPengganti = ambilDataKaryawanBackup_(idKaryawanPengganti);
+  if (!karyawanPengganti) {
+    throw new Error("Karyawan pengganti tidak ditemukan: " + idKaryawanPengganti);
+  }
+
+  var identitasAsal = String(karyawanAsal.id || karyawanAsal.kodeKaryawan || "").trim().toUpperCase();
+  var identitasPengganti = String(karyawanPengganti.id || karyawanPengganti.kodeKaryawan || "").trim().toUpperCase();
+
+  if (identitasAsal === identitasPengganti) {
+    throw new Error("Karyawan asal dan karyawan pengganti tidak boleh orang yang sama.");
+  }
+
+  validasiKaryawanAktifBackup_(karyawanAsal, tanggalTugas, "Karyawan asal");
+  validasiKaryawanAktifBackup_(karyawanPengganti, tanggalTugas, "Karyawan pengganti");
+
+  var shiftAsal = ambilDataShiftBackup_(karyawanAsal.shift);
+  if (!shiftAsal) {
+    throw new Error("Shift normal karyawan asal tidak ditemukan: " + karyawanAsal.shift);
+  }
+
+  var shiftNormalPengganti = ambilDataShiftBackup_(karyawanPengganti.shift);
+  if (!shiftNormalPengganti) {
+    throw new Error("Shift normal karyawan pengganti tidak ditemukan: " + karyawanPengganti.shift);
+  }
+
+  var shiftBackup = ambilDataShiftBackup_(kodeShiftBackup);
+  if (!shiftBackup) {
+    throw new Error("Shift backup tidak ditemukan: " + kodeShiftBackup);
+  }
+
+  return {
+    tanggalTugas: tanggalTugas,
+    karyawanAsal: karyawanAsal,
+    karyawanPengganti: karyawanPengganti,
+    shiftAsal: shiftAsal,
+    shiftNormalPengganti: shiftNormalPengganti,
+    shiftBackup: shiftBackup
+  };
+}
+
+function validasiKaryawanAktifBackup_(dataKaryawan, tanggalTugas, labelKaryawan) {
+  var statusAktif = String(dataKaryawan.statusAktif || "").trim().toUpperCase();
+
+  if (statusAktif !== "AKTIF") {
+    throw new Error(labelKaryawan + " tidak berstatus aktif: " + dataKaryawan.nama);
+  }
+
+  var tanggalTugasNormal = normalisasiTanggalBackup_(tanggalTugas);
+  var tanggalMulai = normalisasiTanggalBackup_(dataKaryawan.tanggalMulaiAktif);
+  var tanggalSelesai = normalisasiTanggalBackup_(dataKaryawan.tanggalSelesaiAktif);
+
+  if (tanggalMulai && tanggalTugasNormal.getTime() < tanggalMulai.getTime()) {
+    throw new Error(labelKaryawan + " belum aktif pada tanggal tugas: " + dataKaryawan.nama);
+  }
+
+  if (tanggalSelesai && tanggalTugasNormal.getTime() > tanggalSelesai.getTime()) {
+    throw new Error(labelKaryawan + " sudah tidak aktif pada tanggal tugas: " + dataKaryawan.nama);
+  }
+}
+
+function normalisasiTanggalBackup_(nilaiTanggal) {
+  return normalisasiTanggal(nilaiTanggal);
+}
+
+function validasiHeaderBackupKaryawan_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_BACKUP_KARYAWAN);
+
+  var headerSeharusnya = [
+    "ID_Backup", "Tanggal_Tugas", "ID_Karyawan_Asal", "Nama_Karyawan_Asal", "Divisi_Asal",
+    "Shift_Asal", "ID_Karyawan_Pengganti", "Nama_Karyawan_Pengganti", "Divisi_Pengganti",
+    "Shift_Normal_Pengganti", "Shift_Backup", "Alasan_Backup", "Status_Tugas", "Kode_Operator",
+    "Waktu_Input", "Catatan", "Waktu_Dibatalkan", "Operator_Pembatalan"
+  ];
+
+  var headerAktual = sheet.getRange(1, 1, 1, headerSeharusnya.length).getDisplayValues()[0];
+  var kesalahan = [];
+
+  for (var i = 0; i < headerSeharusnya.length; i++) {
+    var aktual = String(headerAktual[i] || "").trim();
+    var seharusnya = headerSeharusnya[i];
+
+    if (aktual !== seharusnya) {
+      kesalahan.push("Kolom " + nomorKolomKeHurufBackup_(i + 1) + ": seharusnya '" + seharusnya + "', tetapi ditemukan '" + aktual + "'.");
+    }
+  }
+
+  if (kesalahan.length > 0) {
+    throw new Error("Header BACKUP_KARYAWAN belum sesuai:\n\n" + kesalahan.join("\n"));
+  }
+
+  return true;
+}
+
+function nomorKolomKeHurufBackup_(nomorKolom) {
+  var hasil = "";
+  while (nomorKolom > 0) {
+    var sisa = (nomorKolom - 1) % 26;
+    hasil = String.fromCharCode(65 + sisa) + hasil;
+    nomorKolom = Math.floor((nomorKolom - 1) / 26);
+  }
+  return hasil;
+}
+
+function periksaBenturanPenugasanBackup_(tanggalTugas, idKaryawanAsal, idKaryawanPengganti, nomorBarisDiabaikan) {
+  var tanggalDicari = normalisasiTanggalBackup_(tanggalTugas);
+
+  if (!tanggalDicari) {
+    throw new Error("Tanggal tugas untuk pemeriksaan benturan tidak valid.");
+  }
+
+  var idAsalDicari = normalisasiIdentitasBackup_(idKaryawanAsal);
+  var idPenggantiDicari = normalisasiIdentitasBackup_(idKaryawanPengganti);
+
+  if (!idAsalDicari || !idPenggantiDicari) {
+    throw new Error("ID karyawan asal dan pengganti wajib diisi.");
+  }
+
+  if (idAsalDicari === idPenggantiDicari) {
+    throw new Error("Karyawan asal dan pengganti tidak boleh orang yang sama.");
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_BACKUP_KARYAWAN);
+  var barisAwal = 2;
+  var barisTerakhir = sheet.getLastRow();
+
+  if (barisTerakhir < barisAwal) {
+    return true;
+  }
+
+  var jumlahBaris = barisTerakhir - barisAwal + 1;
+  var data = sheet.getRange(barisAwal, 1, jumlahBaris, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).getValues();
+  var idYangDiperiksa = [idAsalDicari, idPenggantiDicari];
+
+  for (var i = 0; i < data.length; i++) {
+    var nomorBaris = barisAwal + i;
+
+    if (nomorBarisDiabaikan && nomorBaris === nomorBarisDiabaikan) {
+      continue;
+    }
+
+    var row = data[i];
+    var statusTugas = String(row[COL_BACKUP_KARYAWAN.STATUS_TUGAS - 1] || "").trim().toUpperCase();
+
+    if (statusTugas !== "AKTIF") {
+      continue;
+    }
+
+    var tanggalDalamData = normalisasiTanggalBackup_(row[COL_BACKUP_KARYAWAN.TANGGAL_TUGAS - 1]);
+
+    if (!tanggalDalamData || tanggalDalamData.getTime() !== tanggalDicari.getTime()) {
+      continue;
+    }
+
+    var idBackup = String(row[COL_BACKUP_KARYAWAN.ID_BACKUP - 1] || "").trim();
+    var idAsalDalamData = normalisasiIdentitasBackup_(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_ASAL - 1]);
+    var idPenggantiDalamData = normalisasiIdentitasBackup_(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_PENGGANTI - 1]);
+
+    for (var j = 0; j < idYangDiperiksa.length; j++) {
+      var idDicari = idYangDiperiksa[j];
+
+      if (idDicari !== idAsalDalamData && idDicari !== idPenggantiDalamData) {
+        continue;
+      }
+
+      var peranBaru = idDicari === idAsalDicari ? "karyawan asal" : "karyawan pengganti";
+      var peranLama = idDicari === idAsalDalamData ? "karyawan asal" : "karyawan pengganti";
+
+      throw new Error(
+        "Terjadi benturan penugasan. ID '" + idDicari + "' yang akan digunakan sebagai " + peranBaru +
+        " sudah tercatat sebagai " + peranLama + " pada tanggal yang sama" +
+        (idBackup ? " dengan ID Backup '" + idBackup + "'" : " pada baris " + nomorBaris) + "."
+      );
+    }
+  }
+
+  return true;
+}
+
+function normalisasiIdentitasBackup_(nilai) {
+  return String(nilai || "").trim().toUpperCase();
+}
+
+function prosesPenugasanBackupBarisAktif() {
+  var lock = LockService.getDocumentLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error("Sistem sedang memproses data lain. Silakan coba kembali.");
+  }
+
+  try {
+    validasiHeaderBackupKaryawan_();
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getActiveSheet();
+
+    if (sheet.getName() !== SHEET_BACKUP_KARYAWAN) {
+      throw new Error("Silakan pilih baris pada sheet BACKUP_KARYAWAN.");
+    }
+
+    var nomorBaris = sheet.getActiveRange().getRow();
+
+    if (nomorBaris < 2) {
+      throw new Error("Baris header tidak dapat diproses.");
+    }
+
+    var row = sheet.getRange(nomorBaris, 1, 1, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).getValues()[0];
+
+    var idBackupLama = String(row[COL_BACKUP_KARYAWAN.ID_BACKUP - 1] || "").trim();
+    var tanggalTugas = normalisasiTanggal(row[COL_BACKUP_KARYAWAN.TANGGAL_TUGAS - 1]);
+    var idKaryawanAsal = String(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_ASAL - 1] || "").trim();
+    var idKaryawanPengganti = String(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_PENGGANTI - 1] || "").trim();
+    var kodeShiftBackup = String(row[COL_BACKUP_KARYAWAN.SHIFT_BACKUP - 1] || "").trim();
+    var alasanBackup = String(row[COL_BACKUP_KARYAWAN.ALASAN_BACKUP - 1] || "").trim();
+    var kodeOperator = String(row[COL_BACKUP_KARYAWAN.KODE_OPERATOR - 1] || "").trim();
+    var statusTugas = String(row[COL_BACKUP_KARYAWAN.STATUS_TUGAS - 1] || "").trim().toUpperCase();
+
+    if (statusTugas === "AKTIF") {
+      throw new Error("Baris " + nomorBaris + " sudah berstatus AKTIF.");
+    }
+
+    if (statusTugas === "DIBATALKAN") {
+      throw new Error("Penugasan yang sudah dibatalkan tidak dapat diproses kembali.");
+    }
+
+    if (!idKaryawanAsal || !idKaryawanPengganti || !kodeShiftBackup || !alasanBackup || !kodeOperator) {
+      throw new Error("Seluruh kolom input penugasan backup wajib diisi.");
+    }
+
+    var hasilValidasi = validasiPenugasanBackup_(tanggalTugas, idKaryawanAsal, idKaryawanPengganti, kodeShiftBackup);
+
+    var karyawanAsal = hasilValidasi.karyawanAsal;
+    var karyawanPengganti = hasilValidasi.karyawanPengganti;
+    var shiftAsal = hasilValidasi.shiftAsal;
+    var shiftNormalPengganti = hasilValidasi.shiftNormalPengganti;
+    var shiftBackup = hasilValidasi.shiftBackup;
+
+    var idAsalResmi = karyawanAsal.id || karyawanAsal.kodeKaryawan;
+    var idPenggantiResmi = karyawanPengganti.id || karyawanPengganti.kodeKaryawan;
+
+    periksaBenturanPenugasanBackup_(tanggalTugas, idAsalResmi, idPenggantiResmi, nomorBaris);
+
+    var sekarang = new Date();
+    var idBackup = idBackupLama || buatIDPenugasanBackup_(sekarang);
+
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.ID_BACKUP).setValue(idBackup);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.ID_KARYAWAN_ASAL).setValue(idAsalResmi);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.NAMA_KARYAWAN_ASAL, 1, 3)
+      .setValues([[karyawanAsal.nama, karyawanAsal.divisi, shiftAsal.kodeShift]]);
+
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.ID_KARYAWAN_PENGGANTI).setValue(idPenggantiResmi);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.NAMA_KARYAWAN_PENGGANTI, 1, 3)
+      .setValues([[karyawanPengganti.nama, karyawanPengganti.divisi, shiftNormalPengganti.kodeShift]]);
+
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.SHIFT_BACKUP).setValue(shiftBackup.kodeShift);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.STATUS_TUGAS).setValue("AKTIF");
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.WAKTU_INPUT).setValue(sekarang);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.CATATAN).setValue("Penugasan backup berhasil diproses.");
+
+    SpreadsheetApp.flush();
+    ss.toast("Penugasan backup " + idBackup + " berhasil diaktifkan.", "Berhasil", 5);
+
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(error.message, "Proses Gagal", 8);
+    throw error;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function buatIDPenugasanBackup_(tanggalWaktu) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var zonaWaktu = ss.getSpreadsheetTimeZone();
+  var waktu = Utilities.formatDate(tanggalWaktu, zonaWaktu, "yyyyMMdd-HHmmss");
+  var kodeAcak = Utilities.getUuid().replace(/-/g, "").substring(0, 4).toUpperCase();
+  return "BKP-" + waktu + "-" + kodeAcak;
+}
+
+function cariPenugasanBackupAktif_(tanggalTugas, idKaryawan) {
+  var tanggalDicari = normalisasiTanggalBackup_(tanggalTugas);
+
+  if (!tanggalDicari) {
+    throw new Error("Tanggal pencarian penugasan backup tidak valid.");
+  }
+
+  var idDicari = normalisasiIdentitasBackup_(idKaryawan);
+
+  if (!idDicari) {
+    throw new Error("ID karyawan untuk pencarian backup belum diisi.");
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ambilSheet(ss, SHEET_BACKUP_KARYAWAN);
+  var barisAwal = 2;
+  var barisTerakhir = sheet.getLastRow();
+
+  if (barisTerakhir < barisAwal) {
+    return null;
+  }
+
+  var jumlahBaris = barisTerakhir - barisAwal + 1;
+  var data = sheet.getRange(barisAwal, 1, jumlahBaris, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).getValues();
+
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var nomorBaris = barisAwal + i;
+    var statusTugas = String(row[COL_BACKUP_KARYAWAN.STATUS_TUGAS - 1] || "").trim().toUpperCase();
+
+    if (statusTugas !== "AKTIF") {
+      continue;
+    }
+
+    var tanggalDalamData = normalisasiTanggalBackup_(row[COL_BACKUP_KARYAWAN.TANGGAL_TUGAS - 1]);
+
+    if (!tanggalDalamData || tanggalDalamData.getTime() !== tanggalDicari.getTime()) {
+      continue;
+    }
+
+    var idKaryawanAsal = normalisasiIdentitasBackup_(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_ASAL - 1]);
+    var idKaryawanPengganti = normalisasiIdentitasBackup_(row[COL_BACKUP_KARYAWAN.ID_KARYAWAN_PENGGANTI - 1]);
+
+    var peran = "";
+    if (idDicari === idKaryawanAsal) {
+      peran = "ASAL";
+    } else if (idDicari === idKaryawanPengganti) {
+      peran = "PENGGANTI";
+    } else {
+      continue;
+    }
+
+    return {
+      ditemukan: true,
+      nomorBaris: nomorBaris,
+      idBackup: String(row[COL_BACKUP_KARYAWAN.ID_BACKUP - 1] || "").trim(),
+      tanggalTugas: tanggalDalamData,
+      peran: peran,
+      idKaryawanAsal: idKaryawanAsal,
+      namaKaryawanAsal: String(row[COL_BACKUP_KARYAWAN.NAMA_KARYAWAN_ASAL - 1] || "").trim(),
+      divisiAsal: String(row[COL_BACKUP_KARYAWAN.DIVISI_ASAL - 1] || "").trim(),
+      shiftAsal: String(row[COL_BACKUP_KARYAWAN.SHIFT_ASAL - 1] || "").trim(),
+      idKaryawanPengganti: idKaryawanPengganti,
+      namaKaryawanPengganti: String(row[COL_BACKUP_KARYAWAN.NAMA_KARYAWAN_PENGGANTI - 1] || "").trim(),
+      divisiPengganti: String(row[COL_BACKUP_KARYAWAN.DIVISI_PENGGANTI - 1] || "").trim(),
+      shiftNormalPengganti: String(row[COL_BACKUP_KARYAWAN.SHIFT_NORMAL_PENGGANTI - 1] || "").trim(),
+      shiftBackup: String(row[COL_BACKUP_KARYAWAN.SHIFT_BACKUP - 1] || "").trim(),
+      alasanBackup: String(row[COL_BACKUP_KARYAWAN.ALASAN_BACKUP - 1] || "").trim(),
+      statusTugas: statusTugas
+    };
+  }
+
+  return null;
+}
+
+function batalkanPenugasanBackupBarisAktif() {
+  var lock = LockService.getDocumentLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error("Sistem sedang memproses data lain. Silakan coba kembali.");
+  }
+
+  try {
+    validasiHeaderBackupKaryawan_();
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getActiveSheet();
+
+    if (sheet.getName() !== SHEET_BACKUP_KARYAWAN) {
+      throw new Error("Silakan pilih baris pada sheet BACKUP_KARYAWAN.");
+    }
+
+    var rangeAktif = sheet.getActiveRange();
+    if (!rangeAktif) {
+      throw new Error("Pilih salah satu sel pada baris penugasan yang akan dibatalkan.");
+    }
+
+    var nomorBaris = rangeAktif.getRow();
+    if (nomorBaris < 2) {
+      throw new Error("Pilih baris data penugasan, bukan baris header.");
+    }
+
+    var row = sheet.getRange(nomorBaris, 1, 1, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).getValues()[0];
+
+    var idBackup = String(row[COL_BACKUP_KARYAWAN.ID_BACKUP - 1] || "").trim();
+    var statusTugas = String(row[COL_BACKUP_KARYAWAN.STATUS_TUGAS - 1] || "").trim().toUpperCase();
+    var operatorPembatalan = String(row[COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN - 1] || "").trim();
+    var catatanLama = String(row[COL_BACKUP_KARYAWAN.CATATAN - 1] || "").trim();
+
+    if (!idBackup) {
+      throw new Error("ID Backup pada kolom A belum tersedia. Baris ini belum pernah diproses.");
+    }
+
+    if (statusTugas === "DIBATALKAN") {
+      throw new Error("Penugasan " + idBackup + " sudah dibatalkan.");
+    }
+
+    if (statusTugas !== "AKTIF") {
+      throw new Error("Hanya penugasan berstatus AKTIF yang dapat dibatalkan.");
+    }
+
+    if (!operatorPembatalan) {
+      throw new Error("Isi Kode Operator Pembatalan pada kolom R terlebih dahulu.");
+    }
+
+    var waktuDibatalkan = new Date();
+    var zonaWaktu = ss.getSpreadsheetTimeZone();
+    var waktuTampil = Utilities.formatDate(waktuDibatalkan, zonaWaktu, "dd/MM/yyyy HH:mm:ss");
+
+    var catatanPembatalan = "Penugasan dibatalkan pada " + waktuTampil + " oleh " + operatorPembatalan + ".";
+    var catatanBaru = catatanLama ? catatanLama + " " + catatanPembatalan : catatanPembatalan;
+
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.STATUS_TUGAS).setValue("DIBATALKAN");
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.CATATAN).setValue(catatanBaru);
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.WAKTU_DIBATALKAN).setValue(waktuDibatalkan).setNumberFormat("dd/MM/yyyy HH:mm:ss");
+    sheet.getRange(nomorBaris, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).setValue(operatorPembatalan);
+
+    SpreadsheetApp.flush();
+    ss.toast("Penugasan " + idBackup + " berhasil dibatalkan.", "Pembatalan Berhasil", 5);
+
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(error.message, "Pembatalan Gagal", 8);
+    throw error;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function cariKonteksBackupUntukScan_(sekarang, idKaryawan, shiftNormal) {
+  var kandidatTanggal = [];
+  var tanggalSudahDicek = {};
+
+  function tambahKandidat_(tanggal) {
+    var tanggalNormal = normalisasiTanggalBackup_(tanggal);
+    if (!tanggalNormal) return;
+
+    var kunci = tanggalNormal.getTime();
+    if (tanggalSudahDicek[kunci]) return;
+
+    tanggalSudahDicek[kunci] = true;
+    kandidatTanggal.push(tanggalNormal);
+  }
+
+  tambahKandidat_(tentukanTanggalAbsensi(sekarang, shiftNormal));
+  tambahKandidat_(sekarang);
+
+  var tanggalKemarin = new Date(sekarang);
+  tanggalKemarin.setDate(tanggalKemarin.getDate() - 1);
+  tambahKandidat_(tanggalKemarin);
+
+  for (var i = 0; i < kandidatTanggal.length; i++) {
+    var penugasan = cariPenugasanBackupAktif_(kandidatTanggal[i], idKaryawan);
+    if (!penugasan) continue;
+
+    var shiftPenugasan = penugasan.peran === "PENGGANTI" ? penugasan.shiftBackup : penugasan.shiftAsal;
+    var tanggalEfektif = normalisasiTanggalBackup_(tentukanTanggalAbsensi(sekarang, shiftPenugasan));
+
+    if (!tanggalEfektif) continue;
+
+    if (tanggalEfektif.getTime() === penugasan.tanggalTugas.getTime()) {
+      return penugasan;
+    }
+  }
+
+  return null;
+}
+
+/****************************************************
+ * API WEB APP: PENUGASAN BACKUP (SUDAH DIPERBAIKI)
+ ****************************************************/
+function apiPenugasanBackup(e) {
+  var parameter = e && e.parameter ? e.parameter : {};
+  var callback = bersihkanCallback(parameter.callback);
+  var lock = LockService.getDocumentLock();
+
+  if (!lock.tryLock(30000)) {
+    return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Sistem sedang memproses data lain." });
+  }
+
+  try {
+    var tanggalRaw = parameter.tanggal;
+    var idAsal = String(parameter.id_asal || "").trim();
+    var idPengganti = String(parameter.id_pengganti || "").trim();
+    var shiftBackup = String(parameter.shift_backup || "").trim();
+    var alasan = String(parameter.alasan || "").trim();
+    var kodeOperator = String(parameter.kode_operator || "").trim();
+
+    if (!tanggalRaw || !idAsal || !idPengganti || !shiftBackup || !alasan) {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Semua kolom input wajib diisi." });
+    }
+
+    // PERBAIKAN TAHAP 4: Menggunakan normalisasiTanggal agar aman format Indonesia (DD/MM/YYYY)
+    var tanggalTugas = normalisasiTanggal(tanggalRaw);
+    if (!tanggalTugas) {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Format tanggal tidak valid. Gunakan YYYY-MM-DD atau DD/MM/YYYY." });
+    }
+
+    validasiHeaderBackupKaryawan_();
+
+    var hasilValidasi = validasiPenugasanBackup_(tanggalTugas, idAsal, idPengganti, shiftBackup);
+    var idAsalResmi = hasilValidasi.karyawanAsal.id || hasilValidasi.karyawanAsal.kodeKaryawan;
+    var idPenggantiResmi = hasilValidasi.karyawanPengganti.id || hasilValidasi.karyawanPengganti.kodeKaryawan;
+
+    periksaBenturanPenugasanBackup_(tanggalTugas, idAsalResmi, idPenggantiResmi);
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ambilSheet(ss, SHEET_BACKUP_KARYAWAN);
+    var sekarang = new Date();
+    var idBackup = buatIDPenugasanBackup_(sekarang);
+
+    var dataKolomA = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), 1).getValues();
+    var barisKosong = 2;
+    for (var k = dataKolomA.length - 1; k >= 1; k--) {
+      if (String(dataKolomA[k][0] || "").trim() !== "") {
+        barisKosong = k + 2;
+        break;
+      }
+    }
+
+    var barisDataBaru = [
+      idBackup,
+      tanggalTugas,
+      idAsalResmi,
+      hasilValidasi.karyawanAsal.nama,
+      hasilValidasi.karyawanAsal.divisi,
+      hasilValidasi.shiftAsal.kodeShift,
+      idPenggantiResmi,
+      hasilValidasi.karyawanPengganti.nama,
+      hasilValidasi.karyawanPengganti.divisi,
+      hasilValidasi.shiftNormalPengganti.kodeShift,
+      hasilValidasi.shiftBackup.kodeShift,
+      alasan,
+      "AKTIF",
+      kodeOperator,
+      sekarang,
+      "Penugasan backup berhasil diaktifkan via Web App.",
+      "",
+      ""
+    ];
+
+    sheet.getRange(barisKosong, 1, 1, barisDataBaru.length).setValues([barisDataBaru]);
+
+    return buatJsonpResponse(callback, {
+      sukses: true,
+      status: "Berhasil",
+      pesan: "Penugasan backup " + idBackup + " berhasil diaktifkan untuk " + hasilValidasi.karyawanPengganti.nama + "."
+    });
+
+  } catch(error) {
+    return buatJsonpResponse(callback, { sukses: false, status: "Error", pesan: error.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function apiBatalBackup(e) {
+  var parameter = e && e.parameter ? e.parameter : {};
+  var callback = bersihkanCallback(parameter.callback);
+  var lock = LockService.getDocumentLock();
+
+  if (!lock.tryLock(30000)) {
+    return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Sistem sedang memproses data lain." });
+  }
+
+  try {
+    var idBackup = String(parameter.id_backup || "").trim();
+    var kodeOperator = String(parameter.kode_operator || "").trim();
+
+    if (!idBackup) {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "ID Backup wajib diisi." });
+    }
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ambilSheet(ss, SHEET_BACKUP_KARYAWAN);
+    var data = sheet.getDataRange().getValues();
+    var barisDitemukan = 0;
+    var catatanLama = "";
+    var statusTugas = "";
+
+    for (var i = 1; i < data.length; i++) {
+      var idBackupData = String(data[i][COL_BACKUP_KARYAWAN.ID_BACKUP - 1] || "").trim();
+      if (idBackupData.toUpperCase() === idBackup.toUpperCase()) {
+        barisDitemukan = i + 1;
+        statusTugas = String(data[i][COL_BACKUP_KARYAWAN.STATUS_TUGAS - 1] || "").trim().toUpperCase();
+        catatanLama = String(data[i][COL_BACKUP_KARYAWAN.CATATAN - 1] || "").trim();
+        break;
+      }
+    }
+
+    if (barisDitemukan === 0) {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "ID Backup '" + idBackup + "' tidak ditemukan." });
+    }
+
+    if (statusTugas === "DIBATALKAN") {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Penugasan " + idBackup + " sudah dibatalkan sebelumnya." });
+    }
+
+    if (statusTugas !== "AKTIF") {
+      return buatJsonpResponse(callback, { sukses: false, status: "Gagal", pesan: "Hanya penugasan berstatus AKTIF yang dapat dibatalkan." });
+    }
+
+    var waktuDibatalkan = new Date();
+    var zonaWaktu = ss.getSpreadsheetTimeZone();
+    var waktuTampil = Utilities.formatDate(waktuDibatalkan, zonaWaktu, "dd/MM/yyyy HH:mm:ss");
+    var catatanPembatalan = "Dibatalkan via Web App pada " + waktuTampil + " oleh " + kodeOperator + ".";
+    var catatanBaru = catatanLama ? catatanLama + " " + catatanPembatalan : catatanPembatalan;
+
+    sheet.getRange(barisDitemukan, COL_BACKUP_KARYAWAN.STATUS_TUGAS).setValue("DIBATALKAN");
+    sheet.getRange(barisDitemukan, COL_BACKUP_KARYAWAN.CATATAN).setValue(catatanBaru);
+    sheet.getRange(barisDitemukan, COL_BACKUP_KARYAWAN.WAKTU_DIBATALKAN).setValue(waktuDibatalkan).setNumberFormat("dd/MM/yyyy HH:mm:ss");
+    sheet.getRange(barisDitemukan, COL_BACKUP_KARYAWAN.OPERATOR_PEMBATALAN).setValue(kodeOperator);
+
+    return buatJsonpResponse(callback, {
+      sukses: true,
+      status: "Berhasil",
+      pesan: "Penugasan " + idBackup + " berhasil dibatalkan."
+    });
+
+  } catch(error) {
+    return buatJsonpResponse(callback, { sukses: false, status: "Error", pesan: error.message });
+  } finally {
+    lock.releaseLock();
+  }
+}

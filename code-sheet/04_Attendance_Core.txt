@@ -1,0 +1,693 @@
+/****************************************************
+ * 04_Attendance_Core.gs
+ * MESIN UTAMA ABSENSI ONLINE
+ * --------------------------------------------------
+ * Fungsi utama:
+ * - Memvalidasi ID dan token.
+ * - Mengecek MASTER_DATA.
+ * - Mengecek status Aktif/Nonaktif.
+ * - Mengecek anti double scan.
+ * - Menentukan scan Masuk/Pulang/Ditolak.
+ * - Mencatat ke LOG_SCAN.
+ * - Mengupdate ABSENSI_HARIAN.
+ *
+ * Catatan:
+ * prosesScanAbsensiUtama() adalah nama baru yang lebih bersih.
+ * prosesScanUrlV12() tetap dipertahankan sementara agar aman
+ * jika masih ada fungsi lama yang memanggilnya.
+ ****************************************************/
+
+/****************************************************
+ * MESIN UTAMA ABSENSI ONLINE
+ ****************************************************/
+function prosesScanAbsensiUtama(e) {
+  return prosesScanUrlV12(e);
+}
+
+
+function prosesScanUrlV12(e) {
+  var lock =
+    LockService.getScriptLock();
+
+  try {
+    if (!lock.tryLock(10000)) {
+      return ContentService
+        .createTextOutput(
+          "Sistem sedang memproses scan lain. Silakan scan ulang beberapa detik lagi."
+        );
+    }
+
+    return prosesScanUrlV12Terkunci_(e);
+  } finally {
+    if (lock.hasLock()) {
+      lock.releaseLock();
+    }
+  }
+}
+
+
+function prosesScanUrlV12Terkunci_(e) {
+  var id = e.parameter.id;
+  var token = e.parameter.token;
+  var sumberScan =
+    e.parameter.sumberScan ||
+    SUMBER_ONLINE;
+
+  if (!id) {
+    return ContentService
+      .createTextOutput(
+        "Gagal: ID tidak ditemukan di URL."
+      );
+  }
+
+  if (!token) {
+    return ContentService
+      .createTextOutput(
+        "Akses ditolak. Token tidak ditemukan."
+      );
+  }
+
+  var ss =
+    SpreadsheetApp
+      .getActiveSpreadsheet();
+
+  var masterSheet =
+    ambilSheet(
+      ss,
+      SHEET_MASTER_DATA
+    );
+
+  var logSheet =
+    ambilSheet(
+      ss,
+      SHEET_LOG_SCAN
+    );
+
+  var absensiSheet =
+    ambilSheet(
+      ss,
+      SHEET_ABSENSI_HARIAN
+    );
+
+  var masterData =
+    masterSheet
+      .getDataRange()
+      .getValues();
+
+  var dataUser =
+    cariDataUserDiMaster(
+      masterData,
+      id
+    );
+
+  if (!dataUser.ditemukan) {
+    return ContentService
+      .createTextOutput(
+        "Gagal: ID " +
+        id +
+        " tidak ditemukan di MASTER_DATA."
+      );
+  }
+
+  var nama = dataUser.nama;
+  var kelasDivisi =
+    dataUser.kelasDivisi;
+  var shift = dataUser.shift;
+
+  var validasiAkses =
+    validasiAksesUserAbsensi(
+      token,
+      dataUser
+    );
+
+  if (!validasiAkses.valid) {
+    return ContentService
+      .createTextOutput(
+        validasiAkses.pesan
+      );
+  }
+
+  // =========================================================
+  // DEFINISI WAKTU SERVER & TANGGAL HARIAN (WAJIB DI ATAS LOG)
+  // =========================================================
+  var sekarang = new Date();
+  var tanggalHariIni = tentukanTanggalAbsensi(sekarang, shift);
+  var kodeOperator = e.parameter.kodeOperator || e.parameter.operator_id || "";
+
+  // =========================================================
+  // FITUR: VALIDASI GEOFENCING & LOGGING KECURANGAN KE LOG_SCAN
+  // =========================================================
+  var latUser = e.parameter.lat;
+  var lngUser = e.parameter.lng;
+
+  // 1. KONDISI: GPS HP Tidak Terdeteksi / Dimatikan
+  if (!latUser || !lngUser) {
+    var pesanGps = "Scan ditolak: Lokasi GPS HP Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi/GPS pada HP Anda.";
+
+    // Catat ke LOG_SCAN dengan Timestamp, Tanggal, dan Jam yang terisi
+    logSheet.appendRow([
+      sekarang,             // 1. Timestamp Scan
+      tanggalHariIni,       // 2. Tanggal Kerja
+      sekarang,             // 3. Jam Scan
+      id,                   // 4. ID Karyawan
+      nama,                 // 5. Nama Karyawan
+      kelasDivisi,          // 6. Divisi
+      "Scan Ditolak",       // 7. Jenis Scan
+      "Ditolak",            // 8. Status Proses
+      sumberScan,           // 9. Sumber Data
+      "GPS Tidak Terdeteksi / Dimatikan Pengguna", // 10. Catatan Sistem
+      "",                   // 11. Keterangan
+      0,                    // 12. Menit Telat
+      0,                    // 13. Menit Datang Awal
+      "",                   // 14. ID Referensi
+      kodeOperator          // 15. Kode Operator
+    ]);
+
+    return ContentService.createTextOutput(pesanGps);
+  }
+
+  // 2. KONDISI: Posisi Pengguna Di Luar Radius Kantor
+  var settingGps = bacaSettingGpsKantor();
+  if (settingGps.latitude !== 0 && settingGps.longitude !== 0) {
+    var jarakMeter = hitungJarakHaversine(
+      Number(latUser),
+      Number(lngUser),
+      settingGps.latitude,
+      settingGps.longitude
+    );
+
+    if (jarakMeter > settingGps.radiusMeter) {
+      var pesanJarak = "Scan ditolak: Posisi Anda di luar area kantor.\n\n" +
+                       "Jarak Anda saat ini: " + jarakMeter + " meter dari kantor.\n" +
+                       "Batas Radius Maksimal: " + settingGps.radiusMeter + " meter.";
+
+      // Catat ke LOG_SCAN dengan Timestamp, Tanggal, dan Jam yang terisi
+      logSheet.appendRow([
+        sekarang,             // 1. Timestamp Scan
+        tanggalHariIni,       // 2. Tanggal Kerja
+        sekarang,             // 3. Jam Scan
+        id,                   // 4. ID Karyawan
+        nama,                 // 5. Nama Karyawan
+        kelasDivisi,          // 6. Divisi
+        "Scan Ditolak",       // 7. Jenis Scan
+        "Ditolak",            // 8. Status Proses
+        sumberScan,           // 9. Sumber Data
+        "Di luar radius kantor (Jarak: " + jarakMeter + "m, Max: " + settingGps.radiusMeter + "m)", // 10. Catatan Sistem
+        "",                   // 11. Keterangan
+        0,                    // 12. Menit Telat
+        0,                    // 13. Menit Datang Awal
+        "",                   // 14. ID Referensi
+        kodeOperator          // 15. Kode Operator
+      ]);
+
+      return ContentService.createTextOutput(pesanJarak);
+    }
+  }
+  // =========================================================
+
+  var shiftNormal = shift;
+
+  var penugasanBackup =
+    cariKonteksBackupUntukScan_(
+      sekarang,
+      id,
+      shiftNormal
+    );
+
+  var sebagaiPengganti =
+    (
+      penugasanBackup &&
+      penugasanBackup.peran ===
+        "PENGGANTI"
+    );
+
+  var idReferensi =
+    sebagaiPengganti
+      ? String(
+          penugasanBackup.idBackup || ""
+        ).trim()
+      : "";
+
+  if (
+    penugasanBackup &&
+    penugasanBackup.peran === "ASAL"
+  ) {
+    var tanggalTugasBackup =
+      penugasanBackup.tanggalTugas;
+
+    var pesanKaryawanAsal =
+      "Scan ditolak: Anda sedang digantikan oleh " +
+      penugasanBackup
+        .namaKaryawanPengganti +
+      " pada shift " +
+      penugasanBackup.shiftBackup +
+      ". ID penugasan: " +
+      penugasanBackup.idBackup +
+      ".";
+
+    logSheet.appendRow([
+      sekarang,
+      tanggalTugasBackup,
+      sekarang,
+      id,
+      nama,
+      kelasDivisi,
+      "Scan Ditolak",
+      "Ditolak",
+      sumberScan,
+      "Karyawan asal sedang digantikan. " +
+        "ID Backup: " +
+        penugasanBackup.idBackup,
+      "",
+      0,
+      0,
+      penugasanBackup.idBackup,
+      ""
+    ]);
+
+    return ContentService
+      .createTextOutput(
+        pesanKaryawanAsal
+      );
+  }
+
+  if (sebagaiPengganti) {
+    shift =
+      penugasanBackup.shiftBackup;
+
+    Logger.log(
+      "Shift backup diterapkan. " +
+      "ID: " +
+      id +
+      ", shift normal: " +
+      shiftNormal +
+      ", shift efektif: " +
+      shift +
+      ", ID Backup: " +
+      penugasanBackup.idBackup
+    );
+  }
+
+  var cekGanda =
+    cekScanGandaScannerV13(
+      logSheet,
+      id,
+      sumberScan
+    );
+
+  if (cekGanda.ganda) {
+    return ContentService
+      .createTextOutput(
+        cekGanda.pesan
+      );
+  }
+
+  var tanggalHariIni =
+    tentukanTanggalAbsensi(
+      sekarang,
+      shift
+    );
+
+  var logData =
+    logSheet
+      .getDataRange()
+      .getValues();
+
+  var riwayatScanHariIni =
+    cekRiwayatScanHariIni(
+      logData,
+      id,
+      tanggalHariIni,
+      idReferensi
+    );
+
+  // Cek shift malam aktif hanya jika belum ada
+  // Masuk dan belum ada Pulang Perlu Verifikasi.
+  if (
+    !riwayatScanHariIni.sudahMasuk &&
+    !riwayatScanHariIni.sudahPulang
+  ) {
+    var cekPulangAktif =
+      cekRiwayatPulangAktif(
+        logData,
+        id,
+        sekarang,
+        shift,
+        idReferensi
+      );
+
+    if (
+      cekPulangAktif.ditemukan &&
+      cekPulangAktif.sudahMasuk &&
+      !cekPulangAktif.sudahPulang
+    ) {
+      tanggalHariIni =
+        cekPulangAktif
+          .tanggalAbsensi;
+
+      riwayatScanHariIni
+        .sudahMasuk = true;
+
+      riwayatScanHariIni
+        .sudahPulang = false;
+
+      riwayatScanHariIni
+        .waktuMasuk =
+          cekPulangAktif.waktuMasuk;
+
+      riwayatScanHariIni
+        .scanTerakhir =
+          cekPulangAktif.waktuMasuk;
+
+      riwayatScanHariIni
+        .jenisScanTerakhir =
+          "Masuk";
+    }
+  }
+
+  var sudahMasuk =
+    riwayatScanHariIni.sudahMasuk;
+
+  var sudahPulang =
+    riwayatScanHariIni.sudahPulang;
+
+  var jenisScan = "";
+  var statusProses = "";
+  var catatanSistem = "";
+  var pesanBrowser = "";
+  var statusKehadiran = "";
+  var keterangan = "";
+  var menitTerlambat = 0;
+  var menitDatangAwal = 0;
+
+  var aturanScan =
+    cekAturanJamScanOnline(
+      sekarang,
+      sudahMasuk,
+      sudahPulang,
+      riwayatScanHariIni
+        .waktuMasuk,
+      riwayatScanHariIni
+        .scanTerakhir,
+      riwayatScanHariIni
+        .jenisScanTerakhir,
+      nama,
+      id,
+      shift
+    );
+
+  statusKehadiran =
+    aturanScan.statusKehadiran || "";
+
+  keterangan =
+    aturanScan.keterangan || "";
+
+  menitTerlambat =
+    aturanScan.menitTerlambat || 0;
+
+  menitDatangAwal =
+    aturanScan.menitDatangAwal || 0;
+
+  if (!aturanScan.boleh) {
+    jenisScan =
+      aturanScan.jenisScan;
+
+    statusProses =
+      aturanScan.statusProses;
+
+    catatanSistem =
+      aturanScan.catatanSistem;
+
+    pesanBrowser =
+      aturanScan.pesanBrowser;
+  } else {
+    jenisScan =
+      aturanScan.jenisScan;
+
+    var cekPrioritas =
+      cekPrioritasKoreksiAdmin(
+        absensiSheet,
+        tanggalHariIni,
+        id,
+        jenisScan
+      );
+
+    if (cekPrioritas.terkunci) {
+      jenisScan =
+        jenisScan + " Ditolak";
+
+      statusProses = "Ditolak";
+
+      catatanSistem =
+        cekPrioritas.pesan;
+
+      pesanBrowser =
+        "Scan ditolak: data absensi " +
+        nama +
+        " (" +
+        id +
+        ") sudah dikoreksi admin. " +
+        "Silakan hubungi operator.";
+    } else {
+      /*
+       * Jangan selalu menimpa dengan Berhasil.
+       * Status Perlu Verifikasi dari aturan harus
+       * masuk ke LOG_SCAN apa adanya.
+       */
+      statusProses =
+        aturanScan.statusProses ||
+        "Berhasil";
+
+      if (jenisScan == "Masuk") {
+        if (sebagaiPengganti) {
+          catatanSistem =
+            "Scan masuk sebagai karyawan pengganti. " +
+            "ID Backup: " +
+            penugasanBackup.idBackup;
+
+          pesanBrowser =
+            "Jam Masuk sebagai karyawan pengganti berhasil dicatat.\n\n" +
+            "Nama: " +
+            nama +
+            " (" +
+            id +
+            ")\n\n" +
+            "Status Kehadiran: " +
+            statusKehadiran +
+            "\n\nMode Tugas: PENGGANTI" +
+            "\n\nShift Efektif: " +
+            shift +
+            "\n\nID Penugasan: " +
+            penugasanBackup.idBackup;
+        } else {
+          catatanSistem =
+            "Scan masuk berhasil";
+
+          pesanBrowser =
+            "Jam Masuk berhasil dicatat.\n\n" +
+            "Nama: " +
+            nama +
+            " (" +
+            id +
+            ")\n\n" +
+            "Status: " +
+            statusKehadiran;
+        }
+
+        if (keterangan == "Terlambat") {
+          pesanBrowser +=
+            "\n\nAnda terlambat " +
+            menitTerlambat +
+            " menit.";
+        }
+
+        if (
+          keterangan ==
+          "Datang Lebih Awal"
+        ) {
+          pesanBrowser +=
+            "\n\nAnda datang " +
+            menitDatangAwal +
+            " menit lebih awal.";
+        }
+      }
+
+      if (jenisScan == "Pulang") {
+        if (
+          statusProses ==
+            "Perlu Verifikasi"
+        ) {
+          catatanSistem =
+            aturanScan.catatanSistem ||
+            "Scan pulang tanpa data masuk";
+
+          pesanBrowser =
+            aturanScan.pesanBrowser ||
+            (
+              "Jam Pulang dicatat dengan status Perlu Verifikasi.\n\n" +
+              "Nama: " +
+              nama +
+              " (" +
+              id +
+              ")\n\n" +
+              "Data jam masuk tidak ditemukan. " +
+              "Silakan hubungi operator."
+            );
+
+          if (sebagaiPengganti) {
+            catatanSistem +=
+              ". ID Backup: " +
+              penugasanBackup.idBackup;
+
+            pesanBrowser +=
+              "\n\nMode Tugas: PENGGANTI" +
+              "\n\nShift Efektif: " +
+              shift +
+              "\n\nID Penugasan: " +
+              penugasanBackup.idBackup;
+          }
+        } else {
+          catatanSistem =
+            sebagaiPengganti
+              ? (
+                  "Scan pulang sebagai karyawan pengganti. " +
+                  "ID Backup: " +
+                  penugasanBackup.idBackup
+                )
+              : (
+                  keterangan ||
+                  "Scan pulang berhasil"
+                );
+
+          pesanBrowser =
+            (
+              sebagaiPengganti
+                ? "Jam Pulang sebagai karyawan pengganti berhasil dicatat.\n\n"
+                : "Jam Pulang berhasil dicatat.\n\n"
+            ) +
+            "Nama: " +
+            nama +
+            " (" +
+            id +
+            ")\n\n" +
+            "Status: " +
+            statusKehadiran;
+
+          if (sebagaiPengganti) {
+            pesanBrowser +=
+              "\n\nMode Tugas: PENGGANTI" +
+              "\n\nShift Efektif: " +
+              shift +
+              "\n\nID Penugasan: " +
+              penugasanBackup.idBackup;
+          }
+
+          if (keterangan) {
+            pesanBrowser +=
+              "\n\nKeterangan: " +
+              keterangan;
+          }
+        }
+      }
+    }
+  }
+
+  logSheet.appendRow([
+    sekarang,
+    tanggalHariIni,
+    sekarang,
+    id,
+    nama,
+    kelasDivisi,
+    jenisScan,
+    statusProses,
+    sumberScan,
+    catatanSistem,
+    statusKehadiran,
+    menitTerlambat,
+    menitDatangAwal,
+    idReferensi,
+    ""
+  ]);
+
+  /*
+   * Perlu Verifikasi juga harus menulis Jam_Pulang
+   * ke ABSENSI_HARIAN.
+   */
+  if (
+    statusProses == "Berhasil" ||
+    statusProses == "Perlu Verifikasi"
+  ) {
+    try {
+      var hasilUpdate =
+        updateAbsensiHarian(
+          absensiSheet,
+          tanggalHariIni,
+          sekarang,
+          id,
+          nama,
+          kelasDivisi,
+          jenisScan,
+          sumberScan,
+          statusKehadiran,
+          aturanScan.keterangan || "",
+          menitTerlambat,
+          aturanScan
+            .menitDatangAwal || 0,
+          shift,
+          penugasanBackup
+        );
+
+      if (
+        jenisScan == "Pulang" &&
+        statusProses == "Berhasil"
+      ) {
+        if (
+          hasilUpdate.jamKerjaKurang > 0
+        ) {
+          pesanBrowser +=
+            "\n\nJam Kerja Kurang: " +
+            hasilUpdate
+              .jamKerjaKurang +
+            " menit";
+        }
+
+        if (hasilUpdate.lembur > 0) {
+          pesanBrowser +=
+            "\n\nLembur: " +
+            hasilUpdate.lembur +
+            " menit";
+        }
+      }
+    } catch (error) {
+      logSheet.appendRow([
+        new Date(),
+        tanggalHariIni,
+        new Date(),
+        id,
+        nama,
+        kelasDivisi,
+        "Error Update Absensi",
+        "Gagal",
+        sumberScan,
+        error.message,
+        "",
+        0,
+        0,
+        idReferensi,
+        ""
+      ]);
+
+      return ContentService
+        .createTextOutput(
+          "Scan masuk LOG_SCAN, tetapi gagal update ABSENSI_HARIAN: " +
+          error.message
+        );
+    }
+  }
+
+  return ContentService
+    .createTextOutput(
+      pesanBrowser
+    );
+}

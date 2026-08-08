@@ -1,0 +1,1235 @@
+/****************************************************
+ * 15_Helper.gs
+ * HELPER UMUM SISTEM ABSENSI
+ * --------------------------------------------------
+ * Catatan:
+ * File ini berisi fungsi kecil yang dipakai banyak fitur.
+ * Jangan hapus sembarangan karena bisa menyambung ke scanner,
+ * koreksi admin, import offline, dan dashboard.
+ ****************************************************/
+
+function ambilSheet(ss, namaSheet) {
+  var sheet = ss.getSheetByName(namaSheet);
+
+  if (!sheet) {
+    throw new Error("Sheet " + namaSheet + " tidak ditemukan.");
+  }
+
+  return sheet;
+}
+
+function bersihkanCallback(callback) {
+  var callbackAman = String(callback || "callback").trim();
+
+  callbackAman = callbackAman.replace(/[^a-zA-Z0-9_.$]/g, "");
+
+  if (!callbackAman) {
+    callbackAman = "callback";
+  }
+
+  return callbackAman;
+}
+
+function buatJsonpResponse(callback, data) {
+  var callbackAman = bersihkanCallback(callback);
+  var output = callbackAman + "(" + JSON.stringify(data) + ");";
+
+  return ContentService
+    .createTextOutput(output)
+    .setMimeType(ContentService.MimeType.JAVASCRIPT);
+}
+
+/****************************************************
+ * HELPER TANGGAL
+ ****************************************************/
+
+function tanggalSama(tanggal1, tanggal2) {
+  var t1 = normalisasiTanggal(tanggal1);
+  var t2 = normalisasiTanggal(tanggal2);
+
+  if (!t1 || !t2) {
+    return false;
+  }
+
+  return t1.getFullYear() === t2.getFullYear() &&
+         t1.getMonth() === t2.getMonth() &&
+         t1.getDate() === t2.getDate();
+}
+
+function normalisasiTanggal(nilaiTanggal) {
+  if (!nilaiTanggal) {
+    return null;
+  }
+
+  if (Object.prototype.toString.call(nilaiTanggal) === "[object Date]") {
+    if (isNaN(nilaiTanggal.getTime())) {
+      return null;
+    }
+
+    return new Date(
+      nilaiTanggal.getFullYear(),
+      nilaiTanggal.getMonth(),
+      nilaiTanggal.getDate()
+    );
+  }
+
+  var teksTanggal = String(nilaiTanggal).trim();
+
+  // Format Indonesia: dd/mm/yyyy atau dd-mm-yyyy
+  var cocokIndonesia = teksTanggal.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+
+  if (cocokIndonesia) {
+    var hari = Number(cocokIndonesia[1]);
+    var bulan = Number(cocokIndonesia[2]);
+    var tahun = Number(cocokIndonesia[3]);
+
+    var tanggalIndonesia = new Date(tahun, bulan - 1, hari);
+
+    if (
+      tanggalIndonesia.getFullYear() === tahun &&
+      tanggalIndonesia.getMonth() === bulan - 1 &&
+      tanggalIndonesia.getDate() === hari
+    ) {
+      return tanggalIndonesia;
+    }
+
+    return null;
+  }
+
+  // Fallback untuk format lain yang masih bisa dibaca JavaScript
+  var tanggal = new Date(nilaiTanggal);
+
+  if (isNaN(tanggal.getTime())) {
+    return null;
+  }
+
+  return new Date(
+    tanggal.getFullYear(),
+    tanggal.getMonth(),
+    tanggal.getDate()
+  );
+}
+
+/****************************************************
+ * HELPER MASTER DATA
+ ****************************************************/
+
+function cariDataMaster(masterData, id) {
+  for (var i = 1; i < masterData.length; i++) {
+    if (masterData[i][0] == id) {
+      return {
+        ditemukan: true,
+        id: masterData[i][0],
+        nama: masterData[i][2],
+        kelasDivisi: masterData[i][3],
+        statusAktif: masterData[i][6],
+        tokenAbsensi: masterData[i][9],
+        shift: masterData[i][15]
+      };
+    }
+  }
+
+  return {
+    ditemukan: false,
+    id: "",
+    nama: "",
+    kelasDivisi: "",
+    statusAktif: "",
+    tokenAbsensi: ""
+  };
+}
+
+/****************************************************
+ * HELPER FORMAT
+ ****************************************************/
+
+function tambahNol(angka) {
+  if (angka < 10) {
+    return "0" + angka;
+  }
+
+  return String(angka);
+}
+
+function formatJamKey(nilaiJam) {
+  if (!nilaiJam) {
+    return "";
+  }
+
+  if (Object.prototype.toString.call(nilaiJam) === "[object Date]" && !isNaN(nilaiJam)) {
+    return tambahNol(nilaiJam.getHours()) + ":" + tambahNol(nilaiJam.getMinutes());
+  }
+
+  return String(nilaiJam).trim();
+}
+
+function buatTanggalHariIni(sekarang) {
+  return new Date(
+    sekarang.getFullYear(),
+    sekarang.getMonth(),
+    sekarang.getDate()
+  );
+}
+
+function cariDataUserDiMaster(masterData, id) {
+  for (var i = 1; i < masterData.length; i++) {
+    if (masterData[i][0] == id) {
+      return {
+        ditemukan: true,
+        id: masterData[i][0],
+        nama: masterData[i][2],
+        kelasDivisi: masterData[i][3],
+        statusAktif: masterData[i][6],
+        tokenMaster: masterData[i][9],
+        shift: masterData[i][15],
+        baris: i + 1
+      };
+    }
+  }
+
+  return {
+    ditemukan: false,
+    id: id,
+    nama: "",
+    kelasDivisi: "",
+    statusAktif: "",
+    tokenMaster: "",
+    shift: "",
+    baris: -1
+  };
+}
+
+function validasiAksesUserAbsensi(tokenInput, dataUser) {
+  if (
+  String(tokenInput).trim()
+  !==
+  String(dataUser.tokenMaster).trim()
+) {
+    return {
+      valid: false,
+      pesan: "Akses ditolak. Token tidak valid."
+    };
+  }
+
+  if (dataUser.statusAktif !== "Aktif") {
+    return {
+      valid: false,
+      pesan: "Gagal: ID " + dataUser.id + " berstatus Nonaktif."
+    };
+  }
+
+  return {
+    valid: true,
+    pesan: ""
+  };
+}
+
+/****************************************************
+ * HELPER ABSENSI HARIAN
+ * --------------------------------------------------
+ * Fungsi:
+ * - Mengambil data absensi hari berjalan.
+ * - Digunakan saat scan pulang.
+ * - Mengambil kode shift yang sudah tersimpan.
+ ****************************************************/
+
+function ambilShiftDariAbsensiHarian(
+  absensiSheet,
+  tanggal,
+  id
+) {
+
+  var dataAbsensi = absensiSheet.getDataRange().getValues();
+
+
+  for (var i = 1; i < dataAbsensi.length; i++) {
+
+    var tanggalAbsensi = dataAbsensi[i][0];
+    var idAbsensi = String(dataAbsensi[i][1] || "").trim();
+
+
+    if (
+      idAbsensi == id &&
+      tanggalSama(tanggalAbsensi, tanggal)
+    ) {
+
+      return {
+        ditemukan: true,
+        baris: i + 1,
+        shift: dataAbsensi[i][COL_ABSENSI.SHIFT - 1]
+      };
+
+    }
+
+  }
+
+
+  return {
+    ditemukan: false,
+    baris: -1,
+    shift: ""
+  };
+
+}
+
+function getHeaderMap(sheet){
+
+  const headers = sheet
+    .getRange(1,1,1,sheet.getLastColumn())
+    .getValues()[0];
+
+  const map={};
+
+  headers.forEach((h,i)=>{
+    map[h]=i;
+  });
+
+  return map;
+
+}
+
+function namaBulanIndonesia(nilaiTanggal){
+
+  var bulan = [
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember"
+  ];
+
+
+  var tanggal = normalisasiTanggal(nilaiTanggal);
+
+
+  if(!tanggal){
+    return "";
+  }
+
+
+  return bulan[tanggal.getMonth()];
+
+}
+
+function statusTermasukHadir(status){
+
+  const daftarHadir = [
+    "Hadir",
+    "Tepat Waktu",
+    "Datang Lebih Awal",
+    "Terlambat",
+    "Pulang Normal"
+  ];
+
+
+  return daftarHadir.includes(
+    String(status).trim()
+  );
+
+}
+
+function gabungkanTanggalDanJam(
+  tanggal,
+  jam
+) {
+
+  if (!tanggal || !jam) {
+    return "";
+  }
+
+
+  var tanggalObj =
+    new Date(tanggal);
+
+
+  if (
+    isNaN(
+      tanggalObj.getTime()
+    )
+  ) {
+    return "";
+  }
+
+
+  var jamObj;
+
+
+  if (
+    Object.prototype.toString.call(jam)
+    === "[object Date]"
+  ) {
+
+    jamObj = jam;
+
+  } else {
+
+    var teksJam =
+      String(jam).trim();
+
+
+    var bagian =
+      teksJam.split(":");
+
+
+    if (bagian.length < 2) {
+      return "";
+    }
+
+
+    jamObj = {
+      jam: Number(bagian[0]),
+      menit: Number(bagian[1]),
+      detik: Number(bagian[2] || 0)
+    };
+
+  }
+
+
+  return new Date(
+    tanggalObj.getFullYear(),
+    tanggalObj.getMonth(),
+    tanggalObj.getDate(),
+    jamObj.jam !== undefined
+      ? jamObj.jam
+      : jamObj.getHours(),
+    jamObj.menit !== undefined
+      ? jamObj.menit
+      : jamObj.getMinutes(),
+    jamObj.detik !== undefined
+      ? jamObj.detik
+      : jamObj.getSeconds()
+  );
+
+}
+
+function gabungkanTanggalDanJamPulang(
+  tanggal,
+  jamPulang
+){
+
+  if(
+    !tanggal ||
+    !jamPulang
+  ){
+    return "";
+  }
+
+
+  var tanggalObj =
+    new Date(tanggal);
+
+
+  if(
+    isNaN(
+      tanggalObj.getTime()
+    )
+  ){
+    return "";
+  }
+
+
+  var jam =
+    new Date(jamPulang);
+
+
+  var jamValue =
+    jam.getHours();
+
+
+  var menitValue =
+    jam.getMinutes();
+
+
+  var detikValue =
+    jam.getSeconds();
+
+
+  var hasil =
+    new Date(
+      tanggalObj.getFullYear(),
+      tanggalObj.getMonth(),
+      tanggalObj.getDate(),
+      jamValue,
+      menitValue,
+      detikValue
+    );
+
+
+  /*
+   * Untuk shift malam:
+   * jika jam pulang lebih kecil dari jam masuk,
+   * tanggal akan ditambah oleh pemanggil.
+   *
+   * Helper ini hanya membuat tanggal + jam.
+   */
+
+
+  return hasil;
+
+}
+
+/****************************************************
+ * HELPER SETTING GLOBAL
+ * --------------------------------------------------
+ * Membaca konfigurasi umum dari sheet SETTING A:B
+ *
+ * Contoh:
+ * A16 = BATAS_MULTI_SCAN_MENIT
+ * B16 = 5
+ ****************************************************/
+
+function bacaSettingGlobal(
+  namaSetting
+){
+
+  var ss =
+    SpreadsheetApp
+    .getActiveSpreadsheet();
+
+
+  var settingSheet =
+    ambilSheet(
+      ss,
+      "SETTING"
+    );
+
+
+  var data =
+    settingSheet
+    .getRange(
+      1,
+      1,
+      settingSheet.getLastRow(),
+      2
+    )
+    .getValues();
+
+
+  for(
+    var i = 0;
+    i < data.length;
+    i++
+  ){
+
+    var nama =
+      String(
+        data[i][0] || ""
+      )
+      .trim();
+
+
+    if(
+      nama ==
+      String(namaSetting).trim()
+    ){
+
+      return data[i][1];
+
+    }
+
+  }
+
+
+  return "";
+
+}
+
+/****************************************************
+ * CARI MULTI SCAN MASUK
+ * --------------------------------------------------
+ * Mencari kasus:
+ * Masuk Berhasil
+ * lalu Pulang Berhasil dalam waktu dekat
+ ****************************************************/
+
+function cariMultiScanMasuk(
+  logData,
+  tanggal,
+  id
+){
+
+  var hasil = {
+
+    ditemukan:false,
+
+    barisLog:0,
+
+    waktuMasuk:null,
+
+    waktuPulang:null
+
+  };
+
+
+  var batasMultiScan =
+    Number(
+      bacaSettingGlobal(
+        "BATAS_MULTI_SCAN_MENIT"
+      )
+      ||
+      0
+    );
+
+
+  if(
+    batasMultiScan <= 0
+  ){
+
+    return hasil;
+
+  }
+
+
+
+  var waktuMasuk = null;
+
+
+
+  for(
+    var i = 1;
+    i < logData.length;
+    i++
+  ){
+
+    var logTanggal =
+      logData[i][COL_LOG_SCAN.TANGGAL - 1];
+
+
+    var logJam =
+      logData[i][COL_LOG_SCAN.JAM - 1];
+
+
+    var logId =
+      logData[i][COL_LOG_SCAN.ID - 1];
+
+
+    var jenisScan =
+      logData[i][COL_LOG_SCAN.JENIS_SCAN - 1];
+
+
+    var statusProses =
+      logData[i][COL_LOG_SCAN.STATUS_PROSES - 1];
+
+
+
+    if(
+
+      logId == id &&
+
+      tanggalSama(
+        logTanggal,
+        tanggal
+      ) &&
+
+      statusProses == "Berhasil"
+
+    ){
+
+
+      var waktuScan =
+        new Date(logJam);
+
+
+
+      if(
+        jenisScan == "Masuk"
+      ){
+
+        waktuMasuk =
+          waktuScan;
+
+      }
+
+
+
+      if(
+        jenisScan == "Pulang"
+        &&
+        waktuMasuk
+      ){
+
+
+        var selisihMenit =
+          (
+            waktuScan.getTime()
+            -
+            waktuMasuk.getTime()
+          )
+          /
+          60000;
+
+
+
+        if(
+          selisihMenit <= batasMultiScan
+        ){
+
+          hasil.ditemukan =
+            true;
+
+
+          hasil.barisLog =
+            i + 1;
+
+
+          hasil.waktuMasuk =
+            waktuMasuk;
+
+
+          hasil.waktuPulang =
+            waktuScan;
+
+
+          return hasil;
+
+        }
+
+
+      }
+
+
+    }
+
+
+  }
+
+
+  return hasil;
+
+}
+
+function cariOperator(
+  dataOperator,
+  kodeOperator
+){
+
+  var hasil = {
+
+    ditemukan:false,
+    nama:"",
+    status:""
+
+  };
+
+
+  for(
+    var i = 1;
+    i < dataOperator.length;
+    i++
+  ){
+
+    var kode =
+      String(
+        dataOperator[i][0] || ""
+      ).trim();
+
+
+    if(
+      kode ==
+      String(kodeOperator).trim()
+    ){
+
+      hasil.ditemukan = true;
+
+      hasil.nama =
+        dataOperator[i][3];
+
+      hasil.status =
+        dataOperator[i][4];
+
+      return hasil;
+
+    }
+
+  }
+
+
+  return hasil;
+
+}
+
+function generateIdReferensiKoreksi(
+  koreksiSheet
+){
+
+  var data =
+    koreksiSheet
+    .getRange(
+      2,
+      11,
+      Math.max(
+        koreksiSheet.getLastRow()-1,
+        1
+      ),
+      1
+    )
+    .getValues();
+
+
+  var tanggal =
+    Utilities.formatDate(
+      new Date(),
+      Session.getScriptTimeZone(),
+      "yyyyMMdd"
+    );
+
+
+  var nomor =
+    1;
+
+
+  for(
+    var i = 0;
+    i < data.length;
+    i++
+  ){
+
+    var id =
+      String(
+        data[i][0] || ""
+      );
+
+
+    if(
+      id.indexOf(
+        "KOR-" + tanggal
+      ) === 0
+    ){
+
+      nomor++;
+
+    }
+
+  }
+
+
+  return (
+    "KOR-" +
+    tanggal +
+    "-" +
+    String(nomor)
+    .padStart(4,"0")
+  );
+
+}
+
+function tambahLogKoreksiAdmin(
+  logSheet,
+  tanggal,
+  jam,
+  id,
+  nama,
+  divisi,
+  jenisScan,
+  statusProses,
+  catatan,
+  keterangan,
+  idReferensi,
+  kodeOperator
+){
+
+  logSheet.appendRow([
+
+    new Date(),
+
+    tanggal,
+
+    jam,
+
+    id,
+
+    nama,
+
+    divisi,
+
+    jenisScan,
+
+    statusProses,
+
+    SUMBER_KOREKSI_ADMIN,
+
+    catatan,
+
+    keterangan || "",
+
+    0,
+
+    0,
+
+    idReferensi,
+
+    kodeOperator
+
+  ]);
+
+}
+
+function cekRiwayatPulangAktif(
+  logData,
+  id,
+  sekarang,
+  shift,
+  idReferensi
+) {
+
+  var hasil = {
+    ditemukan: false,
+    tanggalAbsensi: null,
+    waktuMasuk: null,
+    waktuPulang: null,
+    sudahMasuk: false,
+    sudahPulang: false,
+    scanTerakhir: null,
+    jenisScanTerakhir: ""
+  };
+
+  /*
+  * Shift fleksibel bukan shift malam terjadwal.
+  */
+  if (
+    !shift ||
+    cekShiftFleksibel(shift)
+  ) {
+    return hasil;
+  }
+
+
+  var dataShift =
+    bacaShiftDariTblShift(shift);
+
+
+  if (!dataShift.ditemukan) {
+    return hasil;
+  }
+
+
+  var jamMasuk =
+    ubahJamKeMenit(
+      dataShift.jamMasukShift
+    );
+
+
+  var jamPulang =
+    ubahJamKeMenit(
+      dataShift.jamPulangShift
+    );
+
+
+  /*
+   * Fungsi ini hanya digunakan
+   * untuk shift yang melewati tengah malam.
+   */
+
+  if (jamPulang >= jamMasuk) {
+    return hasil;
+  }
+
+
+  var menitSekarang =
+    sekarang.getHours() * 60 +
+    sekarang.getMinutes();
+
+
+  var batasPulang =
+    jamPulang +
+    Number(
+      dataShift.batasPulangMenit || 0
+    );
+
+
+  /*
+   * Jika sudah melewati batas pulang,
+   * sesi shift malam tidak lagi aktif.
+   */
+
+  if (menitSekarang > batasPulang) {
+    return hasil;
+  }
+
+
+  /*
+   * Karena sekarang masih berada dalam
+   * waktu pulang shift malam,
+   * tanggal absensinya harus kemarin.
+   */
+
+  var tanggalTarget =
+    new Date(
+      sekarang.getFullYear(),
+      sekarang.getMonth(),
+      sekarang.getDate()
+    );
+
+
+  tanggalTarget.setDate(
+    tanggalTarget.getDate() - 1
+  );
+
+
+  var idTarget =
+    String(id || "").trim();
+
+  var referensiTarget =
+    String(idReferensi || "").trim();
+
+
+  /*
+   * Cari scan berhasil terbaru,
+   * tetapi hanya pada tanggal target.
+   */
+
+  for (
+    var i = logData.length - 1;
+    i >= 1;
+    i--
+  ) {
+
+    var logTanggal =
+      logData[i][1];
+
+    var logJam =
+      logData[i][2];
+
+    var logId =
+      String(
+        logData[i][3] || ""
+      ).trim();
+
+    var logJenis =
+      String(
+        logData[i][6] || ""
+      ).trim();
+
+    var logStatus =
+      String(
+        logData[i][7] || ""
+      ).trim();
+
+    var logIdReferensi =
+      String(
+        logData[i][
+          COL_LOG_SCAN.ID_REFERENSI - 1
+        ] || ""
+      ).trim();
+
+
+    if (
+      logId != idTarget ||
+      logStatus != "Berhasil" ||
+      logIdReferensi !=
+        referensiTarget ||
+      !tanggalSama(
+        logTanggal,
+        tanggalTarget
+      )
+    ) {
+      continue;
+    }
+
+
+    if (
+      logJenis != "Masuk" &&
+      logJenis != "Pulang"
+    ) {
+      continue;
+    }
+
+
+    var waktuScan =
+      gabungkanTanggalDanJam(
+        logTanggal,
+        logJam
+      );
+
+
+    hasil.tanggalAbsensi =
+      tanggalTarget;
+
+    hasil.scanTerakhir =
+      waktuScan;
+
+    hasil.jenisScanTerakhir =
+      logJenis;
+
+
+    /*
+     * Jika scan berhasil terbaru adalah Pulang,
+     * berarti sesi sudah selesai.
+     * Jangan mencari Masuk yang lebih lama.
+     */
+
+    if (logJenis == "Pulang") {
+
+      hasil.sudahPulang = true;
+
+      hasil.waktuPulang =
+        waktuScan;
+
+      return hasil;
+
+    }
+
+
+    /*
+     * Scan terbaru adalah Masuk.
+     * Berarti sesi masih aktif menunggu Pulang.
+     */
+
+    if (logJenis == "Masuk") {
+
+      hasil.ditemukan = true;
+
+      hasil.sudahMasuk = true;
+
+      hasil.waktuMasuk =
+        waktuScan;
+
+      return hasil;
+
+    }
+
+  }
+
+
+  return hasil;
+
+}
+
+function hitungStatusMasukKoreksi(
+  waktuMasuk,
+  shift
+){
+
+  var hasil = {
+
+    menitTerlambat:0,
+
+    menitDatangAwal:0
+
+  };
+
+
+  var dataShift =
+    bacaShiftDariTblShift(
+      shift
+    );
+
+
+  if(
+    !dataShift.ditemukan
+  ){
+
+    return hasil;
+
+  }
+
+
+
+  var jamMasukShift =
+    ubahJamKeMenit(
+      dataShift.jamMasukShift
+    );
+
+
+  var batasNormalMasuk =
+    jamMasukShift
+    +
+    Number(
+      dataShift.batasMasukMenit || 0
+    );
+
+
+
+  var menitScan =
+    waktuMasuk.getHours() * 60
+    +
+    waktuMasuk.getMinutes();
+
+
+
+  if(
+    menitScan < jamMasukShift
+  ){
+
+    hasil.menitDatangAwal =
+      jamMasukShift - menitScan;
+
+
+  }else if(
+    menitScan <= batasNormalMasuk
+  ){
+
+    // masih tepat waktu
+
+    hasil.menitTerlambat = 0;
+    hasil.menitDatangAwal = 0;
+
+
+  }else{
+
+
+    hasil.menitTerlambat =
+      menitScan -
+      batasNormalMasuk;
+
+
+  }
+
+
+  return hasil;
+
+}
+
+/****************************************************
+ * HELPER GEOFENCING / VALIDASI LOKASI GPS KANTOR
+ ****************************************************/
+
+/**
+ * Membaca setting lokasi GPS kantor dari Sheet SETTING baris 20 (kolom A, B, C)
+ */
+/**
+ * Membaca setting lokasi GPS kantor dari Sheet SETTING baris 20 (kolom A, B, C)
+ */
+function bacaSettingGpsKantor() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var settingSheet = ambilSheet(ss, SHEET_SETTING);
+  
+  // Membaca Baris 20, Kolom 1 (A) sampai Kolom 3 (C)
+  var data = settingSheet.getRange(20, 1, 1, 3).getValues()[0];
+  
+  // Mengubah koma (,) menjadi titik (.) jika data terbaca sebagai string/teks
+  var latStr = String(data[0] || "0").replace(",", ".");
+  var lngStr = String(data[1] || "0").replace(",", ".");
+  var radStr = String(data[2] || "50").replace(",", ".");
+  
+  return {
+    latitude: Number(latStr),
+    longitude: Number(lngStr),
+    radiusMeter: Number(radStr) || 50 // Default 50 meter jika kosong
+  };
+}
+
+/**
+ * Menghitung jarak antara 2 koordinat GPS menggunakan Rumus Haversine (Hasil dalam satuan METER)
+ */
+function hitungJarakHaversine(lat1, lon1, lat2, lon2) {
+  var R = 6371000; // Radius bumi dalam meter
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLon = (lon2 - lon1) * Math.PI / 180;
+  
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLon / 2) * Math.sin(dLon / 2);
+          
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  var distance = R * c;
+  
+  return Math.round(distance);
+}

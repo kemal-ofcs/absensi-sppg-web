@@ -1,0 +1,5071 @@
+/****************************************************
+ * 12_Dashboard.gs
+ * DASHBOARD DAN REKAP ABSENSI
+ * --------------------------------------------------
+ * Versi ini disesuaikan dengan:
+ * - ABSENSI_HARIAN 24 kolom.
+ * - ID_SESI.
+ * - MODE_TUGAS NORMAL / PENGGANTI.
+ * - ID_BACKUP.
+ * - Shift FLEX.
+ * - Shift malam lintas tanggal.
+ * - Status Perlu Verifikasi.
+ * - Masa aktif karyawan.
+ * - Aman untuk Google Sheets Table / typed column.
+ *
+ * ATURAN UTAMA
+ * --------------------------------------------------
+ * 1. KPI formal dan ranking hanya memakai sesi NORMAL.
+ * 2. Sesi PENGGANTI tetap tampil pada monitoring operasional.
+ * 3. Perlu Verifikasi tidak masuk penilaian final.
+ * 4. Koreksi Admin menjadi data utama untuk sesi NORMAL
+ *    pada ID dan tanggal yang sama.
+ * 5. Durasi pada ABSENSI_HARIAN dibaca sebagai MENIT.
+ *    Rekap menampilkannya dalam JAM.
+ ****************************************************/
+
+var TARGET_JAM_KERJA_BULANAN_DASHBOARD = 173;
+
+var HEADER_REKAP_HARIAN_DASHBOARD = [
+  "Tanggal",
+  "Total_Karyawan",
+  "Hadir",
+  "Alfa",
+  "Izin",
+  "Sakit",
+  "Dispen",
+  "Tepat_Waktu",
+  "Datang_Lebih_Awal",
+  "Terlambat",
+  "Belum_Scan",
+  "Total_Menit_Terlambat",
+  "Total_Jam_Kerja",
+  "Total_Lembur",
+  "Jam_Kurang"
+];
+
+var HEADER_REKAP_SHIFT_HARIAN_DASHBOARD = [
+  "Tanggal",
+  "Shift",
+  "Nama_Shift",
+  "Total_Karyawan",
+  "Hadir",
+  "Tepat_Waktu",
+  "Datang_Lebih_Awal",
+  "Terlambat",
+  "Sakit",
+  "Izin",
+  "Dispen",
+  "Alfa",
+  "Total_Menit_Terlambat",
+  "Total_Jam_Kerja",
+  "Total_Lembur",
+  "Jam_Kurang",
+  "Persentase_Kehadiran"
+];
+
+var HEADER_REKAP_KARYAWAN_DASHBOARD = [
+  "ID_Unik",
+  "Nama",
+  "Divisi",
+  "Shift",
+  "Nama_Shift",
+  "Bulan",
+  "Tahun",
+  "Total_Hari_Kerja",
+  "Hadir",
+  "Tepat_Waktu",
+  "Datang_Lebih_Awal",
+  "Jumlah_Hari_Terlambat",
+  "Sakit",
+  "Izin",
+  "Dispen",
+  "Alfa",
+  "Total_Menit_Terlambat",
+  "Total_Menit_Datang_Awal",
+  "Total_Jam_Kerja",
+  "Total_Lembur",
+  "Jam_Kurang",
+  "Persentase_Kehadiran",
+  "Score_Akhir"
+];
+
+var HEADER_REKAP_BULANAN_DASHBOARD = [
+  "ID_Unik",
+  "Nama",
+  "Divisi",
+  "Bulan",
+  "Tahun",
+  "Total_Hari_Kerja",
+  "Hadir",
+  "Tepat_Waktu",
+  "Datang_Lebih_Awal",
+  "Jumlah_Hari_Terlambat",
+  "Sakit",
+  "Izin",
+  "Dispen",
+  "Alfa",
+  "Total_Menit_Terlambat",
+  "Total_Menit_Datang_Awal",
+  "Total_Jam_Kerja",
+  "Total_Lembur",
+  "Jam_Kurang",
+  "Persentase_Kehadiran",
+  "Score_Akhir",
+  "Ranking"
+];
+
+var CACHE_SHIFT_DASHBOARD_ = {};
+
+
+/****************************************************
+ * REFRESH SELURUH DASHBOARD
+ ****************************************************/
+
+function refreshDashboard() {
+  var lock =
+    LockService.getScriptLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error(
+      "Dashboard sedang diperbarui oleh proses lain. " +
+      "Silakan coba kembali beberapa saat lagi."
+    );
+  }
+
+  var mulai = new Date();
+
+  try {
+    CACHE_SHIFT_DASHBOARD_ = {};
+
+    var konteks =
+      buatKonteksDashboard_();
+
+    /*
+     * Periode divalidasi sebelum ada output yang ditulis.
+     * Jika periode salah, rekap lama tetap aman.
+     */
+    var periode =
+      ambilPeriodeDashboard_(
+        konteks.sheetDashboard
+      );
+
+    var paket =
+      bangunPaketRekapDashboard_(
+        konteks
+      );
+
+    tulisRekapHarianDashboard_(
+      konteks,
+      paket
+    );
+
+    tulisRekapKaryawanDashboard_(
+      konteks,
+      paket
+    );
+
+    tulisRekapBulananDashboard_(
+      konteks,
+      paket
+    );
+
+    isiDashboardKPIDashboard_(
+      konteks,
+      paket,
+      periode
+    );
+
+    isiMonitoringHariIniDashboard_(
+      konteks
+    );
+
+    isiPerformanceDivisiDashboard_(
+      konteks,
+      paket,
+      periode
+    );
+
+    isiTopKaryawanDashboard_(
+      konteks,
+      paket,
+      periode
+    );
+
+    isiLowKaryawanDashboard_(
+      konteks,
+      paket,
+      periode
+    );
+
+    isiTrendDashboard_(
+      konteks,
+      paket,
+      periode
+    );
+
+    /*
+     * Waktu update hanya ditulis setelah semua proses sukses.
+     */
+    konteks.sheetDashboard
+      .getRange(
+        DASH.header.update
+      )
+      .setValue(
+        new Date()
+      );
+
+    SpreadsheetApp.flush();
+
+    var selesai = new Date();
+
+    var ringkasan = {
+      sukses: true,
+      durasiDetik:
+        Math.round(
+          (
+            selesai.getTime() -
+            mulai.getTime()
+          ) /
+          10
+        ) /
+        100,
+      jumlahSesi:
+        konteks.records.length,
+      jumlahRekapHarian:
+        paket.harian.length,
+      jumlahRekapKaryawan:
+        paket.karyawan.length,
+      jumlahRekapBulanan:
+        paket.bulanan.length
+    };
+
+    Logger.log(
+      "Dashboard refresh selesai: " +
+      JSON.stringify(ringkasan)
+    );
+
+    return ringkasan;
+  } catch (error) {
+    Logger.log(
+      "Dashboard refresh gagal: " +
+      error.message +
+      "\n" +
+      (
+        error.stack || ""
+      )
+    );
+
+    throw error;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/****************************************************
+ * FUNGSI PUBLIK KOMPATIBEL DENGAN VERSI LAMA
+ ****************************************************/
+
+function generateRekapHarian() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  tulisRekapHarianDashboard_(
+    konteks,
+    paket
+  );
+
+  SpreadsheetApp.flush();
+
+  return {
+    jumlahHarian: paket.harian.length,
+    jumlahShift: paket.shift.length
+  };
+}
+
+
+function generateRekapKaryawan() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  tulisRekapKaryawanDashboard_(
+    konteks,
+    paket
+  );
+
+  SpreadsheetApp.flush();
+
+  return {
+    jumlahRekapKaryawan:
+      paket.karyawan.length
+  };
+}
+
+
+function generateRekapBulanan() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  /*
+   * REKAP_BULANAN dibangun langsung dari sumber,
+   * bukan dari isi rekap lama.
+   */
+  tulisRekapBulananDashboard_(
+    konteks,
+    paket
+  );
+
+  SpreadsheetApp.flush();
+
+  return {
+    jumlahRekapBulanan:
+      paket.bulanan.length
+  };
+}
+
+
+function generateDashboardKPI() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var periode =
+    ambilPeriodeDashboard_(
+      konteks.sheetDashboard
+    );
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  isiDashboardKPIDashboard_(
+    konteks,
+    paket,
+    periode
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+function generateDashboardMonitoringHariIni() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  isiMonitoringHariIniDashboard_(
+    konteks
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+function generateDashboardPerformanceDivisi() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var periode =
+    ambilPeriodeDashboard_(
+      konteks.sheetDashboard
+    );
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  isiPerformanceDivisiDashboard_(
+    konteks,
+    paket,
+    periode
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+function generateDashboardTopPerformanceKaryawan() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var periode =
+    ambilPeriodeDashboard_(
+      konteks.sheetDashboard
+    );
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  isiTopKaryawanDashboard_(
+    konteks,
+    paket,
+    periode
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+function generateDashboardLowPerformanceKaryawan() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var periode =
+    ambilPeriodeDashboard_(
+      konteks.sheetDashboard
+    );
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  isiLowKaryawanDashboard_(
+    konteks,
+    paket,
+    periode
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+function generateDashboardTrend() {
+  CACHE_SHIFT_DASHBOARD_ = {};
+
+  var konteks =
+    buatKonteksDashboard_();
+
+  var periode =
+    ambilPeriodeDashboard_(
+      konteks.sheetDashboard
+    );
+
+  var paket =
+    bangunPaketRekapDashboard_(
+      konteks
+    );
+
+  isiTrendDashboard_(
+    konteks,
+    paket,
+    periode
+  );
+
+  SpreadsheetApp.flush();
+}
+
+
+/****************************************************
+ * MEMBACA SUMBER DATA SATU KALI
+ ****************************************************/
+
+function buatKonteksDashboard_() {
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var sheetAbsensi =
+    ambilSheet(
+      ss,
+      SHEET_ABSENSI_HARIAN
+    );
+
+  var sheetMaster =
+    ambilSheet(
+      ss,
+      SHEET_MASTER_DATA
+    );
+
+  var sheetRekapHarian =
+    ambilSheet(
+      ss,
+      SHEET_REKAP_HARIAN
+    );
+
+  var sheetRekapShift =
+    ambilSheet(
+      ss,
+      SHEET_REKAP_SHIFT_HARIAN
+    );
+
+  var sheetRekapKaryawan =
+    ambilSheet(
+      ss,
+      SHEET_REKAP_KARYAWAN
+    );
+
+  var sheetRekapBulanan =
+    ambilSheet(
+      ss,
+      SHEET_REKAP_BULANAN
+    );
+
+  var sheetDashboard =
+    ambilSheet(
+      ss,
+      SHEET_DASHBOARD
+    );
+
+  var dataMaster =
+    bacaDataSheetDashboard_(
+      sheetMaster
+    );
+
+  var petaMaster =
+    buatPetaHeaderDashboard_(
+      dataMaster[0] || []
+    );
+
+  var indeksMaster =
+    buatIndeksMasterDashboard_(
+      petaMaster
+    );
+
+  var masters =
+    normalisasiMasterDashboard_(
+      dataMaster,
+      indeksMaster
+    );
+
+  var masterById = {};
+
+  for (
+    var i = 0;
+    i < masters.length;
+    i++
+  ) {
+    var keyMaster =
+      normalisasiTeksDashboard_(
+        masters[i].id
+      );
+
+    if (
+      keyMaster &&
+      !masterById[keyMaster]
+    ) {
+      masterById[keyMaster] =
+        masters[i];
+    }
+  }
+
+  var dataAbsensi =
+    bacaDataSheetDashboard_(
+      sheetAbsensi
+    );
+
+  var petaAbsensi =
+    buatPetaHeaderDashboard_(
+      dataAbsensi[0] || []
+    );
+
+  var indeksAbsensi =
+    buatIndeksAbsensiDashboard_(
+      petaAbsensi
+    );
+
+  validasiHeaderAbsensiDashboard_(
+    indeksAbsensi
+  );
+
+  var recordsMentah =
+    normalisasiAbsensiDashboard_(
+      dataAbsensi,
+      indeksAbsensi,
+      masterById,
+      ss.getSpreadsheetTimeZone()
+    );
+
+  var records =
+    deduplikasiAbsensiDashboard_(
+      recordsMentah
+    );
+
+  var sheetLogScan = null;
+  var dataLogScan = [];
+
+  if (
+    typeof SHEET_LOG_SCAN !==
+      "undefined"
+  ) {
+    sheetLogScan =
+      ss.getSheetByName(
+        SHEET_LOG_SCAN
+      );
+
+    if (sheetLogScan) {
+      dataLogScan =
+        bacaDataSheetDashboard_(
+          sheetLogScan
+        );
+    }
+  }
+
+  return {
+    ss: ss,
+    zonaWaktu:
+      ss.getSpreadsheetTimeZone(),
+
+    sheetAbsensi: sheetAbsensi,
+    sheetMaster: sheetMaster,
+    sheetLogScan: sheetLogScan,
+    sheetRekapHarian:
+      sheetRekapHarian,
+    sheetRekapShift:
+      sheetRekapShift,
+    sheetRekapKaryawan:
+      sheetRekapKaryawan,
+    sheetRekapBulanan:
+      sheetRekapBulanan,
+    sheetDashboard:
+      sheetDashboard,
+
+    dataLogScan: dataLogScan,
+    masters: masters,
+    masterById: masterById,
+    records: records
+  };
+}
+
+
+function bacaDataSheetDashboard_(
+  sheet
+) {
+  if (
+    !sheet ||
+    sheet.getLastRow() < 1 ||
+    sheet.getLastColumn() < 1
+  ) {
+    return [[]];
+  }
+
+  return sheet
+    .getRange(
+      1,
+      1,
+      sheet.getLastRow(),
+      sheet.getLastColumn()
+    )
+    .getValues();
+}
+
+
+/****************************************************
+ * PEMETAAN HEADER DINAMIS
+ ****************************************************/
+
+function buatPetaHeaderDashboard_(
+  header
+) {
+  var hasil = {};
+
+  for (
+    var i = 0;
+    i < header.length;
+    i++
+  ) {
+    var key =
+      normalisasiNamaHeaderDashboard_(
+        header[i]
+      );
+
+    if (
+      key &&
+      hasil[key] === undefined
+    ) {
+      hasil[key] = i;
+    }
+  }
+
+  return hasil;
+}
+
+
+function normalisasiNamaHeaderDashboard_(
+  nilai
+) {
+  return String(nilai || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+
+function cariIndeksHeaderDashboard_(
+  peta,
+  daftarNama
+) {
+  for (
+    var i = 0;
+    i < daftarNama.length;
+    i++
+  ) {
+    var key =
+      normalisasiNamaHeaderDashboard_(
+        daftarNama[i]
+      );
+
+    if (
+      peta[key] !== undefined
+    ) {
+      return peta[key];
+    }
+  }
+
+  return -1;
+}
+
+
+function buatIndeksAbsensiDashboard_(
+  peta
+) {
+  return {
+    tanggal:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Tanggal"]
+      ),
+    id:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_Unik", "ID"]
+      ),
+    nama:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Nama"]
+      ),
+    divisi:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Divisi",
+          "Kelas_Divisi",
+          "Kelas Divisi"
+        ]
+      ),
+    jamMasuk:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Jam_Masuk"]
+      ),
+    jamPulang:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Jam_Pulang"]
+      ),
+    statusKehadiran:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Status_Kehadiran"]
+      ),
+    statusAbsen:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Status_Absen"]
+      ),
+    keterangan:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Keterangan",
+          "Keterangan_Admin"
+        ]
+      ),
+    sumber:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Sumber_Data", "Sumber"]
+      ),
+    updateTerakhir:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Update_Terakhir"]
+      ),
+    menitTerlambat:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Menit_Terlambat"]
+      ),
+    menitDatangAwal:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Menit_Datang_Awal"]
+      ),
+    jamKerja:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Jam_Kerja"]
+      ),
+    lembur:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Lembur"]
+      ),
+    shift:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Shift"]
+      ),
+    bulan:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Bulan"]
+      ),
+    tahun:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Tahun"]
+      ),
+    jamKerjaKurang:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Jam_Kerja_Kurang",
+          "Jam_Kurang"
+        ]
+      ),
+    idSesi:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_SESI"]
+      ),
+    modeTugas:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["MODE_TUGAS"]
+      ),
+    idBackup:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_BACKUP"]
+      ),
+    idKaryawanAsal:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_KARYAWAN_ASAL"]
+      ),
+    tanggalTugas:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["TANGGAL_TUGAS"]
+      )
+  };
+}
+
+
+function validasiHeaderAbsensiDashboard_(
+  indeks
+) {
+  var wajib = [
+    ["Tanggal", indeks.tanggal],
+    ["ID_Unik", indeks.id],
+    [
+      "Status_Kehadiran",
+      indeks.statusKehadiran
+    ],
+    ["Status_Absen", indeks.statusAbsen],
+    ["Menit_Terlambat", indeks.menitTerlambat],
+    ["Menit_Datang_Awal", indeks.menitDatangAwal],
+    ["Jam_Kerja", indeks.jamKerja],
+    ["Lembur", indeks.lembur],
+    ["Jam_Kerja_Kurang", indeks.jamKerjaKurang],
+    ["Shift", indeks.shift],
+    ["ID_SESI", indeks.idSesi],
+    ["MODE_TUGAS", indeks.modeTugas],
+    ["ID_BACKUP", indeks.idBackup],
+    [
+      "ID_KARYAWAN_ASAL",
+      indeks.idKaryawanAsal
+    ],
+    ["TANGGAL_TUGAS", indeks.tanggalTugas]
+  ];
+
+  var hilang = [];
+
+  for (
+    var i = 0;
+    i < wajib.length;
+    i++
+  ) {
+    if (wajib[i][1] < 0) {
+      hilang.push(
+        wajib[i][0]
+      );
+    }
+  }
+
+  if (hilang.length > 0) {
+    throw new Error(
+      "Header ABSENSI_HARIAN belum sesuai struktur terbaru. " +
+      "Kolom tidak ditemukan: " +
+      hilang.join(", ")
+    );
+  }
+}
+
+
+function buatIndeksMasterDashboard_(
+  peta
+) {
+  var hasil = {
+    id:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_Unik", "ID"]
+      ),
+    nama:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Nama"]
+      ),
+    divisi:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Divisi",
+          "Kelas_Divisi",
+          "Kelas Divisi"
+        ]
+      ),
+    statusAktif:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Status_Aktif"]
+      ),
+    shift:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Shift"]
+      ),
+    tanggalMulai:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Tanggal_Mulai_Aktif",
+          "Tanggal Mulai Aktif"
+        ]
+      ),
+    tanggalSelesai:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Tanggal_Selesai_Aktif",
+          "Tanggal Selesai Aktif"
+        ]
+      )
+  };
+
+  var hilang = [];
+
+  if (hasil.id < 0) {
+    hilang.push("ID_Unik");
+  }
+
+  if (hasil.statusAktif < 0) {
+    hilang.push("Status_Aktif");
+  }
+
+  if (hasil.shift < 0) {
+    hilang.push("Shift");
+  }
+
+  if (hilang.length > 0) {
+    throw new Error(
+      "Header MASTER_DATA belum lengkap. " +
+      "Kolom tidak ditemukan: " +
+      hilang.join(", ")
+    );
+  }
+
+  return hasil;
+}
+
+
+function nilaiBarisDashboard_(
+  row,
+  index
+) {
+  if (
+    index === undefined ||
+    index === null ||
+    index < 0
+  ) {
+    return "";
+  }
+
+  return row[index];
+}
+
+
+/****************************************************
+ * NORMALISASI MASTER DATA
+ ****************************************************/
+
+function normalisasiMasterDashboard_(
+  data,
+  indeks
+) {
+  var hasil = [];
+
+  for (
+    var i = 1;
+    i < data.length;
+    i++
+  ) {
+    var row = data[i];
+
+    var id = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.id
+      ) || ""
+    ).trim();
+
+    if (!id) {
+      continue;
+    }
+
+    hasil.push({
+      nomorBaris: i + 1,
+      id: id,
+      nama: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.nama
+        ) || ""
+      ).trim(),
+      divisi: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.divisi
+        ) || ""
+      ).trim(),
+      statusAktif:
+        normalisasiTeksDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.statusAktif
+          )
+        ),
+      shift: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.shift
+        ) || ""
+      ).trim(),
+      tanggalMulai:
+        normalisasiTanggalDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.tanggalMulai
+          )
+        ),
+      tanggalSelesai:
+        normalisasiTanggalDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.tanggalSelesai
+          )
+        )
+    });
+  }
+
+  return hasil;
+}
+
+
+function karyawanAktifPadaTanggalDashboard_(
+  master,
+  tanggal
+) {
+  if (
+    !master ||
+    !tanggal
+  ) {
+    return false;
+  }
+
+  var t =
+    normalisasiTanggalDashboard_(
+      tanggal
+    );
+
+  if (!t) {
+    return false;
+  }
+
+  var mulai =
+    master.tanggalMulai;
+
+  var selesai =
+    master.tanggalSelesai;
+
+  if (
+    mulai &&
+    t.getTime() <
+      mulai.getTime()
+  ) {
+    return false;
+  }
+
+  if (
+    selesai &&
+    t.getTime() >
+      selesai.getTime()
+  ) {
+    return false;
+  }
+
+  /*
+   * Karyawan Nonaktif masih boleh dihitung untuk
+   * periode historis apabila Tanggal_Selesai_Aktif
+   * tersedia dan tanggal yang diperiksa belum melewatinya.
+   */
+  if (
+    master.statusAktif !== "AKTIF" &&
+    !selesai
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function karyawanAktifDalamPeriodeDashboard_(
+  master,
+  awalPeriode,
+  akhirPeriode
+) {
+  if (!master) {
+    return false;
+  }
+
+  var mulai =
+    master.tanggalMulai;
+
+  var selesai =
+    master.tanggalSelesai;
+
+  if (
+    mulai &&
+    mulai.getTime() >
+      akhirPeriode.getTime()
+  ) {
+    return false;
+  }
+
+  if (
+    selesai &&
+    selesai.getTime() <
+      awalPeriode.getTime()
+  ) {
+    return false;
+  }
+
+  if (
+    master.statusAktif !== "AKTIF" &&
+    !selesai
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+/****************************************************
+ * NORMALISASI ABSENSI 24 KOLOM
+ ****************************************************/
+
+function normalisasiAbsensiDashboard_(
+  data,
+  indeks,
+  masterById,
+  zonaWaktu
+) {
+  var hasil = [];
+
+  for (
+    var i = 1;
+    i < data.length;
+    i++
+  ) {
+    var row = data[i];
+
+    var tanggal =
+      normalisasiTanggalDashboard_(
+        nilaiBarisDashboard_(
+          row,
+          indeks.tanggal
+        )
+      );
+
+    var id = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.id
+      ) || ""
+    ).trim();
+
+    if (
+      !tanggal ||
+      !id
+    ) {
+      continue;
+    }
+
+    var idKey =
+      normalisasiTeksDashboard_(
+        id
+      );
+
+    var master =
+      masterById[idKey] || null;
+
+    var idBackup = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.idBackup
+      ) || ""
+    ).trim();
+
+    var mode =
+      normalisasiTeksDashboard_(
+        nilaiBarisDashboard_(
+          row,
+          indeks.modeTugas
+        )
+      );
+
+    if (
+      mode !== "PENGGANTI" &&
+      mode !== "NORMAL"
+    ) {
+      mode =
+        idBackup
+          ? "PENGGANTI"
+          : "NORMAL";
+    }
+
+    var shift = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.shift
+      ) || ""
+    ).trim();
+
+    if (
+      !shift &&
+      mode === "NORMAL" &&
+      master
+    ) {
+      shift =
+        master.shift;
+    }
+
+    var statusKehadiran = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.statusKehadiran
+      ) || ""
+    ).trim();
+
+    var statusAbsen = String(
+      nilaiBarisDashboard_(
+        row,
+        indeks.statusAbsen
+      ) || ""
+    ).trim();
+
+    var statusNormal =
+      normalisasiStatusKehadiranDashboard_(
+        statusKehadiran
+      );
+
+    var perluVerifikasi =
+      (
+        normalisasiTeksDashboard_(
+          statusKehadiran
+        ) ===
+          "PERLU VERIFIKASI" ||
+        normalisasiTeksDashboard_(
+          statusAbsen
+        ) ===
+          "PERLU VERIFIKASI"
+      );
+
+    var record = {
+      nomorBaris: i + 1,
+      tanggal: tanggal,
+      tanggalKey:
+        buatKunciTanggalDashboard_(
+          tanggal,
+          zonaWaktu
+        ),
+      id: id,
+      nama: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.nama
+        ) ||
+        (
+          master
+            ? master.nama
+            : ""
+        )
+      ).trim(),
+      divisi: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.divisi
+        ) ||
+        (
+          master
+            ? master.divisi
+            : ""
+        )
+      ).trim(),
+      jamMasuk:
+        nilaiBarisDashboard_(
+          row,
+          indeks.jamMasuk
+        ),
+      jamPulang:
+        nilaiBarisDashboard_(
+          row,
+          indeks.jamPulang
+        ),
+      statusKehadiran:
+        statusKehadiran,
+      statusNormal:
+        statusNormal,
+      statusAbsen:
+        statusAbsen,
+      keterangan: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.keterangan
+        ) || ""
+      ).trim(),
+      sumber: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.sumber
+        ) || ""
+      ).trim(),
+      updateTerakhir:
+        nilaiBarisDashboard_(
+          row,
+          indeks.updateTerakhir
+        ),
+      menitTerlambat:
+        angkaTidakNegatifDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.menitTerlambat
+          )
+        ),
+      menitDatangAwal:
+        angkaTidakNegatifDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.menitDatangAwal
+          )
+        ),
+      jamKerjaMenit:
+        angkaTidakNegatifDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.jamKerja
+          )
+        ),
+      lemburMenit:
+        angkaTidakNegatifDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.lembur
+          )
+        ),
+      jamKurangMenit:
+        angkaTidakNegatifDashboard_(
+          nilaiBarisDashboard_(
+            row,
+            indeks.jamKerjaKurang
+          )
+        ),
+      shift: shift,
+      bulanIndex:
+        tanggal.getMonth(),
+      bulan:
+        namaBulanDashboard_(
+          tanggal.getMonth()
+        ),
+      tahun:
+        tanggal.getFullYear(),
+      idSesi: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.idSesi
+        ) || ""
+      ).trim(),
+      modeTugas: mode,
+      idBackup: idBackup,
+      idKaryawanAsal: String(
+        nilaiBarisDashboard_(
+          row,
+          indeks.idKaryawanAsal
+        ) || ""
+      ).trim(),
+      tanggalTugas:
+        nilaiBarisDashboard_(
+          row,
+          indeks.tanggalTugas
+        ),
+      perluVerifikasi:
+        perluVerifikasi
+    };
+
+    record.dikenal =
+      statusDikenalDashboard_(
+        record.statusNormal
+      );
+
+    record.hadir =
+      statusHadirDashboard_(
+        record.statusNormal
+      );
+
+    record.final =
+      (
+        !record.perluVerifikasi &&
+        record.dikenal
+      );
+
+    record.fleksibel =
+      cekShiftFleksibelDashboard_(
+        record.shift
+      );
+
+    record.terlambat =
+      (
+        record.hadir &&
+        !record.fleksibel &&
+        (
+          record.menitTerlambat > 0 ||
+          record.statusNormal ===
+            "TERLAMBAT"
+        )
+      );
+
+    record.datangAwal =
+      (
+        record.hadir &&
+        !record.fleksibel &&
+        !record.terlambat &&
+        (
+          record.menitDatangAwal > 0 ||
+          record.statusNormal ===
+            "DATANG LEBIH AWAL"
+        )
+      );
+
+    record.tepatWaktu =
+      (
+        record.hadir &&
+        !record.fleksibel &&
+        !record.terlambat &&
+        !record.datangAwal &&
+        (
+          adaNilaiDashboard_(
+            record.jamMasuk
+          ) ||
+          record.statusNormal ===
+            "TEPAT WAKTU"
+        )
+      );
+
+    hasil.push(record);
+  }
+
+  return hasil;
+}
+
+
+function normalisasiStatusKehadiranDashboard_(
+  nilai
+) {
+  var status =
+    normalisasiTeksDashboard_(
+      nilai
+    );
+
+  if (
+    status === "ALPA"
+  ) {
+    return "ALFA";
+  }
+
+  return status;
+}
+
+
+function statusDikenalDashboard_(
+  status
+) {
+  return (
+    statusHadirDashboard_(
+      status
+    ) ||
+    status === "ALFA" ||
+    status === "IZIN" ||
+    status === "SAKIT" ||
+    status === "DISPEN"
+  );
+}
+
+
+function statusHadirDashboard_(
+  status
+) {
+  var nilai =
+    normalisasiTeksDashboard_(
+      status
+    );
+
+  return (
+    nilai === "HADIR" ||
+    nilai === "TEPAT WAKTU" ||
+    nilai === "DATANG LEBIH AWAL" ||
+    nilai === "TERLAMBAT"
+  );
+}
+
+
+/****************************************************
+ * DEDUPLIKASI DAN PRIORITAS KOREKSI ADMIN
+ ****************************************************/
+
+function deduplikasiAbsensiDashboard_(
+  records
+) {
+  var koreksiNormal = {};
+
+  for (
+    var i = 0;
+    i < records.length;
+    i++
+  ) {
+    var record = records[i];
+
+    if (
+      record.modeTugas !== "NORMAL" ||
+      !sumberKoreksiAdminDashboard_(
+        record.sumber
+      )
+    ) {
+      continue;
+    }
+
+    var keyKoreksi =
+      record.tanggalKey +
+      "|" +
+      normalisasiTeksDashboard_(
+        record.id
+      );
+
+    koreksiNormal[keyKoreksi] =
+      pilihRecordDashboard_(
+        koreksiNormal[keyKoreksi],
+        record
+      );
+  }
+
+  var map = {};
+
+  for (
+    var j = 0;
+    j < records.length;
+    j++
+  ) {
+    var r = records[j];
+
+    var keyTanggalId =
+      r.tanggalKey +
+      "|" +
+      normalisasiTeksDashboard_(
+        r.id
+      );
+
+    if (
+      r.modeTugas === "NORMAL" &&
+      koreksiNormal[keyTanggalId] &&
+      koreksiNormal[keyTanggalId] !== r
+    ) {
+      /*
+       * Koreksi Admin adalah hasil final sesi NORMAL
+       * untuk ID dan tanggal tersebut.
+       */
+      continue;
+    }
+
+    var keySesi;
+
+    if (
+      r.modeTugas === "NORMAL" &&
+      koreksiNormal[keyTanggalId]
+    ) {
+      keySesi =
+        "KOREKSI|" +
+        keyTanggalId;
+    } else if (r.idSesi) {
+      keySesi =
+        "SESI|" +
+        normalisasiTeksDashboard_(
+          r.idSesi
+        );
+    } else {
+      keySesi =
+        "LEGACY|" +
+        r.tanggalKey +
+        "|" +
+        normalisasiTeksDashboard_(
+          r.id
+        ) +
+        "|" +
+        normalisasiTeksDashboard_(
+          r.shift
+        ) +
+        "|" +
+        r.modeTugas +
+        "|" +
+        normalisasiTeksDashboard_(
+          r.idBackup
+        );
+    }
+
+    map[keySesi] =
+      pilihRecordDashboard_(
+        map[keySesi],
+        r
+      );
+  }
+
+  var hasil =
+    Object.keys(map)
+      .map(function(key) {
+        return map[key];
+      });
+
+  hasil.sort(function(a, b) {
+    if (
+      a.tanggal.getTime() !==
+      b.tanggal.getTime()
+    ) {
+      return (
+        a.tanggal.getTime() -
+        b.tanggal.getTime()
+      );
+    }
+
+    if (
+      a.id !== b.id
+    ) {
+      return String(a.id)
+        .localeCompare(
+          String(b.id)
+        );
+    }
+
+    return (
+      a.nomorBaris -
+      b.nomorBaris
+    );
+  });
+
+  return hasil;
+}
+
+
+function pilihRecordDashboard_(
+  lama,
+  baru
+) {
+  if (!lama) {
+    return baru;
+  }
+
+  var prioritasLama =
+    sumberKoreksiAdminDashboard_(
+      lama.sumber
+    )
+      ? 2
+      : 1;
+
+  var prioritasBaru =
+    sumberKoreksiAdminDashboard_(
+      baru.sumber
+    )
+      ? 2
+      : 1;
+
+  if (
+    prioritasBaru !==
+    prioritasLama
+  ) {
+    return (
+      prioritasBaru >
+      prioritasLama
+    )
+      ? baru
+      : lama;
+  }
+
+  var waktuLama =
+    nilaiWaktuDashboard_(
+      lama.updateTerakhir
+    );
+
+  var waktuBaru =
+    nilaiWaktuDashboard_(
+      baru.updateTerakhir
+    );
+
+  if (
+    waktuBaru !== waktuLama
+  ) {
+    return (
+      waktuBaru > waktuLama
+    )
+      ? baru
+      : lama;
+  }
+
+  return (
+    baru.nomorBaris >
+    lama.nomorBaris
+  )
+    ? baru
+    : lama;
+}
+
+
+function sumberKoreksiAdminDashboard_(
+  sumber
+) {
+  return (
+    normalisasiTeksDashboard_(
+      sumber
+    ).indexOf(
+      "KOREKSI ADMIN"
+    ) >= 0
+  );
+}
+
+
+/****************************************************
+ * MEMBANGUN SELURUH REKAP
+ ****************************************************/
+
+function bangunPaketRekapDashboard_(
+  konteks
+) {
+  var dailyMap = {};
+  var shiftMap = {};
+  var employeeMap = {};
+  var scanNormalMap = {};
+
+  var records =
+    konteks.records;
+
+  /*
+   * Semua tanggal sumber tetap dibuatkan bucket.
+   * Data Perlu Verifikasi tidak masuk angka formal,
+   * tetapi tanggalnya tidak hilang dari monitoring rekap.
+   */
+  for (
+    var i = 0;
+    i < records.length;
+    i++
+  ) {
+    var sumber =
+      records[i];
+
+    pastikanBucketHarianDashboard_(
+      dailyMap,
+      sumber.tanggalKey,
+      sumber.tanggal
+    );
+
+    if (
+      sumber.modeTugas ===
+        "NORMAL"
+    ) {
+      scanNormalMap[
+        sumber.tanggalKey +
+        "|" +
+        normalisasiTeksDashboard_(
+          sumber.id
+        )
+      ] = true;
+    }
+  }
+
+  /*
+   * Bila sumber benar-benar kosong, dashboard tetap
+   * memiliki satu baris tanggal hari ini dengan nilai 0.
+   */
+  if (
+    Object.keys(dailyMap)
+      .length === 0
+  ) {
+    var hariIni =
+      normalisasiTanggalDashboard_(
+        new Date()
+      );
+
+    var keyHariIni =
+      buatKunciTanggalDashboard_(
+        hariIni,
+        konteks.zonaWaktu
+      );
+
+    pastikanBucketHarianDashboard_(
+      dailyMap,
+      keyHariIni,
+      hariIni
+    );
+  }
+
+  for (
+    var j = 0;
+    j < records.length;
+    j++
+  ) {
+    var record = records[j];
+
+    /*
+     * Rekap formal hanya sesi NORMAL yang final.
+     */
+    if (
+      record.modeTugas !== "NORMAL" ||
+      !record.final
+    ) {
+      continue;
+    }
+
+    var harian =
+      pastikanBucketHarianDashboard_(
+        dailyMap,
+        record.tanggalKey,
+        record.tanggal
+      );
+
+    tambahkanRecordKeRekapDashboard_(
+      harian,
+      record
+    );
+
+    var keyShift =
+      record.tanggalKey +
+      "|" +
+      normalisasiTeksDashboard_(
+        record.shift
+      );
+
+    if (!shiftMap[keyShift]) {
+      shiftMap[keyShift] = {
+        tanggal: record.tanggal,
+        tanggalKey:
+          record.tanggalKey,
+        shift: record.shift,
+        namaShift:
+          namaShiftDashboard_(
+            record.shift
+          ),
+        total: 0,
+        hadir: 0,
+        tepatWaktu: 0,
+        datangLebihAwal: 0,
+        terlambat: 0,
+        sakit: 0,
+        izin: 0,
+        dispen: 0,
+        alfa: 0,
+        menitTelat: 0,
+        menitDatangAwal: 0,
+        jamKerjaMenit: 0,
+        lemburMenit: 0,
+        jamKurangMenit: 0
+      };
+    }
+
+    tambahkanRecordKeRekapDashboard_(
+      shiftMap[keyShift],
+      record
+    );
+
+    var keyKaryawan =
+      normalisasiTeksDashboard_(
+        record.id
+      ) +
+      "|" +
+      record.tahun +
+      "|" +
+      tambahNolDashboard_(
+        record.bulanIndex + 1
+      ) +
+      "|" +
+      normalisasiTeksDashboard_(
+        record.shift
+      );
+
+    if (!employeeMap[keyKaryawan]) {
+      employeeMap[keyKaryawan] = {
+        id: record.id,
+        nama: record.nama,
+        divisi: record.divisi,
+        shift: record.shift,
+        namaShift:
+          namaShiftDashboard_(
+            record.shift
+          ),
+        bulan: record.bulan,
+        bulanIndex:
+          record.bulanIndex,
+        tahun: record.tahun,
+        total: 0,
+        hadir: 0,
+        tepatWaktu: 0,
+        datangLebihAwal: 0,
+        terlambat: 0,
+        sakit: 0,
+        izin: 0,
+        dispen: 0,
+        alfa: 0,
+        menitTelat: 0,
+        menitDatangAwal: 0,
+        jamKerjaMenit: 0,
+        lemburMenit: 0,
+        jamKurangMenit: 0
+      };
+    }
+
+    tambahkanRecordKeRekapDashboard_(
+      employeeMap[keyKaryawan],
+      record
+    );
+  }
+
+  /*
+   * Belum Scan dihitung berdasarkan sesi NORMAL saja.
+   * Sesi PENGGANTI tidak menutup kewajiban sesi normal.
+   */
+  var keysTanggal =
+    Object.keys(dailyMap);
+
+  for (
+    var d = 0;
+    d < keysTanggal.length;
+    d++
+  ) {
+    var keyTanggal =
+      keysTanggal[d];
+
+    var bucket =
+      dailyMap[keyTanggal];
+
+    var belumScan = 0;
+
+    for (
+      var m = 0;
+      m < konteks.masters.length;
+      m++
+    ) {
+      var master =
+        konteks.masters[m];
+
+      if (
+        !karyawanAktifPadaTanggalDashboard_(
+          master,
+          bucket.tanggal
+        )
+      ) {
+        continue;
+      }
+
+      var keyScan =
+        keyTanggal +
+        "|" +
+        normalisasiTeksDashboard_(
+          master.id
+        );
+
+      if (!scanNormalMap[keyScan]) {
+        belumScan++;
+      }
+    }
+
+    bucket.belumScan =
+      belumScan;
+  }
+
+  var harian =
+    Object.keys(dailyMap)
+      .map(function(key) {
+        return dailyMap[key];
+      })
+      .sort(sortTanggalDashboard_);
+
+  var shift =
+    Object.keys(shiftMap)
+      .map(function(key) {
+        return shiftMap[key];
+      })
+      .sort(function(a, b) {
+        var bedaTanggal =
+          a.tanggal.getTime() -
+          b.tanggal.getTime();
+
+        if (bedaTanggal !== 0) {
+          return bedaTanggal;
+        }
+
+        return String(a.shift)
+          .localeCompare(
+            String(b.shift),
+            undefined,
+            {
+              numeric: true
+            }
+          );
+      });
+
+  var karyawan =
+    Object.keys(employeeMap)
+      .map(function(key) {
+        var item =
+          employeeMap[key];
+
+        item.persentaseKehadiran =
+          item.total > 0
+            ? item.hadir /
+              item.total
+            : 0;
+
+        item.score =
+          hitungScoreDashboard_(
+            item.hadir,
+            item.total,
+            item.menitTelat,
+            item.jamKerjaMenit / 60
+          );
+
+        return item;
+      })
+      .sort(sortPeriodeKaryawanDashboard_);
+
+  var bulanan =
+    bangunRekapBulananDashboard_(
+      karyawan
+    );
+
+  return {
+    harian: harian,
+    shift: shift,
+    karyawan: karyawan,
+    bulanan: bulanan
+  };
+}
+
+
+function pastikanBucketHarianDashboard_(
+  map,
+  key,
+  tanggal
+) {
+  if (!map[key]) {
+    map[key] = {
+      tanggal: tanggal,
+      tanggalKey: key,
+      total: 0,
+      hadir: 0,
+      alfa: 0,
+      izin: 0,
+      sakit: 0,
+      dispen: 0,
+      tepatWaktu: 0,
+      datangLebihAwal: 0,
+      terlambat: 0,
+      belumScan: 0,
+      menitTelat: 0,
+      menitDatangAwal: 0,
+      jamKerjaMenit: 0,
+      lemburMenit: 0,
+      jamKurangMenit: 0
+    };
+  }
+
+  return map[key];
+}
+
+
+function tambahkanRecordKeRekapDashboard_(
+  target,
+  record
+) {
+  target.total++;
+
+  if (record.hadir) {
+    target.hadir++;
+  }
+
+  if (
+    record.statusNormal === "ALFA"
+  ) {
+    target.alfa++;
+  }
+
+  if (
+    record.statusNormal === "IZIN"
+  ) {
+    target.izin++;
+  }
+
+  if (
+    record.statusNormal === "SAKIT"
+  ) {
+    target.sakit++;
+  }
+
+  if (
+    record.statusNormal === "DISPEN"
+  ) {
+    target.dispen++;
+  }
+
+  if (record.tepatWaktu) {
+    target.tepatWaktu++;
+  }
+
+  if (record.datangAwal) {
+    target.datangLebihAwal++;
+  }
+
+  if (record.terlambat) {
+    target.terlambat++;
+  }
+
+  target.menitTelat +=
+    record.menitTerlambat;
+
+  target.menitDatangAwal +=
+    record.menitDatangAwal;
+
+  target.jamKerjaMenit +=
+    record.jamKerjaMenit;
+
+  target.lemburMenit +=
+    record.lemburMenit;
+
+  target.jamKurangMenit +=
+    record.jamKurangMenit;
+}
+
+
+function bangunRekapBulananDashboard_(
+  rekapKaryawan
+) {
+  var map = {};
+
+  for (
+    var i = 0;
+    i < rekapKaryawan.length;
+    i++
+  ) {
+    var item =
+      rekapKaryawan[i];
+
+    var key =
+      normalisasiTeksDashboard_(
+        item.id
+      ) +
+      "|" +
+      item.tahun +
+      "|" +
+      tambahNolDashboard_(
+        item.bulanIndex + 1
+      );
+
+    if (!map[key]) {
+      map[key] = {
+        id: item.id,
+        nama: item.nama,
+        divisi: item.divisi,
+        bulan: item.bulan,
+        bulanIndex:
+          item.bulanIndex,
+        tahun: item.tahun,
+        total: 0,
+        hadir: 0,
+        tepatWaktu: 0,
+        datangLebihAwal: 0,
+        terlambat: 0,
+        sakit: 0,
+        izin: 0,
+        dispen: 0,
+        alfa: 0,
+        menitTelat: 0,
+        menitDatangAwal: 0,
+        jamKerjaMenit: 0,
+        lemburMenit: 0,
+        jamKurangMenit: 0,
+        persentaseKehadiran: 0,
+        score: 0,
+        ranking: 0
+      };
+    }
+
+    var r = map[key];
+
+    r.total += item.total;
+    r.hadir += item.hadir;
+    r.tepatWaktu +=
+      item.tepatWaktu;
+    r.datangLebihAwal +=
+      item.datangLebihAwal;
+    r.terlambat +=
+      item.terlambat;
+    r.sakit += item.sakit;
+    r.izin += item.izin;
+    r.dispen += item.dispen;
+    r.alfa += item.alfa;
+    r.menitTelat +=
+      item.menitTelat;
+    r.menitDatangAwal +=
+      item.menitDatangAwal;
+    r.jamKerjaMenit +=
+      item.jamKerjaMenit;
+    r.lemburMenit +=
+      item.lemburMenit;
+    r.jamKurangMenit +=
+      item.jamKurangMenit;
+  }
+
+  var hasil =
+    Object.keys(map)
+      .map(function(key) {
+        var r = map[key];
+
+        r.persentaseKehadiran =
+          r.total > 0
+            ? r.hadir / r.total
+            : 0;
+
+        r.score =
+          hitungScoreDashboard_(
+            r.hadir,
+            r.total,
+            r.menitTelat,
+            r.jamKerjaMenit / 60
+          );
+
+        return r;
+      });
+
+  /*
+   * Ranking selalu dimulai kembali untuk setiap
+   * kombinasi bulan dan tahun.
+   */
+  var perPeriode = {};
+
+  for (
+    var j = 0;
+    j < hasil.length;
+    j++
+  ) {
+    var itemPeriode =
+      hasil[j];
+
+    var keyPeriode =
+      itemPeriode.tahun +
+      "|" +
+      tambahNolDashboard_(
+        itemPeriode.bulanIndex + 1
+      );
+
+    if (!perPeriode[keyPeriode]) {
+      perPeriode[keyPeriode] = [];
+    }
+
+    perPeriode[keyPeriode].push(
+      itemPeriode
+    );
+  }
+
+  Object.keys(perPeriode)
+    .forEach(function(key) {
+      var daftar =
+        perPeriode[key];
+
+      daftar.sort(
+        sortPerformanceTerbaikDashboard_
+      );
+
+      for (
+        var x = 0;
+        x < daftar.length;
+        x++
+      ) {
+        daftar[x].ranking =
+          x + 1;
+      }
+    });
+
+  hasil.sort(
+    sortPeriodeKaryawanDashboard_
+  );
+
+  return hasil;
+}
+
+
+function hitungScoreDashboard_(
+  hadir,
+  total,
+  menitTelat,
+  jamKerja
+) {
+  var persentase =
+    total > 0
+      ? hadir / total
+      : 0;
+
+  var nilaiKehadiran =
+    persentase * 50;
+
+  var nilaiDisiplin =
+    Math.max(
+      0,
+      30 -
+      (
+        angkaTidakNegatifDashboard_(
+          menitTelat
+        ) *
+        0.1
+      )
+    );
+
+  var nilaiProduktivitas =
+    Math.min(
+      (
+        angkaTidakNegatifDashboard_(
+          jamKerja
+        ) /
+        TARGET_JAM_KERJA_BULANAN_DASHBOARD
+      ) *
+      20,
+      20
+    );
+
+  return bulatkanDashboard_(
+    Math.min(
+      100,
+      nilaiKehadiran +
+      nilaiDisiplin +
+      nilaiProduktivitas
+    ),
+    2
+  );
+}
+
+
+/****************************************************
+ * MENULIS EMPAT SHEET REKAP
+ ****************************************************/
+
+function tulisRekapHarianDashboard_(
+  konteks,
+  paket
+) {
+  var outputHarian =
+    paket.harian.map(function(r) {
+      return [
+        r.tanggal,
+        r.total,
+        r.hadir,
+        r.alfa,
+        r.izin,
+        r.sakit,
+        r.dispen,
+        r.tepatWaktu,
+        r.datangLebihAwal,
+        r.terlambat,
+        r.belumScan,
+        bulatkanDashboard_(
+          r.menitTelat,
+          2
+        ),
+        menitKeJamDashboard_(
+          r.jamKerjaMenit
+        ),
+        menitKeJamDashboard_(
+          r.lemburMenit
+        ),
+        menitKeJamDashboard_(
+          r.jamKurangMenit
+        )
+      ];
+    });
+
+  tulisSheetRekapDashboard_(
+    konteks.sheetRekapHarian,
+    HEADER_REKAP_HARIAN_DASHBOARD,
+    outputHarian
+  );
+
+  var outputShift =
+    paket.shift.map(function(r) {
+      return [
+        r.tanggal,
+        r.shift,
+        r.namaShift,
+        r.total,
+        r.hadir,
+        r.tepatWaktu,
+        r.datangLebihAwal,
+        r.terlambat,
+        r.sakit,
+        r.izin,
+        r.dispen,
+        r.alfa,
+        bulatkanDashboard_(
+          r.menitTelat,
+          2
+        ),
+        menitKeJamDashboard_(
+          r.jamKerjaMenit
+        ),
+        menitKeJamDashboard_(
+          r.lemburMenit
+        ),
+        menitKeJamDashboard_(
+          r.jamKurangMenit
+        ),
+        r.total > 0
+          ? r.hadir / r.total
+          : 0
+      ];
+    });
+
+  tulisSheetRekapDashboard_(
+    konteks.sheetRekapShift,
+    HEADER_REKAP_SHIFT_HARIAN_DASHBOARD,
+    outputShift
+  );
+
+  formatRekapHarianDashboard_(
+    konteks.sheetRekapHarian,
+    outputHarian.length
+  );
+
+  formatRekapShiftDashboard_(
+    konteks.sheetRekapShift,
+    outputShift.length
+  );
+}
+
+
+function tulisRekapKaryawanDashboard_(
+  konteks,
+  paket
+) {
+  var output =
+    paket.karyawan.map(function(r) {
+      return [
+        r.id,
+        r.nama,
+        r.divisi,
+        r.shift,
+        r.namaShift,
+        r.bulan,
+        r.tahun,
+        r.total,
+        r.hadir,
+        r.tepatWaktu,
+        r.datangLebihAwal,
+        r.terlambat,
+        r.sakit,
+        r.izin,
+        r.dispen,
+        r.alfa,
+        bulatkanDashboard_(
+          r.menitTelat,
+          2
+        ),
+        bulatkanDashboard_(
+          r.menitDatangAwal,
+          2
+        ),
+        menitKeJamDashboard_(
+          r.jamKerjaMenit
+        ),
+        menitKeJamDashboard_(
+          r.lemburMenit
+        ),
+        menitKeJamDashboard_(
+          r.jamKurangMenit
+        ),
+        r.persentaseKehadiran,
+        r.score
+      ];
+    });
+
+  tulisSheetRekapDashboard_(
+    konteks.sheetRekapKaryawan,
+    HEADER_REKAP_KARYAWAN_DASHBOARD,
+    output
+  );
+
+  formatRekapKaryawanDashboard_(
+    konteks.sheetRekapKaryawan,
+    output.length
+  );
+}
+
+
+function tulisRekapBulananDashboard_(
+  konteks,
+  paket
+) {
+  var output =
+    paket.bulanan.map(function(r) {
+      return [
+        r.id,
+        r.nama,
+        r.divisi,
+        r.bulan,
+        r.tahun,
+        r.total,
+        r.hadir,
+        r.tepatWaktu,
+        r.datangLebihAwal,
+        r.terlambat,
+        r.sakit,
+        r.izin,
+        r.dispen,
+        r.alfa,
+        bulatkanDashboard_(
+          r.menitTelat,
+          2
+        ),
+        bulatkanDashboard_(
+          r.menitDatangAwal,
+          2
+        ),
+        menitKeJamDashboard_(
+          r.jamKerjaMenit
+        ),
+        menitKeJamDashboard_(
+          r.lemburMenit
+        ),
+        menitKeJamDashboard_(
+          r.jamKurangMenit
+        ),
+        r.persentaseKehadiran,
+        r.score,
+        r.ranking
+      ];
+    });
+
+  tulisSheetRekapDashboard_(
+    konteks.sheetRekapBulanan,
+    HEADER_REKAP_BULANAN_DASHBOARD,
+    output
+  );
+
+  formatRekapBulananDashboard_(
+    konteks.sheetRekapBulanan,
+    output.length
+  );
+}
+
+
+function tulisSheetRekapDashboard_(
+  sheet,
+  header,
+  output
+) {
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      header.length
+    )
+    .setValues([
+      header
+    ]);
+
+  var lastRow =
+    sheet.getLastRow();
+
+  var lastColumn =
+    Math.max(
+      sheet.getLastColumn(),
+      header.length
+    );
+
+  if (lastRow > 1) {
+    sheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        lastColumn
+      )
+      .clearContent();
+  }
+
+  if (output.length > 0) {
+    sheet
+      .getRange(
+        2,
+        1,
+        output.length,
+        header.length
+      )
+      .setValues(
+        output
+      );
+  }
+}
+
+
+function formatRekapHarianDashboard_(
+  sheet,
+  jumlahBaris
+) {
+  if (jumlahBaris < 1) {
+    return;
+  }
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      1,
+      jumlahBaris,
+      1
+    ),
+    "dd/MM/yyyy"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      13,
+      jumlahBaris,
+      3
+    ),
+    "0.00"
+  );
+}
+
+
+function formatRekapShiftDashboard_(
+  sheet,
+  jumlahBaris
+) {
+  if (jumlahBaris < 1) {
+    return;
+  }
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      1,
+      jumlahBaris,
+      1
+    ),
+    "dd/MM/yyyy"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      14,
+      jumlahBaris,
+      3
+    ),
+    "0.00"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      17,
+      jumlahBaris,
+      1
+    ),
+    "0.00%"
+  );
+}
+
+
+function formatRekapKaryawanDashboard_(
+  sheet,
+  jumlahBaris
+) {
+  if (jumlahBaris < 1) {
+    return;
+  }
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      19,
+      jumlahBaris,
+      3
+    ),
+    "0.00"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      22,
+      jumlahBaris,
+      1
+    ),
+    "0.00%"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      23,
+      jumlahBaris,
+      1
+    ),
+    "0.00"
+  );
+}
+
+
+function formatRekapBulananDashboard_(
+  sheet,
+  jumlahBaris
+) {
+  if (jumlahBaris < 1) {
+    return;
+  }
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      17,
+      jumlahBaris,
+      3
+    ),
+    "0.00"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      20,
+      jumlahBaris,
+      1
+    ),
+    "0.00%"
+  );
+
+  aturFormatNomorAmanDashboard_(
+    sheet.getRange(
+      2,
+      21,
+      jumlahBaris,
+      1
+    ),
+    "0.00"
+  );
+}
+
+
+/*
+ * Google Sheets Table dapat menetapkan tipe kolom.
+ * Pada kolom tersebut setNumberFormat() dapat melempar:
+ * "Anda tidak dapat menetapkan format nomor sel di kolom
+ * yang sedang diketik."
+ *
+ * Format hanya bersifat tampilan, sehingga kegagalannya
+ * tidak boleh membatalkan perhitungan dan refresh dashboard.
+ */
+function aturFormatNomorAmanDashboard_(
+  range,
+  format
+) {
+  try {
+    range.setNumberFormat(
+      format
+    );
+
+    return true;
+  } catch (error) {
+    Logger.log(
+      "Format nomor dilewati pada " +
+      range.getSheet().getName() +
+      "!" +
+      range.getA1Notation() +
+      ": " +
+      error.message
+    );
+
+    return false;
+  }
+}
+
+
+/****************************************************
+ * KPI DASHBOARD
+ ****************************************************/
+
+function isiDashboardKPIDashboard_(
+  konteks,
+  paket,
+  periode
+) {
+  var bulanIndex =
+    periode.getMonth();
+
+  var tahun =
+    periode.getFullYear();
+
+  var awalPeriode =
+    new Date(
+      tahun,
+      bulanIndex,
+      1
+    );
+
+  var akhirPeriode =
+    new Date(
+      tahun,
+      bulanIndex + 1,
+      0
+    );
+
+  var totalKaryawanAktif = 0;
+
+  for (
+    var m = 0;
+    m < konteks.masters.length;
+    m++
+  ) {
+    if (
+      karyawanAktifDalamPeriodeDashboard_(
+        konteks.masters[m],
+        awalPeriode,
+        akhirPeriode
+      )
+    ) {
+      totalKaryawanAktif++;
+    }
+  }
+
+  var totalHariKerja = 0;
+  var totalHadir = 0;
+  var totalAlfa = 0;
+  var totalTelat = 0;
+  var totalLemburJam = 0;
+
+  for (
+    var i = 0;
+    i < paket.bulanan.length;
+    i++
+  ) {
+    var row =
+      paket.bulanan[i];
+
+    if (
+      row.bulanIndex !==
+        bulanIndex ||
+      row.tahun !== tahun
+    ) {
+      continue;
+    }
+
+    totalHariKerja +=
+      row.total;
+
+    totalHadir +=
+      row.hadir;
+
+    totalAlfa +=
+      row.alfa;
+
+    totalTelat +=
+      row.terlambat;
+
+    totalLemburJam +=
+      row.lemburMenit /
+      60;
+  }
+
+  var persentase =
+    totalHariKerja > 0
+      ? totalHadir /
+        totalHariKerja
+      : 0;
+
+  var totalVerifikasi = 0;
+  var totalPengganti = 0;
+
+  for (
+    var r = 0;
+    r < konteks.records.length;
+    r++
+  ) {
+    var record =
+      konteks.records[r];
+
+    if (
+      record.bulanIndex !==
+        bulanIndex ||
+      record.tahun !== tahun
+    ) {
+      continue;
+    }
+
+    if (
+      record.perluVerifikasi
+    ) {
+      totalVerifikasi++;
+    }
+
+    if (
+      record.modeTugas ===
+        "PENGGANTI"
+    ) {
+      totalPengganti++;
+    }
+  }
+
+  var totalScanDitolak =
+    hitungScanDitolakPeriodeDashboard_(
+      konteks,
+      awalPeriode,
+      akhirPeriode
+    );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.total,
+    totalKaryawanAktif
+  );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.hadir,
+    persentase
+  );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.hadirDetail,
+    totalHadir +
+      " Hadir dari " +
+      totalHariKerja +
+      " Hari Kerja"
+  );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.alfa,
+    totalAlfa
+  );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.terlambat,
+    totalTelat
+  );
+
+  setNilaiDashboardWajib_(
+    konteks.sheetDashboard,
+    DASH.kpi.lembur,
+    formatAngkaDashboard_(
+      totalLemburJam,
+      2
+    ) +
+      " Jam"
+  );
+
+  setNilaiDashboardOpsional_(
+    konteks.sheetDashboard,
+    [
+      "kpi.perluVerifikasi",
+      "kpi.verifikasi"
+    ],
+    totalVerifikasi
+  );
+
+  setNilaiDashboardOpsional_(
+    konteks.sheetDashboard,
+    ["kpi.pengganti"],
+    totalPengganti
+  );
+
+  setNilaiDashboardOpsional_(
+    konteks.sheetDashboard,
+    ["kpi.scanDitolak"],
+    totalScanDitolak
+  );
+
+  Logger.log(
+    "Generate Dashboard KPI selesai."
+  );
+}
+
+
+/****************************************************
+ * MONITORING OPERASIONAL HARI INI
+ ****************************************************/
+
+function isiMonitoringHariIniDashboard_(
+  konteks
+) {
+  var sekarang = new Date();
+
+  var recordsOperasional = [];
+
+  for (
+    var i = 0;
+    i < konteks.records.length;
+    i++
+  ) {
+    var record =
+      konteks.records[i];
+
+    if (
+      recordTermasukOperasionalSaatIniDashboard_(
+        record,
+        sekarang,
+        konteks.zonaWaktu
+      )
+    ) {
+      recordsOperasional.push(
+        record
+      );
+    }
+  }
+
+  var dataTerlambat = [];
+  var dataAlfa = [];
+  var dataVerifikasiHariIni = [];
+  var dataPengganti = [];
+
+  for (
+    var r = 0;
+    r < recordsOperasional.length;
+    r++
+  ) {
+    var item =
+      recordsOperasional[r];
+
+    var labelShift =
+      labelShiftModeDashboard_(
+        item.shift,
+        item.modeTugas
+      );
+
+    if (
+      item.final &&
+      item.terlambat
+    ) {
+      dataTerlambat.push([
+        dataTerlambat.length + 1,
+        item.id,
+        item.nama,
+        item.divisi,
+        labelShift,
+        formatJamDashboard_(
+          item.jamMasuk,
+          konteks.zonaWaktu
+        ),
+        formatAngkaDashboard_(
+          item.menitTerlambat,
+          0
+        ) +
+          " menit"
+      ]);
+    }
+
+    if (
+      item.final &&
+      item.modeTugas ===
+        "NORMAL" &&
+      item.statusNormal ===
+        "ALFA"
+    ) {
+      dataAlfa.push([
+        dataAlfa.length + 1,
+        item.id,
+        item.nama,
+        item.divisi,
+        labelShift
+      ]);
+    }
+
+    if (
+      item.perluVerifikasi
+    ) {
+      dataVerifikasiHariIni.push([
+        item.tanggal,
+        item.id,
+        item.nama,
+        item.divisi,
+        formatJamDashboard_(
+          item.jamMasuk,
+          konteks.zonaWaktu
+        ),
+        formatJamDashboard_(
+          item.jamPulang,
+          konteks.zonaWaktu
+        ),
+        item.keterangan,
+        item.modeTugas
+      ]);
+    }
+
+    if (
+      item.modeTugas ===
+        "PENGGANTI"
+    ) {
+      dataPengganti.push([
+        dataPengganti.length + 1,
+        item.id,
+        item.nama,
+        item.divisi,
+        item.shift,
+        item.idKaryawanAsal,
+        item.idBackup,
+        item.statusAbsen
+      ]);
+    }
+  }
+
+  var sudahScanNormal = {};
+
+  for (
+    var s = 0;
+    s < recordsOperasional.length;
+    s++
+  ) {
+    var scan =
+      recordsOperasional[s];
+
+    if (
+      scan.modeTugas !==
+        "NORMAL"
+    ) {
+      continue;
+    }
+
+    sudahScanNormal[
+      scan.tanggalKey +
+      "|" +
+      normalisasiTeksDashboard_(
+        scan.id
+      )
+    ] = true;
+  }
+
+  var dataBelumScan = [];
+
+  for (
+    var m = 0;
+    m < konteks.masters.length;
+    m++
+  ) {
+    var master =
+      konteks.masters[m];
+
+    var tanggalKerja =
+      tentukanTanggalKerjaMonitoringDashboard_(
+        sekarang,
+        master.shift
+      );
+
+    if (
+      !karyawanAktifPadaTanggalDashboard_(
+        master,
+        tanggalKerja
+      )
+    ) {
+      continue;
+    }
+
+    var keyTanggal =
+      buatKunciTanggalDashboard_(
+        tanggalKerja,
+        konteks.zonaWaktu
+      );
+
+    var keyScan =
+      keyTanggal +
+      "|" +
+      normalisasiTeksDashboard_(
+        master.id
+      );
+
+    if (!sudahScanNormal[keyScan]) {
+      dataBelumScan.push([
+        dataBelumScan.length + 1,
+        master.id,
+        master.nama,
+        master.divisi,
+        master.shift
+      ]);
+    }
+  }
+
+  dataTerlambat.sort(
+    sortNomorTerakhirDashboard_
+  );
+
+  dataAlfa.sort(
+    sortNomorTerakhirDashboard_
+  );
+
+  dataBelumScan.sort(
+    sortNomorTerakhirDashboard_
+  );
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.terlambat,
+    beriNomorUlangDashboard_(
+      dataTerlambat
+    )
+  );
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.belumScan,
+    beriNomorUlangDashboard_(
+      dataBelumScan
+    )
+  );
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.alfa,
+    beriNomorUlangDashboard_(
+      dataAlfa
+    )
+  );
+
+  tulisTabelOpsionalDashboard_(
+    konteks.sheetDashboard,
+    [
+      "perluVerifikasiHariIni",
+      "verifikasiHariIni",
+      "monitoring.perluVerifikasiHariIni",
+      "monitoring.verifikasiHariIni"
+    ],
+    dataVerifikasiHariIni
+  );
+
+  var semuaVerifikasi =
+    konteks.records
+      .filter(function(record) {
+        return record.perluVerifikasi;
+      })
+      .sort(function(a, b) {
+        return (
+          b.tanggal.getTime() -
+          a.tanggal.getTime()
+        );
+      })
+      .map(function(record) {
+        return [
+          record.tanggal,
+          record.id,
+          record.nama,
+          record.divisi,
+          formatJamDashboard_(
+            record.jamMasuk,
+            konteks.zonaWaktu
+          ),
+          formatJamDashboard_(
+            record.jamPulang,
+            konteks.zonaWaktu
+          ),
+          record.statusKehadiran,
+          record.statusAbsen,
+          record.keterangan,
+          record.shift,
+          record.modeTugas
+        ];
+      });
+
+  tulisTabelOpsionalDashboard_(
+    konteks.sheetDashboard,
+    [
+      "semuaPerluVerifikasi",
+      "semuaVerifikasi",
+      "monitoring.semuaPerluVerifikasi",
+      "monitoring.semuaVerifikasi"
+    ],
+    semuaVerifikasi
+  );
+
+  tulisTabelOpsionalDashboard_(
+    konteks.sheetDashboard,
+    [
+      "penggantiHariIni",
+      "pengganti",
+      "monitoring.penggantiHariIni",
+      "monitoring.pengganti"
+    ],
+    dataPengganti
+  );
+
+  var scanDitolakHariIni =
+    ambilScanDitolakHariIniDashboard_(
+      konteks,
+      sekarang
+    );
+
+  tulisTabelOpsionalDashboard_(
+    konteks.sheetDashboard,
+    [
+      "scanDitolakHariIni",
+      "scanDitolak",
+      "monitoring.scanDitolakHariIni",
+      "monitoring.scanDitolak"
+    ],
+    scanDitolakHariIni
+  );
+
+  Logger.log(
+    "Generate Monitoring Hari Ini selesai."
+  );
+}
+
+
+function recordTermasukOperasionalSaatIniDashboard_(
+  record,
+  sekarang,
+  zonaWaktu
+) {
+  var tanggalKerja =
+    tentukanTanggalKerjaMonitoringDashboard_(
+      sekarang,
+      record.shift
+    );
+
+  return (
+    record.tanggalKey ===
+    buatKunciTanggalDashboard_(
+      tanggalKerja,
+      zonaWaktu
+    )
+  );
+}
+
+
+function tentukanTanggalKerjaMonitoringDashboard_(
+  sekarang,
+  shift
+) {
+  var hariIni =
+    normalisasiTanggalDashboard_(
+      sekarang
+    );
+
+  if (
+    !shift ||
+    cekShiftFleksibelDashboard_(
+      shift
+    )
+  ) {
+    return hariIni;
+  }
+
+  if (
+    typeof tentukanTanggalAbsensi ===
+      "function"
+  ) {
+    try {
+      var hasil =
+        tentukanTanggalAbsensi(
+          sekarang,
+          shift
+        );
+
+      var hasilNormal =
+        normalisasiTanggalDashboard_(
+          hasil
+        );
+
+      if (hasilNormal) {
+        return hasilNormal;
+      }
+    } catch (error) {
+      Logger.log(
+        "Fallback tanggal monitoring shift " +
+        shift +
+        ": " +
+        error.message
+      );
+    }
+  }
+
+  var dataShift =
+    dataShiftDashboard_(
+      shift
+    );
+
+  if (
+    !dataShift ||
+    !dataShift.ditemukan
+  ) {
+    return hariIni;
+  }
+
+  var masuk =
+    ubahJamKeMenitDashboard_(
+      dataShift.jamMasukShift
+    );
+
+  var pulang =
+    ubahJamKeMenitDashboard_(
+      dataShift.jamPulangShift
+    );
+
+  if (
+    masuk === null ||
+    pulang === null ||
+    pulang >= masuk
+  ) {
+    return hariIni;
+  }
+
+  var menitSekarang =
+    sekarang.getHours() * 60 +
+    sekarang.getMinutes();
+
+  var batas =
+    pulang +
+    angkaTidakNegatifDashboard_(
+      dataShift.batasPulangMenit
+    ) +
+    angkaTidakNegatifDashboard_(
+      dataShift
+        .bufferDeteksiShiftMalamMenit
+    );
+
+  if (
+    menitSekarang <= batas
+  ) {
+    hariIni.setDate(
+      hariIni.getDate() - 1
+    );
+  }
+
+  return hariIni;
+}
+
+
+/****************************************************
+ * AUDIT RINGAN LOG_SCAN UNTUK DASHBOARD
+ ****************************************************/
+
+function buatIndeksLogDashboard_(
+  header
+) {
+  var peta =
+    buatPetaHeaderDashboard_(
+      header
+    );
+
+  return {
+    timestamp:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Timestamp",
+          "Timestamp_Input"
+        ]
+      ),
+    tanggal:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Tanggal"]
+      ),
+    jam:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Jam"]
+      ),
+    id:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["ID_Unik", "ID"]
+      ),
+    nama:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Nama"]
+      ),
+    jenisScan:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Jenis_Scan"]
+      ),
+    statusProses:
+      cariIndeksHeaderDashboard_(
+        peta,
+        ["Status_Proses"]
+      ),
+    keterangan:
+      cariIndeksHeaderDashboard_(
+        peta,
+        [
+          "Keterangan",
+          "Catatan"
+        ]
+      )
+  };
+}
+
+
+function ambilScanDitolakHariIniDashboard_(
+  konteks,
+  sekarang
+) {
+  var hasil = [];
+
+  if (
+    konteks.dataLogScan.length <= 1
+  ) {
+    return hasil;
+  }
+
+  var indeks =
+    buatIndeksLogDashboard_(
+      konteks.dataLogScan[0]
+    );
+
+  var hariIni =
+    normalisasiTanggalDashboard_(
+      sekarang
+    );
+
+  for (
+    var i = 1;
+    i < konteks.dataLogScan.length;
+    i++
+  ) {
+    var row =
+      konteks.dataLogScan[i];
+
+    var status =
+      normalisasiTeksDashboard_(
+        nilaiBarisDashboard_(
+          row,
+          indeks.statusProses
+        )
+      );
+
+    if (status !== "DITOLAK") {
+      continue;
+    }
+
+    var tanggal =
+      tanggalLogDashboard_(
+        row,
+        indeks
+      );
+
+    if (
+      !tanggal ||
+      !tanggalSamaDashboard_(
+        tanggal,
+        hariIni
+      )
+    ) {
+      continue;
+    }
+
+    hasil.push([
+      nilaiBarisDashboard_(
+        row,
+        indeks.timestamp
+      ) || tanggal,
+      nilaiBarisDashboard_(
+        row,
+        indeks.id
+      ),
+      nilaiBarisDashboard_(
+        row,
+        indeks.nama
+      ),
+      nilaiBarisDashboard_(
+        row,
+        indeks.jenisScan
+      ),
+      nilaiBarisDashboard_(
+        row,
+        indeks.keterangan
+      )
+    ]);
+  }
+
+  return hasil;
+}
+
+
+function hitungScanDitolakPeriodeDashboard_(
+  konteks,
+  awal,
+  akhir
+) {
+  if (
+    konteks.dataLogScan.length <= 1
+  ) {
+    return 0;
+  }
+
+  var indeks =
+    buatIndeksLogDashboard_(
+      konteks.dataLogScan[0]
+    );
+
+  var total = 0;
+
+  for (
+    var i = 1;
+    i < konteks.dataLogScan.length;
+    i++
+  ) {
+    var row =
+      konteks.dataLogScan[i];
+
+    var status =
+      normalisasiTeksDashboard_(
+        nilaiBarisDashboard_(
+          row,
+          indeks.statusProses
+        )
+      );
+
+    if (status !== "DITOLAK") {
+      continue;
+    }
+
+    var tanggal =
+      tanggalLogDashboard_(
+        row,
+        indeks
+      );
+
+    if (
+      tanggal &&
+      tanggal.getTime() >=
+        awal.getTime() &&
+      tanggal.getTime() <=
+        akhir.getTime()
+    ) {
+      total++;
+    }
+  }
+
+  return total;
+}
+
+
+function tanggalLogDashboard_(
+  row,
+  indeks
+) {
+  var tanggal =
+    normalisasiTanggalDashboard_(
+      nilaiBarisDashboard_(
+        row,
+        indeks.tanggal
+      )
+    );
+
+  if (tanggal) {
+    return tanggal;
+  }
+
+  return normalisasiTanggalDashboard_(
+    nilaiBarisDashboard_(
+      row,
+      indeks.timestamp
+    )
+  );
+}
+
+
+/****************************************************
+ * PERFORMANCE DIVISI DAN KARYAWAN
+ ****************************************************/
+
+function isiPerformanceDivisiDashboard_(
+  konteks,
+  paket,
+  periode
+) {
+  var dataPeriode =
+    filterBulananPeriodeDashboard_(
+      paket.bulanan,
+      periode
+    );
+
+  var map = {};
+
+  for (
+    var i = 0;
+    i < dataPeriode.length;
+    i++
+  ) {
+    var item =
+      dataPeriode[i];
+
+    var namaDivisi =
+      item.divisi || "-";
+
+    if (!map[namaDivisi]) {
+      map[namaDivisi] = {
+        nama: namaDivisi,
+        jumlahKaryawan: 0,
+        totalHari: 0,
+        totalHadir: 0,
+        totalScore: 0
+      };
+    }
+
+    var divisi =
+      map[namaDivisi];
+
+    divisi.jumlahKaryawan++;
+    divisi.totalHari +=
+      item.total;
+    divisi.totalHadir +=
+      item.hadir;
+    divisi.totalScore +=
+      item.score;
+  }
+
+  var output =
+    Object.keys(map)
+      .map(function(key) {
+        var item = map[key];
+
+        return [
+          0,
+          item.nama,
+          item.totalHari > 0
+            ? item.totalHadir /
+              item.totalHari
+            : 0,
+          item.jumlahKaryawan > 0
+            ? bulatkanDashboard_(
+                item.totalScore /
+                item.jumlahKaryawan,
+                2
+              )
+            : 0
+        ];
+      })
+      .sort(function(a, b) {
+        if (a[3] !== b[3]) {
+          return b[3] - a[3];
+        }
+
+        return b[2] - a[2];
+      });
+
+  for (
+    var x = 0;
+    x < output.length;
+    x++
+  ) {
+    output[x][0] = x + 1;
+  }
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.performance,
+    output
+  );
+
+  Logger.log(
+    "Generate Performance Divisi selesai."
+  );
+}
+
+
+function isiTopKaryawanDashboard_(
+  konteks,
+  paket,
+  periode
+) {
+  var data =
+    filterBulananPeriodeDashboard_(
+      paket.bulanan,
+      periode
+    )
+      .slice()
+      .sort(
+        sortPerformanceTerbaikDashboard_
+      );
+
+  var output = [];
+
+  for (
+    var i = 0;
+    i < data.length;
+    i++
+  ) {
+    output.push([
+      i + 1,
+      data[i].nama,
+      data[i].divisi,
+      data[i]
+        .persentaseKehadiran,
+      data[i].score
+    ]);
+  }
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.topKaryawan,
+    output
+  );
+
+  Logger.log(
+    "Generate Top Performance Karyawan selesai."
+  );
+}
+
+
+function isiLowKaryawanDashboard_(
+  konteks,
+  paket,
+  periode
+) {
+  var data =
+    filterBulananPeriodeDashboard_(
+      paket.bulanan,
+      periode
+    )
+      .slice()
+      .sort(
+        sortPerformanceTerendahDashboard_
+      );
+
+  var output = [];
+
+  for (
+    var i = 0;
+    i < data.length;
+    i++
+  ) {
+    output.push([
+      i + 1,
+      data[i].nama,
+      data[i].divisi,
+      data[i]
+        .persentaseKehadiran,
+      data[i].score
+    ]);
+  }
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.lowKaryawan,
+    output
+  );
+
+  Logger.log(
+    "Generate Low Performance Karyawan selesai."
+  );
+}
+
+
+function filterBulananPeriodeDashboard_(
+  data,
+  periode
+) {
+  var bulan =
+    periode.getMonth();
+
+  var tahun =
+    periode.getFullYear();
+
+  return data.filter(function(item) {
+    return (
+      item.bulanIndex === bulan &&
+      item.tahun === tahun
+    );
+  });
+}
+
+
+/****************************************************
+ * TREND TAHUNAN
+ ****************************************************/
+
+function isiTrendDashboard_(
+  konteks,
+  paket,
+  periode
+) {
+  var tahun =
+    periode.getFullYear();
+
+  var bulanData = [];
+
+  for (
+    var i = 0;
+    i < 12;
+    i++
+  ) {
+    bulanData.push({
+      bulan:
+        namaBulanDashboard_(i),
+      hadir: 0,
+      alfa: 0,
+      izin: 0,
+      sakit: 0,
+      dispen: 0,
+      hariKerja: 0
+    });
+  }
+
+  for (
+    var r = 0;
+    r < paket.harian.length;
+    r++
+  ) {
+    var item =
+      paket.harian[r];
+
+    if (
+      item.tanggal.getFullYear() !==
+      tahun
+    ) {
+      continue;
+    }
+
+    var bulan =
+      item.tanggal.getMonth();
+
+    var target =
+      bulanData[bulan];
+
+    target.hadir += item.hadir;
+    target.alfa += item.alfa;
+    target.izin += item.izin;
+    target.sakit += item.sakit;
+    target.dispen += item.dispen;
+    target.hariKerja +=
+      item.total;
+  }
+
+  var outputStatus =
+    bulanData.map(function(item) {
+      return [
+        item.bulan,
+        item.hadir,
+        item.alfa,
+        item.izin,
+        item.sakit,
+        item.dispen
+      ];
+    });
+
+  var outputKehadiran =
+    bulanData.map(function(item) {
+      return [
+        item.bulan,
+        item.hariKerja > 0
+          ? item.hadir /
+            item.hariKerja
+          : 0,
+        item.hadir,
+        item.hariKerja
+      ];
+    });
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.grafik.trendStatus,
+    outputStatus
+  );
+
+  tulisTabelDashboard(
+    konteks.sheetDashboard,
+    DASH.grafik.trendKehadiran,
+    outputKehadiran
+  );
+
+  Logger.log(
+    "Generate Dashboard Trend selesai."
+  );
+}
+
+
+/****************************************************
+ * PENULISAN TABEL DASHBOARD YANG AMAN
+ ****************************************************/
+
+function clearTabelDashboard(
+  sheet,
+  config
+) {
+  if (
+    !configDashboardValid_(
+      config
+    )
+  ) {
+    return;
+  }
+
+  var rangeAwal =
+    sheet.getRange(
+      config.start
+    );
+
+  sheet
+    .getRange(
+      rangeAwal.getRow(),
+      rangeAwal.getColumn(),
+      Number(config.maxRow),
+      Number(config.kolom)
+    )
+    .clearContent();
+}
+
+
+function tulisTabelDashboard(
+  sheet,
+  config,
+  data
+) {
+  if (
+    !configDashboardValid_(
+      config
+    )
+  ) {
+    throw new Error(
+      "Konfigurasi tabel DASH tidak valid."
+    );
+  }
+
+  clearTabelDashboard(
+    sheet,
+    config
+  );
+
+  var jumlahMaksimum =
+    Number(config.maxRow);
+
+  var jumlahKolom =
+    Number(config.kolom);
+
+  var sumber =
+    Array.isArray(data)
+      ? data.slice(
+          0,
+          jumlahMaksimum
+        )
+      : [];
+
+  if (
+    Array.isArray(data) &&
+    data.length >
+      jumlahMaksimum
+  ) {
+    Logger.log(
+      "Tabel dashboard " +
+      config.start +
+      " dibatasi " +
+      jumlahMaksimum +
+      " baris dari " +
+      data.length +
+      " baris."
+    );
+  }
+
+  var output =
+    sumber.map(function(row) {
+      var hasil =
+        Array.isArray(row)
+          ? row.slice(
+              0,
+              jumlahKolom
+            )
+          : [];
+
+      while (
+        hasil.length <
+        jumlahKolom
+      ) {
+        hasil.push("");
+      }
+
+      return hasil;
+    });
+
+  if (output.length < 1) {
+    return;
+  }
+
+  var rangeAwal =
+    sheet.getRange(
+      config.start
+    );
+
+  sheet
+    .getRange(
+      rangeAwal.getRow(),
+      rangeAwal.getColumn(),
+      output.length,
+      jumlahKolom
+    )
+    .setValues(
+      output
+    );
+}
+
+
+function configDashboardValid_(
+  config
+) {
+  return (
+    config &&
+    typeof config.start ===
+      "string" &&
+    config.start &&
+    Number(config.maxRow) > 0 &&
+    Number(config.kolom) > 0
+  );
+}
+
+
+function tulisTabelOpsionalDashboard_(
+  sheet,
+  daftarPath,
+  data
+) {
+  for (
+    var i = 0;
+    i < daftarPath.length;
+    i++
+  ) {
+    var config =
+      ambilConfigDashDashboard_([
+        daftarPath[i]
+      ]);
+
+    if (
+      !configDashboardValid_(
+        config
+      )
+    ) {
+      continue;
+    }
+
+    tulisTabelDashboard(
+      sheet,
+      config,
+      data
+    );
+
+    return true;
+  }
+
+  return false;
+}
+
+
+function setNilaiDashboardWajib_(
+  sheet,
+  alamat,
+  nilai
+) {
+  if (
+    typeof alamat !== "string" ||
+    !alamat
+  ) {
+    throw new Error(
+      "Alamat sel DASH wajib tidak valid."
+    );
+  }
+
+  sheet
+    .getRange(alamat)
+    .setValue(nilai);
+}
+
+
+function setNilaiDashboardOpsional_(
+  sheet,
+  daftarPath,
+  nilai
+) {
+  for (
+    var i = 0;
+    i < daftarPath.length;
+    i++
+  ) {
+    var alamat =
+      ambilConfigDashDashboard_([
+        daftarPath[i]
+      ]);
+
+    if (
+      typeof alamat !== "string" ||
+      !alamat
+    ) {
+      continue;
+    }
+
+    sheet
+      .getRange(alamat)
+      .setValue(nilai);
+
+    return true;
+  }
+
+  return false;
+}
+
+
+function ambilConfigDashDashboard_(
+  daftarPath
+) {
+  if (
+    typeof DASH === "undefined" ||
+    !DASH
+  ) {
+    return null;
+  }
+
+  for (
+    var i = 0;
+    i < daftarPath.length;
+    i++
+  ) {
+    var bagian =
+      daftarPath[i].split(".");
+
+    var nilai = DASH;
+
+    for (
+      var j = 0;
+      j < bagian.length;
+      j++
+    ) {
+      if (
+        nilai === null ||
+        nilai === undefined ||
+        nilai[bagian[j]] ===
+          undefined
+      ) {
+        nilai = null;
+        break;
+      }
+
+      nilai =
+        nilai[bagian[j]];
+    }
+
+    if (nilai) {
+      return nilai;
+    }
+  }
+
+  return null;
+}
+
+
+/****************************************************
+ * PERIODE DASHBOARD
+ ****************************************************/
+
+function ambilPeriodeDashboard_(
+  sheetDashboard
+) {
+  if (
+    typeof DASH === "undefined" ||
+    !DASH ||
+    !DASH.header ||
+    !DASH.header.periode
+  ) {
+    throw new Error(
+      "Konfigurasi DASH.header.periode tidak ditemukan."
+    );
+  }
+
+  var nilai =
+    sheetDashboard
+      .getRange(
+        DASH.header.periode
+      )
+      .getValue();
+
+  if (!nilai) {
+    throw new Error(
+      "Periode dashboard belum dipilih pada " +
+      DASH.header.periode +
+      "."
+    );
+  }
+
+  var tanggal =
+    normalisasiTanggalDashboard_(
+      nilai
+    );
+
+  if (!tanggal) {
+    throw new Error(
+      "Format periode dashboard tidak valid pada " +
+      DASH.header.periode +
+      "."
+    );
+  }
+
+  return tanggal;
+}
+
+
+/****************************************************
+ * HELPER SHIFT
+ ****************************************************/
+
+function cekShiftFleksibelDashboard_(
+  shift
+) {
+  if (
+    typeof cekShiftFleksibel ===
+      "function"
+  ) {
+    try {
+      return cekShiftFleksibel(
+        shift
+      );
+    } catch (error) {
+      Logger.log(
+        "Fallback cek FLEX: " +
+        error.message
+      );
+    }
+  }
+
+  var kode =
+    normalisasiTeksDashboard_(
+      shift
+    );
+
+  var flex =
+    typeof SHIFT_FLEKSIBEL !==
+      "undefined"
+      ? normalisasiTeksDashboard_(
+          SHIFT_FLEKSIBEL
+        )
+      : "FLEX";
+
+  return (
+    kode === flex ||
+    kode === "FLEX" ||
+    kode === "FLEKSIBEL"
+  );
+}
+
+
+function dataShiftDashboard_(
+  shift
+) {
+  var key =
+    normalisasiTeksDashboard_(
+      shift
+    );
+
+  if (!key) {
+    return null;
+  }
+
+  if (
+    CACHE_SHIFT_DASHBOARD_[key] !==
+      undefined
+  ) {
+    return CACHE_SHIFT_DASHBOARD_[key];
+  }
+
+  if (
+    cekShiftFleksibelDashboard_(
+      shift
+    )
+  ) {
+    CACHE_SHIFT_DASHBOARD_[key] = {
+      ditemukan: true,
+      kodeShift: shift,
+      namaShift: "Fleksibel",
+      jamMasukShift: "",
+      jamPulangShift: "",
+      batasPulangMenit: 0,
+      bufferDeteksiShiftMalamMenit: 0
+    };
+
+    return CACHE_SHIFT_DASHBOARD_[key];
+  }
+
+  if (
+    typeof bacaShiftDariTblShift !==
+      "function"
+  ) {
+    CACHE_SHIFT_DASHBOARD_[key] =
+      null;
+
+    return null;
+  }
+
+  try {
+    var hasil =
+      bacaShiftDariTblShift(
+        shift
+      );
+
+    CACHE_SHIFT_DASHBOARD_[key] =
+      hasil || null;
+  } catch (error) {
+    Logger.log(
+      "Shift " +
+      shift +
+      " gagal dibaca untuk dashboard: " +
+      error.message
+    );
+
+    CACHE_SHIFT_DASHBOARD_[key] =
+      null;
+  }
+
+  return CACHE_SHIFT_DASHBOARD_[key];
+}
+
+
+function namaShiftDashboard_(
+  shift
+) {
+  if (!shift) {
+    return "";
+  }
+
+  if (
+    cekShiftFleksibelDashboard_(
+      shift
+    )
+  ) {
+    return "Fleksibel";
+  }
+
+  var dataShift =
+    dataShiftDashboard_(
+      shift
+    );
+
+  if (
+    dataShift &&
+    dataShift.ditemukan &&
+    dataShift.namaShift
+  ) {
+    return dataShift.namaShift;
+  }
+
+  return String(shift);
+}
+
+
+function labelShiftModeDashboard_(
+  shift,
+  mode
+) {
+  var label =
+    String(shift || "-");
+
+  if (
+    mode === "PENGGANTI"
+  ) {
+    label +=
+      " / PENGGANTI";
+  }
+
+  return label;
+}
+
+
+function ubahJamKeMenitDashboard_(
+  nilai
+) {
+  if (
+    nilai === null ||
+    nilai === undefined ||
+    nilai === ""
+  ) {
+    return null;
+  }
+
+  if (
+    Object.prototype.toString
+      .call(nilai) ===
+      "[object Date]" &&
+    !isNaN(nilai.getTime())
+  ) {
+    return (
+      nilai.getHours() * 60 +
+      nilai.getMinutes() +
+      nilai.getSeconds() / 60
+    );
+  }
+
+  var teks =
+    String(nilai)
+      .trim()
+      .replace(".", ":");
+
+  var cocok =
+    teks.match(
+      /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+    );
+
+  if (!cocok) {
+    return null;
+  }
+
+  return (
+    Number(cocok[1]) * 60 +
+    Number(cocok[2]) +
+    Number(cocok[3] || 0) /
+      60
+  );
+}
+
+
+/****************************************************
+ * HELPER SORTING
+ ****************************************************/
+
+function sortTanggalDashboard_(
+  a,
+  b
+) {
+  return (
+    a.tanggal.getTime() -
+    b.tanggal.getTime()
+  );
+}
+
+
+function sortPeriodeKaryawanDashboard_(
+  a,
+  b
+) {
+  if (a.tahun !== b.tahun) {
+    return a.tahun - b.tahun;
+  }
+
+  if (
+    a.bulanIndex !==
+    b.bulanIndex
+  ) {
+    return (
+      a.bulanIndex -
+      b.bulanIndex
+    );
+  }
+
+  if (
+    String(a.id) !==
+    String(b.id)
+  ) {
+    return String(a.id)
+      .localeCompare(
+        String(b.id)
+      );
+  }
+
+  return String(a.shift)
+    .localeCompare(
+      String(b.shift),
+      undefined,
+      {
+        numeric: true
+      }
+    );
+}
+
+
+function sortPerformanceTerbaikDashboard_(
+  a,
+  b
+) {
+  if (a.score !== b.score) {
+    return b.score - a.score;
+  }
+
+  if (
+    a.persentaseKehadiran !==
+    b.persentaseKehadiran
+  ) {
+    return (
+      b.persentaseKehadiran -
+      a.persentaseKehadiran
+    );
+  }
+
+  if (
+    a.terlambat !==
+    b.terlambat
+  ) {
+    return (
+      a.terlambat -
+      b.terlambat
+    );
+  }
+
+  return String(a.nama)
+    .localeCompare(
+      String(b.nama)
+    );
+}
+
+
+function sortPerformanceTerendahDashboard_(
+  a,
+  b
+) {
+  if (a.score !== b.score) {
+    return a.score - b.score;
+  }
+
+  if (
+    a.persentaseKehadiran !==
+    b.persentaseKehadiran
+  ) {
+    return (
+      a.persentaseKehadiran -
+      b.persentaseKehadiran
+    );
+  }
+
+  if (
+    a.terlambat !==
+    b.terlambat
+  ) {
+    return (
+      b.terlambat -
+      a.terlambat
+    );
+  }
+
+  return String(a.nama)
+    .localeCompare(
+      String(b.nama)
+    );
+}
+
+
+function sortNomorTerakhirDashboard_(
+  a,
+  b
+) {
+  var namaA =
+    String(a[2] || "");
+
+  var namaB =
+    String(b[2] || "");
+
+  return namaA.localeCompare(
+    namaB
+  );
+}
+
+
+function beriNomorUlangDashboard_(
+  data
+) {
+  for (
+    var i = 0;
+    i < data.length;
+    i++
+  ) {
+    data[i][0] = i + 1;
+  }
+
+  return data;
+}
+
+
+/****************************************************
+ * HELPER UMUM DASHBOARD
+ ****************************************************/
+
+function normalisasiTeksDashboard_(
+  nilai
+) {
+  return String(nilai || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ");
+}
+
+
+function angkaTidakNegatifDashboard_(
+  nilai
+) {
+  var angka =
+    Number(nilai);
+
+  if (
+    !isFinite(angka) ||
+    angka < 0
+  ) {
+    return 0;
+  }
+
+  return angka;
+}
+
+
+function adaNilaiDashboard_(
+  nilai
+) {
+  return !(
+    nilai === null ||
+    nilai === undefined ||
+    nilai === ""
+  );
+}
+
+
+function nilaiWaktuDashboard_(
+  nilai
+) {
+  if (
+    Object.prototype.toString
+      .call(nilai) ===
+      "[object Date]" &&
+    !isNaN(nilai.getTime())
+  ) {
+    return nilai.getTime();
+  }
+
+  var tanggal =
+    new Date(nilai);
+
+  return isNaN(tanggal.getTime())
+    ? 0
+    : tanggal.getTime();
+}
+
+
+function normalisasiTanggalDashboard_(
+  nilai
+) {
+  if (
+    Object.prototype.toString
+      .call(nilai) ===
+      "[object Date]" &&
+    !isNaN(nilai.getTime())
+  ) {
+    return new Date(
+      nilai.getFullYear(),
+      nilai.getMonth(),
+      nilai.getDate()
+    );
+  }
+
+  if (
+    nilai === null ||
+    nilai === undefined ||
+    nilai === ""
+  ) {
+    return null;
+  }
+
+  var teks =
+    String(nilai).trim();
+
+  var cocokIndonesia =
+    teks.match(
+      /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/
+    );
+
+  if (cocokIndonesia) {
+    var tanggalIndonesia =
+      new Date(
+        Number(cocokIndonesia[3]),
+        Number(cocokIndonesia[2]) - 1,
+        Number(cocokIndonesia[1])
+      );
+
+    if (
+      tanggalIndonesia.getFullYear() ===
+        Number(cocokIndonesia[3]) &&
+      tanggalIndonesia.getMonth() ===
+        Number(cocokIndonesia[2]) - 1 &&
+      tanggalIndonesia.getDate() ===
+        Number(cocokIndonesia[1])
+    ) {
+      return tanggalIndonesia;
+    }
+  }
+
+  var tanggal =
+    new Date(nilai);
+
+  if (isNaN(tanggal.getTime())) {
+    return null;
+  }
+
+  return new Date(
+    tanggal.getFullYear(),
+    tanggal.getMonth(),
+    tanggal.getDate()
+  );
+}
+
+
+function buatKunciTanggalDashboard_(
+  tanggal,
+  zonaWaktu
+) {
+  if (
+    typeof Utilities !==
+      "undefined" &&
+    Utilities.formatDate
+  ) {
+    return Utilities.formatDate(
+      tanggal,
+      zonaWaktu ||
+        "Asia/Jakarta",
+      "yyyy-MM-dd"
+    );
+  }
+
+  return (
+    tanggal.getFullYear() +
+    "-" +
+    tambahNolDashboard_(
+      tanggal.getMonth() + 1
+    ) +
+    "-" +
+    tambahNolDashboard_(
+      tanggal.getDate()
+    )
+  );
+}
+
+
+function tanggalSamaDashboard_(
+  a,
+  b
+) {
+  var tanggalA =
+    normalisasiTanggalDashboard_(
+      a
+    );
+
+  var tanggalB =
+    normalisasiTanggalDashboard_(
+      b
+    );
+
+  return (
+    tanggalA &&
+    tanggalB &&
+    tanggalA.getTime() ===
+      tanggalB.getTime()
+  );
+}
+
+
+function namaBulanDashboard_(
+  indeks
+) {
+  var nama = [
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember"
+  ];
+
+  return nama[indeks] || "";
+}
+
+
+function tambahNolDashboard_(
+  angka
+) {
+  return Number(angka) < 10
+    ? "0" + Number(angka)
+    : String(Number(angka));
+}
+
+
+function menitKeJamDashboard_(
+  menit
+) {
+  return bulatkanDashboard_(
+    angkaTidakNegatifDashboard_(
+      menit
+    ) /
+    60,
+    2
+  );
+}
+
+
+function bulatkanDashboard_(
+  angka,
+  desimal
+) {
+  var faktor =
+    Math.pow(
+      10,
+      Number(desimal || 0)
+    );
+
+  return (
+    Math.round(
+      Number(angka || 0) *
+      faktor
+    ) /
+    faktor
+  );
+}
+
+
+function formatAngkaDashboard_(
+  angka,
+  desimal
+) {
+  return bulatkanDashboard_(
+    angka,
+    desimal
+  )
+    .toFixed(
+      Number(desimal || 0)
+    )
+    .replace(".", ",");
+}
+
+
+function formatJamDashboard_(
+  nilai,
+  zonaWaktu
+) {
+  if (!adaNilaiDashboard_(nilai)) {
+    return "";
+  }
+
+  if (
+    Object.prototype.toString
+      .call(nilai) ===
+      "[object Date]" &&
+    !isNaN(nilai.getTime())
+  ) {
+    if (
+      typeof Utilities !==
+        "undefined" &&
+      Utilities.formatDate
+    ) {
+      return Utilities.formatDate(
+        nilai,
+        zonaWaktu ||
+          "Asia/Jakarta",
+        "HH:mm"
+      );
+    }
+
+    return (
+      tambahNolDashboard_(
+        nilai.getHours()
+      ) +
+      ":" +
+      tambahNolDashboard_(
+        nilai.getMinutes()
+      )
+    );
+  }
+
+  var teks =
+    String(nilai).trim();
+
+  var cocok =
+    teks.match(
+      /(\d{1,2})[:.](\d{2})/
+    );
+
+  if (cocok) {
+    return (
+      tambahNolDashboard_(
+        cocok[1]
+      ) +
+      ":" +
+      cocok[2]
+    );
+  }
+
+  return teks;
+}

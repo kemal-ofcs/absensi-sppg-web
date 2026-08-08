@@ -1,0 +1,1124 @@
+/****************************************************
+ * 16_Token_And_Audit.gs
+ * GENERATE TOKEN DAN AUDIT DUPLIKAT
+ * --------------------------------------------------
+ * Fungsi utama:
+ * - Membuat token absensi secara batch.
+ * - Menolak pembuatan token baru untuk ID ganda.
+ * - Mencatat ID ganda MASTER_DATA ke AUDIT_ABSENSI.
+ * - Mengaudit duplikat sesi di ABSENSI_HARIAN.
+ * - Mendukung sesi NORMAL dan PENGGANTI.
+ * - Mendukung fallback untuk data lama tanpa ID_SESI.
+ * - Mencegah temuan audit aktif dicatat berulang.
+ *
+ * Catatan penting:
+ * - Audit hanya melaporkan temuan.
+ * - Audit tidak menghapus atau mengubah ABSENSI_HARIAN.
+ * - Token yang sudah ada tidak pernah diganti.
+ ****************************************************/
+
+
+/****************************************************
+ * GENERATE TOKEN ABSENSI
+ ****************************************************/
+function generateTokenAbsensi() {
+
+  var lock =
+    LockService.getScriptLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error(
+      "Generate token belum dapat dijalankan karena " +
+      "sistem sedang memproses data lain."
+    );
+  }
+
+  try {
+    return generateTokenAbsensiTerkunci_();
+  } finally {
+    if (lock.hasLock()) {
+      lock.releaseLock();
+    }
+  }
+}
+
+
+function generateTokenAbsensiTerkunci_() {
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var masterSheet =
+    ambilSheet(
+      ss,
+      SHEET_MASTER_DATA
+    );
+
+  var auditSheet =
+    ambilSheet(
+      ss,
+      SHEET_AUDIT_ABSENSI
+    );
+
+  pastikanHeaderAuditAbsensiTokenAudit_(
+    auditSheet
+  );
+
+  var data =
+    masterSheet
+      .getDataRange()
+      .getValues();
+
+  var ringkasan = {
+    jumlahTokenBaru: 0,
+    jumlahTokenSudahAda: 0,
+    jumlahIdKosong: 0,
+    jumlahGrupIdGanda: 0,
+    jumlahBarisIdGanda: 0,
+    jumlahAuditBaru: 0,
+    jumlahAuditSudahTercatat: 0
+  };
+
+  if (data.length <= 1) {
+    SpreadsheetApp
+      .getUi()
+      .alert(
+        "Generate token selesai.\n\n" +
+        "Belum ada data karyawan di MASTER_DATA."
+      );
+
+    return ringkasan;
+  }
+
+  var kolomId =
+    COL_MASTER_DATA.ID;
+
+  var kolomNama =
+    COL_MASTER_DATA.NAMA;
+
+  var kolomToken =
+    COL_MASTER_DATA.TOKEN_ABSENSI;
+
+  var daftarId = {};
+  var nilaiToken = [];
+
+  for (
+    var i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    var id =
+      String(
+        data[i][kolomId - 1] || ""
+      ).trim();
+
+    var nama =
+      String(
+        data[i][kolomNama - 1] || ""
+      ).trim();
+
+    var tokenAsli =
+      data[i][kolomToken - 1];
+
+    var tokenNormal =
+      String(
+        tokenAsli || ""
+      ).trim();
+
+    nilaiToken.push([
+      tokenAsli
+    ]);
+
+    if (!id) {
+      ringkasan.jumlahIdKosong++;
+      continue;
+    }
+
+    var keyId =
+      buatKeyIdMasterTokenAudit_(id);
+
+    if (!daftarId[keyId]) {
+      daftarId[keyId] = [];
+    }
+
+    daftarId[keyId].push({
+      indeksData: i,
+      nomorBaris: i + 1,
+      id: id,
+      nama: nama,
+      tokenTerisi: !!tokenNormal
+    });
+  }
+
+  var dataAuditCalon = [];
+
+  for (
+    var keyId in daftarId
+  ) {
+
+    if (
+      !daftarId.hasOwnProperty(keyId)
+    ) {
+      continue;
+    }
+
+    var kelompok =
+      daftarId[keyId];
+
+    if (kelompok.length > 1) {
+
+      ringkasan
+        .jumlahGrupIdGanda++;
+
+      ringkasan
+        .jumlahBarisIdGanda +=
+          kelompok.length;
+
+      dataAuditCalon =
+        dataAuditCalon.concat(
+          buatAuditIdMasterGandaTokenAudit_(
+            kelompok
+          )
+        );
+
+      /*
+       * Seluruh baris dengan ID ganda sengaja tidak
+       * diberi token baru sampai duplikasi diselesaikan.
+       * Token lama juga tidak diubah.
+       */
+      continue;
+    }
+
+    var satuData =
+      kelompok[0];
+
+    if (
+      satuData.tokenTerisi
+    ) {
+      ringkasan
+        .jumlahTokenSudahAda++;
+      continue;
+    }
+
+    var tokenBaru =
+      Utilities.getUuid();
+
+    nilaiToken[
+      satuData.indeksData - 1
+    ][0] = tokenBaru;
+
+    ringkasan.jumlahTokenBaru++;
+  }
+
+  if (
+    ringkasan.jumlahTokenBaru > 0
+  ) {
+    masterSheet
+      .getRange(
+        2,
+        kolomToken,
+        nilaiToken.length,
+        1
+      )
+      .setValues(
+        nilaiToken
+      );
+  }
+
+  var kunciAuditAktif =
+    ambilKunciAuditAktifTokenAudit_(
+      auditSheet
+    );
+
+  var hasilFilterAudit =
+    filterAuditBaruTokenAudit_(
+      dataAuditCalon,
+      kunciAuditAktif
+    );
+
+  if (
+    hasilFilterAudit.dataBaru.length > 0
+  ) {
+    tulisAuditBatchTokenAudit_(
+      auditSheet,
+      hasilFilterAudit.dataBaru
+    );
+  }
+
+  ringkasan.jumlahAuditBaru =
+    hasilFilterAudit.dataBaru.length;
+
+  ringkasan.jumlahAuditSudahTercatat =
+    hasilFilterAudit.jumlahSudahAda;
+
+  SpreadsheetApp.flush();
+
+  var pesan =
+    "Generate token absensi selesai.\n\n" +
+    "Token baru: " +
+    ringkasan.jumlahTokenBaru +
+    "\n" +
+    "Token sudah ada: " +
+    ringkasan.jumlahTokenSudahAda +
+    "\n" +
+    "Baris tanpa ID: " +
+    ringkasan.jumlahIdKosong +
+    "\n" +
+    "Grup ID ganda: " +
+    ringkasan.jumlahGrupIdGanda;
+
+  if (
+    ringkasan.jumlahGrupIdGanda > 0
+  ) {
+    pesan +=
+      "\n\nID ganda tidak diberi token baru. " +
+      "Temuan baru dicatat di AUDIT_ABSENSI: " +
+      ringkasan.jumlahAuditBaru +
+      ".";
+  }
+
+  SpreadsheetApp
+    .getUi()
+    .alert(pesan);
+
+  return ringkasan;
+}
+
+
+/****************************************************
+ * AUDIT DUPLIKAT ABSENSI HARIAN
+ ****************************************************/
+function cekDuplikatAbsensiHarian() {
+
+  var lock =
+    LockService.getScriptLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error(
+      "Audit duplikat belum dapat dijalankan karena " +
+      "sistem sedang memproses data lain."
+    );
+  }
+
+  try {
+    return cekDuplikatAbsensiHarianTerkunci_();
+  } finally {
+    if (lock.hasLock()) {
+      lock.releaseLock();
+    }
+  }
+}
+
+
+function cekDuplikatAbsensiHarianTerkunci_() {
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var absensiSheet =
+    ambilSheet(
+      ss,
+      SHEET_ABSENSI_HARIAN
+    );
+
+  var auditSheet =
+    ambilSheet(
+      ss,
+      SHEET_AUDIT_ABSENSI
+    );
+
+  pastikanHeaderAuditAbsensiTokenAudit_(
+    auditSheet
+  );
+
+  var data =
+    absensiSheet
+      .getDataRange()
+      .getValues();
+
+  var ringkasan = {
+    jumlahBarisDiperiksa: 0,
+    jumlahSesiModern: 0,
+    jumlahSesiLegacy: 0,
+    jumlahBarisDilewati: 0,
+    jumlahDuplikat: 0,
+    jumlahAuditBaru: 0,
+    jumlahAuditSudahTercatat: 0
+  };
+
+  if (data.length <= 1) {
+    SpreadsheetApp
+      .getUi()
+      .alert(
+        "Cek duplikat selesai.\n\n" +
+        "Belum ada data di ABSENSI_HARIAN."
+      );
+
+    return ringkasan;
+  }
+
+  var daftarKey = {};
+  var daftarDuplikat = [];
+
+  for (
+    var i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    var nomorBaris =
+      i + 1;
+
+    var identitas =
+      buatIdentitasSesiTokenAudit_(
+        data[i],
+        nomorBaris
+      );
+
+    if (!identitas.valid) {
+      ringkasan
+        .jumlahBarisDilewati++;
+      continue;
+    }
+
+    ringkasan
+      .jumlahBarisDiperiksa++;
+
+    if (
+      identitas.dasarKey ===
+      "ID_SESI"
+    ) {
+      ringkasan
+        .jumlahSesiModern++;
+    } else {
+      ringkasan
+        .jumlahSesiLegacy++;
+    }
+
+    if (
+      daftarKey[identitas.key]
+    ) {
+      daftarDuplikat.push({
+        dataPertama:
+          daftarKey[identitas.key],
+        dataDuplikat:
+          identitas
+      });
+    } else {
+      daftarKey[identitas.key] =
+        identitas;
+    }
+  }
+
+  ringkasan.jumlahDuplikat =
+    daftarDuplikat.length;
+
+  if (
+    daftarDuplikat.length === 0
+  ) {
+    SpreadsheetApp
+      .getUi()
+      .alert(
+        "Cek duplikat selesai.\n\n" +
+        "Tidak ditemukan sesi dobel di " +
+        "ABSENSI_HARIAN.\n\n" +
+        "Baris diperiksa: " +
+        ringkasan.jumlahBarisDiperiksa +
+        "\n" +
+        "Baris dilewati: " +
+        ringkasan.jumlahBarisDilewati
+      );
+
+    return ringkasan;
+  }
+
+  var sekarang =
+    new Date();
+
+  var dataAuditCalon = [];
+
+  for (
+    var j = 0;
+    j < daftarDuplikat.length;
+    j++
+  ) {
+
+    var temuan =
+      daftarDuplikat[j];
+
+    var pertama =
+      temuan.dataPertama;
+
+    var duplikat =
+      temuan.dataDuplikat;
+
+    var kunciTemuan =
+      "ABSENSI|" +
+      duplikat.key +
+      "|BARIS|" +
+      pertama.nomorBaris +
+      "|" +
+      duplikat.nomorBaris;
+
+    var penandaAudit =
+      buatPenandaAuditTokenAudit_(
+        kunciTemuan
+      );
+
+    var detail =
+      "Duplikat sesi absensi ditemukan. " +
+      "Baris pertama: " +
+      pertama.nomorBaris +
+      " | Baris duplikat: " +
+      duplikat.nomorBaris +
+      " | Dasar audit: " +
+      duplikat.dasarKey +
+      " | Data pertama: " +
+      buatRingkasanSesiTokenAudit_(
+        pertama
+      ) +
+      " | Data duplikat: " +
+      buatRingkasanSesiTokenAudit_(
+        duplikat
+      ) +
+      " " +
+      penandaAudit;
+
+    dataAuditCalon.push([
+      sekarang,
+      "Duplikat Absensi",
+      duplikat.tanggal,
+      duplikat.id,
+      duplikat.nama,
+      duplikat.nomorBaris,
+      detail,
+      "Perlu Dicek"
+    ]);
+  }
+
+  var kunciAuditAktif =
+    ambilKunciAuditAktifTokenAudit_(
+      auditSheet
+    );
+
+  var hasilFilterAudit =
+    filterAuditBaruTokenAudit_(
+      dataAuditCalon,
+      kunciAuditAktif
+    );
+
+  if (
+    hasilFilterAudit.dataBaru.length > 0
+  ) {
+    tulisAuditBatchTokenAudit_(
+      auditSheet,
+      hasilFilterAudit.dataBaru
+    );
+  }
+
+  ringkasan.jumlahAuditBaru =
+    hasilFilterAudit.dataBaru.length;
+
+  ringkasan.jumlahAuditSudahTercatat =
+    hasilFilterAudit.jumlahSudahAda;
+
+  SpreadsheetApp.flush();
+
+  SpreadsheetApp
+    .getUi()
+    .alert(
+      "Cek duplikat selesai.\n\n" +
+      "Duplikat ditemukan: " +
+      ringkasan.jumlahDuplikat +
+      "\n" +
+      "Temuan baru dicatat: " +
+      ringkasan.jumlahAuditBaru +
+      "\n" +
+      "Temuan aktif yang sudah tercatat: " +
+      ringkasan.jumlahAuditSudahTercatat +
+      "\n\n" +
+      "Hasil tersedia di sheet AUDIT_ABSENSI."
+    );
+
+  return ringkasan;
+}
+
+
+/****************************************************
+ * IDENTITAS SESI UNTUK AUDIT
+ * --------------------------------------------------
+ * Data terbaru:
+ *   key = ID_SESI
+ *
+ * Data lama tanpa ID_SESI:
+ *   key = Tanggal + ID + Shift + MODE_TUGAS
+ *         + ID_BACKUP
+ ****************************************************/
+function buatIdentitasSesiTokenAudit_(
+  row,
+  nomorBaris
+) {
+
+  var tanggal =
+    nilaiKolomTokenAudit_(
+      row,
+      COL_ABSENSI.TANGGAL
+    );
+
+  var id =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.ID
+      ) || ""
+    ).trim();
+
+  var nama =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.NAMA
+      ) || ""
+    ).trim();
+
+  var shift =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.SHIFT
+      ) || ""
+    ).trim();
+
+  var idSesi =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.ID_SESI
+      ) || ""
+    ).trim();
+
+  var modeTugas =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.MODE_TUGAS
+      ) || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  var idBackup =
+    String(
+      nilaiKolomTokenAudit_(
+        row,
+        COL_ABSENSI.ID_BACKUP
+      ) || ""
+    ).trim();
+
+  if (!modeTugas) {
+    modeTugas =
+      idBackup
+        ? "PENGGANTI"
+        : "NORMAL";
+  }
+
+  if (idSesi) {
+    return {
+      valid: true,
+      key:
+        "ID_SESI|" +
+        idSesi.toUpperCase(),
+      dasarKey: "ID_SESI",
+      nomorBaris: nomorBaris,
+      tanggal: tanggal,
+      id: id,
+      nama: nama,
+      shift: shift,
+      modeTugas: modeTugas,
+      idBackup: idBackup,
+      idSesi: idSesi
+    };
+  }
+
+  var tanggalKey =
+    buatKunciTanggalTokenAudit_(
+      tanggal
+    );
+
+  /*
+   * Fallback data lama membutuhkan Tanggal dan ID.
+   * Baris tanpa keduanya dilewati karena tidak mungkin
+   * dibuatkan identitas sesi yang aman.
+   */
+  if (
+    !tanggalKey ||
+    !id
+  ) {
+    return {
+      valid: false,
+      nomorBaris: nomorBaris
+    };
+  }
+
+  var keyLegacy =
+    "LEGACY|" +
+    tanggalKey +
+    "|" +
+    id.toUpperCase() +
+    "|" +
+    shift.toUpperCase() +
+    "|" +
+    modeTugas +
+    "|" +
+    idBackup.toUpperCase();
+
+  return {
+    valid: true,
+    key: keyLegacy,
+    dasarKey: "FALLBACK_DATA_LAMA",
+    nomorBaris: nomorBaris,
+    tanggal: tanggal,
+    id: id,
+    nama: nama,
+    shift: shift,
+    modeTugas: modeTugas,
+    idBackup: idBackup,
+    idSesi: ""
+  };
+}
+
+
+function buatRingkasanSesiTokenAudit_(
+  dataSesi
+) {
+
+  return (
+    "ID_SESI=" +
+    (
+      dataSesi.idSesi ||
+      "(kosong)"
+    ) +
+    ", MODE_TUGAS=" +
+    (
+      dataSesi.modeTugas ||
+      "(kosong)"
+    ) +
+    ", ID_BACKUP=" +
+    (
+      dataSesi.idBackup ||
+      "(kosong)"
+    ) +
+    ", SHIFT=" +
+    (
+      dataSesi.shift ||
+      "(kosong)"
+    )
+  );
+}
+
+
+/****************************************************
+ * AUDIT ID GANDA MASTER_DATA
+ ****************************************************/
+function buatAuditIdMasterGandaTokenAudit_(
+  kelompok
+) {
+
+  var dataAudit = [];
+  var sekarang =
+    new Date();
+
+  var pertama =
+    kelompok[0];
+
+  for (
+    var i = 1;
+    i < kelompok.length;
+    i++
+  ) {
+
+    var duplikat =
+      kelompok[i];
+
+    var kunciTemuan =
+      "MASTER_ID|" +
+      buatKeyIdMasterTokenAudit_(
+        duplikat.id
+      ) +
+      "|BARIS|" +
+      pertama.nomorBaris +
+      "|" +
+      duplikat.nomorBaris;
+
+    var penandaAudit =
+      buatPenandaAuditTokenAudit_(
+        kunciTemuan
+      );
+
+    var detail =
+      "ID karyawan ditemukan lebih dari satu kali di " +
+      "MASTER_DATA. Baris pertama: " +
+      pertama.nomorBaris +
+      " | Baris duplikat: " +
+      duplikat.nomorBaris +
+      " | Status token baris pertama: " +
+      (
+        pertama.tokenTerisi
+          ? "Terisi"
+          : "Kosong"
+      ) +
+      " | Status token baris duplikat: " +
+      (
+        duplikat.tokenTerisi
+          ? "Terisi"
+          : "Kosong"
+      ) +
+      ". Token tidak diubah sampai ID ganda diperbaiki. " +
+      penandaAudit;
+
+    dataAudit.push([
+      sekarang,
+      "Duplikat ID MASTER_DATA",
+      "",
+      duplikat.id,
+      duplikat.nama,
+      duplikat.nomorBaris,
+      detail,
+      "Perlu Dicek"
+    ]);
+  }
+
+  return dataAudit;
+}
+
+
+/****************************************************
+ * PENCEGAHAN AUDIT BERULANG
+ ****************************************************/
+function ambilKunciAuditAktifTokenAudit_(
+  auditSheet
+) {
+
+  var hasil = {};
+  var lastRow =
+    auditSheet.getLastRow();
+
+  if (lastRow < 2) {
+    return hasil;
+  }
+
+  var dataAudit =
+    auditSheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        8
+      )
+      .getValues();
+
+  for (
+    var i = 0;
+    i < dataAudit.length;
+    i++
+  ) {
+
+    var detail =
+      String(
+        dataAudit[i][6] || ""
+      );
+
+    var status =
+      String(
+        dataAudit[i][7] || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    var kunci =
+      ambilPenandaDariDetailTokenAudit_(
+        detail
+      );
+
+    if (
+      kunci &&
+      !statusAuditSelesaiTokenAudit_(
+        status
+      )
+    ) {
+      hasil[kunci] = true;
+    }
+  }
+
+  return hasil;
+}
+
+
+function filterAuditBaruTokenAudit_(
+  dataAudit,
+  kunciAuditAktif
+) {
+
+  var dataBaru = [];
+  var jumlahSudahAda = 0;
+
+  for (
+    var i = 0;
+    i < dataAudit.length;
+    i++
+  ) {
+
+    var detail =
+      String(
+        dataAudit[i][6] || ""
+      );
+
+    var kunci =
+      ambilPenandaDariDetailTokenAudit_(
+        detail
+      );
+
+    if (
+      kunci &&
+      kunciAuditAktif[kunci]
+    ) {
+      jumlahSudahAda++;
+      continue;
+    }
+
+    dataBaru.push(
+      dataAudit[i]
+    );
+
+    if (kunci) {
+      kunciAuditAktif[kunci] = true;
+    }
+  }
+
+  return {
+    dataBaru: dataBaru,
+    jumlahSudahAda:
+      jumlahSudahAda
+  };
+}
+
+
+function buatPenandaAuditTokenAudit_(
+  nilai
+) {
+  return (
+    "[KUNCI_AUDIT:" +
+    encodeURIComponent(
+      String(nilai || "")
+    ) +
+    "]"
+  );
+}
+
+
+function ambilPenandaDariDetailTokenAudit_(
+  detail
+) {
+
+  var cocok =
+    String(detail || "")
+      .match(
+        /\[KUNCI_AUDIT:([^\]]+)\]/
+      );
+
+  return cocok
+    ? cocok[1]
+    : "";
+}
+
+
+function statusAuditSelesaiTokenAudit_(
+  status
+) {
+
+  var statusNormal =
+    String(status || "")
+      .trim()
+      .toUpperCase();
+
+  return (
+    statusNormal === "SELESAI" ||
+    statusNormal === "DIPERBAIKI" ||
+    statusNormal === "DITUTUP" ||
+    statusNormal === "DIABAIKAN"
+  );
+}
+
+
+/****************************************************
+ * PENULISAN AUDIT
+ ****************************************************/
+function pastikanHeaderAuditAbsensiTokenAudit_(
+  auditSheet
+) {
+
+  var header = [
+    "Waktu_Audit",
+    "Jenis_Audit",
+    "Tanggal",
+    "ID",
+    "Nama",
+    "Baris_Data",
+    "Detail",
+    "Status"
+  ];
+
+  if (
+    auditSheet.getLastRow() === 0
+  ) {
+    auditSheet
+      .getRange(
+        1,
+        1,
+        1,
+        header.length
+      )
+      .setValues([
+        header
+      ]);
+
+    return;
+  }
+
+  var headerLama =
+    auditSheet
+      .getRange(
+        1,
+        1,
+        1,
+        header.length
+      )
+      .getValues()[0];
+
+  var headerKosong = true;
+
+  for (
+    var i = 0;
+    i < headerLama.length;
+    i++
+  ) {
+    if (
+      String(
+        headerLama[i] || ""
+      ).trim()
+    ) {
+      headerKosong = false;
+      break;
+    }
+  }
+
+  if (headerKosong) {
+    auditSheet
+      .getRange(
+        1,
+        1,
+        1,
+        header.length
+      )
+      .setValues([
+        header
+      ]);
+  }
+}
+
+
+function tulisAuditBatchTokenAudit_(
+  auditSheet,
+  dataAudit
+) {
+
+  if (
+    !dataAudit ||
+    dataAudit.length === 0
+  ) {
+    return;
+  }
+
+  var barisMulai =
+    Math.max(
+      auditSheet.getLastRow() + 1,
+      2
+    );
+
+  auditSheet
+    .getRange(
+      barisMulai,
+      1,
+      dataAudit.length,
+      8
+    )
+    .setValues(
+      dataAudit
+    );
+}
+
+
+/****************************************************
+ * HELPER
+ ****************************************************/
+function buatKeyIdMasterTokenAudit_(
+  id
+) {
+  return (
+    "ID|" +
+    String(id || "")
+      .trim()
+      .toUpperCase()
+  );
+}
+
+
+function nilaiKolomTokenAudit_(
+  row,
+  nomorKolom
+) {
+
+  if (
+    !row ||
+    !nomorKolom ||
+    nomorKolom < 1
+  ) {
+    return "";
+  }
+
+  return row[nomorKolom - 1];
+}
+
+
+function buatKunciTanggalTokenAudit_(
+  tanggal
+) {
+
+  var tanggalNormal =
+    normalisasiTanggal(tanggal);
+
+  if (
+    !tanggalNormal ||
+    Object.prototype.toString.call(
+      tanggalNormal
+    ) !== "[object Date]" ||
+    isNaN(
+      tanggalNormal.getTime()
+    )
+  ) {
+    return "";
+  }
+
+  return (
+    tanggalNormal.getFullYear() +
+    "-" +
+    tambahNol(
+      tanggalNormal.getMonth() + 1
+    ) +
+    "-" +
+    tambahNol(
+      tanggalNormal.getDate()
+    )
+  );
+}

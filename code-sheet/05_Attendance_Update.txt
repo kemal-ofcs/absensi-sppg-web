@@ -1,0 +1,560 @@
+/****************************************************
+ * 05_Attendance_Update.gs
+ * UPDATE ABSENSI HARIAN
+ * --------------------------------------------------
+ * Fungsi utama:
+ * - Mencari data absensi berdasarkan Tanggal + ID.
+ * - Membuat baris baru jika belum ada.
+ * - Mengisi Jam Masuk.
+ * - Mengisi Jam Pulang.
+ * - Mengatur Status Kehadiran dan Status Absen.
+ * - Menyimpan Sumber Data dan waktu update.
+ ****************************************************/
+
+/****************************************************
+ * MEMBACA RIWAYAT SCAN PADA TANGGAL ABSENSI
+ ****************************************************/
+function cekRiwayatScanHariIni(
+  logData,
+  id,
+  tanggalHariIni,
+  idReferensi
+) {
+  var hasil = {
+    sudahMasuk: false,
+    sudahPulang: false,
+    waktuMasuk: null,
+    waktuPulang: null,
+    scanTerakhir: null,
+    jenisScanTerakhir: "",
+    jumlahScan: 0
+  };
+
+  var idTarget = String(id || "").trim();
+  var referensiTarget = String(idReferensi || "").trim();
+
+  for (var i = 1; i < logData.length; i++) {
+    var logTanggal = logData[i][1];
+    var logJam = logData[i][2];
+    var logId = logData[i][3];
+    var logJenisScan = logData[i][6];
+    var logStatusProses = logData[i][7];
+    var logIdReferensi = String(logData[i][COL_LOG_SCAN.ID_REFERENSI - 1] || "").trim();
+
+    var statusBerhasil = logStatusProses == "Berhasil";
+    var pulangPerluVerifikasi = logJenisScan == "Pulang" && logStatusProses == "Perlu Verifikasi";
+
+    if (
+      String(logId || "").trim() == idTarget &&
+      tanggalSama(logTanggal, tanggalHariIni) &&
+      logIdReferensi == referensiTarget &&
+      (statusBerhasil || pulangPerluVerifikasi)
+    ) {
+      hasil.jumlahScan++;
+
+      var waktuScan = gabungkanTanggalDanJam(logTanggal, logJam);
+
+      hasil.scanTerakhir = waktuScan;
+      hasil.jenisScanTerakhir = logJenisScan;
+
+      if (logJenisScan == "Masuk") {
+        hasil.sudahMasuk = true;
+        hasil.waktuMasuk = waktuScan;
+      }
+
+      if (logJenisScan == "Pulang") {
+        hasil.sudahPulang = true;
+        hasil.waktuPulang = waktuScan;
+      }
+    }
+  }
+
+  return hasil;
+}
+
+/****************************************************
+ * UPDATE ABSENSI HARIAN
+ ****************************************************/
+function updateAbsensiHarian(
+  absensiSheet,
+  tanggal,
+  waktuScan,
+  id,
+  nama,
+  kelasDivisi,
+  jenisScan,
+  sumberScan,
+  statusKehadiran,
+  keterangan,
+  menitTerlambat,
+  menitDatangAwal,
+  shift,
+  penugasanBackup
+) {
+  sumberScan = sumberScan || SUMBER_ONLINE;
+
+  var konteksSesi = buatKonteksSesiAbsensi_(
+    tanggal,
+    id,
+    shift,
+    penugasanBackup
+  );
+
+  var hasilUpdate = {
+    sukses: true,
+    jamKerja: 0,
+    lembur: 0,
+    jamKerjaKurang: 0,
+    keterangan: ""
+  };
+
+  var jamKerjaNormal = 0;
+  var istirahatKerja = 0;
+  var dataShift = null;
+
+  if (shift) {
+    dataShift = bacaShiftDariTblShift(shift);
+
+    if (dataShift.ditemukan) {
+      jamKerjaNormal = dataShift.jamKerjaNormal;
+      istirahatKerja = dataShift.istirahatMenit;
+    }
+  }
+
+  if (jamKerjaNormal == 0 || istirahatKerja == 0) {
+    var settingAbsensi = bacaSettingAbsensi();
+    jamKerjaNormal = Number(settingAbsensi.jamKerjaNormal || 0);
+    istirahatKerja = Number(settingAbsensi.istirahatKerja || 0);
+  }
+
+  var tanggalObj = new Date(tanggal);
+
+  var namaBulan = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+  ];
+
+  var bulanAbsensi = namaBulan[tanggalObj.getMonth()];
+  var tahunAbsensi = tanggalObj.getFullYear();
+
+  var dataAbsensi = absensiSheet.getDataRange().getValues();
+
+  var barisDitemukan = 0;
+  var barisLegacy = 0;
+
+  for (var i = 1; i < dataAbsensi.length; i++) {
+    var tanggalAbsensi = dataAbsensi[i][COL_ABSENSI.TANGGAL - 1];
+    var idAbsensi = String(dataAbsensi[i][COL_ABSENSI.ID - 1] || "").trim();
+    var idSesiAbsensi = String(dataAbsensi[i][COL_ABSENSI.ID_SESI - 1] || "").trim();
+
+    if (idAbsensi == id && tanggalSama(tanggalAbsensi, tanggal)) {
+      if (idSesiAbsensi == konteksSesi.idSesi) {
+        barisDitemukan = i + 1;
+        break;
+      }
+
+      if (!barisLegacy && cocokDenganSesiLegacy_(dataAbsensi[i], konteksSesi, shift)) {
+        barisLegacy = i + 1;
+      }
+    }
+  }
+
+  if (!barisDitemukan && barisLegacy) {
+    barisDitemukan = barisLegacy;
+  }
+
+  // ==============================
+  // BARIS BELUM ADA
+  // ==============================
+  if (barisDitemukan == 0) {
+    var rowBaru = cariBarisKosongAbsensi(absensiSheet);
+
+    if (jenisScan == "Masuk") {
+      absensiSheet
+        .getRange(rowBaru, 1, 1, 24)
+        .setValues([[
+          tanggal,
+          id,
+          nama,
+          kelasDivisi,
+          waktuScan,
+          "",
+          statusKehadiran || "Hadir",
+          "Belum Pulang",
+          keterangan || "-",
+          sumberScan,
+          waktuScan,
+          menitTerlambat || 0,
+          menitDatangAwal || 0,
+          0,
+          0,
+          shift,
+          bulanAbsensi,
+          tahunAbsensi,
+          0,
+          konteksSesi.idSesi,
+          konteksSesi.modeTugas,
+          konteksSesi.idBackup,
+          konteksSesi.idKaryawanAsal,
+          konteksSesi.tanggalTugas
+        ]]);
+    }
+
+    if (jenisScan == "Pulang") {
+      absensiSheet
+        .getRange(rowBaru, 1, 1, 24)
+        .setValues([[
+          tanggal,
+          id,
+          nama,
+          kelasDivisi,
+          "",
+          waktuScan,
+          statusKehadiran || "Hadir",
+          "Perlu Verifikasi",
+          "Scan pulang tanpa data masuk",
+          sumberScan,
+          waktuScan,
+          0,
+          0,
+          0,
+          0,
+          shift,
+          bulanAbsensi,
+          tahunAbsensi,
+          0,
+          konteksSesi.idSesi,
+          konteksSesi.modeTugas,
+          konteksSesi.idBackup,
+          konteksSesi.idKaryawanAsal,
+          konteksSesi.tanggalTugas
+        ]]);
+
+      hasilUpdate.keterangan = "Perlu Verifikasi";
+    }
+  } else {
+    tulisMetadataSesiAbsensi_(
+      absensiSheet,
+      barisDitemukan,
+      konteksSesi
+    );
+
+    // ==============================
+    // UPDATE SCAN MASUK
+    // ==============================
+    if (jenisScan == "Masuk") {
+      var statusLama = absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_KEHADIRAN).getValue();
+      var keteranganLama = absensiSheet.getRange(barisDitemukan, COL_ABSENSI.KETERANGAN).getValue();
+
+      var dariAlfaOtomatis = (
+        statusLama == "Alfa" &&
+        keteranganLama == "Generate alfa otomatis"
+      );
+
+      if (dariAlfaOtomatis) {
+        catatAuditAbsensi(
+          "Koreksi Sistem",
+          tanggal,
+          id,
+          nama,
+          barisDitemukan,
+          "Alfa otomatis berubah menjadi Hadir karena scan masuk",
+          "Selesai"
+        );
+      }
+
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_MASUK).setValue(waktuScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_KEHADIRAN).setValue(statusKehadiran || "Hadir");
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_ABSEN).setValue("Belum Pulang");
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.KETERANGAN).setValue(dariAlfaOtomatis ? "Scan masuk setelah Alfa otomatis" : (keterangan || "-"));
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.SUMBER).setValue(sumberScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.UPDATE_TERAKHIR).setValue(waktuScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.MENIT_TERLAMBAT).setValue(menitTerlambat || 0);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.MENIT_DATANG_AWAL).setValue(menitDatangAwal || 0);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.SHIFT).setValue(shift);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.BULAN).setValue(bulanAbsensi);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.TAHUN).setValue(tahunAbsensi);
+    }
+
+    // ==============================
+    // UPDATE SCAN PULANG
+    // ==============================
+    if (jenisScan == "Pulang") {
+      var waktuMasuk = absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_MASUK).getValue();
+      var adaWaktuMasuk = (waktuMasuk instanceof Date && !isNaN(waktuMasuk.getTime()));
+
+      if (!adaWaktuMasuk) {
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_PULANG).setValue(waktuScan);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_KEHADIRAN).setValue(statusKehadiran || "Hadir");
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_ABSEN).setValue("Perlu Verifikasi");
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.KETERANGAN).setValue("Scan pulang tanpa data masuk");
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.SUMBER).setValue(sumberScan);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.UPDATE_TERAKHIR).setValue(waktuScan);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_KERJA).setValue(0);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.LEMBUR).setValue(0);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_KERJA_KURANG).setValue(0);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.SHIFT).setValue(shift);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.BULAN).setValue(bulanAbsensi);
+        absensiSheet.getRange(barisDitemukan, COL_ABSENSI.TAHUN).setValue(tahunAbsensi);
+
+        hasilUpdate.keterangan = "Perlu Verifikasi";
+        SpreadsheetApp.flush();
+        return hasilUpdate;
+      }
+
+      var hasilKerja;
+
+      if (cekShiftFleksibel(shift)) {
+        hasilKerja = hitungJamKerjaFleksibel(waktuMasuk, waktuScan);
+      } else {
+        hasilKerja = hitungJamKerja(
+          waktuMasuk,
+          waktuScan,
+          istirahatKerja,
+          jamKerjaNormal,
+          (dataShift ? dataShift.offsetIstirahatMulai : 0)
+        );
+      }
+
+      var statusPulang;
+
+      if (cekShiftFleksibel(shift)) {
+        statusPulang = "Fleksibel";
+      } else {
+        statusPulang = tentukanStatusPulang(
+          waktuMasuk,
+          waktuScan,
+          jamKerjaNormal,
+          hasilKerja
+        );
+      }
+
+      hasilUpdate.jamKerja = hasilKerja.jamKerja;
+      hasilUpdate.lembur = hasilKerja.lembur;
+      hasilUpdate.jamKerjaKurang = hasilKerja.jamKerjaKurang;
+      hasilUpdate.keterangan = statusPulang;
+
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_PULANG).setValue(waktuScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.KETERANGAN).setValue(statusPulang);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.STATUS_ABSEN).setValue("Lengkap");
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.SUMBER).setValue(sumberScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.UPDATE_TERAKHIR).setValue(waktuScan);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_KERJA).setValue(hasilKerja.jamKerja);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.LEMBUR).setValue(hasilKerja.lembur);
+      absensiSheet.getRange(barisDitemukan, COL_ABSENSI.JAM_KERJA_KURANG).setValue(hasilKerja.jamKerjaKurang);
+    }
+  }
+
+  SpreadsheetApp.flush();
+  return hasilUpdate;
+}
+
+function buatKonteksSesiAbsensi_(tanggal, id, shift, penugasanBackup) {
+  var pengganti = (penugasanBackup && penugasanBackup.peran === "PENGGANTI");
+  var idBackup = pengganti ? String(penugasanBackup.idBackup || "").trim() : "";
+
+  if (pengganti && !idBackup) {
+    throw new Error("ID Backup kosong pada penugasan karyawan pengganti.");
+  }
+
+  var idKaryawan = String(id || "").trim();
+  var kodeShift = String(shift || "").trim();
+  var tanggalObj = new Date(tanggal);
+
+  if (isNaN(tanggalObj.getTime())) {
+    throw new Error("Tanggal absensi tidak valid saat membuat ID sesi.");
+  }
+
+  var zonaWaktu = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  var kunciTanggal = Utilities.formatDate(tanggalObj, zonaWaktu, "yyyyMMdd");
+
+  var idSesi = pengganti
+    ? (idBackup + "-PENGGANTI-" + idKaryawan)
+    : ("NORMAL-" + kunciTanggal + "-" + idKaryawan + "-" + kodeShift);
+
+  return {
+    idSesi: idSesi,
+    modeTugas: pengganti ? "PENGGANTI" : "NORMAL",
+    idBackup: idBackup,
+    idKaryawanAsal: pengganti ? String(penugasanBackup.idKaryawanAsal || "").trim() : "",
+    tanggalTugas: pengganti ? penugasanBackup.tanggalTugas : ""
+  };
+}
+
+function cocokDenganSesiLegacy_(row, konteksSesi, shift) {
+  var idSesiLama = String(row[COL_ABSENSI.ID_SESI - 1] || "").trim();
+
+  if (idSesiLama) {
+    return false;
+  }
+
+  var modeLama = String(row[COL_ABSENSI.MODE_TUGAS - 1] || "").trim().toUpperCase();
+  var idBackupLama = String(row[COL_ABSENSI.ID_BACKUP - 1] || "").trim();
+  var shiftLama = String(row[COL_ABSENSI.SHIFT - 1] || "").trim();
+  var shiftTarget = String(shift || "").trim();
+
+  if (shiftLama && shiftTarget && shiftLama != shiftTarget) {
+    return false;
+  }
+
+  if (konteksSesi.modeTugas == "PENGGANTI") {
+    return (
+      (!modeLama || modeLama == "PENGGANTI") &&
+      (!idBackupLama || idBackupLama == konteksSesi.idBackup)
+    );
+  }
+
+  return (
+    (!modeLama || modeLama == "NORMAL") &&
+    !idBackupLama
+  );
+}
+
+function tulisMetadataSesiAbsensi_(absensiSheet, nomorBaris, konteksSesi) {
+  absensiSheet
+    .getRange(nomorBaris, COL_ABSENSI.ID_SESI, 1, 5)
+    .setValues([[
+      konteksSesi.idSesi,
+      konteksSesi.modeTugas,
+      konteksSesi.idBackup,
+      konteksSesi.idKaryawanAsal,
+      konteksSesi.tanggalTugas
+    ]]);
+}
+
+/****************************************************
+ * CARI BARIS KOSONG ABSENSI (SUDAH DIPERBAIKI)
+ ****************************************************/
+function cariBarisKosongAbsensi(absensiSheet) {
+  var lastRow = absensiSheet.getLastRow();
+
+  // Jika sheet kosong atau hanya berisikan baris header (1 baris)
+  if (lastRow <= 1) {
+    return 2;
+  }
+
+  var data = absensiSheet
+    .getRange(2, COL_ABSENSI.TANGGAL, lastRow - 1, 2)
+    .getValues();
+
+  for (var i = 0; i < data.length; i++) {
+    var tanggal = data[i][0];
+    var id = data[i][1];
+
+    if (!tanggal && !id) {
+      return i + 2;
+    }
+  }
+
+  return lastRow + 1;
+}
+
+/****************************************************
+ * HITUNG JAM KERJA
+ ****************************************************/
+function hitungJamKerja(
+  waktuMasuk,
+  waktuPulang,
+  istirahatMenit,
+  jamKerjaNormal,
+  offsetIstirahatMulai
+) {
+  if (!waktuMasuk || !waktuPulang) {
+    return {
+      jamKerja: 0,
+      jamKerjaKurang: 0,
+      lembur: 0
+    };
+  }
+
+  var waktuMasukDate = new Date(waktuMasuk);
+  var waktuPulangDate = new Date(waktuPulang);
+
+  var durasiHadir = Math.floor(
+    (waktuPulangDate.getTime() - waktuMasukDate.getTime()) / 1000 / 60
+  );
+
+  if (durasiHadir < 0) {
+    durasiHadir = 0;
+  }
+
+  var potonganIstirahat = 0;
+
+  if (offsetIstirahatMulai) {
+    var waktuMulaiIstirahat = new Date(
+      waktuMasukDate.getTime() + Number(offsetIstirahatMulai) * 60000
+    );
+
+    if (waktuPulangDate > waktuMulaiIstirahat) {
+      potonganIstirahat = Number(istirahatMenit || 0);
+    }
+  }
+
+  var kerjaEfektif = durasiHadir - potonganIstirahat;
+
+  if (kerjaEfektif < 0) {
+    kerjaEfektif = 0;
+  }
+
+  var kerjaNormal = Number(jamKerjaNormal || 0);
+  var jamKerjaKurang = 0;
+  var lembur = 0;
+
+  if (kerjaEfektif < kerjaNormal) {
+    jamKerjaKurang = kerjaNormal - kerjaEfektif;
+  }
+
+  if (kerjaEfektif > kerjaNormal) {
+    lembur = kerjaEfektif - kerjaNormal;
+  }
+
+  return {
+    jamKerja: kerjaEfektif,
+    jamKerjaKurang: jamKerjaKurang,
+    lembur: lembur
+  };
+}
+
+function hitungJamKerjaFleksibel(waktuMasuk, waktuPulang) {
+  if (!waktuMasuk || !waktuPulang) {
+    return {
+      jamKerja: 0,
+      lembur: 0,
+      jamKerjaKurang: 0
+    };
+  }
+
+  var masuk = new Date(waktuMasuk);
+  var pulang = new Date(waktuPulang);
+
+  var durasi = Math.floor(
+    (pulang.getTime() - masuk.getTime()) / 60000
+  );
+
+  if (durasi < 0) {
+    durasi = 0;
+  }
+
+  return {
+    jamKerja: durasi,
+    lembur: 0,
+    jamKerjaKurang: 0
+  };
+}
+
+function tentukanStatusPulang(
+  waktuMasuk,
+  waktuPulang,
+  jamKerjaNormal,
+  hasilKerja
+) {
+  if (hasilKerja.lembur > 0) {
+    return "Pulang Lembur";
+  }
+
+  if (hasilKerja.jamKerjaKurang > 0) {
+    return "Pulang Lebih Awal";
+  }
+
+  return "Pulang Normal";
+}

@@ -1,0 +1,200 @@
+/****************************************************
+ * 02_Scanner_API.gs
+ * SCANNER API V1.3
+ * --------------------------------------------------
+ * Fungsi utama:
+ * - Menerima QR Text dari external scanner.
+ * - Menggunakan JSONP agar bisa dipanggil dari GitHub Pages.
+ * - Memproses payload QR format ID_Unik|Token.
+ * - Mengirim hasil scan kembali ke frontend scanner.
+ ****************************************************/
+
+function apiScannerV13(e) {
+  var parameter = e && e.parameter ? e.parameter : {};
+  var qrText = String(parameter.qr || "").trim();
+  var callback = bersihkanCallback(parameter.callback);
+
+  var hasil;
+
+  try {
+    hasil = prosesScanScannerV13(qrText, parameter);
+  } catch (error) {
+    hasil = {
+      sukses: false,
+      status: "Error",
+      sumber: SUMBER_SCANNER_API_V13,
+      id: "",
+      pesan: "Terjadi error di API Scanner : " + error.message
+    };
+  }
+
+  return buatJsonpResponse(callback, hasil);
+}
+
+function prosesScanScannerV13(qrText, parameter) {
+  var hasilParse = parseQrScannerV13(qrText);
+
+  if (!hasilParse.valid) {
+    return {
+      sukses: false,
+      status: "Gagal",
+      sumber: SUMBER_SCANNER_V13,
+      pesan: hasilParse.pesan
+    };
+  }
+
+  var eSimulasi = {
+    parameter: {
+      id: hasilParse.id,
+      token: hasilParse.token,
+      sumberScan: SUMBER_SCANNER_V13,
+      operator_id: parameter && parameter.operator_id ? parameter.operator_id : "",
+      kodeOperator: parameter && parameter.kodeOperator ? parameter.kodeOperator : "",
+      username: parameter && parameter.username ? parameter.username : "",
+      lat: parameter && parameter.lat ? parameter.lat : "",
+      lng: parameter && parameter.lng ? parameter.lng : ""
+    }
+  };
+
+  try {
+    var hasil = prosesScanAbsensiUtama(eSimulasi);
+    var rawContent = hasil.getContent(); // Mengambil isi respon teks dari mesin absensi
+
+    var parsedHasil = {};
+    try {
+      parsedHasil = JSON.parse(rawContent);
+    } catch (errJson) {
+      var teks = String(rawContent || "").trim();
+      
+      // Deteksi apakah teks respon mengindikasikan kegagalan / penolakan
+      var isGagal = teks.indexOf("Gagal") === 0 || 
+                    teks.indexOf("Akses ditolak") === 0 || 
+                    teks.indexOf("Scan ditolak") === 0 || 
+                    teks.indexOf("Sistem sedang") === 0 ||
+                    teks.indexOf("Error") === 0;
+
+      parsedHasil = { 
+        pesan: teks, 
+        sukses: !isGagal,
+        status: isGagal ? "Gagal" : "Selesai"
+      };
+    }
+
+    return {
+      sukses: typeof parsedHasil.sukses !== "undefined" ? parsedHasil.sukses : true,
+      status: parsedHasil.status || "Selesai",
+      sumber: SUMBER_SCANNER_V13,
+      id: hasilParse.id,
+      pesan: parsedHasil.pesan || rawContent
+    };
+  } catch (error) {
+    return {
+      sukses: false,
+      status: "Error",
+      sumber: SUMBER_SCANNER_V13,
+      id: hasilParse.id,
+      pesan: "Error eksekusi absensi: " + error.message
+    };
+  }
+}
+
+function parseQrScannerV13(qrText) {
+  if (!qrText) {
+    return {
+      valid: false,
+      pesan: "QR kosong atau tidak terbaca.",
+      id: "",
+      token: ""
+    };
+  }
+
+  var teks = String(qrText).trim();
+  var bagian = teks.split("|");
+
+  if (bagian.length !== 2) {
+    return {
+      valid: false,
+      pesan: "Format QR tidak valid. Gunakan format ID_Unik|Token.",
+      id: "",
+      token: ""
+    };
+  }
+
+  var id = String(bagian[0] || "").trim();
+  var token = String(bagian[1] || "").trim();
+
+  if (!id) {
+    return {
+      valid: false,
+      pesan: "ID_Unik kosong di dalam QR.",
+      id: "",
+      token: ""
+    };
+  }
+
+  if (!token) {
+    return {
+      valid: false,
+      pesan: "Token kosong di dalam QR.",
+      id: "",
+      token: ""
+    };
+  }
+
+  return {
+    valid: true,
+    pesan: "QR valid.",
+    id: id,
+    token: token
+  };
+}
+
+function cekScanGandaScannerV13(logSheet, id, sumberScan) {
+  if (sumberScan !== SUMBER_SCANNER_V13) {
+    return {
+      ganda: false,
+      pesan: ""
+    };
+  }
+
+  var batasDetik = 60;
+  var dataLog = logSheet.getDataRange().getValues();
+  var sekarang = new Date();
+
+  for (var i = dataLog.length - 1; i >= 1; i--) {
+    var timestampLog = dataLog[i][0];
+    var idLog = String(dataLog[i][3] || "").trim();
+    var sumberLog = String(dataLog[i][8] || "").trim();
+
+    if (idLog === id && sumberLog === SUMBER_SCANNER_V13) {
+      var waktuLog = timestampLog;
+
+      if (!(waktuLog instanceof Date)) {
+        waktuLog = new Date(timestampLog);
+      }
+
+      if (isNaN(waktuLog.getTime())) {
+        return {
+          ganda: false,
+          pesan: ""
+        };
+      }
+
+      var selisihDetik = (sekarang.getTime() - waktuLog.getTime()) / 1000;
+
+      if (selisihDetik >= 0 && selisihDetik < batasDetik) {
+        return {
+          ganda: true,
+          pesan: "Scan ganda terdeteksi. Silakan tunggu " + Math.ceil(batasDetik - selisihDetik) + " detik sebelum scan ulang."
+        };
+      }
+
+      break;
+    }
+  }
+
+  return {
+    ganda: false,
+    pesan: ""
+  };
+}

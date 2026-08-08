@@ -1,0 +1,1347 @@
+/****************************************************
+ * 10_Alfa_And_Audit.gs
+ * GENERATE ALFA DAN AUDIT ABSENSI
+ * --------------------------------------------------
+ * Aturan utama:
+ * - Alfa dibuat untuk sesi NORMAL karyawan aktif yang
+ *   belum memiliki absensi.
+ * - Penugasan backup TIDAK membatalkan Alfa karyawan
+ *   asal.
+ * - Kehadiran sebagai PENGGANTI tidak dianggap sebagai
+ *   kehadiran sesi NORMAL.
+ * - Koreksi admin Sakit/Izin/Dispen tidak boleh ditimpa.
+ * - Shift FLEX tidak dibuatkan Alfa otomatis.
+ * - Shift malam memakai tanggal mulai kerja.
+ ****************************************************/
+
+function generateAlfaHarian(
+  waktuSimulasi,
+  namaSheetAbsensi,
+  filterShift
+) {
+
+  var lock =
+    LockService.getScriptLock();
+
+  if (!lock.tryLock(30000)) {
+    throw new Error(
+      "Generate Alfa belum dapat dijalankan karena " +
+      "sistem sedang memproses absensi lain."
+    );
+  }
+
+  try {
+    return generateAlfaHarianTerkunci_(
+      waktuSimulasi,
+      namaSheetAbsensi,
+      filterShift
+    );
+  } finally {
+    if (lock.hasLock()) {
+      lock.releaseLock();
+    }
+  }
+}
+
+
+function generateAlfaHarianTerkunci_(
+  waktuSimulasi,
+  namaSheetAbsensi,
+  filterShift
+) {
+
+
+  if(
+    !izinGenerateAlfa_()
+  ){
+
+    Logger.log(
+      "Generate Alfa NONAKTIF berdasarkan SETTING."
+    );
+
+
+    return {
+
+      jumlahAlfaDibuat:0,
+      jumlahSudahAda:0,
+      jumlahKoreksiPrioritas:0,
+      jumlahBelumWaktunya:0,
+      jumlahFleksibel:0,
+      jumlahNonaktif:0,
+      jumlahShiftTidakValid:0,
+
+      status:
+        "NONAKTIF",
+
+      pesan:
+        "Generate Alfa dimatikan melalui SETTING"
+
+    };
+
+  }
+
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var masterSheet =
+    ambilSheet(
+      ss,
+      SHEET_MASTER_DATA
+    );
+
+  var absensiSheet =
+    ambilSheet(
+      ss,
+      namaSheetAbsensi ||
+        SHEET_ABSENSI_HARIAN
+    );
+
+  var masterData =
+    masterSheet
+      .getDataRange()
+      .getValues();
+
+  var absensiData =
+    absensiSheet
+      .getDataRange()
+      .getValues();
+
+  var sekarang =
+    waktuSimulasi ||
+    new Date();
+
+  var filterShiftNormal =
+    normalisasiKodeShiftAlfa_(
+      filterShift
+    );
+
+  var barisMulai =
+    absensiSheet.getLastRow() + 1;
+
+  var dataAlfaBaru = [];
+  var dataAuditBaru = [];
+
+  var ringkasan = {
+    jumlahAlfaDibuat: 0,
+    jumlahSudahAda: 0,
+    jumlahKoreksiPrioritas: 0,
+    jumlahBelumWaktunya: 0,
+    jumlahFleksibel: 0,
+    jumlahNonaktif: 0,
+    jumlahShiftTidakValid: 0
+  };
+
+  for (
+    var i = 1;
+    i < masterData.length;
+    i++
+  ) {
+
+    var id = String(
+      masterData[i][
+        COL_MASTER_DATA.ID - 1
+      ] || ""
+    ).trim();
+
+    var nama = String(
+      masterData[i][
+        COL_MASTER_DATA.NAMA - 1
+      ] || ""
+    ).trim();
+
+    var kelasDivisi = String(
+      masterData[i][
+        COL_MASTER_DATA.DIVISI - 1
+      ] || ""
+    ).trim();
+
+    var statusAktif = String(
+      masterData[i][
+        COL_MASTER_DATA.STATUS_AKTIF - 1
+      ] || ""
+    )
+      .trim()
+      .toUpperCase();
+
+    var shift = String(
+      masterData[i][
+        COL_MASTER_DATA.SHIFT - 1
+      ] || ""
+    ).trim();
+
+    if (
+      !id ||
+      statusAktif !== "AKTIF"
+    ) {
+      ringkasan.jumlahNonaktif++;
+      continue;
+    }
+
+    if (
+      cekShiftFleksibel(shift)
+    ) {
+      ringkasan.jumlahFleksibel++;
+      continue;
+    }
+
+    if (
+      filterShiftNormal &&
+      normalisasiKodeShiftAlfa_(shift) !==
+        filterShiftNormal
+    ) {
+      continue;
+    }
+
+    var dataShift =
+      bacaShiftDariTblShift(shift);
+
+    if (
+      !dataShift ||
+      !dataShift.ditemukan
+    ) {
+      ringkasan
+        .jumlahShiftTidakValid++;
+
+      dataAuditBaru.push([
+        sekarang,
+        "Skip Generate Alfa",
+        "",
+        id,
+        nama,
+        "",
+        "Shift " +
+          (shift || "(kosong)") +
+          " tidak ditemukan di SETTING.",
+        "Gagal"
+      ]);
+
+      continue;
+    }
+
+    var tanggalAbsensi =
+      tentukanTanggalKerjaAlfa_(
+        sekarang,
+        dataShift
+      );
+
+    /*
+     * Koreksi Sakit/Izin/Dispen diperiksa lebih dahulu.
+     * Penugasan backup tidak menjadi alasan untuk skip.
+     */
+    var koreksiPrioritas =
+      cariKoreksiPrioritasAlfa_(
+        absensiData,
+        id,
+        tanggalAbsensi
+      );
+
+    if (
+      koreksiPrioritas.ditemukan
+    ) {
+      ringkasan
+        .jumlahKoreksiPrioritas++;
+      continue;
+    }
+
+    /*
+     * Hanya sesi NORMAL yang dapat mencegah Alfa normal.
+     * Baris MODE_TUGAS=PENGGANTI sengaja diabaikan.
+     */
+    var absensiNormal =
+      cariAbsensiNormalHarian_(
+        absensiData,
+        id,
+        tanggalAbsensi
+      );
+
+    if (
+      absensiNormal.ditemukan
+    ) {
+      ringkasan.jumlahSudahAda++;
+      continue;
+    }
+
+    var waktuGenerate =
+      buatWaktuGenerateAlfa_(
+        tanggalAbsensi,
+        dataShift
+      );
+
+    if (
+      sekarang.getTime() <
+      waktuGenerate.getTime()
+    ) {
+      ringkasan
+        .jumlahBelumWaktunya++;
+      continue;
+    }
+
+    var konteksSesi =
+      buatKonteksAlfaNormal_(
+        tanggalAbsensi,
+        id,
+        shift
+      );
+
+    var bulanTahun =
+      ambilBulanTahunAlfa_(
+        tanggalAbsensi
+      );
+
+    var dataAlfa = [
+      tanggalAbsensi,
+      id,
+      nama,
+      kelasDivisi,
+      "",
+      "",
+      "Alfa",
+      "Tidak Hadir",
+      "Generate Alfa otomatis - belum ada absensi atau koreksi Sakit/Izin/Dispen",
+      SUMBER_GENERATE_SISTEM,
+      sekarang,
+      0,
+      0,
+      0,
+      0,
+      shift,
+      bulanTahun.bulan,
+      bulanTahun.tahun,
+      0,
+      konteksSesi.idSesi,
+      "NORMAL",
+      "",
+      "",
+      ""
+    ];
+
+    dataAlfaBaru.push(
+      dataAlfa
+    );
+
+    /*
+     * Masukkan ke cache agar MASTER_DATA dengan ID ganda
+     * tidak menghasilkan dua baris Alfa.
+     */
+    absensiData.push(
+      dataAlfa
+    );
+
+    var nomorBaris =
+      barisMulai +
+      dataAlfaBaru.length -
+      1;
+
+    dataAuditBaru.push([
+      sekarang,
+      "Generate Alfa",
+      tanggalAbsensi,
+      id,
+      nama,
+      nomorBaris,
+      "Alfa sesi NORMAL dibuat karena belum ada absensi " +
+        "atau koreksi Sakit/Izin/Dispen. " +
+        "Penugasan backup tidak menggugurkan Alfa karyawan asal.",
+      "Selesai"
+    ]);
+  }
+
+  if (
+    dataAlfaBaru.length > 0
+  ) {
+    absensiSheet
+      .getRange(
+        barisMulai,
+        1,
+        dataAlfaBaru.length,
+        24
+      )
+      .setValues(
+        dataAlfaBaru
+      );
+  }
+
+  if (
+    dataAuditBaru.length > 0
+  ) {
+    catatAuditAbsensiBatch_(
+      dataAuditBaru
+    );
+  }
+
+  SpreadsheetApp.flush();
+
+  ringkasan.jumlahAlfaDibuat =
+    dataAlfaBaru.length;
+
+  Logger.log(
+    "Generate Alfa selesai: " +
+    JSON.stringify(ringkasan)
+  );
+
+  return ringkasan;
+}
+
+
+/****************************************************
+ * PENCARIAN ABSENSI SESI NORMAL
+ ****************************************************/
+
+function cekAbsensiHarianSudahAda(
+  absensiData,
+  id,
+  tanggal
+) {
+  return cariAbsensiNormalHarian_(
+    absensiData,
+    id,
+    tanggal
+  ).ditemukan;
+}
+
+
+function cariAbsensiNormalHarian_(
+  absensiData,
+  id,
+  tanggal
+) {
+
+  var idDicari =
+    String(id || "").trim();
+
+  for (
+    var i = 1;
+    i < absensiData.length;
+    i++
+  ) {
+
+    var row =
+      absensiData[i];
+
+    var idAbsensi =
+      String(
+        row[
+          COL_ABSENSI.ID - 1
+        ] || ""
+      ).trim();
+
+    var tanggalAbsensi =
+      row[
+        COL_ABSENSI.TANGGAL - 1
+      ];
+
+    if (
+      idAbsensi !== idDicari ||
+      !tanggalSama(
+        tanggalAbsensi,
+        tanggal
+      )
+    ) {
+      continue;
+    }
+
+    var modeTugas =
+      String(
+        row[
+          COL_ABSENSI.MODE_TUGAS - 1
+        ] || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    var idBackup =
+      String(
+        row[
+          COL_ABSENSI.ID_BACKUP - 1
+        ] || ""
+      ).trim();
+
+    /*
+     * Kehadiran backup bukan kehadiran sesi normal.
+     * Baris lama tanpa metadata dianggap sesi normal.
+     */
+    if (
+      modeTugas === "PENGGANTI" ||
+      idBackup
+    ) {
+      continue;
+    }
+
+    return {
+      ditemukan: true,
+      nomorBaris: i + 1,
+      data: row
+    };
+  }
+
+  return {
+    ditemukan: false,
+    nomorBaris: 0,
+    data: null
+  };
+}
+
+
+/****************************************************
+ * KOREKSI PRIORITAS ALFA
+ * --------------------------------------------------
+ * Hanya koreksi admin:
+ * - Sakit
+ * - Izin
+ * - Dispen
+ *
+ * Koreksi tersebut tidak boleh ditimpa generator Alfa.
+ ****************************************************/
+
+function cariKoreksiPrioritasAlfa_(
+  absensiData,
+  id,
+  tanggal
+) {
+
+  var idDicari =
+    String(id || "").trim();
+
+  var sumberAdmin =
+    String(
+      SUMBER_KOREKSI_ADMIN || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  for (
+    var i = 1;
+    i < absensiData.length;
+    i++
+  ) {
+
+    var row =
+      absensiData[i];
+
+    var idAbsensi =
+      String(
+        row[
+          COL_ABSENSI.ID - 1
+        ] || ""
+      ).trim();
+
+    if (
+      idAbsensi !== idDicari ||
+      !tanggalSama(
+        row[
+          COL_ABSENSI.TANGGAL - 1
+        ],
+        tanggal
+      )
+    ) {
+      continue;
+    }
+
+    var modeTugas =
+      String(
+        row[
+          COL_ABSENSI.MODE_TUGAS - 1
+        ] || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    var idBackup =
+      String(
+        row[
+          COL_ABSENSI.ID_BACKUP - 1
+        ] || ""
+      ).trim();
+
+    if (
+      modeTugas === "PENGGANTI" ||
+      idBackup
+    ) {
+      continue;
+    }
+
+    var statusKehadiran =
+      String(
+        row[
+          COL_ABSENSI.STATUS_KEHADIRAN - 1
+        ] || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    var sumberData =
+      String(
+        row[
+          COL_ABSENSI.SUMBER - 1
+        ] || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    var statusPrioritas =
+      (
+        statusKehadiran === "SAKIT" ||
+        statusKehadiran === "IZIN" ||
+        statusKehadiran === "DISPEN"
+      );
+
+    if (
+      statusPrioritas &&
+      sumberData === sumberAdmin
+    ) {
+      return {
+        ditemukan: true,
+        nomorBaris: i + 1,
+        statusKehadiran:
+          statusKehadiran
+      };
+    }
+  }
+
+  return {
+    ditemukan: false,
+    nomorBaris: 0,
+    statusKehadiran: ""
+  };
+}
+
+
+/****************************************************
+ * CEK BOLEH GENERATE ALFA
+ * --------------------------------------------------
+ * Dipertahankan agar pemanggilan lama tetap kompatibel.
+ ****************************************************/
+
+function bolehGenerateAlfa(
+  sekarang,
+  tanggalAbsensi,
+  id,
+  shift,
+  absensiData,
+  absensiSheet
+) {
+
+  if (
+    cekShiftFleksibel(shift)
+  ) {
+    return {
+      boleh: false,
+      alasan: "Karyawan fleksibel"
+    };
+  }
+
+  var koreksiPrioritas =
+    cariKoreksiPrioritasAlfa_(
+      absensiData,
+      id,
+      tanggalAbsensi
+    );
+
+  if (
+    koreksiPrioritas.ditemukan
+  ) {
+    return {
+      boleh: false,
+      alasan:
+        "Sudah ada koreksi admin " +
+        koreksiPrioritas.statusKehadiran
+    };
+  }
+
+  if (
+    cekAbsensiHarianSudahAda(
+      absensiData,
+      id,
+      tanggalAbsensi
+    )
+  ) {
+    return {
+      boleh: false,
+      alasan:
+        "Data absensi sesi NORMAL sudah tersedia"
+    };
+  }
+
+  if (
+    !cekWaktuGenerateAlfa(
+      sekarang,
+      shift,
+      tanggalAbsensi
+    )
+  ) {
+    return {
+      boleh: false,
+      alasan:
+        "Belum masuk waktu Generate Alfa"
+    };
+  }
+
+  return {
+    boleh: true,
+    alasan: "Boleh Generate Alfa"
+  };
+}
+
+
+/****************************************************
+ * TANGGAL DAN WAKTU GENERATE ALFA
+ ****************************************************/
+
+function tentukanTanggalKerjaAlfa_(
+  sekarang,
+  dataShift
+) {
+
+  var tanggalKerja =
+    new Date(
+      sekarang.getFullYear(),
+      sekarang.getMonth(),
+      sekarang.getDate()
+    );
+
+  var jamMasuk =
+    ubahJamKeMenit(
+      dataShift.jamMasukShift
+    );
+
+  var jamPulang =
+    ubahJamKeMenit(
+      dataShift.jamPulangShift
+    );
+
+  var menitSekarang =
+    sekarang.getHours() * 60 +
+    sekarang.getMinutes();
+
+  /*
+   * Untuk shift malam, waktu setelah tengah malam
+   * sampai sebelum jam masuk berikutnya masih berkaitan
+   * dengan tanggal mulai kerja sebelumnya.
+   */
+  if (
+    jamPulang < jamMasuk &&
+    menitSekarang < jamMasuk
+  ) {
+    tanggalKerja.setDate(
+      tanggalKerja.getDate() - 1
+    );
+  }
+
+  return tanggalKerja;
+}
+
+
+function buatWaktuGenerateAlfa_(
+  tanggalKerja,
+  dataShift
+) {
+
+  var jamMasuk =
+    ubahJamKeMenit(
+      dataShift.jamMasukShift
+    );
+
+  var jamPulang =
+    ubahJamKeMenit(
+      dataShift.jamPulangShift
+    );
+
+  var offsetAlfa =
+    Number(
+      dataShift.offsetGenerateAlfa || 0
+    );
+
+  var waktuGenerate =
+    new Date(
+      tanggalKerja.getFullYear(),
+      tanggalKerja.getMonth(),
+      tanggalKerja.getDate(),
+      0,
+      0,
+      0,
+      0
+    );
+
+  /*
+   * Jam pulang shift malam berada pada hari berikutnya.
+   */
+  if (
+    jamPulang < jamMasuk
+  ) {
+    waktuGenerate.setDate(
+      waktuGenerate.getDate() + 1
+    );
+  }
+
+  /*
+   * setMinutes menangani offset yang melewati tengah malam.
+   */
+  waktuGenerate.setMinutes(
+    jamPulang - offsetAlfa
+  );
+
+  return waktuGenerate;
+}
+
+
+function cekWaktuGenerateAlfa(
+  sekarang,
+  shift,
+  tanggalAbsensi
+) {
+
+  if (
+    !shift ||
+    cekShiftFleksibel(shift)
+  ) {
+    return false;
+  }
+
+  var dataShift =
+    bacaShiftDariTblShift(shift);
+
+  if (
+    !dataShift ||
+    !dataShift.ditemukan
+  ) {
+    return false;
+  }
+
+  var tanggalKerja =
+    tanggalAbsensi
+      ? new Date(tanggalAbsensi)
+      : tentukanTanggalKerjaAlfa_(
+          sekarang,
+          dataShift
+        );
+
+  var waktuGenerate =
+    buatWaktuGenerateAlfa_(
+      tanggalKerja,
+      dataShift
+    );
+
+  return (
+    sekarang.getTime() >=
+    waktuGenerate.getTime()
+  );
+}
+
+
+function cekShiftSudahSelesaiAlfa(
+  sekarang,
+  shift
+) {
+
+  if (
+    !shift ||
+    cekShiftFleksibel(shift)
+  ) {
+    return false;
+  }
+
+  var dataShift =
+    bacaShiftDariTblShift(shift);
+
+  if (
+    !dataShift ||
+    !dataShift.ditemukan
+  ) {
+    return false;
+  }
+
+  var tanggalKerja =
+    tentukanTanggalKerjaAlfa_(
+      sekarang,
+      dataShift
+    );
+
+  var jamMasuk =
+    ubahJamKeMenit(
+      dataShift.jamMasukShift
+    );
+
+  var jamPulang =
+    ubahJamKeMenit(
+      dataShift.jamPulangShift
+    );
+
+  var waktuSelesai =
+    new Date(
+      tanggalKerja.getFullYear(),
+      tanggalKerja.getMonth(),
+      tanggalKerja.getDate(),
+      0,
+      0,
+      0,
+      0
+    );
+
+  if (
+    jamPulang < jamMasuk
+  ) {
+    waktuSelesai.setDate(
+      waktuSelesai.getDate() + 1
+    );
+  }
+
+  waktuSelesai.setMinutes(
+    jamPulang +
+    Number(
+      dataShift.batasPulangMenit || 0
+    )
+  );
+
+  return (
+    sekarang.getTime() >=
+    waktuSelesai.getTime()
+  );
+}
+
+
+/****************************************************
+ * KONTEKS SESI DAN BULAN
+ ****************************************************/
+
+function buatKonteksAlfaNormal_(
+  tanggal,
+  id,
+  shift
+) {
+
+  /*
+   * Gunakan helper sesi versi terbaru jika tersedia.
+   */
+  if (
+    typeof buatKonteksSesiAbsensi_ ===
+      "function"
+  ) {
+    return buatKonteksSesiAbsensi_(
+      tanggal,
+      id,
+      shift,
+      null
+    );
+  }
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var zonaWaktu =
+    ss.getSpreadsheetTimeZone();
+
+  var kunciTanggal =
+    Utilities.formatDate(
+      new Date(tanggal),
+      zonaWaktu,
+      "yyyyMMdd"
+    );
+
+  return {
+    idSesi:
+      "NORMAL-" +
+      kunciTanggal +
+      "-" +
+      String(id || "").trim() +
+      "-" +
+      String(shift || "").trim(),
+    modeTugas: "NORMAL",
+    idBackup: "",
+    idKaryawanAsal: "",
+    tanggalTugas: ""
+  };
+}
+
+
+function ambilBulanTahunAlfa_(
+  tanggal
+) {
+
+  var namaBulan = [
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember"
+  ];
+
+  return {
+    bulan:
+      namaBulan[
+        tanggal.getMonth()
+      ],
+    tahun:
+      tanggal.getFullYear()
+  };
+}
+
+
+function normalisasiKodeShiftAlfa_(
+  shift
+) {
+  return String(
+    shift || ""
+  )
+    .trim()
+    .toUpperCase();
+}
+
+
+/****************************************************
+ * CATAT AUDIT ABSENSI
+ ****************************************************/
+
+function catatAuditAbsensi(
+  jenisAudit,
+  tanggal,
+  id,
+  nama,
+  barisData,
+  detail,
+  status
+) {
+
+  catatAuditAbsensiBatch_([
+    [
+      new Date(),
+      jenisAudit,
+      tanggal,
+      id,
+      nama,
+      barisData || "",
+      detail,
+      status
+    ]
+  ]);
+}
+
+
+function catatAuditAbsensiBatch_(
+  dataAudit
+) {
+
+  if (
+    !dataAudit ||
+    dataAudit.length === 0
+  ) {
+    return;
+  }
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var auditSheet =
+    ambilSheet(
+      ss,
+      SHEET_AUDIT_ABSENSI
+    );
+
+  auditSheet
+    .getRange(
+      auditSheet.getLastRow() + 1,
+      1,
+      dataAudit.length,
+      8
+    )
+    .setValues(
+      dataAudit
+    );
+}
+
+
+/****************************************************
+ * PEMANGGIL BERDASARKAN SHIFT
+ ****************************************************/
+
+function generateAlfaBerdasarkanShift(
+  kodeShift,
+  waktuSimulasi,
+  namaSheetAbsensi
+) {
+
+  return generateAlfaHarian(
+    waktuSimulasi || new Date(),
+    namaSheetAbsensi ||
+      SHEET_ABSENSI_HARIAN,
+    kodeShift
+  );
+}
+
+
+/****************************************************
+ * SETUP TRIGGER GENERATE ALFA
+ * --------------------------------------------------
+ * Satu trigger berulang memeriksa semua shift.
+ * Alfa tetap hanya dibuat setelah waktu masing-masing
+ * shift tercapai.
+ ****************************************************/
+
+function setupTriggerGenerateAlfa() {
+
+  var jumlahTriggerLama =
+    hapusTriggerGenerateAlfaLama();
+
+  ScriptApp
+    .newTrigger(
+      "jalankanGenerateAlfaShift"
+    )
+    .timeBased()
+    .everyMinutes(15)
+    .create();
+
+  catatAuditAbsensi(
+    "Setup Trigger Alfa",
+    "",
+    "",
+    "",
+    "",
+    "Trigger lama dihapus: " +
+      jumlahTriggerLama +
+      ". Trigger berulang setiap 15 menit berhasil dibuat.",
+    "Selesai"
+  );
+
+  return {
+    triggerLamaDihapus:
+      jumlahTriggerLama,
+    intervalMenit: 15
+  };
+}
+
+
+function jalankanGenerateAlfaShift() {
+
+  Logger.log(
+    "START Trigger Generate Alfa"
+  );
+
+  var hasil =
+    generateAlfaHarian();
+
+  Logger.log(
+    "END Trigger Generate Alfa: " +
+    JSON.stringify(hasil)
+  );
+
+  return hasil;
+}
+
+
+/****************************************************
+ * HELPER KOMPATIBILITAS TRIGGER LAMA
+ ****************************************************/
+
+function hitungWaktuGenerateAlfa(
+  jamPulang,
+  offset
+) {
+
+  var menitPulang =
+    ubahJamKeMenit(
+      jamPulang
+    );
+
+  var menitGenerate =
+    menitPulang -
+    Number(offset || 0);
+
+  while (
+    menitGenerate < 0
+  ) {
+    menitGenerate += 1440;
+  }
+
+  menitGenerate =
+    menitGenerate % 1440;
+
+  return {
+    jam:
+      Math.floor(
+        menitGenerate / 60
+      ),
+    menit:
+      menitGenerate % 60
+  };
+}
+
+
+function tentukanShiftDariWaktuAlfa(
+  waktu
+) {
+
+  var data =
+    ambilSemuaDataShift();
+
+  var sekarang =
+    waktu || new Date();
+
+  for (
+    var i = 0;
+    i < data.length;
+    i++
+  ) {
+
+    var kodeShift =
+      data[i][0];
+
+    if (
+      !kodeShift ||
+      cekShiftFleksibel(kodeShift)
+    ) {
+      continue;
+    }
+
+    var dataShift =
+      bacaShiftDariTblShift(
+        kodeShift
+      );
+
+    if (
+      !dataShift ||
+      !dataShift.ditemukan
+    ) {
+      continue;
+    }
+
+    var tanggalKerja =
+      tentukanTanggalKerjaAlfa_(
+        sekarang,
+        dataShift
+      );
+
+    var waktuGenerate =
+      buatWaktuGenerateAlfa_(
+        tanggalKerja,
+        dataShift
+      );
+
+    var selisihMenit =
+      Math.floor(
+        (
+          sekarang.getTime() -
+          waktuGenerate.getTime()
+        ) /
+        60000
+      );
+
+    if (
+      selisihMenit >= 0 &&
+      selisihMenit <= 15
+    ) {
+      return kodeShift;
+    }
+  }
+
+  return null;
+}
+
+
+function hapusTriggerGenerateAlfaLama() {
+
+  var triggers =
+    ScriptApp.getProjectTriggers();
+
+  var jumlahDihapus = 0;
+
+  var handlerAlfa = {
+    jalankanGenerateAlfaShift: true,
+    jalankanGenerateAlfaOtomatis: true
+  };
+
+  triggers.forEach(
+    function(trigger) {
+
+      var handler =
+        trigger.getHandlerFunction();
+
+      if (
+        handlerAlfa[handler]
+      ) {
+        ScriptApp.deleteTrigger(
+          trigger
+        );
+
+        jumlahDihapus++;
+      }
+    }
+  );
+
+  return jumlahDihapus;
+}
+
+/****************************************************
+ * KONTROL AKTIF / NONAKTIF GENERATE ALFA
+ * --------------------------------------------------
+ * Setting:
+ * O2 = AKTIF_GENERATE_ALFA
+ * P2 = YA / TIDAK
+ ****************************************************/
+
+function izinGenerateAlfa_(){
+
+  var ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  var settingSheet =
+    ss.getSheetByName(
+      "SETTING"
+    );
+
+
+  if(
+    !settingSheet
+  ){
+
+    Logger.log(
+      "Sheet SETTING tidak ditemukan. Generate Alfa dihentikan."
+    );
+
+    return false;
+
+  }
+
+
+  var parameter =
+    String(
+      settingSheet
+        .getRange("O2")
+        .getValue()
+    )
+    .trim()
+    .toUpperCase();
+
+
+  var nilai =
+    String(
+      settingSheet
+        .getRange("P2")
+        .getValue()
+    )
+    .trim()
+    .toUpperCase();
+
+
+  if(
+    parameter !== "AKTIF_GENERATE_ALFA"
+  ){
+
+    Logger.log(
+      "Parameter AKTIF_GENERATE_ALFA tidak ditemukan."
+    );
+
+    return false;
+
+  }
+
+
+  return nilai === "YA";
+
+}
