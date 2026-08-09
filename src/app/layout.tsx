@@ -3,8 +3,13 @@ import { AuthProvider } from "@/lib/context/AuthContext";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Absensi SPPG",
-  description: "Aplikasi absensi SPPG berbasis Next.js dan Tauri.",
+  title: {
+    default: "Absensi SPPG",
+    template: "%s · Absensi SPPG",
+  },
+  description:
+    "Sistem operasional absensi SPPG untuk Web dan Desktop dengan dukungan online dan offline.",
+  applicationName: "Absensi SPPG",
 };
 
 export default function RootLayout({
@@ -14,7 +19,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id">
-      <body className="antialiased bg-slate-950 text-slate-100">
+      <body>
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

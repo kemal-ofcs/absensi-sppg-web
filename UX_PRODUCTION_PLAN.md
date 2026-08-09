@@ -25,7 +25,7 @@ Tanggal audit awal: 9 Agustus 2026 (Asia/Jakarta)
 - Next.js 16.3 menyediakan `useOffline`, tetapi masih experimental. API ini tidak akan diaktifkan sebelum diuji terhadap static export, Tauri, dan kebutuhan aplikasi.
 - Mode offline web/desktop belum tervalidasi end-to-end. Jalur database lokal hanya dipilih saat `window` tidak tersedia, sedangkan WebView Tauri berjalan dengan `window`.
 - Ada blocker keamanan production: fallback admin tertanam, password dibandingkan/disimpan sebagai plaintext di browser, token Turso dapat masuk bundle publik, session berada di `localStorage`, dan CSP Tauri bernilai `null`.
-- Konfigurasi paket desktop masih memakai identifier/metadata pengembangan dan ukuran awal jendela 800 x 600.
+- Identifier paket desktop sudah memakai `id.sppg.absensi`. Metadata produk lain dan perilaku jendela 800 x 600 masih perlu ditinjau sebelum release candidate.
 - Worktree sudah memiliki banyak perubahan lokal yang belum di-commit. Semuanya dianggap sebagai pekerjaan pemilik dan harus dipertahankan.
 
 ## Keputusan produk yang disetujui
@@ -216,4 +216,91 @@ jawaban: aku belum tau soalnya ini untuk aplikasi freelance aku, kemungkinan pas
 - Next.js production build dan TypeScript: lulus; seluruh route tetap static-exported.
 - `git diff --check`: lulus.
 
-- Identifier Tauri telah diperbarui secara permanen dari `com.tauri.dev` menjadi `id.sppg.absensi` untuk persiapan build production.
+- Identifier Tauri sudah menggunakan `id.sppg.absensi` di `src-tauri/tauri.conf.json` dan telah dikonfirmasi oleh pemilik aplikasi.
+
+### Audit ulang kode baru dan Tahap 2 — selesai (9 Agustus 2026)
+
+- Perubahan baru pemilik pada Home, Dashboard, Scanner, Settings, Header, dan script development dipertahankan; tidak ada route, service, schema, kontrak data, atau arsitektur lama yang dihapus/diganti.
+- Regresi hasil audit ulang diselesaikan: redirect auth kembali tanpa Effect, `alert()` diganti feedback inline, key acak diganti key stabil, dan pembacaan logo lokal menggunakan subscription store.
+- Tersisa tiga `useEffect` yang memang menyinkronkan sumber eksternal: pemuatan KPI Home, pemuatan data Dashboard, dan GPS Scanner. Semuanya memiliki cleanup/perlindungan stale update.
+- Design token global ditambahkan untuk surface, border, warna utama biru muda, aksen gold, focus ring, safe area, dan reduced motion.
+- App shell bersama, skip link, navigasi desktop, dan bottom navigation mobile ditambahkan tanpa mengganti struktur App Router.
+- Komponen presentasional bersama ditambahkan: ikon SVG, logo merek, status badge, dan page header.
+- Settings menyediakan unggah/ganti/reset logo PNG, JPG, atau WebP maksimal 1 MB. Logo disimpan lokal per perangkat untuk saat ini; sinkronisasi lintas perangkat menunggu keputusan arsitektur pada Tahap 4.
+- Layout utama diperkuat untuk lebar 320 px, tablet, desktop Tauri 800 × 600, dan desktop lebar melalui breakpoint responsif serta target sentuh yang memadai.
+- Status jaringan tidak lagi menyamakan koneksi internet dengan keberhasilan sinkronisasi data.
+- Biome/lint dan pemeriksaan diff lulus. Production build Web/static export lulus setelah perubahan Tahap 2.
+- Verifikasi screenshot lintas viewport belum dapat dijalankan karena konektor browser internal gagal melakukan bootstrap; audit responsif pada tahap ini dilakukan dari struktur layout dan hasil build, tanpa klaim pengujian visual.
+
+### Paket stabilisasi sebelum Tahap 3 — selesai untuk Web (9 Agustus 2026)
+
+- Home, Karyawan, Shift, Settings, navigasi bersama, dan Scanner distabilkan tanpa mengganti struktur route atau arsitektur data yang sudah ada.
+- Scanner kini berfokus pada QR: kamera memakai decoder QR native perangkat bila tersedia dan tersedia fallback QR reader USB/wireless. Simulasi scan tidak masuk UI atau bundle production.
+- Data Karyawan dan Shift memiliki validasi inline, loading, empty, error, dialog yang dapat ditutup dengan keyboard, dan layout responsif. Identifier karyawan baru dibuat dari UUID agar tidak mudah bertabrakan.
+- Guard akses sementara diterapkan pada lapisan UI: area sensitif hanya terlihat untuk Admin. Ini belum merupakan keamanan data end-to-end dan akan diganti setelah desain Superadmin serta matriks izin disetujui.
+- Pengaturan logo tetap memakai logo fallback SPPG; `public/Logo BGN.jpg` tidak dipakai sebagai logo bawaan sesuai keputusan pemilik.
+- Enam unit test ditambahkan untuk guard sementara, identifier, validasi Karyawan/Shift, dan format payload QR. `bun test`, Biome, TypeScript, dan Next.js production build lulus.
+- Bundle production tidak memuat nama karyawan uji, ID `EMP_TEST`, tombol tahap, atau mode simulasi. File helper test lama dan route `/api/test-db` belum dihapus karena penghapusan final dilakukan saat release cleanup dengan persetujuan eksplisit.
+- Verifikasi visual otomatis lintas viewport masih tertahan oleh kegagalan konektor browser internal. Build Desktop/Tauri juga belum dapat dinyatakan lulus karena proses bundling sebelumnya melewati batas waktu alat.
+
+### Perubahan yang menunggu persetujuan
+
+- Menambahkan identitas Superadmin ke schema autentikasi saat ini yang baru mengenal Admin, Operator, dan Scanner.
+- Menambahkan matriks izin per role dari Master Operator dan menegakkannya pada UI serta service/data boundary, bukan hanya menyembunyikan menu.
+- Mengubah autentikasi plaintext/default, penyimpanan sesi, fallback database, CSP Tauri, dan alur sinkronisasi local-first. Semua ini menyentuh schema atau boundary keamanan/data sehingga harus dibuat dalam proposal teknis terpisah.
+
+### Keputusan RBAC — disetujui pada 9 Agustus 2026
+
+- Akses ditentukan per role, bukan per akun operator.
+- Semua akun dengan role yang sama memperoleh matriks permission yang sama.
+- Superadmin merupakan role keempat, memiliki seluruh akses, dan menjadi satu-satunya role yang dapat mengatur permission Admin, Operator, dan Scanner.
+- Detail schema, migrasi, audit, aturan offline, dan enforcement didokumentasikan pada `RBAC_SUPERADMIN_PROPOSAL.md` serta belum diterapkan sampai persetujuan implementasi diberikan.
+- Superadmin pertama menggunakan kode `SPD001`; akun belum ada pada database lokal dan harus dibuat melalui bootstrap aman tanpa kredensial hard-coded.
+- Perubahan permission wajib online. Fase A dan Fase B telah disetujui.
+- Halaman Master Operator khusus Superadmin dengan CRUD akun dan role berbasis database disetujui.
+- Role tambahan dinamis seperti Supervisor atau HR juga disetujui. Role non-sistem dikelola Superadmin dan dinonaktifkan sebagai operasi default agar referensi serta audit lama tetap utuh.
+
+### Fase A RBAC — implementasi kode selesai (9 Agustus 2026)
+
+- Migration runner additive/idempotent, role dinamis, katalog permission, matriks role, revision, dan audit permission ditambahkan.
+- Master Operator tersedia di `/operators` khusus Superadmin dengan CRUD akun, role tambahan, dan matriks akses.
+- Guard sementara berbasis nama role diganti permission dinamis untuk navigasi, route, export, Karyawan, dan Shift.
+- Password operator baru di-hash dengan PBKDF2-SHA256; password legacy dapat di-upgrade saat login online berhasil.
+- Bootstrap satu kali untuk `SPD001` tersedia melalui `bun run bootstrap:superadmin` dan hanya membaca kredensial dari environment lokal.
+- Kode Fase A lulus lint, TypeScript, 12 test, dan production build 12 halaman. Bundle production tetap bersih dari data simulasi.
+- Database lokal telah dimigrasikan dan bootstrap `SPD001` berhasil. Row ID internal yang dihasilkan adalah `2`, sedangkan identifier bisnis Superadmin tetap `SPD001`.
+- Verifikasi visual otomatis belum dapat dilakukan karena konektor browser internal gagal tersambung.
+- RBAC Fase A belum disebut enforcement production sampai Fase B memindahkan pemeriksaan autentikasi/otorisasi ke boundary Web dan Tauri yang tepercaya.
+
+### Fase B RBAC — audit boundary dan proposal teknis (9 Agustus 2026)
+
+- Audit memastikan static export tunggal saat ini tidak dapat menyediakan cookie session dan API Web dinamis sekaligus menjadi bundle Desktop offline.
+- Ditemukan bahwa koneksi database publik, session browser storage, enforcement client-compatible, CSP Tauri `null`, serta belum adanya command Rust merupakan blocker production.
+- Rancangan dual-runtime tercatat di `SECURITY_PHASE_B_PROPOSAL.md`: Web memakai Next.js server/API dan Turso server-only; Desktop tetap static export tetapi autentikasi, RBAC, SQLite lokal, serta sinkronisasi dijalankan melalui boundary Tauri/Rust.
+- Route, halaman, schema domain, dan service contract lama dipertahankan melalui adapter runtime serta dimigrasikan per vertical slice.
+- Checkpoint arsitektur disetujui dan Vercel dipilih sebagai target hosting Web.
+
+### Fase B1 — dual build dan fondasi session Web selesai (9 Agustus 2026)
+
+- Target build dipisahkan tanpa menghapus halaman atau kontrak lama: `build:web` untuk Next.js server/Vercel dan `build:desktop` untuk static export Tauri.
+- Tauri `beforeBuildCommand` sekarang secara eksplisit menjalankan `build:desktop`.
+- Credential Turso dipindahkan ke environment server-only tanpa prefix `NEXT_PUBLIC_`; `.env.example` hanya memuat placeholder aman.
+- Pemeriksaan artifact awal menemukan satu JWT-like token di JavaScript Desktop lama. Setelah perbaikan, scan ulang Web client dan Desktop menghasilkan nol JWT-like secret serta nol URL Turso production.
+- Migration additive versi 2 menambahkan tabel opaque Web session, expiry, revocation, permission revision, dan indeks operator aktif.
+- Fondasi Route Handler login, baca session, serta logout tersedia dengan cookie `HttpOnly`, `Secure` pada production, `SameSite=Lax`, dan response `no-store`.
+- Initializer Web tidak lagi dapat membuat akun default legacy `OP001/admin123`; perilaku seed lama hanya dipertahankan pada jalur legacy non-production sampai Fase C.
+- Session UI lama belum dicabut. Pengalihan Login dan Master Operator dilakukan pada B2 setelah direct-call authorization test tersedia.
+- Tidak ada `useEffect` baru. Biome, TypeScript, 18 test, Web build, Desktop static export, dan pemeriksaan diff lulus.
+- Sebelum deployment production, token Turso lama harus dirotasi dan variable Vercel berprefix `NEXT_PUBLIC_` harus dihapus/diganti dengan variable server-only.
+
+### Fase B2 — Web RBAC vertical slice selesai (9 Agustus 2026)
+
+- Login dan session Web sekarang memakai API server serta cookie opaque `HttpOnly`; `localStorage` lama tidak lagi menjadi sumber autentikasi Web.
+- Halaman Master Operator dan role memakai adapter runtime. Web memanggil API tepercaya, sedangkan Desktop tetap memakai service lama sampai boundary Tauri dikerjakan pada B3.
+- API operator/role membaca actor dari session server, menegakkan permission dan Superadmin, memeriksa same-origin, memvalidasi payload, dan mengembalikan response `no-store`.
+- Session dicabut ketika operator, role, atau matriks permission terkait berubah. Superadmin aktif terakhir tetap tidak dapat dihapus, dinonaktifkan, atau diturunkan.
+- Rate limit login persisten ditambahkan tanpa dependency baru. Fallback akun default `OP001/admin123` dihapus dari kode runtime tanpa menyentuh record database lama milik pengguna.
+- Tidak ada `useEffect` baru. Biome dan TypeScript bersih; 24/24 test, Web production build, dan Desktop static export lulus.
+- Integrasi hasil production build membuktikan guest `401`, origin asing `403`, akses Superadmin `200`, create operator `201`, role tanpa permission `403`, serta atribut cookie `HttpOnly`, `Secure`, dan `SameSite=Lax`.
+- Pengujian visual browser masih tertahan oleh kegagalan bootstrap konektor internal. Ini tidak dicatat sebagai visual test yang lulus.
+- B3 belum dimulai dan tetap memerlukan checkpoint untuk boundary keamanan Desktop/Tauri.

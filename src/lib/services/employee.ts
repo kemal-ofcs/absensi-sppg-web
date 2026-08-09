@@ -44,9 +44,9 @@ export async function getDaftarKaryawan(filter?: {
 
   if (filter?.search) {
     query +=
-      " AND (m.nama LIKE ? OR m.kode_karyawan LIKE ? OR m.id_unik LIKE ?)";
+      " AND (m.nama LIKE ? OR m.kode_karyawan LIKE ? OR m.id_unik LIKE ? OR m.divisi LIKE ?)";
     const s = `%${filter.search}%`;
-    params.push(s, s, s);
+    params.push(s, s, s, s);
   }
 
   if (filter?.divisi) {
@@ -141,6 +141,10 @@ export async function updateKaryawan(
   const updates: string[] = [];
   const args: (string | number | boolean | null)[] = [];
 
+  if (data.kode_karyawan !== undefined) {
+    updates.push("kode_karyawan = ?");
+    args.push(data.kode_karyawan);
+  }
   if (data.nama !== undefined) {
     updates.push("nama = ?");
     args.push(data.nama);

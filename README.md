@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Absensi SPPG
 
-## Getting Started
+Aplikasi absensi Web dan Desktop Tauri dengan RBAC dinamis serta target sinkronisasi local-first.
 
-First, run the development server:
+## Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Buka `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Target build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# Next.js server build untuk Web/Vercel
+bun run build:web
 
-## Learn More
+# Static export ke out/ untuk Desktop Tauri
+bun run build:desktop
 
-To learn more about Next.js, take a look at the following resources:
+# Packaging Tauri; otomatis menjalankan build:desktop
+bun run tauri:build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Perintah `bun run build` diarahkan ke target Web. Konfigurasi Tauri selalu menggunakan target Desktop agar Route Handler Web tidak disalin ke aplikasi Desktop.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Environment Web/Vercel
 
-## Deploy on Vercel
+Salin nama variable dari `.env.example`. Credential database wajib server-only:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `TURSO_DATABASE_URL`
+- `TURSO_AUTH_TOKEN`
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Jangan memakai prefix `NEXT_PUBLIC_` untuk URL atau token Turso. Token yang pernah dipakai sebagai public environment harus dirotasi sebelum deployment production.
+
+Pada Web, login dan RBAC memakai Route Handler same-origin dengan cookie session `HttpOnly`. Endpoint operator dan role tidak menerima identitas actor dari browser; actor selalu dimuat dari session server. Desktop masih memakai adapter lokal lama sampai boundary Tauri pada Fase B3 selesai.
+
+## Quality gate
+
+```bash
+bun run lint
+bunx tsc --noEmit
+bun test
+bun run build:web
+bun run build:desktop
+```

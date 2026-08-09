@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "bun run build:web",
+    "build:web": "bun scripts/build-target.ts web",
+    "build:desktop": "bun scripts/build-target.ts desktop",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "start": "next start",
     "lint": "biome check",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "test": "bun test",
+    "bootstrap:superadmin": "bun scripts/bootstrap-superadmin.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",

@@ -9,16 +9,17 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { verifikasiLoginOperator } from "@/lib/services/operator";
+import type { OperatorUser } from "@/lib/auth/operator-user";
+import {
+  getWebSessionServerSnapshot,
+  getWebSessionSnapshot,
+  loginWebSession,
+  logoutWebSession,
+  subscribeWebSession,
+} from "@/lib/auth/web-session-store";
+import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 
-export interface OperatorUser {
-  id: number;
-  kode_operator: string;
-  nama_operator: string;
-  username: string;
-  role: string;
-  loginAt?: string;
-}
+export type { OperatorUser } from "@/lib/auth/operator-user";
 
 interface AuthContextType {
   user: OperatorUser | null;
@@ -58,7 +59,17 @@ function parseSession(snapshot: string | null): OperatorUser | null {
   if (!snapshot) return null;
 
   try {
-    return JSON.parse(snapshot) as OperatorUser;
+    const parsed = JSON.parse(snapshot) as Partial<OperatorUser>;
+    if (
+      !Number.isSafeInteger(parsed.id) ||
+      typeof parsed.roleId !== "number" ||
+      typeof parsed.roleKey !== "string" ||
+      typeof parsed.isSuperadmin !== "boolean" ||
+      !Array.isArray(parsed.permissions)
+    ) {
+      return null;
+    }
+    return parsed as OperatorUser;
   } catch {
     return null;
   }
@@ -83,26 +94,45 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const sessionSnapshot = useSyncExternalStore(
+  const legacySessionSnapshot = useSyncExternalStore(
     subscribeToSession,
     getSessionSnapshot,
     () => null,
   );
-  const user = parseSession(sessionSnapshot);
+  const webSessionSnapshot = useSyncExternalStore(
+    subscribeWebSession,
+    getWebSessionSnapshot,
+    getWebSessionServerSnapshot,
+  );
+  const isDesktop = isDesktopRuntime();
+  const user = isDesktop
+    ? parseSession(legacySessionSnapshot)
+    : webSessionSnapshot.user;
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const router = useRouter();
 
   const login = useCallback(async (username: string, passwordPlain: string) => {
     setIsLoading(true);
     try {
+      if (!isDesktopRuntime()) {
+        return await loginWebSession(username, passwordPlain);
+      }
+      const { verifikasiLoginOperator } = await import(
+        "@/lib/services/operator"
+      );
       const result = await verifikasiLoginOperator(username, passwordPlain);
       if (result.sukses && result.operator) {
         const sessionUser: OperatorUser = {
           id: result.operator.id,
-          kode_operator: result.operator.kode_operator,
-          nama_operator: result.operator.nama_operator,
+          kode_operator: result.operator.kodeOperator,
+          nama_operator: result.operator.name,
           username: result.operator.username,
-          role: result.operator.role,
+          role: result.operator.roleName,
+          roleId: result.operator.roleId,
+          roleKey: result.operator.roleKey,
+          isSuperadmin: result.operator.isSuperadmin,
+          permissions: result.operator.permissions,
+          permissionRevision: result.operator.permissionRevision,
           loginAt: new Date().toISOString(),
         };
 
@@ -122,8 +152,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
-    writeSession(null);
-    router.push("/login");
+    if (isDesktopRuntime()) {
+      writeSession(null);
+      router.push("/login");
+      return;
+    }
+    void logoutWebSession().finally(() => router.push("/login"));
   }, [router]);
 
   return (
@@ -131,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         isAuthenticated: !!user,
-        isLoading,
+        isLoading: isLoading || (!isDesktop && webSessionSnapshot.isLoading),
         login,
         logout,
       }}

@@ -8,6 +8,7 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 
 export default function LoginPage() {
+  const showDemoHelper = process.env.NODE_ENV !== "production";
   const isHydrated = useHydrated();
   const isOnline = useOnlineStatus();
   const { user, login, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -85,9 +86,7 @@ export default function LoginPage() {
               }`}
             ></span>
             <span className="text-slate-300">
-              {isOnline
-                ? "Mode Online (Turso Cloud)"
-                : "Mode Offline (SQLite Local)"}
+              {isOnline ? "Jaringan tersedia" : "Tidak ada jaringan"}
             </span>
           </div>
 
@@ -127,7 +126,7 @@ export default function LoginPage() {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Masukkan username (contoh: admin / OP001)"
+                placeholder="Masukkan username atau kode operator"
                 autoComplete="username"
                 className="w-full bg-slate-950/90 border border-slate-800 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white px-4 py-3 rounded-xl text-xs sm:text-sm font-mono transition outline-none"
               />
@@ -178,20 +177,22 @@ export default function LoginPage() {
         </form>
 
         {/* Quick Demo Login Helper */}
-        <div className="pt-4 border-t border-slate-800/80 text-center space-y-2">
-          <p className="text-[11px] text-slate-500">
-            Gunakan kredensial berikut untuk uji coba pertama:
-          </p>
-          <button
-            type="button"
-            onClick={fillDemoAdmin}
-            className="w-full py-2 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-mono transition flex items-center justify-center gap-1.5"
-          >
-            <span>⚡ Quick Demo:</span>
-            <span className="text-emerald-400 font-bold">admin</span> /{" "}
-            <span className="text-emerald-400 font-bold">admin123</span>
-          </button>
-        </div>
+        {showDemoHelper ? (
+          <div className="pt-4 border-t border-slate-800/80 text-center space-y-2">
+            <p className="text-[11px] text-slate-500">
+              Gunakan kredensial berikut untuk uji coba pertama:
+            </p>
+            <button
+              type="button"
+              onClick={fillDemoAdmin}
+              className="w-full py-2 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-mono transition flex items-center justify-center gap-1.5"
+            >
+              <span>⚡ Quick Demo:</span>
+              <span className="text-emerald-400 font-bold">admin</span> /{" "}
+              <span className="text-emerald-400 font-bold">admin123</span>
+            </button>
+          </div>
+        ) : null}
 
         {/* Footer info */}
         <div className="text-center text-[10px] text-slate-600 font-mono">

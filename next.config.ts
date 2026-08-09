@@ -1,8 +1,9 @@
 import type { NextConfig } from "next";
 
+const isDesktopBuild = process.env.SPPG_BUILD_TARGET === "desktop";
+
 const nextConfig: NextConfig = {
-  /* config options here */
-  output: "export",
+  ...(isDesktopBuild ? { output: "export" as const } : {}),
   images: {
     unoptimized: true,
   },

@@ -1,9 +1,10 @@
-import { db } from "./db";
+import type { Client } from "@libsql/client";
+import { runDatabaseMigrations } from "./db-migrations";
 
-export async function initDatabaseSchema() {
+export async function initDatabaseSchema(client: Client) {
   try {
     // 1. master_data
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS master_data (
         id_unik TEXT PRIMARY KEY,
         kode_karyawan TEXT UNIQUE,
@@ -27,7 +28,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 2. id_card
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS id_card (
         id_card_id INTEGER PRIMARY KEY AUTOINCREMENT,
         id_unik TEXT UNIQUE NOT NULL,
@@ -44,7 +45,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 3. master_operator
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS master_operator (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kode_operator TEXT UNIQUE NOT NULL,
@@ -52,12 +53,13 @@ export async function initDatabaseSchema() {
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('Admin', 'Operator', 'Scanner')),
+        role_id INTEGER,
         status TEXT DEFAULT 'Aktif'
       );
     `);
 
     // 4. tbl_shift
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS tbl_shift (
         id_shift INTEGER PRIMARY KEY AUTOINCREMENT,
         kode_shift INTEGER UNIQUE NOT NULL,
@@ -77,15 +79,17 @@ export async function initDatabaseSchema() {
     `);
 
     // 5. setting_gex_system
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS setting_gex_system (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
     `);
 
+    await runDatabaseMigrations(client);
+
     // 6. log_scan
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS log_scan (
         id_log INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp_scan TEXT NOT NULL,
@@ -107,7 +111,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 7. absensi_harian
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS absensi_harian (
         id_absensi INTEGER PRIMARY KEY AUTOINCREMENT,
         tanggal DATE NOT NULL,
@@ -138,7 +142,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 8. backup_karyawan
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS backup_karyawan (
         id_backup TEXT PRIMARY KEY,
         tanggal_tugas DATE NOT NULL,
@@ -162,7 +166,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 9. koreksi_admin
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS koreksi_admin (
         id_koreksi INTEGER PRIMARY KEY AUTOINCREMENT,
         id_referensi TEXT UNIQUE NOT NULL,
@@ -180,7 +184,7 @@ export async function initDatabaseSchema() {
     `);
 
     // 10. audit_absensi
-    await db.execute(`
+    await client.execute(`
       CREATE TABLE IF NOT EXISTS audit_absensi (
         id_audit INTEGER PRIMARY KEY AUTOINCREMENT,
         waktu TEXT NOT NULL,
@@ -195,33 +199,33 @@ export async function initDatabaseSchema() {
     `);
 
     // Indices for ultra-fast queries
-    await db.execute(
+    await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_log_scan_id_tanggal ON log_scan(id_karyawan, tanggal_kerja);",
     );
-    await db.execute(
+    await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_absensi_tanggal_id ON absensi_harian(tanggal, id_karyawan);",
     );
-    await db.execute(
+    await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_absensi_id_sesi ON absensi_harian(id_sesi);",
     );
 
     // Seed default data
-    await seedDefaultData();
+    await seedDefaultData(client);
 
-    console.log("Database schema SQLite berhasil diinisialisasi.");
+    console.log("Database schema berhasil diinisialisasi.");
   } catch (error) {
     console.error("Gagal menginisialisasi database schema:", error);
     throw error;
   }
 }
 
-async function seedDefaultData() {
+async function seedDefaultData(client: Client) {
   // Seed Default Shift
-  const shiftCheck = await db.execute(
+  const shiftCheck = await client.execute(
     "SELECT COUNT(*) as count FROM tbl_shift;",
   );
   if (Number(shiftCheck.rows[0]?.count || 0) === 0) {
-    await db.execute(`
+    await client.execute(`
       INSERT OR IGNORE INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit, offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit)
       VALUES 
       (1, 'Shift 1 - Pagi Normal', '07:00', '15:00', 60, 120, 0, 480, 60, 240, 240, 180, 120),
@@ -231,23 +235,12 @@ async function seedDefaultData() {
     `);
   }
 
-  // Seed Default Admin Operator
-  const operatorCheck = await db.execute(
-    "SELECT COUNT(*) as count FROM master_operator;",
-  );
-  if (Number(operatorCheck.rows[0]?.count || 0) === 0) {
-    await db.execute(`
-      INSERT OR IGNORE INTO master_operator (kode_operator, nama_operator, username, password_hash, role, status)
-      VALUES ('OP001', 'Admin Utama', 'admin', 'admin123', 'Admin', 'Aktif');
-    `);
-  }
-
   // Seed Default System Settings
-  const settingsCheck = await db.execute(
+  const settingsCheck = await client.execute(
     "SELECT COUNT(*) as count FROM setting_gex_system;",
   );
   if (Number(settingsCheck.rows[0]?.count || 0) === 0) {
-    await db.execute(`
+    await client.execute(`
       INSERT OR IGNORE INTO setting_gex_system (key, value) VALUES
       ('lat_kantor', '0'),
       ('lng_kantor', '0'),

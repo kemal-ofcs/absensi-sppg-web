@@ -2,14 +2,106 @@
 
 :root {
   color-scheme: dark;
+  --app-background: #07111f;
+  --app-background-soft: #0b1728;
+  --app-surface: rgba(15, 23, 42, 0.86);
+  --app-surface-raised: rgba(30, 41, 59, 0.72);
+  --app-border: rgba(255, 255, 255, 0.1);
+  --app-primary: #38bdf8;
+  --app-primary-strong: #0284c7;
+  --app-gold: #f6c453;
+  --app-text: #f8fafc;
+  --app-text-muted: #94a3b8;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--app-background);
+}
+
 body {
   margin: 0;
   min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      circle at 12% -10%,
+      rgb(56 189 248 / 14%),
+      transparent 32rem
+    ),
+    radial-gradient(circle at 92% 4%, rgb(246 196 83 / 9%), transparent 28rem),
+    linear-gradient(180deg, var(--app-background-soft), var(--app-background));
+  color: var(--app-text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgb(56 189 248 / 32%);
+  color: white;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 2%), transparent 18rem),
+    transparent;
+}
+
+.app-panel {
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  box-shadow: 0 24px 70px rgb(2 8 23 / 24%);
+  backdrop-filter: blur(18px);
+}
+
+.app-input {
+  min-height: 2.75rem;
+  width: 100%;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 0.75rem;
+  background: #020617;
+  padding-inline: 0.75rem;
+  color: white;
+  outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.app-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgb(56 189 248 / 20%);
+}
+
+.app-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.mobile-safe-bottom {
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
 }
 
 code,
@@ -19,4 +111,17 @@ samp {
   font-family:
     "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
     monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  [class*="animate-"],
+  [class*="transition"] {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+  }
 }
