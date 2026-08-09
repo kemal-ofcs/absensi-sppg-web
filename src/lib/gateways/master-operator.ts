@@ -5,11 +5,12 @@ import type { OperatorDraft, OperatorRecord } from "@/lib/operators/types";
 import type { PermissionKey } from "@/lib/rbac/catalog";
 import type { RoleDraft, RoleRecord } from "@/lib/rbac/types";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
+import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 
 export async function getMasterOperators(actorId: number) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/operator");
-    return service.getMasterOperators(actorId);
+    void actorId;
+    return invokeDesktop<OperatorRecord[]>("desktop_get_master_operators");
   }
   const response = await requestWebApi<{ operators: OperatorRecord[] }>(
     "/api/operators/query",
@@ -20,8 +21,11 @@ export async function getMasterOperators(actorId: number) {
 
 export async function createOperator(actorId: number, draft: OperatorDraft) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/operator");
-    return service.createOperator(actorId, draft);
+    void actorId;
+    return invokeDesktop<{ sukses: true; id: number }>(
+      "desktop_create_operator",
+      { draft },
+    );
   }
   return requestWebApi<{ sukses: true; id: number }>("/api/operators", "POST", {
     draft,
@@ -34,8 +38,11 @@ export async function updateMasterOperator(
   draft: OperatorDraft,
 ) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/operator");
-    return service.updateMasterOperator(actorId, operatorId, draft);
+    void actorId;
+    return invokeDesktop<{ sukses: true }>("desktop_update_operator", {
+      operatorId,
+      draft,
+    });
   }
   return requestWebApi<{ sukses: true }>("/api/operators", "PATCH", {
     operatorId,
@@ -48,8 +55,10 @@ export async function deleteMasterOperator(
   operatorId: number,
 ) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/operator");
-    return service.deleteMasterOperator(actorId, operatorId);
+    void actorId;
+    return invokeDesktop<{ sukses: true }>("desktop_delete_operator", {
+      operatorId,
+    });
   }
   return requestWebApi<{ sukses: true }>("/api/operators", "DELETE", {
     operatorId,
@@ -58,8 +67,8 @@ export async function deleteMasterOperator(
 
 export async function getRoleRecords(actorId: number) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/rbac");
-    return service.getRoleRecords(actorId);
+    void actorId;
+    return invokeDesktop<RoleRecord[]>("desktop_get_roles");
   }
   const response = await requestWebApi<{ roles: RoleRecord[] }>(
     "/api/roles/query",
@@ -74,8 +83,11 @@ export async function createRole(
   permissionKeys: readonly PermissionKey[],
 ) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/rbac");
-    return service.createRole(actorId, draft, permissionKeys);
+    void actorId;
+    return invokeDesktop<{ sukses: true; id: number }>("desktop_create_role", {
+      draft,
+      permissionKeys: [...permissionKeys],
+    });
   }
   return requestWebApi<{ sukses: true; id: number }>("/api/roles", "POST", {
     draft,
@@ -89,8 +101,11 @@ export async function updateRole(
   draft: RoleDraft,
 ) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/rbac");
-    return service.updateRole(actorId, roleId, draft);
+    void actorId;
+    return invokeDesktop<{ sukses: true }>("desktop_update_role", {
+      roleId,
+      draft,
+    });
   }
   return requestWebApi<{ sukses: true }>("/api/roles", "PATCH", {
     roleId,
@@ -104,8 +119,11 @@ export async function setRolePermissions(
   permissionKeys: readonly PermissionKey[],
 ) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/rbac");
-    return service.setRolePermissions(actorId, roleId, permissionKeys);
+    void actorId;
+    return invokeDesktop<{ sukses: true; revision: number }>(
+      "desktop_set_role_permissions",
+      { roleId, permissionKeys: [...permissionKeys] },
+    );
   }
   return requestWebApi<{ sukses: true; revision: number }>(
     "/api/roles",
@@ -116,8 +134,8 @@ export async function setRolePermissions(
 
 export async function deleteRole(actorId: number, roleId: number) {
   if (isDesktopRuntime()) {
-    const service = await import("@/lib/services/rbac");
-    return service.deleteRole(actorId, roleId);
+    void actorId;
+    return invokeDesktop<{ sukses: true }>("desktop_delete_role", { roleId });
   }
   return requestWebApi<{ sukses: true }>("/api/roles", "DELETE", { roleId });
 }

@@ -19,7 +19,7 @@ bun run build:web
 # Static export ke out/ untuk Desktop Tauri
 bun run build:desktop
 
-# Packaging Tauri; otomatis menjalankan build:desktop
+# Packaging Tauri; wajib diberi konfigurasi pelanggan dan otomatis menjalankan build:desktop
 bun run tauri:build
 ```
 
@@ -34,7 +34,18 @@ Salin nama variable dari `.env.example`. Credential database wajib server-only:
 
 Jangan memakai prefix `NEXT_PUBLIC_` untuk URL atau token Turso. Token yang pernah dipakai sebagai public environment harus dirotasi sebelum deployment production.
 
-Pada Web, login dan RBAC memakai Route Handler same-origin dengan cookie session `HttpOnly`. Endpoint operator dan role tidak menerima identitas actor dari browser; actor selalu dimuat dari session server. Desktop masih memakai adapter lokal lama sampai boundary Tauri pada Fase B3 selesai.
+Pada Web, login dan RBAC memakai Route Handler same-origin dengan cookie session `HttpOnly`. Endpoint operator dan role tidak menerima identitas actor dari browser; actor selalu dimuat dari session server.
+
+## Environment Desktop per pelanggan
+
+Setiap pembeli wajib mempunyai deployment Vercel dan database Turso sendiri. Sebelum packaging release Desktop, set dua nilai publik berikut pada environment build:
+
+- `SPPG_API_BASE_URL`: origin HTTPS Vercel pelanggan tanpa path.
+- `SPPG_OFFLINE_AUTH_MAX_AGE_HOURS`: masa berlaku snapshot login offline, 1-720 jam, sesuai kebijakan yang telah disetujui.
+
+Nilai tersebut bukan credential database. `TURSO_AUTH_TOKEN` tetap hanya berada pada environment server Vercel dan tidak boleh diberikan ke build Desktop. Installer satu pelanggan tidak boleh didistribusikan ke pelanggan lain karena origin API sudah diikat saat build.
+
+Panduan provisioning lengkap tersedia di `CUSTOMER_DEPLOYMENT_GUIDE.md`.
 
 ## Quality gate
 
@@ -44,4 +55,6 @@ bunx tsc --noEmit
 bun test
 bun run build:web
 bun run build:desktop
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```

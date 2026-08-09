@@ -2,7 +2,7 @@
 
 Tanggal: 9 Agustus 2026 (Asia/Jakarta)
 
-Status: checkpoint arsitektur disetujui dengan Vercel sebagai target Web. B1 dan B2 selesai; B3 menunggu persetujuan pelaksanaan.
+Status: checkpoint arsitektur disetujui dengan Vercel sebagai target Web. B1, B2, dan implementasi kode B3 selesai; smoke test Desktop online/offline pada perangkat pengguna menjadi checkpoint operasional berikutnya.
 
 ## Status implementasi B1
 
@@ -174,4 +174,19 @@ Pemilik telah menyetujui rancangan berikut:
 - Integrasi server production lokal lulus: guest `401`, origin asing `403`, Login/session/Superadmin API `200`, create operator `201`, dan Admin tanpa izin `403`.
 - Tidak ada `useEffect` baru pada B2. Biome, TypeScript, 24 test, build Web, dan static export Desktop lulus. Artifact Desktop hanya memuat route statis `/api/test-db`; tidak memuat endpoint auth/operator/role, JWT-like secret, credential environment aktual, atau kredensial pengujian B2. Verifikasi visual melalui browser internal belum dapat dilakukan karena bootstrap konektor gagal; pengujian boundary dilakukan lewat HTTP terhadap hasil production build.
 
-Implementasi selanjutnya adalah B3: memindahkan autentikasi serta enforcement RBAC Desktop ke custom Rust commands, SQLite lokal, dan penyimpanan secret yang aman. B3 tidak dimulai dalam checkpoint ini.
+## Checkpoint implementasi B3
+
+- Setiap pembeli memakai deployment Vercel dan database Turso terpisah. Binary Desktop diikat ke origin Vercel pelanggan melalui `SPPG_API_BASE_URL` saat build; domain tidak dapat diganti dari WebView atau halaman Settings.
+- Release Desktop menolak build tanpa origin HTTPS pelanggan dan `SPPG_OFFLINE_AUTH_MAX_AGE_HOURS`. Rentang kebijakan offline dibatasi 1-720 jam dan harus ditentukan sebelum build pelanggan.
+- Login Desktop online dilakukan oleh custom Rust command ke API pelanggan. Token session hanya berada di memori Rust dan tidak dikirim ke `localStorage` atau JavaScript.
+- Login online pertama membuat snapshot identitas/RBAC terenkripsi per operator menggunakan Stronghold dan kunci turunan password Argon2. SQLite lokal hanya menyimpan indeks non-secret serta audit keamanan.
+- Saat server benar-benar tidak tersedia, Desktop dapat membuka snapshot dengan username/kode operator dan password yang benar. Snapshot yang kedaluwarsa, berasal dari pelanggan lain, password salah, atau alias lokal yang dimodifikasi ditolak.
+- Penolakan login server seperti password salah dan rate limit tidak pernah dialihkan ke fallback offline.
+- Master Operator dan pengelolaan role selalu memerlukan session online. Rust memeriksa status Superadmin serta permission sebelum request; server mengulang pemeriksaan dari session tepercaya.
+- WebView hanya memperoleh custom commands yang di-allowlist. SQL, HTTP, dan Stronghold generik tidak diekspos. CSP production diaktifkan dan koneksi jaringan WebView dibatasi ke IPC Tauri.
+- Adapter legacy dipindahkan ke modul rollback tetapi belum dihapus. Session legacy di `localStorage` dibersihkan saat Desktop baru mulai; tidak ada route, tabel domain, atau service lama yang dihapus.
+- Tidak ada `useEffect` baru. Biome, TypeScript, 24/24 test frontend/server, 11/11 test Rust, Clippy ketat, build Web, static export Desktop, dan packaging MSI/NSIS lulus. Warning linker PDB berasal dari binary native `libsodium`; bukan warning kode aplikasi dan tidak menggagalkan build.
+
+B4 tetap diperlukan untuk data operasional Karyawan, Shift, Scanner/Absensi, Koreksi, outbox, retry, dan sinkronisasi local-first. B3 hanya menutup autentikasi serta RBAC Desktop dan tidak mengklaim sinkronisasi domain operasional sudah selesai.
+
+Koreksi pasca-checkpoint: logout Web/Desktop mengganti history aktif ke `/login` setelah session dicabut. Integrasi lokal membuktikan session berubah dari `200` menjadi `401` setelah logout, dan test regresi memastikan redirect memakai `location.replace`.

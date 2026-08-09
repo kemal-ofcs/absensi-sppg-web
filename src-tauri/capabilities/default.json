@@ -1,7 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Minimum capability untuk UI lokal dan boundary keamanan Desktop",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "local": true,
+  "permissions": [
+    "core:default",
+    "allow-desktop-get-session",
+    "allow-desktop-get-runtime-status",
+    "allow-desktop-login",
+    "allow-desktop-logout",
+    "allow-desktop-get-master-operators",
+    "allow-desktop-create-operator",
+    "allow-desktop-update-operator",
+    "allow-desktop-delete-operator",
+    "allow-desktop-get-roles",
+    "allow-desktop-create-role",
+    "allow-desktop-update-role",
+    "allow-desktop-set-role-permissions",
+    "allow-desktop-delete-role"
+  ]
 }

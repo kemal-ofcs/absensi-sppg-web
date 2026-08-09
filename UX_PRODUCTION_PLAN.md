@@ -303,4 +303,17 @@ jawaban: aku belum tau soalnya ini untuk aplikasi freelance aku, kemungkinan pas
 - Tidak ada `useEffect` baru. Biome dan TypeScript bersih; 24/24 test, Web production build, dan Desktop static export lulus.
 - Integrasi hasil production build membuktikan guest `401`, origin asing `403`, akses Superadmin `200`, create operator `201`, role tanpa permission `403`, serta atribut cookie `HttpOnly`, `Secure`, dan `SameSite=Lax`.
 - Pengujian visual browser masih tertahan oleh kegagalan bootstrap konektor internal. Ini tidak dicatat sebagai visual test yang lulus.
-- B3 belum dimulai dan tetap memerlukan checkpoint untuk boundary keamanan Desktop/Tauri.
+- Catatan B2 ditutup setelah B3 memperoleh persetujuan dan diimplementasikan pada checkpoint berikut ini.
+
+### Fase B3 — boundary keamanan Desktop selesai pada kode (9 Agustus 2026)
+
+- Desktop tidak lagi login melalui koneksi Turso/browser atau session `localStorage`. Login online, session, dan operasi Master Operator dialihkan ke custom Rust commands.
+- Setiap build Desktop diikat ke satu origin HTTPS Vercel pelanggan. Model bisnis satu pembeli–satu Vercel–satu Turso didokumentasikan dan tidak ada endpoint pelanggan yang hard-coded pada source.
+- Login online pertama memprovisi snapshot operator/RBAC terenkripsi Stronghold. Login offline hanya tersedia di perangkat yang pernah login online, memakai password yang benar, masih dalam masa berlaku, dan berasal dari deployment pelanggan yang sama.
+- Session online/token hanya berada di memori Rust. SQLite keamanan lokal menyimpan indeks non-secret dan audit; perubahan alias indeks tidak dapat menaikkan identitas karena selalu diverifikasi terhadap snapshot terenkripsi.
+- Mutasi operator, role, dan permission tetap wajib online serta diperiksa dua kali: permission/Superadmin pada Rust dan session/permission pada server.
+- Capability Tauri hanya membuka 13 command use-case. Akses SQL, HTTP, atau Stronghold generik tidak diberikan kepada WebView; CSP production serta prototype freezing diaktifkan.
+- Adapter dan service lama tidak dihapus. Modul session Desktop lama dipertahankan untuk rollback dan menunggu persetujuan cleanup release.
+- Tidak ada `useEffect` baru. Biome, TypeScript, 24/24 test lama, 11/11 test Rust, Clippy dengan warning sebagai error, build Web, static export Desktop, serta installer MSI/NSIS lulus.
+- Yang belum termasuk B3: sinkronisasi data operasional Karyawan/Shift/Scanner/Koreksi. Itu tetap menjadi B4 dan tidak boleh dianggap selesai hanya karena login offline sudah tersedia.
+- Koreksi pasca-checkpoint: logout Web dan Desktop kini menunggu pencabutan session lalu memakai `location.replace("/login")`. Halaman terlindungi tidak tertinggal di history; test regresi navigasi, integrasi session `200 -> logout -> 401`, build Web, static Desktop, dan installer Tauri lulus.
