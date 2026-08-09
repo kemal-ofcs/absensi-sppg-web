@@ -7,7 +7,8 @@ class AudioSynthesizer {
     if (!this.audioCtx && typeof window !== "undefined") {
       const AudioContextClass =
         window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
       if (AudioContextClass) {
         this.audioCtx = new AudioContextClass();
       }

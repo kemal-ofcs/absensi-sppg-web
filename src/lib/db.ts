@@ -23,10 +23,11 @@ function createDbConnection() {
     });
   }
 
-  // 3. Fallback jika dibuka di browser tanpa TURSO_DATABASE_URL di .env
-  throw new Error(
-    "TURSO_DATABASE_URL belum dikonfigurasi pada .env! Tambahkan NEXT_PUBLIC_TURSO_DATABASE_URL='libsql://...' di .env.",
-  );
+  // 3. Jika dibuka di browser Web Vercel tanpa TURSO_DATABASE_URL di .env, gunakan fallback dummy client
+  // agar tidak melemparkan Unhandled Exception yang menyebabkan error "This page couldn't load"
+  return createClient({
+    url: "libsql://dummy-offline.turso.io",
+  });
 }
 
 export const db = createDbConnection();
@@ -36,8 +37,18 @@ let isInitialized = false;
 // Memastikan schema database dan tabel-tabel terbuat otomatis
 export async function ensureDbInitialized() {
   if (!isInitialized) {
-    await initDatabaseSchema();
-    isInitialized = true;
+    try {
+      if (!tursoUrl && typeof window !== "undefined") {
+        console.warn(
+          "NEXT_PUBLIC_TURSO_DATABASE_URL belum dikonfigurasi pada Environment Variables Vercel.",
+        );
+        return;
+      }
+      await initDatabaseSchema();
+      isInitialized = true;
+    } catch (error) {
+      console.warn("Gagal inisialisasi schema database:", error);
+    }
   }
 }
 

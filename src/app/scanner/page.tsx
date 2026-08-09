@@ -1,14 +1,18 @@
 "use client";
 
+import { redirect } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { HeaderBar } from "@/components/HeaderBar";
+import { useAuth } from "@/lib/context/AuthContext";
+import { useClock } from "@/lib/hooks/useClock";
+import { useHydrated } from "@/lib/hooks/useHydrated";
+import type { ScanResult } from "@/lib/services/attendance";
 import {
-  type ScanTerminalInput,
   getCurrentCoordinates,
+  type ScanTerminalInput,
   submitTerminalScan,
 } from "@/lib/services/scanner";
-import type { ScanResult } from "@/lib/services/attendance";
 import { audioSynth } from "@/lib/utils/audio";
-import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
 
 interface ScanLogItem {
   id: string;
@@ -23,9 +27,11 @@ interface ScanLogItem {
 }
 
 export default function ScannerPage() {
+  const isHydrated = useHydrated();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const clock = useClock();
+
   const [mode, setMode] = useState<"hardware" | "simulasi">("hardware");
-  const [currentTime, setCurrentTime] = useState<string>("");
-  const [currentDate, setCurrentDate] = useState<string>("");
   const [scanInput, setScanInput] = useState<string>("");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
@@ -37,48 +43,41 @@ export default function ScannerPage() {
   const [scanHistory, setScanHistory] = useState<ScanLogItem[]>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Update Clock real-time
-  useEffect(() => {
-    const updateClock = () => {
-      const now = new Date();
-      setCurrentTime(
-        now.toLocaleTimeString("id-ID", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }),
-      );
-      setCurrentDate(
-        now.toLocaleDateString("id-ID", {
-          weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        }),
-      );
-    };
-
-    updateClock();
-    const interval = setInterval(updateClock, 1000);
-    return () => clearInterval(interval);
+  const connectScannerInput = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node;
+    node?.focus();
   }, []);
 
-  // Fetch Location GPS
+  const currentTime = clock
+    ? clock.toLocaleTimeString("id-ID", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    : "--:--:--";
+  const currentDate = clock
+    ? clock.toLocaleDateString("id-ID", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : "Memuat waktu...";
+
+  // Fetch Location GPS safely
   useEffect(() => {
+    if (!isHydrated) return;
+
+    let isMounted = true;
     getCurrentCoordinates().then((coords) => {
-      if (coords) {
+      if (coords && isMounted) {
         setGpsLocation(coords);
       }
     });
-  }, []);
-
-  // Auto focus input scanner
-  useEffect(() => {
-    if (mode === "hardware") {
-      inputRef.current?.focus();
-    }
-  }, [mode]);
+    return () => {
+      isMounted = false;
+    };
+  }, [isHydrated]);
 
   const handleScanSubmit = useCallback(
     async (payload: string) => {
@@ -93,7 +92,7 @@ export default function ScannerPage() {
           qrContent: cleanPayload,
           lat: gpsLocation?.lat,
           lng: gpsLocation?.lng,
-          kodeOperator: "OP001",
+          kodeOperator: user?.kode_operator || "OP001",
           sumberData: "Scanner",
         };
 
@@ -121,7 +120,7 @@ export default function ScannerPage() {
 
         setScanHistory((prev) => [
           {
-            id: Math.random().toString(),
+            id: `${now.getTime()}-${result.idKaryawan || cleanPayload}`,
             waktu: timeStr,
             nama: result.nama || result.idKaryawan || "Karyawan",
             idUnik: result.idKaryawan || "-",
@@ -155,7 +154,7 @@ export default function ScannerPage() {
         }
       }
     },
-    [isProcessing, gpsLocation, audioEnabled, mode],
+    [isProcessing, gpsLocation, user, audioEnabled, mode],
   );
 
   // Keyboard handler untuk Hardware Barcode Scanner (USB / Wireless)
@@ -166,25 +165,36 @@ export default function ScannerPage() {
     }
   };
 
+  if (!isHydrated || authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-xs text-slate-400 font-mono animate-pulse">
+            Memuat Terminal Scanner...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) redirect("/login");
+
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-x-hidden">
+      <HeaderBar />
+
       {/* Header Bar Terminal */}
-      <header className="h-16 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-6 flex items-center justify-between">
+      <header className="h-16 border-b border-slate-800 bg-slate-900/60 px-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Link
-            href="/"
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs font-semibold flex items-center gap-1 border border-slate-700"
-          >
-            ← Kembali Dashboard
-          </Link>
-          <div className="h-5 w-px bg-slate-800"></div>
           <div>
             <h1 className="text-sm font-bold text-white tracking-wide flex items-center gap-2">
               <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
               TERMINAL SCANNER ABSENSI SPPG
             </h1>
             <p className="text-[11px] text-slate-400 font-mono">
-              Operator: OP001 (Admin) | Location:{" "}
+              Operator: {user?.nama_operator} ({user?.kode_operator}) |
+              Location:{" "}
               {gpsLocation
                 ? `${gpsLocation.lat.toFixed(4)}, ${gpsLocation.lng.toFixed(4)}`
                 : "Kantor Pusat"}
@@ -264,7 +274,7 @@ export default function ScannerPage() {
               <div className="relative">
                 <input
                   id="barcode-input"
-                  ref={inputRef}
+                  ref={connectScannerInput}
                   type="text"
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
@@ -457,6 +467,6 @@ export default function ScannerPage() {
           </div>
         </div>
       </div>
-    </main>
+    </div>
   );
 }

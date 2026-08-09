@@ -1,19 +1,27 @@
 "use client";
 
+import { redirect } from "next/navigation";
+import { useEffect, useState } from "react";
+import { HeaderBar } from "@/components/HeaderBar";
+import { useAuth } from "@/lib/context/AuthContext";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   type DashboardMetrics,
-  type RekapBulananItem,
   getDashboardMetrics,
   getRekapBulanan,
   getRekapHarian,
   getTopKaryawanTerajin,
+  type RekapBulananItem,
 } from "@/lib/services/report";
-import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
 
 export default function DashboardPage() {
+  const isHydrated = useHydrated();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
-  const [activeTab, setActiveTab] = useState<"harian" | "bulanan" | "leaderboard">("harian");
+  const [activeTab, setActiveTab] = useState<
+    "harian" | "bulanan" | "leaderboard"
+  >("harian");
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split("T")[0],
   );
@@ -27,36 +35,57 @@ export default function DashboardPage() {
     Record<string, unknown>[]
   >([]);
   const [loading, setLoading] = useState<boolean>(true);
-
-  const loadDashboardData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const metricsData = await getDashboardMetrics();
-      setMetrics(metricsData);
-
-      const harianData = await getRekapHarian({ tanggal: selectedDate });
-      setRekapHarianList(harianData);
-
-      const bulananData = await getRekapBulanan();
-      setRekapBulananList(bulananData);
-
-      const topData = await getTopKaryawanTerajin(5);
-      setTopKaryawanList(topData);
-    } catch (err: unknown) {
-      console.error("Gagal memuat data dashboard:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedDate]);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+
+    let isCancelled = false;
+    setLoading(true);
+    setLoadError(null);
+
+    async function loadDashboardData() {
+      try {
+        const [metricsData, harianData, bulananData, topData] =
+          await Promise.all([
+            getDashboardMetrics(),
+            getRekapHarian({ tanggal: selectedDate }),
+            getRekapBulanan(),
+            getTopKaryawanTerajin(5),
+          ]);
+
+        if (isCancelled) return;
+
+        setMetrics(metricsData);
+        setRekapHarianList(harianData);
+        setRekapBulananList(bulananData);
+        setTopKaryawanList(topData);
+      } catch (error: unknown) {
+        if (isCancelled) return;
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Data dashboard tidak dapat dimuat.",
+        );
+      } finally {
+        if (!isCancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
     loadDashboardData();
-  }, [loadDashboardData]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isHydrated, isAuthenticated, selectedDate]);
 
   // Export CSV Data
   const exportToCSV = () => {
     if (activeTab === "harian") {
-      let csvContent = "data:text/csv;charset=utf-8,ID,Nama,Divisi,Jam Masuk,Jam Pulang,Status Kehadiran,Menit Terlambat,Keterangan\n";
+      let csvContent =
+        "data:text/csv;charset=utf-8,ID,Nama,Divisi,Jam Masuk,Jam Pulang,Status Kehadiran,Menit Terlambat,Keterangan\n";
       for (const row of rekapHarianList) {
         csvContent += `"${row.id_karyawan}","${row.nama}","${row.kelas_divisi}","${row.jam_masuk}","${row.jam_pulang}","${row.status_kehadiran}","${row.menit_terlambat}","${row.keterangan}"\n`;
       }
@@ -68,7 +97,8 @@ export default function DashboardPage() {
       link.click();
       document.body.removeChild(link);
     } else if (activeTab === "bulanan") {
-      let csvContent = "data:text/csv;charset=utf-8,ID,Nama,Divisi,Total Hadir,Total Telat (Menit),Frekuensi Telat,Total Sakit,Total Izin,Total Alfa,Total Jam Kerja,Total Lembur\n";
+      let csvContent =
+        "data:text/csv;charset=utf-8,ID,Nama,Divisi,Total Hadir,Total Telat (Menit),Frekuensi Telat,Total Sakit,Total Izin,Total Alfa,Total Jam Kerja,Total Lembur\n";
       for (const row of rekapBulananList) {
         csvContent += `"${row.idKaryawan}","${row.nama}","${row.divisi}","${row.totalHadir}","${row.totalTerlambat}","${row.frekuensiTelat}","${row.totalSakit}","${row.totalIzin}","${row.totalAlfa}","${row.totalJamKerja}","${row.totalLembur}"\n`;
       }
@@ -82,263 +112,348 @@ export default function DashboardPage() {
     }
   };
 
-  return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-8 flex flex-col font-sans">
-      <div className="max-w-7xl w-full mx-auto space-y-8">
-        {/* Top Header Navigation */}
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
-          <div>
-            <div className="flex items-center gap-2">
-              <Link
-                href="/"
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md transition text-xs font-semibold border border-slate-700"
-              >
-                ← Home
-              </Link>
-              <span className="text-xs uppercase tracking-widest text-emerald-400 font-semibold">
-                Executive Analytics & Reports (Tahap 6)
-              </span>
-            </div>
-            <h1 className="text-2xl font-bold text-white mt-2">
-              Dashboard Rekapitulasi Absensi SPPG
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="bg-slate-900 border border-slate-700 text-white px-3 py-2 rounded-xl text-xs font-mono outline-none focus:border-emerald-500"
-            />
-
-            <button
-              type="button"
-              onClick={exportToCSV}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-emerald-950/50 flex items-center gap-1.5"
-            >
-              📥 Export CSV Report
-            </button>
-          </div>
-        </div>
-
-        {/* 4 Metric Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-2">
-            <span className="text-slate-400 text-xs font-medium uppercase tracking-wider">
-              Total Karyawan Aktif
-            </span>
-            <div className="text-2xl font-bold text-white">
-              {metrics?.totalKaryawan || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-500 font-mono">
-              Terdaftar di Master Data
-            </p>
-          </div>
-
-          <div className="bg-slate-900/80 border border-emerald-500/40 rounded-2xl p-5 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-emerald-400 text-xs font-medium uppercase tracking-wider">
-                Hadir Hari Ini
-              </span>
-              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-full text-[10px] font-mono">
-                {metrics?.persentaseKehadiran || 0}% Rate
-              </span>
-            </div>
-            <div className="text-2xl font-bold text-emerald-300">
-              {metrics?.hadirHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Status Hadir Berhasil
-            </p>
-          </div>
-
-          <div className="bg-slate-900/80 border border-amber-500/40 rounded-2xl p-5 space-y-2">
-            <span className="text-amber-400 text-xs font-medium uppercase tracking-wider">
-              Terlambat Hari Ini
-            </span>
-            <div className="text-2xl font-bold text-amber-300">
-              {metrics?.terlambatHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Datang melebihi toleransi
-            </p>
-          </div>
-
-          <div className="bg-slate-900/80 border border-rose-500/40 rounded-2xl p-5 space-y-2">
-            <span className="text-rose-400 text-xs font-medium uppercase tracking-wider">
-              Alfa / Tidak Hadir
-            </span>
-            <div className="text-2xl font-bold text-rose-300">
-              {metrics?.alfaHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Sakit/Izin: {metrics?.sakitIzinHariIni || 0} Orang
-            </p>
-          </div>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="bg-slate-900/60 p-1.5 border border-slate-800 rounded-xl flex items-center gap-2 max-w-md">
-          <button
-            type="button"
-            onClick={() => setActiveTab("harian")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "harian"
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Rekap Harian ({selectedDate})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("bulanan")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "bulanan"
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Rekap Akumulasi Bulanan
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("leaderboard")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "leaderboard"
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Leaderboard Rajin
-          </button>
-        </div>
-
-        {/* Table Data Container */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-          {loading ? (
-            <div className="py-20 flex flex-col items-center justify-center space-y-3">
-              <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-xs text-slate-400">Memuat laporan data...</p>
-            </div>
-          ) : activeTab === "harian" ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
-                    <th className="p-4">ID / NIK</th>
-                    <th className="p-4">Nama Karyawan</th>
-                    <th className="p-4">Divisi</th>
-                    <th className="p-4">Jam Masuk</th>
-                    <th className="p-4">Jam Pulang</th>
-                    <th className="p-4">Status Kehadiran</th>
-                    <th className="p-4">Menit Telat</th>
-                    <th className="p-4">Keterangan</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {rekapHarianList.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="p-12 text-center text-slate-500">
-                        Belum ada data absensi harian pada tanggal ini.
-                      </td>
-                    </tr>
-                  ) : (
-                    rekapHarianList.map((row) => (
-                      <tr key={String(row.id_absensi || Math.random())} className="hover:bg-slate-800/40 transition">
-                        <td className="p-4 text-emerald-400 font-bold">{String(row.id_karyawan)}</td>
-                        <td className="p-4 text-white font-semibold">{String(row.nama)}</td>
-                        <td className="p-4 text-slate-300">{String(row.kelas_divisi)}</td>
-                        <td className="p-4 text-slate-300">{String(row.jam_masuk || "-")}</td>
-                        <td className="p-4 text-slate-300">{String(row.jam_pulang || "-")}</td>
-                        <td className="p-4">
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                            row.status_kehadiran === "Hadir"
-                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                              : row.status_kehadiran === "Alfa"
-                                ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                                : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                          }`}>
-                            {String(row.status_kehadiran)}
-                          </span>
-                        </td>
-                        <td className="p-4 text-amber-300">{Number(row.menit_terlambat) > 0 ? `${row.menit_terlambat} mnt` : "-"}</td>
-                        <td className="p-4 text-slate-400">{String(row.keterangan || "-")}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : activeTab === "bulanan" ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
-                    <th className="p-4">ID</th>
-                    <th className="p-4">Nama</th>
-                    <th className="p-4">Divisi</th>
-                    <th className="p-4">Hadir</th>
-                    <th className="p-4">Total Telat</th>
-                    <th className="p-4">Frekuensi Telat</th>
-                    <th className="p-4">Sakit</th>
-                    <th className="p-4">Izin</th>
-                    <th className="p-4">Alfa</th>
-                    <th className="p-4">Jam Kerja</th>
-                    <th className="p-4">Lembur</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {rekapBulananList.length === 0 ? (
-                    <tr>
-                      <td colSpan={11} className="p-12 text-center text-slate-500">
-                        Belum ada data akumulasi bulanan.
-                      </td>
-                    </tr>
-                  ) : (
-                    rekapBulananList.map((row) => (
-                      <tr key={row.idKaryawan} className="hover:bg-slate-800/40 transition">
-                        <td className="p-4 text-emerald-400 font-bold">{row.idKaryawan}</td>
-                        <td className="p-4 text-white font-semibold">{row.nama}</td>
-                        <td className="p-4 text-slate-300">{row.divisi}</td>
-                        <td className="p-4 text-emerald-300 font-bold">{row.totalHadir} Hari</td>
-                        <td className="p-4 text-amber-300">{row.totalTerlambat} Mnt</td>
-                        <td className="p-4 text-slate-300">{row.frekuensiTelat}x</td>
-                        <td className="p-4 text-sky-300">{row.totalSakit}</td>
-                        <td className="p-4 text-purple-300">{row.totalIzin}</td>
-                        <td className="p-4 text-rose-400 font-bold">{row.totalAlfa}</td>
-                        <td className="p-4 text-slate-300">{row.totalJamKerja} Jam</td>
-                        <td className="p-4 text-amber-400 font-bold">{row.totalLembur} Jam</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {topKaryawanList.map((item, idx) => (
-                <div key={String(item.id_karyawan || idx)} className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full flex items-center justify-center font-bold text-sm">
-                      #{idx + 1}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-white text-sm">{String(item.nama)}</h4>
-                      <p className="text-xs text-slate-400 font-mono">{String(item.divisi)} ({String(item.id_karyawan)})</p>
-                    </div>
-                  </div>
-                  <div className="text-right font-mono">
-                    <span className="text-xs text-emerald-400 font-bold block">{Number(item.total_kehadiran)} Hari Hadir</span>
-                    <span className="text-[11px] text-slate-500">Total Telat: {Number(item.total_telat)} mnt</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+  if (!isHydrated || authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-xs text-slate-400 font-mono animate-pulse">
+            Memuat Dashboard Analytics...
+          </p>
         </div>
       </div>
-    </main>
+    );
+  }
+
+  if (!isAuthenticated) redirect("/login");
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      <HeaderBar />
+
+      <main className="flex-1 p-4 sm:p-6 md:p-8 flex flex-col">
+        <div className="max-w-7xl w-full mx-auto space-y-8">
+          {/* Top Header Navigation */}
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+            <div>
+              <span className="text-xs uppercase tracking-widest text-emerald-400 font-semibold">
+                Executive Analytics & Reports
+              </span>
+              <h1 className="text-xl sm:text-2xl font-bold text-white mt-1">
+                Dashboard Rekapitulasi Absensi SPPG
+              </h1>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-slate-900 border border-slate-700 text-white px-3 py-2 rounded-xl text-xs font-mono outline-none focus:border-emerald-500"
+              />
+
+              <button
+                type="button"
+                onClick={exportToCSV}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-emerald-950/50 flex items-center gap-1.5"
+              >
+                📥 Export CSV Report
+              </button>
+            </div>
+          </div>
+
+          {loadError && (
+            <div
+              role="alert"
+              className="rounded-2xl border border-rose-800/80 bg-rose-950/60 p-4 text-sm text-rose-200"
+            >
+              <p className="font-semibold">Dashboard gagal dimuat</p>
+              <p className="mt-1 text-xs text-rose-300">{loadError}</p>
+            </div>
+          )}
+
+          {/* 4 Metric Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-2">
+              <span className="text-slate-400 text-xs font-medium uppercase tracking-wider">
+                Total Karyawan Aktif
+              </span>
+              <div className="text-2xl font-bold text-white">
+                {metrics?.totalKaryawan || 0} Orang
+              </div>
+              <p className="text-[11px] text-slate-500 font-mono">
+                Terdaftar di Master Data
+              </p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-emerald-500/40 rounded-2xl p-5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-emerald-400 text-xs font-medium uppercase tracking-wider">
+                  Hadir Hari Ini
+                </span>
+                <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-full text-[10px] font-mono">
+                  {metrics?.persentaseKehadiran || 0}% Rate
+                </span>
+              </div>
+              <div className="text-2xl font-bold text-emerald-300">
+                {metrics?.hadirHariIni || 0} Orang
+              </div>
+              <p className="text-[11px] text-slate-400 font-mono">
+                Status Hadir Berhasil
+              </p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-amber-500/40 rounded-2xl p-5 space-y-2">
+              <span className="text-amber-400 text-xs font-medium uppercase tracking-wider">
+                Terlambat Hari Ini
+              </span>
+              <div className="text-2xl font-bold text-amber-300">
+                {metrics?.terlambatHariIni || 0} Orang
+              </div>
+              <p className="text-[11px] text-slate-400 font-mono">
+                Datang melebihi toleransi
+              </p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-rose-500/40 rounded-2xl p-5 space-y-2">
+              <span className="text-rose-400 text-xs font-medium uppercase tracking-wider">
+                Alfa / Tidak Hadir
+              </span>
+              <div className="text-2xl font-bold text-rose-300">
+                {metrics?.alfaHariIni || 0} Orang
+              </div>
+              <p className="text-[11px] text-slate-400 font-mono">
+                Sakit/Izin: {metrics?.sakitIzinHariIni || 0} Orang
+              </p>
+            </div>
+          </div>
+
+          {/* Tab Navigation */}
+          <div className="bg-slate-900/60 p-1.5 border border-slate-800 rounded-xl flex items-center gap-2 max-w-md">
+            <button
+              type="button"
+              onClick={() => setActiveTab("harian")}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === "harian"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Rekap Harian ({selectedDate})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("bulanan")}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === "bulanan"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Rekap Bulanan
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("leaderboard")}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === "leaderboard"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Leaderboard
+            </button>
+          </div>
+
+          {/* Table Data Container */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+            {loading ? (
+              <div className="py-20 flex flex-col items-center justify-center space-y-3">
+                <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                <p className="text-xs text-slate-400 font-mono">
+                  Memuat laporan data...
+                </p>
+              </div>
+            ) : activeTab === "harian" ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
+                      <th className="p-4">ID / NIK</th>
+                      <th className="p-4">Nama Karyawan</th>
+                      <th className="p-4">Divisi</th>
+                      <th className="p-4">Jam Masuk</th>
+                      <th className="p-4">Jam Pulang</th>
+                      <th className="p-4">Status Kehadiran</th>
+                      <th className="p-4">Menit Telat</th>
+                      <th className="p-4">Keterangan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono">
+                    {rekapHarianList.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="p-12 text-center text-slate-500"
+                        >
+                          Belum ada data absensi harian pada tanggal ini.
+                        </td>
+                      </tr>
+                    ) : (
+                      rekapHarianList.map((row) => (
+                        <tr
+                          key={String(
+                            row.id_absensi ??
+                              `${row.id_karyawan}-${selectedDate}`,
+                          )}
+                          className="hover:bg-slate-800/40 transition"
+                        >
+                          <td className="p-4 text-emerald-400 font-bold">
+                            {String(row.id_karyawan)}
+                          </td>
+                          <td className="p-4 text-white font-semibold">
+                            {String(row.nama)}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {String(row.kelas_divisi)}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {String(row.jam_masuk || "-")}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {String(row.jam_pulang || "-")}
+                          </td>
+                          <td className="p-4">
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                                row.status_kehadiran === "Hadir"
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                  : row.status_kehadiran === "Alfa"
+                                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                    : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                              }`}
+                            >
+                              {String(row.status_kehadiran)}
+                            </span>
+                          </td>
+                          <td className="p-4 text-amber-300">
+                            {Number(row.menit_terlambat) > 0
+                              ? `${row.menit_terlambat} mnt`
+                              : "-"}
+                          </td>
+                          <td className="p-4 text-slate-400">
+                            {String(row.keterangan || "-")}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : activeTab === "bulanan" ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
+                      <th className="p-4">ID</th>
+                      <th className="p-4">Nama</th>
+                      <th className="p-4">Divisi</th>
+                      <th className="p-4">Hadir</th>
+                      <th className="p-4">Total Telat</th>
+                      <th className="p-4">Frekuensi Telat</th>
+                      <th className="p-4">Sakit</th>
+                      <th className="p-4">Izin</th>
+                      <th className="p-4">Alfa</th>
+                      <th className="p-4">Jam Kerja</th>
+                      <th className="p-4">Lembur</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono">
+                    {rekapBulananList.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={11}
+                          className="p-12 text-center text-slate-500"
+                        >
+                          Belum ada data akumulasi bulanan.
+                        </td>
+                      </tr>
+                    ) : (
+                      rekapBulananList.map((row) => (
+                        <tr
+                          key={row.idKaryawan}
+                          className="hover:bg-slate-800/40 transition"
+                        >
+                          <td className="p-4 text-emerald-400 font-bold">
+                            {row.idKaryawan}
+                          </td>
+                          <td className="p-4 text-white font-semibold">
+                            {row.nama}
+                          </td>
+                          <td className="p-4 text-slate-300">{row.divisi}</td>
+                          <td className="p-4 text-emerald-300 font-bold">
+                            {row.totalHadir} Hari
+                          </td>
+                          <td className="p-4 text-amber-300">
+                            {row.totalTerlambat} Mnt
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {row.frekuensiTelat}x
+                          </td>
+                          <td className="p-4 text-sky-300">{row.totalSakit}</td>
+                          <td className="p-4 text-purple-300">
+                            {row.totalIzin}
+                          </td>
+                          <td className="p-4 text-rose-400 font-bold">
+                            {row.totalAlfa}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {row.totalJamKerja} Jam
+                          </td>
+                          <td className="p-4 text-amber-400 font-bold">
+                            {row.totalLembur} Jam
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {topKaryawanList.map((item, idx) => (
+                  <div
+                    key={String(item.id_karyawan || idx)}
+                    className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full flex items-center justify-center font-bold text-sm">
+                        #{idx + 1}
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-white text-sm">
+                          {String(item.nama)}
+                        </h4>
+                        <p className="text-xs text-slate-400 font-mono">
+                          {String(item.divisi)} ({String(item.id_karyawan)})
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right font-mono">
+                      <span className="text-xs text-emerald-400 font-bold block">
+                        {Number(item.total_kehadiran)} Hari Hadir
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        Total Telat: {Number(item.total_telat)} mnt
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }

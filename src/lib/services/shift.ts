@@ -70,10 +70,7 @@ export async function tambahShift(data: ShiftInput) {
   return { sukses: true, id_shift: Number(res.lastInsertRowid) };
 }
 
-export async function updateShift(
-  id_shift: number,
-  data: Partial<ShiftInput>,
-) {
+export async function updateShift(id_shift: number, data: Partial<ShiftInput>) {
   await ensureDbInitialized();
 
   const updates: string[] = [];
@@ -127,8 +124,7 @@ export async function hapusShift(id_shift: number) {
   if (Number(checkRes.rows[0]?.count || 0) > 0) {
     return {
       sukses: false,
-      pesan:
-        "Gagal menghapus shift: Shift ini sedang digunakan oleh karyawan.",
+      pesan: "Gagal menghapus shift: Shift ini sedang digunakan oleh karyawan.",
     };
   }
 

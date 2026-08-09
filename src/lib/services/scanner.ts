@@ -1,7 +1,7 @@
 import {
+  prosesScanAbsensi,
   type ScanPayload,
   type ScanResult,
-  prosesScanAbsensi,
 } from "./attendance";
 
 export interface ScanTerminalInput {
