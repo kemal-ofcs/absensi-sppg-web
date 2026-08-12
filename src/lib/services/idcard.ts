@@ -1,3 +1,5 @@
+import "server-only";
+
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface IdCardUpdateInput {
@@ -15,25 +17,29 @@ export async function getDaftarIdCard(filter?: {
   await ensureDbInitialized();
 
   let query = `
-    SELECT c.*, m.kode_karyawan, m.status_aktif, m.token_absensi, m.qr_code
-    FROM id_card c
-    JOIN master_data m ON c.id_unik = m.id_unik
+    SELECT c.id_card_id, m.id_unik, m.nama, m.divisi,
+      COALESCE(c.idcard_status, 'Belum') AS idcard_status,
+      c.idcard_pdf_url, c.idcard_last_generate, c.idcard_catatan,
+      c.tanggal_generate, c.link_qr_png, m.kode_karyawan, m.status_aktif,
+      m.token_absensi, m.qr_code
+    FROM master_data m
+    LEFT JOIN id_card c ON c.id_unik = m.id_unik
     WHERE 1=1
   `;
   const params: (string | number | boolean | null)[] = [];
 
   if (filter?.status) {
-    query += " AND c.idcard_status = ?";
+    query += " AND COALESCE(c.idcard_status, 'Belum') = ?";
     params.push(filter.status);
   }
 
   if (filter?.search) {
-    query += " AND (c.nama LIKE ? OR c.id_unik LIKE ? OR c.divisi LIKE ?)";
+    query += " AND (m.nama LIKE ? OR m.id_unik LIKE ? OR m.divisi LIKE ?)";
     const s = `%${filter.search}%`;
     params.push(s, s, s);
   }
 
-  query += " ORDER BY c.nama ASC;";
+  query += " ORDER BY m.nama ASC;";
 
   const res = await db.execute({ sql: query, args: params });
   return res.rows as unknown as Record<string, unknown>[];
@@ -44,6 +50,14 @@ export async function updateStatusIdCard(data: IdCardUpdateInput) {
 
   const now = new Date().toISOString();
   const today = now.split("T")[0];
+
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO id_card
+      (id_unik, nama, divisi, idcard_status, tanggal_generate)
+      SELECT id_unik, nama, divisi, 'Belum', ? FROM master_data
+      WHERE id_unik = ?;`,
+    args: [today, data.id_unik],
+  });
 
   const updates: string[] = [
     "idcard_status = ?",
@@ -77,17 +91,4 @@ export async function updateStatusIdCard(data: IdCardUpdateInput) {
   });
 
   return { sukses: true };
-}
-
-export async function generateQrPngDataUrl(
-  id_unik: string,
-  token: string,
-): Promise<string> {
-  // Payload string QR format: ID_Unik|Token
-  const payload = `${id_unik}|${token}`;
-
-  // Menggunakan API QR Server public / Canvas SVG generator data URL
-  const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payload)}`;
-
-  return qrApiUrl;
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-generate-employee-tokens"
+description = "Enables the desktop_generate_employee_tokens command without any pre-configured scope."
+commands.allow = ["desktop_generate_employee_tokens"]
+
+[[permission]]
+identifier = "deny-desktop-generate-employee-tokens"
+description = "Denies the desktop_generate_employee_tokens command without any pre-configured scope."
+commands.deny = ["desktop_generate_employee_tokens"]

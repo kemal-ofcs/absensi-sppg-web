@@ -43,6 +43,8 @@ Setiap pembeli wajib mempunyai deployment Vercel dan database Turso sendiri. Seb
 - `SPPG_API_BASE_URL`: origin HTTPS Vercel pelanggan tanpa path.
 - `SPPG_OFFLINE_AUTH_MAX_AGE_HOURS`: masa berlaku snapshot login offline, 1-720 jam, sesuai kebijakan yang telah disetujui.
 
+Saat `bun run tauri:dev`, Desktop memakai `http://localhost:3000` agar login dan sinkronisasi selalu menuju server Next lokal yang sedang dijalankan. `SPPG_DEV_API_BASE_URL` dapat diisi bila alamat development memang perlu diganti; nilai release tetap berasal dari `SPPG_API_BASE_URL`.
+
 Nilai tersebut bukan credential database. `TURSO_AUTH_TOKEN` tetap hanya berada pada environment server Vercel dan tidak boleh diberikan ke build Desktop. Installer satu pelanggan tidak boleh didistribusikan ke pelanggan lain karena origin API sudah diikat saat build.
 
 Panduan provisioning lengkap tersedia di `CUSTOMER_DEPLOYMENT_GUIDE.md`.

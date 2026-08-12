@@ -1,8 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  checkLoginRateLimit,
   clearLoginFailures,
-  recordLoginFailure,
+  consumeLoginAttempt,
 } from "@/lib/auth/login-rate-limit";
 import {
   getWebSessionCookieOptions,
@@ -15,7 +14,10 @@ import {
   getServerDatabase,
 } from "@/lib/server/db";
 import {
-  acceptsJson,
+  JsonBodyError,
+  readBoundedJsonBody,
+} from "@/lib/server/http/json-body";
+import {
   getClientAddress,
   isSameOriginMutation,
 } from "@/lib/server/http/request-security";
@@ -38,17 +40,19 @@ export async function POST(request: NextRequest) {
   if (!isSameOriginMutation(request)) {
     return errorResponse("Origin permintaan tidak diizinkan.", 403);
   }
-  if (!acceptsJson(request)) {
-    return errorResponse("Content-Type harus application/json.", 415);
-  }
-  if (Number(request.headers.get("content-length") ?? 0) > 4_096) {
-    return errorResponse("Payload login terlalu besar.", 413);
-  }
-
   let body: LoginBody;
   try {
-    body = (await request.json()) as LoginBody;
-  } catch {
+    body = await readBoundedJsonBody<LoginBody>(request, 4_096);
+  } catch (error) {
+    if (error instanceof JsonBodyError) {
+      const message =
+        error.status === 413
+          ? "Payload login terlalu besar."
+          : error.status === 415
+            ? "Content-Type harus application/json."
+            : "Payload login tidak valid.";
+      return errorResponse(message, error.status);
+    }
     return errorResponse("Payload login tidak valid.", 400);
   }
 
@@ -62,7 +66,7 @@ export async function POST(request: NextRequest) {
   await ensureServerDatabaseInitialized();
   const database = getServerDatabase();
   const clientAddress = getClientAddress(request);
-  const rateLimit = await checkLoginRateLimit(
+  const rateLimit = await consumeLoginAttempt(
     database,
     clientAddress,
     username,
@@ -78,7 +82,6 @@ export async function POST(request: NextRequest) {
 
   const operator = await authenticateWebOperator(username, password);
   if (!operator) {
-    await recordLoginFailure(database, clientAddress, username);
     return errorResponse("Username atau password tidak sesuai.", 401);
   }
   await clearLoginFailures(database, clientAddress, username);

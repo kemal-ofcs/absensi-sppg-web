@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { canAccessArea } from "@/lib/auth/access";
-import { parseQrToken } from "@/lib/services/attendance";
+import { employeeQrPayload } from "@/lib/client/qr-code";
+import { validateGeofenceSettings } from "@/lib/validations/geofence";
+import { parseQrToken } from "@/lib/validations/scanner";
 import {
   createEmployeeIdentifiers,
   firstValidationMessage,
@@ -85,5 +87,36 @@ describe("QR payload", () => {
     });
     expect(parseQrToken("EMP_ABC123").valid).toBe(false);
     expect(parseQrToken("").valid).toBe(false);
+  });
+
+  test("membentuk payload untuk data lama yang hanya memiliki token", () => {
+    expect(
+      employeeQrPayload({ id_unik: "EMP_LAMA", token_absensi: "TOKEN123" }),
+    ).toBe("EMP_LAMA|TOKEN123");
+    expect(employeeQrPayload({ id_unik: "EMP_TANPA_TOKEN" })).toBe("");
+  });
+});
+
+describe("geofencing", () => {
+  test("memvalidasi koordinat dan radius kantor", () => {
+    expect(
+      validateGeofenceSettings({
+        enabled: true,
+        latitude: -6.2,
+        longitude: 106.8,
+        radiusMeter: 100,
+      }),
+    ).toEqual({});
+    expect(
+      validateGeofenceSettings({
+        enabled: true,
+        latitude: 0,
+        longitude: 0,
+        radiusMeter: 5,
+      }),
+    ).toEqual({
+      latitude: "Tentukan koordinat kantor sebelum geofencing diaktifkan.",
+      radiusMeter: "Radius wajib berupa angka bulat antara 10-10.000 meter.",
+    });
   });
 });

@@ -2,6 +2,10 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { AuthorizationError } from "@/lib/auth/permission-assertion";
+import {
+  JsonBodyError,
+  readBoundedJsonBody,
+} from "@/lib/server/http/json-body";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -21,17 +25,13 @@ export function noStoreJson(body: unknown, status = 200) {
 }
 
 export async function readJsonBody<T>(request: Request, maxBytes = 16_384) {
-  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("application/json")) {
-    throw new ApiRequestError("Content-Type harus application/json.", 415);
-  }
-  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) {
-    throw new ApiRequestError("Payload terlalu besar.", 413);
-  }
   try {
-    return (await request.json()) as T;
-  } catch {
-    throw new ApiRequestError("Payload JSON tidak valid.", 400);
+    return await readBoundedJsonBody<T>(request, maxBytes);
+  } catch (error) {
+    if (error instanceof JsonBodyError) {
+      throw new ApiRequestError(error.message, error.status);
+    }
+    throw error;
   }
 }
 
@@ -45,7 +45,7 @@ export function toApiErrorResponse(error: unknown) {
     return noStoreJson(
       {
         sukses: false,
-        pesan: "Kode operator, username, atau nama role sudah digunakan.",
+        pesan: "Kode, username, ID, atau nama unik tersebut sudah digunakan.",
       },
       409,
     );

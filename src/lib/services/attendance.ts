@@ -1,4 +1,11 @@
+import "server-only";
+
+import type { ScanResult } from "@/lib/contracts/scanner";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { hitungJarakHaversine, parseQrToken } from "@/lib/validations/scanner";
+
+export type { ScanResult } from "@/lib/contracts/scanner";
+export { hitungJarakHaversine, parseQrToken } from "@/lib/validations/scanner";
 
 export interface ScanPayload {
   qrText: string;
@@ -10,90 +17,6 @@ export interface ScanPayload {
     | "Import Offline"
     | "Generate Sistem";
   kodeOperator?: string;
-}
-
-export interface ScanResult {
-  sukses: boolean;
-  status: "Berhasil" | "Ditolak" | "Perlu Verifikasi" | "Error";
-  jenisScan: string;
-  idKaryawan: string;
-  nama: string;
-  divisi: string;
-  pesan: string;
-  catatanSistem?: string;
-  keterangan?: string;
-  menitTerlambat?: number;
-  menitDatangAwal?: number;
-  jamKerja?: number;
-  lembur?: number;
-  jamKerjaKurang?: number;
-  shiftEfektif?: number;
-  modeTugas?: "NORMAL" | "PENGGANTI";
-}
-
-// ----------------------------------------------------
-// 1. HAVERSINE DISTANCE CALCULATOR (GEOFENCING)
-// ----------------------------------------------------
-export function hitungJarakHaversine(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
-): number {
-  const R = 6371000; // Radius bumi dalam meter
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
-}
-
-// ----------------------------------------------------
-// 2. PARSE QR TOKEN (FORMAT: ID_Unik|Token)
-// ----------------------------------------------------
-export function parseQrToken(qrText: string): {
-  valid: boolean;
-  pesan: string;
-  idUnik: string;
-  token: string;
-} {
-  if (!qrText || typeof qrText !== "string") {
-    return {
-      valid: false,
-      pesan: "QR kosong atau tidak terbaca.",
-      idUnik: "",
-      token: "",
-    };
-  }
-
-  const parts = qrText.trim().split("|");
-  if (parts.length !== 2) {
-    return {
-      valid: false,
-      pesan: "Format QR tidak valid. Format harus: ID_Unik|Token.",
-      idUnik: "",
-      token: "",
-    };
-  }
-
-  const idUnik = parts[0].trim();
-  const token = parts[1].trim();
-
-  if (!idUnik || !token) {
-    return {
-      valid: false,
-      pesan: "ID_Unik atau Token kosong di dalam QR.",
-      idUnik: "",
-      token: "",
-    };
-  }
-
-  return { valid: true, pesan: "QR Valid.", idUnik, token };
 }
 
 // ----------------------------------------------------
@@ -181,8 +104,12 @@ export async function prosesScanAbsensi(
   const latKantor = Number(settings.lat_kantor || 0);
   const lngKantor = Number(settings.lng_kantor || 0);
   const radiusMax = Number(settings.radius_meter || 100);
+  const geofenceEnabled =
+    settings.geofence_enabled === "true" ||
+    (settings.geofence_enabled === undefined &&
+      (latKantor !== 0 || lngKantor !== 0));
 
-  if (latKantor !== 0 && lngKantor !== 0) {
+  if (geofenceEnabled) {
     if (payload.lat == null || payload.lng == null) {
       const pesanGps =
         "Scan ditolak: Lokasi GPS HP Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi.";
@@ -254,7 +181,10 @@ export async function prosesScanAbsensi(
   // 5. Anti Double-Scan Cooldown (Batas Cooldown 60 Detik)
   const cooldownSec = Number(settings.anti_double_scan_seconds || 60);
   const logTerakhirRes = await db.execute({
-    sql: "SELECT timestamp_scan FROM log_scan WHERE id_karyawan = ? AND sumber_data = 'Scanner' ORDER BY id_log DESC LIMIT 1;",
+    sql: `SELECT timestamp_scan FROM log_scan
+          WHERE id_karyawan = ? AND sumber_data = 'Scanner'
+            AND status_proses IN ('Berhasil', 'Perlu Verifikasi')
+          ORDER BY id_log DESC LIMIT 1;`,
     args: [String(user.id_unik)],
   });
 
@@ -265,6 +195,22 @@ export async function prosesScanAbsensi(
     const selisihDetik = (sekarang.getTime() - lastScanTime) / 1000;
     if (selisihDetik >= 0 && selisihDetik < cooldownSec) {
       const sisa = Math.ceil(cooldownSec - selisihDetik);
+      await catatLogScan({
+        timestamp: sekarang,
+        tanggalKerja: formatTanggalIso(sekarang),
+        jamScan: formatJamIso(sekarang),
+        idKaryawan: String(user.id_unik),
+        nama: String(user.nama),
+        divisi: String(user.divisi),
+        jenisScan: "Scan Ditolak",
+        statusProses: "Ditolak",
+        sumberData: sumberScan,
+        catatanSistem: `Scan ganda dalam masa cooldown (${cooldownSec} detik)`,
+        keterangan: "Duplikat diabaikan",
+        menitTerlambat: 0,
+        menitDatangAwal: 0,
+        kodeOperator,
+      });
       return {
         sukses: false,
         status: "Ditolak",
@@ -562,6 +508,7 @@ export async function prosesScanAbsensi(
     jamKerjaKurang,
     shiftEfektif,
     modeTugas,
+    idSesi,
   };
 }
 

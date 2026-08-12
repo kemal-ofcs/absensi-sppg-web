@@ -9,9 +9,9 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { type AppArea, canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
+import { getDashboardMetrics } from "@/lib/gateways/report";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
-import { getDashboardMetrics } from "@/lib/services/report";
 
 interface DashboardMetrics {
   hadirHariIni: number;
@@ -80,6 +80,16 @@ const MODULES: ModuleCard[] = [
     description:
       "Kelola identitas visual dan logo yang tersimpan pada perangkat ini.",
     tone: "sky",
+  },
+  {
+    area: "operational",
+    href: "/operational",
+    icon: "tools",
+    label: "Buka operasional",
+    title: "Koreksi & Backup",
+    description:
+      "Kelola Koreksi Admin, penugasan karyawan pengganti, dan Import Offline dengan antrean sinkronisasi.",
+    tone: "amber",
   },
   {
     area: "operators",

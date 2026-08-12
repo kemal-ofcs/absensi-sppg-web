@@ -86,6 +86,36 @@ export async function insertOperator(client: Client, draft: OperatorDraft) {
   return { success: true, id: Number(result.lastInsertRowid) };
 }
 
+export async function bootstrapSuperadmin(
+  client: Client,
+  draft: Omit<OperatorDraft, "roleId">,
+) {
+  if (draft.kodeOperator.trim().toUpperCase() !== "SPD001") {
+    throw new Error("Kode bootstrap Superadmin harus SPD001.");
+  }
+  if (!draft.password) throw new Error("Password Superadmin wajib diisi.");
+
+  const existing = await client.execute(`
+    SELECT COUNT(*) AS total
+    FROM master_operator m JOIN app_role r ON r.id = m.role_id
+    WHERE m.status = 'Aktif' AND r.is_superadmin = 1;
+  `);
+  if (Number(existing.rows[0]?.total) > 0) {
+    throw new Error(
+      "Bootstrap ditutup karena Superadmin aktif sudah tersedia.",
+    );
+  }
+
+  const role = await client.execute(
+    "SELECT id FROM app_role WHERE role_key = 'superadmin' AND status = 'Aktif' LIMIT 1;",
+  );
+  const roleId = Number(role.rows[0]?.id);
+  if (!Number.isSafeInteger(roleId)) {
+    throw new Error("Role Superadmin aktif belum tersedia.");
+  }
+  return insertOperator(client, { ...draft, roleId });
+}
+
 export async function editOperator(
   client: Client,
   actorId: number,

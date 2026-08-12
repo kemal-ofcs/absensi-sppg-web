@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  clearForcedLogoutMarker,
+  hasForcedLogoutMarker,
+  setForcedLogoutMarker,
+} from "@/lib/auth/logout-marker";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
@@ -38,6 +43,15 @@ function emit(next: DesktopSessionSnapshot) {
 
 async function refreshDesktopSession() {
   if (!isDesktopRuntime()) return null;
+  if (hasForcedLogoutMarker()) {
+    emit({ user: null, isLoading: false, mode: null });
+    try {
+      await invokeDesktop<void>("desktop_logout");
+    } catch {
+      // Marker mencegah sesi lama dipulihkan sampai login baru berhasil.
+    }
+    return null;
+  }
   try {
     const user = await invokeDesktop<OperatorUser | null>(
       "desktop_get_session",
@@ -83,15 +97,18 @@ export async function loginDesktopSession(
       pesan: result.pesan || "Login Desktop tidak berhasil.",
     };
   }
+  clearForcedLogoutMarker();
   emit({ user: result.operator, isLoading: false, mode: result.mode });
   return { sukses: true, pesan: result.pesan };
 }
 
 export async function logoutDesktopSession() {
+  setForcedLogoutMarker();
+  emit({ user: null, isLoading: false, mode: null });
   try {
     await invokeDesktop<void>("desktop_logout");
-  } finally {
-    emit({ user: null, isLoading: false, mode: null });
+  } catch {
+    // Logout UI tetap final; command dicoba lagi setelah reload.
   }
 }
 

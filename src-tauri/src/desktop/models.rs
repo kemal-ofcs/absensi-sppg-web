@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -65,6 +66,19 @@ pub struct DesktopRuntimeStatus {
     pub mode: Option<SessionMode>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopSyncStatus {
+    pub client_id: String,
+    pub pending: i64,
+    pub synced: i64,
+    pub failed: i64,
+    pub conflict: i64,
+    pub last_revision: i64,
+    pub last_sync_at: Option<i64>,
+    pub table_counts: Value,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandError {
@@ -83,7 +97,7 @@ impl CommandError {
     pub fn internal() -> Self {
         Self::new(
             "DESKTOP_INTERNAL_ERROR",
-            "Penyimpanan keamanan Desktop tidak dapat diproses.",
+            "Data lokal Desktop tidak dapat diproses.",
         )
     }
 }

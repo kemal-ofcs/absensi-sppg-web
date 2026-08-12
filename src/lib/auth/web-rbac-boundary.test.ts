@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type Client, createClient } from "@libsql/client";
 import {
   checkLoginRateLimit,
+  consumeLoginAttempt,
   recordLoginFailure,
 } from "@/lib/auth/login-rate-limit";
 import type { OperatorUser } from "@/lib/auth/operator-user";
@@ -142,6 +143,10 @@ describe("Web RBAC trusted boundary", () => {
         }),
       ),
     ).toBe(false);
+
+    expect(
+      isSameOriginRequest(new Request("http://localhost:3000/api/operators")),
+    ).toBe(false);
   });
 
   test("session kedaluwarsa dan operator nonaktif tidak dapat dipakai", async () => {
@@ -219,6 +224,28 @@ describe("Web RBAC trusted boundary", () => {
       );
       expect(result.allowed).toBe(false);
       expect(result.retryAfterSeconds).toBeGreaterThan(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("reservasi login atomik menolak percobaan setelah batas", async () => {
+    const { client } = await createFixture();
+    try {
+      const now = new Date("2026-08-09T01:00:00.000Z");
+      const results = [];
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        results.push(
+          await consumeLoginAttempt(
+            client,
+            "203.0.113.11",
+            "parallel-user",
+            now,
+          ),
+        );
+      }
+      expect(results.slice(0, 5).every((result) => result.allowed)).toBe(true);
+      expect(results[5]?.allowed).toBe(false);
     } finally {
       client.close();
     }

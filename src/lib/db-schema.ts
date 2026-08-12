@@ -1,8 +1,39 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
+const CURRENT_SCHEMA_VERSION = 5;
+const REQUIRED_TABLE_COUNT = 18;
+
+export async function isDatabaseSchemaReady(client: Client) {
+  try {
+    const result = await client.execute(`
+      SELECT
+        COALESCE((SELECT MAX(version) FROM schema_migration), 0) AS version,
+        (
+          SELECT COUNT(*) FROM sqlite_master
+          WHERE type = 'table' AND name IN (
+            'master_data', 'id_card', 'master_operator', 'tbl_shift',
+            'setting_gex_system', 'log_scan', 'absensi_harian',
+            'backup_karyawan', 'koreksi_admin', 'audit_absensi', 'app_role',
+            'app_permission', 'role_permission', 'app_session',
+            'auth_login_rate_limit', 'sync_operation_receipt',
+            'sync_change_log', 'import_offline'
+          )
+        ) AS table_count;
+    `);
+    return (
+      Number(result.rows[0]?.version ?? 0) >= CURRENT_SCHEMA_VERSION &&
+      Number(result.rows[0]?.table_count ?? 0) === REQUIRED_TABLE_COUNT
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function initDatabaseSchema(client: Client) {
   try {
+    if (await isDatabaseSchemaReady(client)) return;
+
     // 1. master_data
     await client.execute(`
       CREATE TABLE IF NOT EXISTS master_data (
@@ -212,7 +243,7 @@ export async function initDatabaseSchema(client: Client) {
     // Seed default data
     await seedDefaultData(client);
 
-    console.log("Database schema berhasil diinisialisasi.");
+    console.log("Database schema berhasil dimigrasikan.");
   } catch (error) {
     console.error("Gagal menginisialisasi database schema:", error);
     throw error;
@@ -242,6 +273,7 @@ async function seedDefaultData(client: Client) {
   if (Number(settingsCheck.rows[0]?.count || 0) === 0) {
     await client.execute(`
       INSERT OR IGNORE INTO setting_gex_system (key, value) VALUES
+      ('geofence_enabled', 'false'),
       ('lat_kantor', '0'),
       ('lng_kantor', '0'),
       ('radius_meter', '100'),

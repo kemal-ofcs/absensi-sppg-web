@@ -7,6 +7,8 @@ import {
 const RBAC_MIGRATION_VERSION = 1;
 const WEB_SESSION_MIGRATION_VERSION = 2;
 const LOGIN_RATE_LIMIT_MIGRATION_VERSION = 3;
+const OPERATIONAL_SYNC_MIGRATION_VERSION = 4;
+const OFFLINE_IMPORT_MIGRATION_VERSION = 5;
 
 const SYSTEM_ROLES = [
   {
@@ -127,6 +129,56 @@ export async function runDatabaseMigrations(client: Client) {
     );
   `);
 
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS sync_operation_receipt (
+      event_id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('applied', 'rejected', 'conflict')),
+      result_json TEXT NOT NULL,
+      base_revision INTEGER,
+      server_revision INTEGER,
+      actor_operator_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      processed_at TEXT NOT NULL
+    );
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS sync_change_log (
+      revision INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      changed_at TEXT NOT NULL,
+      actor_operator_id INTEGER NOT NULL
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS import_offline (
+      id_import INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_key TEXT UNIQUE NOT NULL,
+      timestamp_input TEXT NOT NULL,
+      tanggal DATE NOT NULL,
+      id_unik TEXT NOT NULL,
+      nama TEXT,
+      divisi TEXT,
+      jam_masuk TEXT,
+      jam_pulang TEXT,
+      status_kehadiran TEXT,
+      status_absen TEXT,
+      keterangan TEXT,
+      status_proses TEXT NOT NULL DEFAULT 'Belum Diproses',
+      diproses_pada TEXT,
+      pesan_error TEXT,
+      kode_operator TEXT
+    );
+  `);
+
   if (!(await hasColumn(client, "master_operator", "role_id"))) {
     await client.execute(
       "ALTER TABLE master_operator ADD COLUMN role_id INTEGER;",
@@ -235,6 +287,19 @@ export async function runDatabaseMigrations(client: Client) {
     args: [LOGIN_RATE_LIMIT_MIGRATION_VERSION, now],
   });
 
+  await client.execute({
+    sql: `
+      INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+      VALUES (?, 'operational-sync-foundation', ?);
+    `,
+    args: [OPERATIONAL_SYNC_MIGRATION_VERSION, now],
+  });
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'offline-import-foundation', ?);`,
+    args: [OFFLINE_IMPORT_MIGRATION_VERSION, now],
+  });
+
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_master_operator_role_id ON master_operator(role_id);",
   );
@@ -246,5 +311,14 @@ export async function runDatabaseMigrations(client: Client) {
   );
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_auth_login_rate_limit_blocked ON auth_login_rate_limit(blocked_until);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_sync_receipt_client_status ON sync_operation_receipt(client_id, status, processed_at);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_sync_change_domain_revision ON sync_change_log(domain, revision);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_import_offline_status ON import_offline(status_proses, timestamp_input);",
   );
 }

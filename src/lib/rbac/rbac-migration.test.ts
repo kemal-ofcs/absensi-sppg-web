@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type Client, createClient } from "@libsql/client";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import {
+  hashPassword,
+  hashVerifiedPasswordForUpgrade,
+  verifyPassword,
+} from "@/lib/auth/password";
 import { runDatabaseMigrations } from "@/lib/db-migrations";
-import { initDatabaseSchema } from "@/lib/db-schema";
+import { initDatabaseSchema, isDatabaseSchemaReady } from "@/lib/db-schema";
 import {
   DEFAULT_ROLE_PERMISSIONS,
   SUPERADMIN_ONLY_PERMISSIONS,
@@ -39,6 +43,12 @@ beforeAll(async () => {
 afterAll(() => client.close());
 
 describe("dynamic RBAC migration", () => {
+  test("mendeteksi skema siap agar request berikutnya melewati migrasi", async () => {
+    await initDatabaseSchema(client);
+    expect(await isDatabaseSchemaReady(client)).toBe(true);
+    await initDatabaseSchema(client);
+  });
+
   test("migrasi idempotent dan mempertahankan operator lama", async () => {
     await runDatabaseMigrations(client);
     await runDatabaseMigrations(client);
@@ -76,7 +86,7 @@ describe("dynamic RBAC migration", () => {
       "SELECT version FROM schema_migration ORDER BY version;",
     );
     expect(migrations.rows.map((row) => Number(row.version))).toEqual([
-      1, 2, 3,
+      1, 2, 3, 4, 5,
     ]);
 
     const sessionColumns = await client.execute(
@@ -117,6 +127,11 @@ describe("password hashing", () => {
     expect(await verifyPassword("legacy-password", "legacy-password")).toEqual({
       valid: true,
       needsUpgrade: true,
+    });
+    const upgraded = await hashVerifiedPasswordForUpgrade("legacy-password");
+    expect(await verifyPassword("legacy-password", upgraded)).toEqual({
+      valid: true,
+      needsUpgrade: false,
     });
   });
 });

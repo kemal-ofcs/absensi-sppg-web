@@ -1,3 +1,5 @@
+import "server-only";
+
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface DashboardMetrics {
@@ -94,6 +96,41 @@ export async function getRekapHarian(filter?: {
 
   const res = await db.execute({ sql: query, args: params });
   return res.rows as unknown as Record<string, unknown>[];
+}
+
+export async function getRiwayatScan(filter?: {
+  tanggal?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  await ensureDbInitialized();
+  const tanggal = filter?.tanggal || new Date().toISOString().split("T")[0];
+  const search = filter?.search?.trim() || "";
+  const limit = Math.min(500, Math.max(1, filter?.limit || 200));
+  const offset = Math.max(0, filter?.offset || 0);
+  const result = await db.execute({
+    sql: `
+      SELECT id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
+        nama, divisi, jenis_scan, status_proses, sumber_data,
+        catatan_sistem, keterangan, kode_operator
+      FROM log_scan
+      WHERE tanggal_kerja = ?
+        AND (? = '' OR nama LIKE ? OR id_karyawan LIKE ? OR divisi LIKE ?)
+      ORDER BY timestamp_scan DESC, id_log DESC
+      LIMIT ? OFFSET ?;
+    `,
+    args: [
+      tanggal,
+      search,
+      `%${search}%`,
+      `%${search}%`,
+      `%${search}%`,
+      limit,
+      offset,
+    ],
+  });
+  return result.rows as unknown as Record<string, unknown>[];
 }
 
 export async function getRekapBulanan(filter?: {

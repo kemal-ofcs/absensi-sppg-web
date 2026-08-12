@@ -1,3 +1,5 @@
+import "server-only";
+
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface KaryawanInput {
@@ -19,11 +21,104 @@ export interface KaryawanInput {
 
 export function generateRandomToken(length = 8): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const random = new Uint32Array(length);
+  crypto.getRandomValues(random);
   let token = "";
   for (let i = 0; i < length; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
+    token += chars.charAt(random[i] % chars.length);
   }
   return token;
+}
+
+export async function importKaryawanMassal(drafts: KaryawanInput[]) {
+  await ensureDbInitialized();
+  if (drafts.length === 0) return { sukses: true, berhasil: 0, dilewati: 0 };
+
+  const ids = drafts.map((draft) => draft.id_unik);
+  const codes = drafts.map((draft) => draft.kode_karyawan);
+  const placeholders = drafts.map(() => "?").join(",");
+  const existing = await db.execute({
+    sql: `SELECT id_unik, kode_karyawan FROM master_data
+      WHERE id_unik IN (${placeholders}) OR kode_karyawan IN (${placeholders});`,
+    args: [...ids, ...codes],
+  });
+  const existingIds = new Set(existing.rows.map((row) => String(row.id_unik)));
+  const existingCodes = new Set(
+    existing.rows.map((row) => String(row.kode_karyawan)),
+  );
+  const accepted = drafts.filter(
+    (draft) =>
+      !existingIds.has(draft.id_unik) &&
+      !existingCodes.has(draft.kode_karyawan),
+  );
+  const requestedShiftIds = [
+    ...new Set(accepted.map((draft) => draft.id_shift)),
+  ];
+  if (requestedShiftIds.length > 0) {
+    const shiftPlaceholders = requestedShiftIds.map(() => "?").join(",");
+    const shifts = await db.execute({
+      sql: `SELECT id_shift FROM tbl_shift WHERE id_shift IN (${shiftPlaceholders});`,
+      args: requestedShiftIds,
+    });
+    const validShiftIds = new Set(
+      shifts.rows.map((row) => Number(row.id_shift)),
+    );
+    const invalidShiftId = requestedShiftIds.find(
+      (shiftId) => !validShiftIds.has(shiftId),
+    );
+    if (invalidShiftId !== undefined) {
+      throw new Error(`Shift ID ${invalidShiftId} tidak tersedia.`);
+    }
+  }
+
+  for (let offset = 0; offset < accepted.length; offset += 100) {
+    const statements = accepted.slice(offset, offset + 100).flatMap((data) => {
+      const token = generateRandomToken(10);
+      const today =
+        data.tanggal_daftar || new Date().toISOString().split("T")[0];
+      return [
+        {
+          sql: `INSERT INTO master_data (
+            id_unik, kode_karyawan, nama, divisi, jabatan_status, no_hp, lp,
+            id_shift, status_aktif, tanggal_daftar, catatan, token_absensi,
+            qr_code, status_qr, jenis_personil, tanggal_mulai_aktif,
+            tanggal_selesai_aktif, status_backup
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Generated', ?, ?, ?, 'NORMAL');`,
+          args: [
+            data.id_unik,
+            data.kode_karyawan,
+            data.nama,
+            data.divisi,
+            data.jabatan_status || "-",
+            data.no_hp || "",
+            data.lp,
+            data.id_shift,
+            data.status_aktif || "Aktif",
+            today,
+            data.catatan || "",
+            token,
+            `${data.id_unik}|${token}`,
+            data.jenis_personil || "Pegawai",
+            data.tanggal_mulai_aktif || today,
+            data.tanggal_selesai_aktif || "",
+          ],
+        },
+        {
+          sql: `INSERT INTO id_card
+            (id_unik, nama, divisi, idcard_status, tanggal_generate)
+            VALUES (?, ?, ?, 'Belum', ?);`,
+          args: [data.id_unik, data.nama, data.divisi, today],
+        },
+      ];
+    });
+    await db.batch(statements, "write");
+  }
+
+  return {
+    sukses: true,
+    berhasil: accepted.length,
+    dilewati: drafts.length - accepted.length,
+  };
 }
 
 export async function getDaftarKaryawan(filter?: {
@@ -34,7 +129,12 @@ export async function getDaftarKaryawan(filter?: {
   await ensureDbInitialized();
 
   let query = `
-    SELECT m.*, s.nama_shift, c.idcard_status, c.idcard_pdf_url, c.link_qr_png
+    SELECT
+      m.id_unik, m.kode_karyawan, m.nama, m.divisi, m.jabatan_status,
+      m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
+      m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
+      m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
+      c.idcard_status, c.idcard_pdf_url, c.link_qr_png
     FROM master_data m
     LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
     LEFT JOIN id_card c ON m.id_unik = c.id_unik
@@ -70,7 +170,13 @@ export async function getKaryawanById(id_unik: string) {
 
   const res = await db.execute({
     sql: `
-      SELECT m.*, s.nama_shift, c.idcard_status, c.idcard_pdf_url, c.link_qr_png, c.idcard_last_generate
+      SELECT
+        m.id_unik, m.kode_karyawan, m.nama, m.divisi, m.jabatan_status,
+        m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
+        m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
+        m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
+        c.idcard_status, c.idcard_pdf_url, c.link_qr_png,
+        c.idcard_last_generate
       FROM master_data m
       LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
       LEFT JOIN id_card c ON m.id_unik = c.id_unik

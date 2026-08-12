@@ -7,6 +7,7 @@ use url::Url;
 use super::{models::DesktopSession, storage};
 
 const BUILD_API_BASE_URL: Option<&str> = option_env!("SPPG_API_BASE_URL");
+const BUILD_DEV_API_BASE_URL: Option<&str> = option_env!("SPPG_DEV_API_BASE_URL");
 const BUILD_OFFLINE_MAX_AGE_HOURS: Option<&str> = option_env!("SPPG_OFFLINE_AUTH_MAX_AGE_HOURS");
 
 pub struct DesktopState {
@@ -54,7 +55,13 @@ fn parse_api_base_url_value(configured: Option<&str>, debug_build: bool) -> Resu
 }
 
 fn parse_api_base_url() -> Result<Url, String> {
-    parse_api_base_url_value(BUILD_API_BASE_URL, cfg!(debug_assertions))
+    let debug_build = cfg!(debug_assertions);
+    let configured = if debug_build {
+        BUILD_DEV_API_BASE_URL
+    } else {
+        BUILD_API_BASE_URL
+    };
+    parse_api_base_url_value(configured, debug_build)
 }
 
 fn parse_offline_hours_value(configured: Option<&str>, debug_build: bool) -> Result<u64, String> {

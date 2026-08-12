@@ -1,23 +1,34 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import type React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Modal } from "@/components/ui/Modal";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
+import { downloadDataUrl } from "@/lib/client/download";
+import {
+  downloadEmployeeTemplate,
+  exportEmployees,
+  readEmployeeWorkbook,
+} from "@/lib/client/employee-workbook";
+import { createQrPng, employeeQrPayload } from "@/lib/client/qr-code";
 import { useAuth } from "@/lib/context/AuthContext";
-import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   generateTokenMassal,
   getDaftarKaryawan,
+  importKaryawanMassal,
   type KaryawanInput,
   tambahKaryawan,
   toggleStatusKaryawan,
   updateKaryawan,
-} from "@/lib/services/employee";
-import { getDaftarShift } from "@/lib/services/shift";
+} from "@/lib/gateways/employee";
+import { getDaftarIdCard } from "@/lib/gateways/id-card";
+import { getDaftarShift } from "@/lib/gateways/shift";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   createEmployeeIdentifiers,
   firstValidationMessage,
@@ -37,6 +48,13 @@ export default function KaryawanPage() {
   const [search, setSearch] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [qrPreview, setQrPreview] = useState<{
+    id: string;
+    nama: string;
+    png: string;
+  } | null>(null);
+  const [bulkWorking, setBulkWorking] = useState(false);
 
   // Modal State
   const [showModal, setShowModal] = useState<boolean>(false);
@@ -183,6 +201,47 @@ export default function KaryawanPage() {
     }
   };
 
+  const handleImport = async (file: File) => {
+    setBulkWorking(true);
+    try {
+      const drafts = await readEmployeeWorkbook(file);
+      const result = await importKaryawanMassal(drafts);
+      setAlertMsg(
+        `Import selesai: ${result.berhasil} berhasil, ${result.dilewati} dilewati karena sudah ada/gagal.`,
+      );
+      await loadData();
+    } catch (cause) {
+      setErrorMsg(
+        cause instanceof Error ? cause.message : "Import Excel gagal.",
+      );
+    } finally {
+      setBulkWorking(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
+  const handleShowQr = async (row: Record<string, unknown>) => {
+    try {
+      const cards = await getDaftarIdCard({ search: String(row.id_unik) });
+      const card = cards.find(
+        (item) => String(item.id_unik) === String(row.id_unik),
+      );
+      const payload = employeeQrPayload(card ?? {});
+      if (!payload) {
+        throw new Error(
+          "Token QR karyawan belum tersedia. Jalankan Generate QR Token Massal lalu coba lagi.",
+        );
+      }
+      setQrPreview({
+        id: String(row.id_unik),
+        nama: String(row.nama),
+        png: await createQrPng(payload),
+      });
+    } catch (cause) {
+      setErrorMsg(cause instanceof Error ? cause.message : "QR gagal dibuat.");
+    }
+  };
+
   if (!isHydrated || authLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
@@ -218,6 +277,38 @@ export default function KaryawanPage() {
 
         {canManage ? (
           <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleImport(file);
+              }}
+            />
+            <button
+              type="button"
+              disabled={bulkWorking}
+              onClick={() => importInputRef.current?.click()}
+              className="px-3.5 py-2 bg-slate-800 text-emerald-300 font-semibold text-xs rounded-xl border border-emerald-500/40 disabled:opacity-50"
+            >
+              {bulkWorking ? "Memproses..." : "Import Excel"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void downloadEmployeeTemplate()}
+              className="px-3.5 py-2 bg-slate-800 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700"
+            >
+              Template
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportEmployees(karyawanList)}
+              className="px-3.5 py-2 bg-slate-800 text-sky-300 font-semibold text-xs rounded-xl border border-sky-500/40"
+            >
+              Export Excel
+            </button>
             <button
               type="button"
               onClick={handleGenerateMassal}
@@ -381,13 +472,22 @@ export default function KaryawanPage() {
                       </td>
                       <td className="p-4 text-right">
                         {canManage ? (
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(row)}
-                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition"
-                          >
-                            Edit
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleShowQr(row)}
+                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg text-xs transition"
+                            >
+                              Lihat QR
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(row)}
+                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition"
+                            >
+                              Edit
+                            </button>
+                          </div>
                         ) : (
                           <span className="text-[10px] text-slate-500">
                             Lihat saja
@@ -402,6 +502,46 @@ export default function KaryawanPage() {
           </div>
         )}
       </div>
+
+      {canManage ? (
+        <div className="text-right">
+          <Link
+            href="/id-cards"
+            className="text-xs font-bold text-sky-300 hover:text-sky-200"
+          >
+            Buka pembuatan dan cetak ID card →
+          </Link>
+        </div>
+      ) : null}
+
+      {qrPreview ? (
+        <Modal
+          title={`QR ${qrPreview.nama}`}
+          titleId="qr-preview-title"
+          onClose={() => setQrPreview(null)}
+        >
+          <div className="flex flex-col items-center gap-4 text-center">
+            <Image
+              unoptimized
+              src={qrPreview.png}
+              alt={`QR absensi ${qrPreview.nama}`}
+              width={320}
+              height={320}
+              className="rounded-xl bg-white p-3"
+            />
+            <p className="font-mono text-xs text-slate-400">{qrPreview.id}</p>
+            <button
+              type="button"
+              onClick={() =>
+                downloadDataUrl(qrPreview.png, `qr-${qrPreview.id}.png`)
+              }
+              className="rounded-xl bg-sky-400 px-5 py-2 text-xs font-bold text-slate-950"
+            >
+              Simpan QR sebagai PNG
+            </button>
+          </div>
+        </Modal>
+      ) : null}
 
       {/* Add / Edit Employee Modal */}
       {showModal && canManage ? (

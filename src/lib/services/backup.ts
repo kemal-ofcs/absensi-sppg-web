@@ -1,3 +1,5 @@
+import "server-only";
+
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface PenugasanBackupInput {

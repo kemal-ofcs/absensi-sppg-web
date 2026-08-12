@@ -22,7 +22,7 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
+    if (!username.trim() || !password) {
       setErrorMsg("Mohon isi Username / Kode Operator dan Password.");
       return;
     }
@@ -31,9 +31,9 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      const res = await login(username.trim(), password.trim());
+      const res = await login(username.trim(), password);
       if (res.sukses) {
-        router.push("/");
+        router.replace("/");
       } else {
         setErrorMsg(res.pesan);
       }

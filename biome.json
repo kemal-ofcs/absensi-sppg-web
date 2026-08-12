@@ -13,6 +13,7 @@
       "!.next",
       "!dist",
       "!build",
+      "!backup-app",
       "!code-sheet",
       "!src-tauri/target"
     ]

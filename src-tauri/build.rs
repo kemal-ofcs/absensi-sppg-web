@@ -14,6 +14,31 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_update_role",
     "desktop_set_role_permissions",
     "desktop_delete_role",
+    "desktop_get_employees",
+    "desktop_create_employee",
+    "desktop_update_employee",
+    "desktop_set_employee_status",
+    "desktop_generate_employee_tokens",
+    "desktop_get_shifts",
+    "desktop_create_shift",
+    "desktop_update_shift",
+    "desktop_delete_shift",
+    "desktop_submit_qr_scan",
+    "desktop_get_corrections",
+    "desktop_create_correction",
+    "desktop_get_backups",
+    "desktop_create_backup",
+    "desktop_cancel_backup",
+    "desktop_import_offline",
+    "desktop_get_dashboard_data",
+    "desktop_get_id_cards",
+    "desktop_update_id_card",
+    "desktop_get_geofence_settings",
+    "desktop_update_geofence_settings",
+    "desktop_get_sync_status",
+    "desktop_sync_now",
+    "desktop_get_sync_conflicts",
+    "desktop_retry_failed_sync",
 ];
 
 fn local_build_values() -> HashMap<String, String> {
@@ -42,6 +67,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../.env");
     let local = local_build_values();
     let api_base_url = expose_build_value("SPPG_API_BASE_URL", &local);
+    expose_build_value("SPPG_DEV_API_BASE_URL", &local);
     let offline_hours = expose_build_value("SPPG_OFFLINE_AUTH_MAX_AGE_HOURS", &local);
 
     if env::var("PROFILE").as_deref() == Ok("release") {

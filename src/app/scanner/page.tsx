@@ -1,18 +1,20 @@
 "use client";
 
+import type { IScannerControls } from "@zxing/browser";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { canAccessArea } from "@/lib/auth/access";
+import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
-import { useClock } from "@/lib/hooks/useClock";
-import { useHydrated } from "@/lib/hooks/useHydrated";
-import type { ScanResult } from "@/lib/services/attendance";
+import type { ScanResult } from "@/lib/contracts/scanner";
 import {
   getCurrentCoordinates,
   type ScanTerminalInput,
   submitTerminalScan,
-} from "@/lib/services/scanner";
+} from "@/lib/gateways/scanner";
+import { useClock } from "@/lib/hooks/useClock";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 import { audioSynth } from "@/lib/utils/audio";
 
 interface ScanLogItem {
@@ -25,18 +27,6 @@ interface ScanLogItem {
   statusProses: string;
   pesan: string;
   sukses: boolean;
-}
-
-interface DetectedQrCode {
-  rawValue: string;
-}
-
-interface QrDetector {
-  detect(source: HTMLVideoElement): Promise<DetectedQrCode[]>;
-}
-
-interface QrDetectorConstructor {
-  new (options: { formats: string[] }): QrDetector;
 }
 
 export default function ScannerPage() {
@@ -59,8 +49,7 @@ export default function ScannerPage() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
+  const scannerControlsRef = useRef<IScannerControls | null>(null);
   const cameraScanLockedRef = useRef(false);
   const connectScannerInput = useCallback((node: HTMLInputElement | null) => {
     inputRef.current = node;
@@ -68,14 +57,13 @@ export default function ScannerPage() {
   }, []);
 
   const stopCamera = useCallback(() => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    scannerControlsRef.current?.stop();
+    scannerControlsRef.current = null;
+    const stream = videoRef.current?.srcObject;
+    if (stream instanceof MediaStream) {
+      for (const track of stream.getTracks()) track.stop();
     }
-    for (const track of streamRef.current?.getTracks() ?? []) track.stop();
-    streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-    cameraScanLockedRef.current = false;
     setCameraActive(false);
   }, []);
 
@@ -121,10 +109,12 @@ export default function ScannerPage() {
       setScanInput("");
 
       try {
+        const currentLocation = gpsLocation ?? (await getCurrentCoordinates());
+        if (currentLocation && !gpsLocation) setGpsLocation(currentLocation);
         const input: ScanTerminalInput = {
           qrContent: cleanPayload,
-          lat: gpsLocation?.lat,
-          lng: gpsLocation?.lng,
+          lat: currentLocation?.lat,
+          lng: currentLocation?.lng,
           kodeOperator: user?.kode_operator || "OP001",
           sumberData: "Scanner",
         };
@@ -192,57 +182,37 @@ export default function ScannerPage() {
     setCameraMessage(null);
     cameraScanLockedRef.current = false;
 
-    const Detector = (
-      window as typeof window & { BarcodeDetector?: QrDetectorConstructor }
-    ).BarcodeDetector;
-    if (!Detector) {
-      setCameraMessage(
-        "Decoder QR kamera belum didukung perangkat ini. Gunakan QR reader USB/wireless.",
-      );
-      return;
-    }
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraMessage("Kamera tidak tersedia pada perangkat ini.");
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: "environment" } },
-      });
-      streamRef.current = stream;
       const video = videoRef.current;
       if (!video) {
         stopCamera();
         return;
       }
-
-      video.srcObject = stream;
-      await video.play();
+      const { BrowserQRCodeReader } = await import("@zxing/browser");
+      const reader = new BrowserQRCodeReader(undefined, {
+        delayBetweenScanAttempts: 120,
+      });
+      const controls = await reader.decodeFromConstraints(
+        {
+          audio: false,
+          video: { facingMode: { ideal: "environment" } },
+        },
+        video,
+        (result) => {
+          const qrContent = result?.getText().trim();
+          if (!qrContent || cameraScanLockedRef.current) return;
+          cameraScanLockedRef.current = true;
+          stopCamera();
+          void handleScanSubmit(qrContent);
+        },
+      );
+      scannerControlsRef.current = controls;
       setCameraActive(true);
-      const detector = new Detector({ formats: ["qr_code"] });
-
-      const detectFrame = async () => {
-        if (!streamRef.current || cameraScanLockedRef.current) return;
-        try {
-          const codes = await detector.detect(video);
-          const qrContent = codes[0]?.rawValue.trim();
-          if (qrContent) {
-            cameraScanLockedRef.current = true;
-            stopCamera();
-            await handleScanSubmit(qrContent);
-            return;
-          }
-        } catch {
-          setCameraMessage(
-            "Frame kamera belum dapat dibaca. Arahkan QR ke area pemindaian.",
-          );
-        }
-        animationFrameRef.current = requestAnimationFrame(detectFrame);
-      };
-
-      animationFrameRef.current = requestAnimationFrame(detectFrame);
     } catch (error: unknown) {
       stopCamera();
       setCameraMessage(
@@ -292,7 +262,7 @@ export default function ScannerPage() {
               Location:{" "}
               {gpsLocation
                 ? `${gpsLocation.lat.toFixed(4)}, ${gpsLocation.lng.toFixed(4)}`
-                : "Kantor Pusat"}
+                : "GPS belum tersedia"}
             </p>
           </div>
         </div>
@@ -531,7 +501,7 @@ export default function ScannerPage() {
               Riwayat Scan Real-time
             </h3>
             <span className="text-[11px] font-mono text-slate-500">
-              {scanHistory.length} Record
+              {scanHistory.length} pada sesi ini
             </span>
           </div>
 
@@ -577,6 +547,18 @@ export default function ScannerPage() {
                 </div>
               ))
             )}
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-4 text-xs text-slate-400">
+            Tampilan ini hanya memuat 16 scan terakhir pada sesi terminal. Semua
+            log tetap disimpan di database.{" "}
+            {hasPermission(user, "dashboard.view") ? (
+              <Link
+                href="/history"
+                className="font-bold text-sky-300 hover:text-sky-200"
+              >
+                Buka riwayat tersimpan
+              </Link>
+            ) : null}
           </div>
         </div>
       </div>

@@ -2,38 +2,56 @@
   "name": "absensi-sppg-app",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "bun@1.3.14",
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.3.0"
+  },
   "scripts": {
     "dev": "next dev --webpack",
+    "dev:desktop": "bun scripts/dev-target.ts",
     "build": "bun run build:web",
     "build:web": "bun scripts/build-target.ts web",
     "build:desktop": "bun scripts/build-target.ts desktop",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:preview": "tauri dev --config src-tauri/tauri.preview.conf.json --no-watch",
     "tauri:build": "tauri build",
     "start": "next start",
-    "lint": "biome check",
+    "lint": "biome check .",
     "format": "biome format --write",
-    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "test": "bun scripts/run-tests.ts",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run test:rust",
     "bootstrap:superadmin": "bun scripts/bootstrap-superadmin.ts"
   },
   "dependencies": {
-    "@libsql/client": "^0.14.0",
+    "@libsql/client": "0.17.4",
     "@tailwindcss/postcss": "^4.3.3",
     "@tauri-apps/api": "^2.2.0",
-    "next": "^16.3.0",
+    "@zxing/browser": "0.2.0",
+    "exceljs": "4.4.0",
+    "next": "16.3.0",
     "postcss": "^8.5.26",
+    "qrcode": "1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",
     "@tauri-apps/cli": "^2.3.0",
-    "@types/bun": "latest",
+    "@types/bun": "1.3.14",
     "@types/node": "^20",
+    "@types/qrcode": "1.5.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
     "typescript": "^5"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }

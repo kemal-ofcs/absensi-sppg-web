@@ -112,10 +112,19 @@ pub async fn authorized_json(
     if status.is_success() {
         return Ok(payload);
     }
+    let fallback_message = match status {
+        StatusCode::NOT_FOUND => {
+            "Endpoint sinkronisasi tidak ditemukan pada server aplikasi. Pastikan Desktop terhubung ke versi server yang sama."
+        }
+        StatusCode::INTERNAL_SERVER_ERROR => {
+            "Server aplikasi mengalami kesalahan saat memproses sinkronisasi (HTTP 500)."
+        }
+        _ => "Permintaan server tidak dapat diproses.",
+    };
     let message = payload
         .get("pesan")
         .and_then(Value::as_str)
-        .unwrap_or("Permintaan server tidak dapat diproses.");
+        .unwrap_or(fallback_message);
     let code = match status {
         StatusCode::UNAUTHORIZED => "DESKTOP_SESSION_EXPIRED",
         StatusCode::FORBIDDEN => "DESKTOP_ACCESS_DENIED",

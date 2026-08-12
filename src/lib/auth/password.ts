@@ -56,10 +56,7 @@ export function validatePasswordStrength(password: string) {
   return null;
 }
 
-export async function hashPassword(password: string) {
-  const strengthError = validatePasswordStrength(password);
-  if (strengthError) throw new Error(strengthError);
-
+async function hashPasswordValue(password: string) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await derivePassword(password, salt, PASSWORD_ITERATIONS);
   return [
@@ -68,6 +65,18 @@ export async function hashPassword(password: string) {
     bytesToBase64(salt),
     bytesToBase64(hash),
   ].join("$");
+}
+
+export async function hashPassword(password: string) {
+  const strengthError = validatePasswordStrength(password);
+  if (strengthError) throw new Error(strengthError);
+  return hashPasswordValue(password);
+}
+
+// Hanya untuk password legacy yang sudah berhasil diverifikasi. Kebijakan
+// kekuatan tetap berlaku pada pembuatan atau perubahan password baru.
+export function hashVerifiedPasswordForUpgrade(password: string) {
+  return hashPasswordValue(password);
 }
 
 export async function verifyPassword(password: string, storedValue: string) {

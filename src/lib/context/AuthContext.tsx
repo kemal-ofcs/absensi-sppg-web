@@ -88,9 +88,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ? logoutDesktopSession()
       : logoutWebSession();
 
-    void logoutRequest
-      .catch(() => undefined)
-      .finally(() => redirectAfterLogout());
+    redirectAfterLogout();
+    void logoutRequest.catch(() => undefined);
   }, []);
 
   return (

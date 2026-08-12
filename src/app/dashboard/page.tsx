@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
-import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   type DashboardMetrics,
   getDashboardMetrics,
@@ -13,7 +12,8 @@ import {
   getRekapHarian,
   getTopKaryawanTerajin,
   type RekapBulananItem,
-} from "@/lib/services/report";
+} from "@/lib/gateways/report";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 
 export default function DashboardPage() {
   const isHydrated = useHydrated();

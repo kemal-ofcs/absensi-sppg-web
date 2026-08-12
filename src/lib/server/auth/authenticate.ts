@@ -1,7 +1,12 @@
 import "server-only";
 
+import type { Client } from "@libsql/client";
 import type { OperatorUser } from "@/lib/auth/operator-user";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import {
+  hashPassword,
+  hashVerifiedPasswordForUpgrade,
+  verifyPassword,
+} from "@/lib/auth/password";
 import { PERMISSION_CATALOG, type PermissionKey } from "@/lib/rbac/catalog";
 import {
   ensureServerDatabaseInitialized,
@@ -15,10 +20,14 @@ function getDummyPasswordHash() {
   return dummyPasswordHash;
 }
 
-async function readPermissions(roleId: number, isSuperadmin: boolean) {
+async function readPermissions(
+  database: Client,
+  roleId: number,
+  isSuperadmin: boolean,
+) {
   if (isSuperadmin) return PERMISSION_CATALOG.map(({ key }) => key);
 
-  const result = await getServerDatabase().execute({
+  const result = await database.execute({
     sql: `
       SELECT permission_key
       FROM role_permission
@@ -33,12 +42,11 @@ async function readPermissions(roleId: number, isSuperadmin: boolean) {
   ) as PermissionKey[];
 }
 
-export async function authenticateWebOperator(
+export async function authenticateOperatorWithClient(
+  database: Client,
   usernameOrCode: string,
   password: string,
 ): Promise<OperatorUser | null> {
-  await ensureServerDatabaseInitialized();
-  const database = getServerDatabase();
   const identifier = usernameOrCode.trim();
   const result = await database.execute({
     sql: `
@@ -47,7 +55,7 @@ export async function authenticateWebOperator(
         m.role_id, r.role_key, r.nama_role, r.is_superadmin
       FROM master_operator m
       JOIN app_role r ON r.id = m.role_id
-      WHERE (m.username = ? OR m.kode_operator = ?)
+      WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
         AND m.status = 'Aktif' AND r.status = 'Aktif'
       LIMIT 1;
     `,
@@ -67,7 +75,7 @@ export async function authenticateWebOperator(
   if (verification.needsUpgrade) {
     await database.execute({
       sql: "UPDATE master_operator SET password_hash = ? WHERE id = ?;",
-      args: [await hashPassword(password), Number(row.id)],
+      args: [await hashVerifiedPasswordForUpgrade(password), Number(row.id)],
     });
   }
 
@@ -86,8 +94,20 @@ export async function authenticateWebOperator(
     roleId,
     roleKey: String(row.role_key),
     isSuperadmin,
-    permissions: await readPermissions(roleId, isSuperadmin),
+    permissions: await readPermissions(database, roleId, isSuperadmin),
     permissionRevision: Number(revision.rows[0]?.value ?? 1),
     loginAt: new Date().toISOString(),
   };
+}
+
+export async function authenticateWebOperator(
+  usernameOrCode: string,
+  password: string,
+) {
+  await ensureServerDatabaseInitialized();
+  return authenticateOperatorWithClient(
+    getServerDatabase(),
+    usernameOrCode,
+    password,
+  );
 }

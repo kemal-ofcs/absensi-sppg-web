@@ -8,13 +8,13 @@ import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Modal } from "@/components/ui/Modal";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
-import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   getDaftarShift,
   type ShiftInput,
   tambahShift,
   updateShift,
-} from "@/lib/services/shift";
+} from "@/lib/gateways/shift";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
   firstValidationMessage,
   validateShiftDraft,

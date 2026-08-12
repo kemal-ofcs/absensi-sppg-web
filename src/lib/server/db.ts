@@ -4,28 +4,41 @@ import { type Client, createClient } from "@libsql/client";
 import { initDatabaseSchema } from "@/lib/db-schema";
 import { resolveServerDatabaseConfig } from "@/lib/server/database-config";
 
-let serverClient: Client | null = null;
-let initialization: Promise<void> | null = null;
+interface ServerDatabaseState {
+  client: Client | null;
+  initialization: Promise<void> | null;
+}
+
+const globalDatabase = globalThis as typeof globalThis & {
+  __sppgServerDatabase?: ServerDatabaseState;
+};
+
+if (!globalDatabase.__sppgServerDatabase) {
+  globalDatabase.__sppgServerDatabase = { client: null, initialization: null };
+}
+const state = globalDatabase.__sppgServerDatabase;
 
 export function getServerDatabase() {
-  if (!serverClient) {
+  if (!state.client) {
     const config = resolveServerDatabaseConfig(process.env);
-    serverClient = createClient({
+    state.client = createClient({
       url: config.url,
       authToken: config.authToken,
     });
   }
 
-  return serverClient;
+  return state.client;
 }
 
 export async function ensureServerDatabaseInitialized() {
-  if (!initialization) {
-    initialization = initDatabaseSchema(getServerDatabase()).catch((error) => {
-      initialization = null;
-      throw error;
-    });
+  if (!state.initialization) {
+    state.initialization = initDatabaseSchema(getServerDatabase()).catch(
+      (error) => {
+        state.initialization = null;
+        throw error;
+      },
+    );
   }
 
-  await initialization;
+  await state.initialization;
 }

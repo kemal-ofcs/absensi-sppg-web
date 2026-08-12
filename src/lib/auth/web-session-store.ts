@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  clearForcedLogoutMarker,
+  hasForcedLogoutMarker,
+  setForcedLogoutMarker,
+} from "@/lib/auth/logout-marker";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 
@@ -60,6 +65,20 @@ export function getWebSessionServerSnapshot() {
 
 export async function refreshWebSession() {
   if (isDesktopRuntime()) return null;
+  if (hasForcedLogoutMarker()) {
+    emit({ user: null, isLoading: false });
+    try {
+      await fetch("/api/auth/session", {
+        method: "DELETE",
+        credentials: "same-origin",
+        cache: "no-store",
+        keepalive: true,
+      });
+    } catch {
+      // Marker mempertahankan status logout lokal sampai login baru berhasil.
+    }
+    return null;
+  }
   try {
     const response = await fetch("/api/auth/session", {
       method: "POST",
@@ -87,6 +106,7 @@ export async function loginWebSession(username: string, password: string) {
     });
     const body = await readResponse(response);
     if (response.ok && body.sukses && body.operator) {
+      clearForcedLogoutMarker();
       emit({ user: body.operator, isLoading: false });
       return { sukses: true, pesan: body.pesan ?? "Login berhasil." };
     }
@@ -104,14 +124,17 @@ export async function loginWebSession(username: string, password: string) {
 }
 
 export async function logoutWebSession() {
+  setForcedLogoutMarker();
+  emit({ user: null, isLoading: false });
   try {
     await fetch("/api/auth/session", {
       method: "DELETE",
       credentials: "same-origin",
       cache: "no-store",
+      keepalive: true,
     });
-  } finally {
-    emit({ user: null, isLoading: false });
+  } catch {
+    // Logout lokal tetap final; revoke server dicoba lagi saat halaman dimuat.
   }
 }
 

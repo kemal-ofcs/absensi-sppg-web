@@ -1,3 +1,5 @@
+import "server-only";
+
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface KoreksiInput {
@@ -11,7 +13,8 @@ export interface KoreksiInput {
     | "Lupa Absen Masuk"
     | "Lupa Absen Pulang"
     | "Kendala Sistem - Jam Masuk"
-    | "Kendala Sistem - Jam Pulang";
+    | "Kendala Sistem - Jam Pulang"
+    | "Terlambat";
   jam_koreksi?: string; // HH:mm
   keterangan_admin?: string;
   kode_operator: string;
@@ -26,6 +29,22 @@ export function generateIdReferensiKoreksi(): string {
 
 export async function prosesKoreksiAdmin(input: KoreksiInput) {
   await ensureDbInitialized();
+
+  if (
+    [
+      "Lupa Absen Masuk",
+      "Lupa Absen Pulang",
+      "Kendala Sistem - Jam Masuk",
+      "Kendala Sistem - Jam Pulang",
+      "Terlambat",
+    ].includes(input.jenis_koreksi) &&
+    !input.jam_koreksi
+  ) {
+    return {
+      sukses: false,
+      pesan: `Jam koreksi wajib diisi untuk '${input.jenis_koreksi}'.`,
+    };
+  }
 
   // 1. Validasi Operator
   const opRes = await db.execute({
@@ -157,9 +176,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     input.jenis_koreksi === "Kendala Sistem - Jam Masuk"
   ) {
     // ---- KOREKSI LUPA ABSEN MASUK ----
-    const jamMasukKoreksi = input.jam_koreksi
-      ? `${input.tanggal} ${input.jam_koreksi}:00`
-      : `${input.tanggal} 07:00:00`;
+    const jamMasukKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
 
     if (existRecord) {
       await db.execute({
@@ -203,9 +220,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     input.jenis_koreksi === "Kendala Sistem - Jam Pulang"
   ) {
     // ---- KOREKSI LUPA ABSEN PULANG ----
-    const jamPulangKoreksi = input.jam_koreksi
-      ? `${input.tanggal} ${input.jam_koreksi}:00`
-      : `${input.tanggal} 15:00:00`;
+    const jamPulangKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
 
     if (existRecord) {
       await db.execute({
@@ -236,6 +251,66 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
           jamPulangKoreksi,
           input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
           nowStr,
+          idShift,
+          bulanStr,
+          tahunNum,
+          idSesi,
+        ],
+      });
+    }
+  } else if (input.jenis_koreksi === "Terlambat") {
+    const shiftRes = await db.execute({
+      sql: "SELECT jam_masuk, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+      args: [idShift],
+    });
+    if (shiftRes.rows.length === 0) {
+      return { sukses: false, pesan: "Konfigurasi shift tidak ditemukan." };
+    }
+    const [hour, minute] = String(input.jam_koreksi).split(":").map(Number);
+    const [shiftHour, shiftMinute] = String(shiftRes.rows[0].jam_masuk)
+      .split(":")
+      .map(Number);
+    const arrivalMinutes = hour * 60 + minute;
+    const shiftMinutes = shiftHour * 60 + shiftMinute;
+    const normalLimit =
+      shiftMinutes + Number(shiftRes.rows[0].batas_masuk_menit ?? 0);
+    const menitTerlambat = Math.max(0, arrivalMinutes - normalLimit);
+    const menitDatangAwal = Math.max(0, shiftMinutes - arrivalMinutes);
+    const jamMasukKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
+    if (existRecord) {
+      await db.execute({
+        sql: `UPDATE absensi_harian SET jam_masuk = ?, status_kehadiran = 'Hadir',
+              status_absen = CASE WHEN jam_pulang != '' THEN 'Lengkap' ELSE 'Belum Pulang' END,
+              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
+              menit_terlambat = ?, menit_datang_awal = ? WHERE id_absensi = ?;`,
+        args: [
+          jamMasukKoreksi,
+          input.keterangan_admin || "Koreksi Admin - Terlambat",
+          nowStr,
+          menitTerlambat,
+          menitDatangAwal,
+          Number(existRecord.id_absensi),
+        ],
+      });
+    } else {
+      await db.execute({
+        sql: `INSERT INTO absensi_harian (
+                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
+                menit_terlambat, menit_datang_awal, jam_kerja, lembur,
+                jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas
+              ) VALUES (?, ?, ?, ?, ?, '', 'Hadir', 'Belum Pulang', ?,
+                'Koreksi Admin', ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
+        args: [
+          input.tanggal,
+          idUnik,
+          nama,
+          divisi,
+          jamMasukKoreksi,
+          input.keterangan_admin || "Koreksi Admin - Terlambat",
+          nowStr,
+          menitTerlambat,
+          menitDatangAwal,
           idShift,
           bulanStr,
           tahunNum,
