@@ -167,9 +167,17 @@ export default function HistoryPage() {
                   </td>
                 </tr>
               ) : null}
-              {rows.map((row) => (
+              {rows.map((row, index) => (
                 <tr
-                  key={String(tab === "scan" ? row.id_log : row.id_absensi)}
+                  key={String(
+                    tab === "scan"
+                      ? row.id_log ||
+                          row.id_referensi ||
+                          `${row.timestamp_scan}-${row.id_karyawan}-${index}`
+                      : row.id_sesi ||
+                          row.id_absensi ||
+                          `${row.tanggal}-${row.id_karyawan}-${index}`,
+                  )}
                   className="hover:bg-slate-800/50"
                 >
                   <td className="p-3 font-mono text-sky-300">
