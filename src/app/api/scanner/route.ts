@@ -1,9 +1,6 @@
 import type { NextRequest } from "next/server";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
-import {
-  ensureServerDatabaseInitialized,
-  getServerDatabase,
-} from "@/lib/server/db";
+import { ensureServerDatabaseInitialized } from "@/lib/server/db";
 import {
   ApiRequestError,
   noStoreJson,
@@ -11,7 +8,6 @@ import {
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
-import { recordOperationalChange } from "@/lib/server/operational/change-log";
 import { submitTerminalScan } from "@/lib/services/scanner";
 
 export const runtime = "nodejs";
@@ -42,24 +38,17 @@ export async function POST(request: NextRequest) {
       throw new ApiRequestError("Isi QR tidak valid.", 400);
     }
     await ensureServerDatabaseInitialized();
-    const result = await submitTerminalScan({
-      qrContent,
-      lat: coordinate(body.lat),
-      lng: coordinate(body.lng),
-      kodeOperator: actor.kode_operator,
-      sumberData: "Scanner",
-    });
-    const eventKey =
-      result.idSesi ??
-      `scan:${Date.now()}:${result.idKaryawan || "tidak-dikenal"}`;
-    const revision = await recordOperationalChange(getServerDatabase(), {
-      domain: "attendance",
-      entityKey: eventKey,
-      operation: "scan",
-      payload: result,
-      actorOperatorId: actor.id,
-    });
-    return noStoreJson({ ...result, revision });
+    const result = await submitTerminalScan(
+      {
+        qrContent,
+        lat: coordinate(body.lat),
+        lng: coordinate(body.lng),
+        kodeOperator: actor.kode_operator,
+        sumberData: "Scanner",
+      },
+      { actorOperatorId: actor.id },
+    );
+    return noStoreJson(result);
   } catch (error) {
     return toApiErrorResponse(error);
   }

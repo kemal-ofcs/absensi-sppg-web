@@ -1,5 +1,6 @@
 import "server-only";
 
+import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface DashboardMetrics {
@@ -29,7 +30,7 @@ export interface RekapBulananItem {
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   await ensureDbInitialized();
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = formatTanggalOperasional(new Date());
 
   // 1. Total Karyawan Aktif
   const empRes = await db.execute(
@@ -76,7 +77,7 @@ export async function getRekapHarian(filter?: {
 }) {
   await ensureDbInitialized();
 
-  const tanggalStr = filter?.tanggal || new Date().toISOString().split("T")[0];
+  const tanggalStr = filter?.tanggal || formatTanggalOperasional(new Date());
 
   let query = `
     SELECT a.*, m.kode_karyawan, s.nama_shift
@@ -105,7 +106,7 @@ export async function getRiwayatScan(filter?: {
   offset?: number;
 }) {
   await ensureDbInitialized();
-  const tanggal = filter?.tanggal || new Date().toISOString().split("T")[0];
+  const tanggal = filter?.tanggal || formatTanggalOperasional(new Date());
   const search = filter?.search?.trim() || "";
   const limit = Math.min(500, Math.max(1, filter?.limit || 200));
   const offset = Math.max(0, filter?.offset || 0);
@@ -154,9 +155,12 @@ export async function getRekapBulanan(filter?: {
     "November",
     "Desember",
   ];
-  const now = new Date();
-  const bulanStr = filter?.bulan || monthNames[now.getMonth()] || "Agustus";
-  const tahunNum = filter?.tahun || now.getFullYear();
+  const operationalDate = formatTanggalOperasional(new Date());
+  const operationalYear = Number(operationalDate.slice(0, 4));
+  const operationalMonth = Number(operationalDate.slice(5, 7));
+  const bulanStr =
+    filter?.bulan || monthNames[operationalMonth - 1] || "Agustus";
+  const tahunNum = filter?.tahun || operationalYear;
 
   let query = `
     SELECT 

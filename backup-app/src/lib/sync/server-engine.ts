@@ -13,6 +13,7 @@ import type {
   SyncResult,
   SyncRunSummary,
   SyncStatusResult,
+  SyncTableRunSummary,
 } from "@/lib/sync/types";
 
 const BATCH_SIZE = 100;
@@ -23,7 +24,47 @@ type SyncCounts = {
   downloaded: number;
   conflicts: number;
   failed: number;
+  tables: Map<string, SyncTableRunSummary>;
 };
+
+type SyncCountKey = "uploaded" | "downloaded" | "conflicts" | "failed";
+
+function createSyncCounts(): SyncCounts {
+  return {
+    uploaded: 0,
+    downloaded: 0,
+    conflicts: 0,
+    failed: 0,
+    tables: new Map(
+      SYNC_TABLES.map((table) => [
+        table.name,
+        {
+          table: table.name,
+          uploaded: 0,
+          downloaded: 0,
+          conflicts: 0,
+          failed: 0,
+        },
+      ]),
+    ),
+  };
+}
+
+function incrementCount(counts: SyncCounts, table: string, key: SyncCountKey) {
+  counts[key] += 1;
+  const tableCounts = counts.tables.get(table);
+  if (tableCounts) tableCounts[key] += 1;
+}
+
+function resultCounts(counts: SyncCounts) {
+  return {
+    uploaded: counts.uploaded,
+    downloaded: counts.downloaded,
+    conflicts: counts.conflicts,
+    failed: counts.failed,
+    tables: [...counts.tables.values()],
+  };
+}
 
 type SyncClients = {
   local: Client;
@@ -324,8 +365,8 @@ async function pushTable(
               reason: "Remote version/HLC is newer than pending local row.",
             });
             await applyRemoteRecord(clients.local, table, remoteRecord);
-            counts.conflicts += 1;
-            counts.downloaded += 1;
+            incrementCount(counts, table.name, "conflicts");
+            incrementCount(counts, table.name, "downloaded");
             continue;
           }
           if (comparison === 0) {
@@ -358,8 +399,8 @@ async function pushTable(
               reason: "Remote row changed during optimistic cloud upload.",
             });
             await applyRemoteRecord(clients.local, table, latestRemote);
-            counts.conflicts += 1;
-            counts.downloaded += 1;
+            incrementCount(counts, table.name, "conflicts");
+            incrementCount(counts, table.name, "downloaded");
             continue;
           }
           if (!latestRemote) {
@@ -372,14 +413,15 @@ async function pushTable(
           }
         }
         await markLocalSynced(clients.local, table.name, id);
-        counts.uploaded += 1;
+        incrementCount(counts, table.name, "uploaded");
       } catch (error) {
-        counts.failed += 1;
-        if (localRecord?.id) {
+        incrementCount(counts, table.name, "failed");
+        const failedId = localRecord?.id ?? rawRecord.id;
+        if (failedId) {
           await markLocalError(
             clients.local,
             table.name,
-            String(localRecord.id),
+            String(failedId),
           ).catch(() => undefined);
         }
         console.error(`[SYNC_PUSH:${table.name}]`, error);
@@ -396,8 +438,10 @@ async function readCursor(local: Client, table: string) {
     args: [table],
   });
   const row = result.rows[0] as Record<string, unknown> | undefined;
-  const lastUpdatedAt = Math.max(0, Number(row?.last_updated_at ?? 0) - 1);
-  return { lastUpdatedAt, lastId: "" };
+  return {
+    lastUpdatedAt: Math.max(0, Number(row?.last_updated_at ?? 0)),
+    lastId: String(row?.last_id ?? ""),
+  };
 }
 
 async function saveCursor(
@@ -436,7 +480,7 @@ async function pullTable(
 
     for (const raw of result.rows) {
       const rawRecord = raw as Record<string, unknown>;
-      cursor = {
+      const nextCursor = {
         lastUpdatedAt: Number(rawRecord.updated_at ?? cursor.lastUpdatedAt),
         lastId: String(rawRecord.id ?? cursor.lastId),
       };
@@ -447,7 +491,7 @@ async function pullTable(
 
         if (!localState) {
           await applyRemoteRecord(clients.local, table, remoteRecord);
-          counts.downloaded += 1;
+          incrementCount(counts, table.name, "downloaded");
         } else {
           const comparison = compareSyncOrder(
             toOrder(localState.record),
@@ -467,7 +511,7 @@ async function pullTable(
               winner: "local",
               reason: "Pending local version/HLC is newer than remote row.",
             });
-            counts.conflicts += 1;
+            incrementCount(counts, table.name, "conflicts");
           } else if (comparison < 0) {
             if (localIsPending) {
               await recordConflict({
@@ -479,17 +523,28 @@ async function pullTable(
                 winner: "remote",
                 reason: "Remote version/HLC is newer than pending local row.",
               });
-              counts.conflicts += 1;
+              incrementCount(counts, table.name, "conflicts");
             }
             await applyRemoteRecord(clients.local, table, remoteRecord);
-            counts.downloaded += 1;
+            incrementCount(counts, table.name, "downloaded");
           } else if (comparison === 0 && localIsPending) {
             await markLocalSynced(clients.local, table.name, id);
           }
         }
+        cursor = nextCursor;
       } catch (error) {
-        counts.failed += 1;
+        incrementCount(counts, table.name, "failed");
         console.error(`[SYNC_PULL:${table.name}]`, error);
+        await saveCursor(
+          clients.local,
+          table.name,
+          cursor.lastUpdatedAt,
+          cursor.lastId,
+        );
+        throw new SyncEngineError(
+          "SYNC_PULL_ROW_FAILED",
+          `Pull ${table.name} berhenti pada record ${nextCursor.lastId}; cursor tidak dimajukan agar data tidak terlewat.`,
+        );
       }
     }
 
@@ -551,12 +606,7 @@ async function finishRun(
 
 async function executeSync(action: SyncAction): Promise<SyncResult> {
   const clients = await getSyncClients();
-  const counts: SyncCounts = {
-    uploaded: 0,
-    downloaded: 0,
-    conflicts: 0,
-    failed: 0,
-  };
+  const counts = createSyncCounts();
   const runId = await createRun(clients.local, action);
 
   try {
@@ -571,12 +621,19 @@ async function executeSync(action: SyncAction): Promise<SyncResult> {
       }
     }
 
+    if (counts.failed > 0) {
+      throw new SyncEngineError(
+        "SYNC_PARTIAL_FAILURE",
+        `Sinkronisasi belum selesai: ${counts.failed} record gagal dan tetap dijadwalkan untuk dicoba ulang.`,
+      );
+    }
+
     await finishRun(clients.local, runId, "success", counts, null);
     return {
       status: "success",
       message: `Sync selesai: ${counts.uploaded} upload, ${counts.downloaded} download, ${counts.conflicts} konflik.`,
       runId,
-      ...counts,
+      ...resultCounts(counts),
     };
   } catch (error) {
     const message =
@@ -629,50 +686,62 @@ export async function getServerSyncStatus(): Promise<SyncStatusResult> {
       message: "Web runtime memakai database cloud secara langsung.",
       pending: 0,
       failed: 0,
+      tables: [],
       lastRun: null,
     };
   }
 
   const local = createClient({ url: resolveLocalUrl() });
-  await runMigrations(asDatabaseLike(local), { seedData: false });
-  let pending = 0;
-  let failed = 0;
-  for (const table of SYNC_TABLES) {
-    const result = await local.execute(
-      `SELECT
-         SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END) AS pending,
-         SUM(CASE WHEN sync_status = 'error' THEN 1 ELSE 0 END) AS failed
-       FROM "${table.name}"`,
-    );
-    pending += Number(result.rows[0]?.pending ?? 0);
-    failed += Number(result.rows[0]?.failed ?? 0);
-  }
-
-  const lastRunResult = await local.execute(
-    "SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 1",
-  );
-  const lastRunRow = lastRunResult.rows[0] as
-    | Record<string, unknown>
-    | undefined;
-  let configured = true;
   try {
-    resolveCloudConfig();
-  } catch {
-    configured = false;
-  }
+    await runMigrations(asDatabaseLike(local), { seedData: false });
+    let pending = 0;
+    let failed = 0;
+    const tables: SyncStatusResult["tables"] = [];
+    for (const table of SYNC_TABLES) {
+      const result = await local.execute(
+        `SELECT
+           SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN sync_status = 'error' THEN 1 ELSE 0 END) AS failed
+         FROM "${table.name}"`,
+      );
+      const tablePending = Number(result.rows[0]?.pending ?? 0);
+      const tableFailed = Number(result.rows[0]?.failed ?? 0);
+      pending += tablePending;
+      failed += tableFailed;
+      tables.push({
+        table: table.name,
+        pending: tablePending,
+        failed: tableFailed,
+      });
+    }
 
-  const status: SyncStatusResult = {
-    available: true,
-    configured,
-    message: configured
-      ? "Turso siap; perubahan lokal akan disinkronkan dari server desktop."
-      : "Turso belum dikonfigurasi atau aplikasi belum direstart.",
-    pending,
-    failed,
-    lastRun: lastRunRow ? mapRun(lastRunRow) : null,
-  };
-  local.close();
-  return status;
+    const lastRunResult = await local.execute(
+      "SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 1",
+    );
+    const lastRunRow = lastRunResult.rows[0] as
+      | Record<string, unknown>
+      | undefined;
+    let configured = true;
+    try {
+      resolveCloudConfig();
+    } catch {
+      configured = false;
+    }
+
+    return {
+      available: true,
+      configured,
+      message: configured
+        ? "Turso siap; perubahan lokal akan disinkronkan dari server desktop."
+        : "Turso belum dikonfigurasi atau aplikasi belum direstart.",
+      pending,
+      failed,
+      tables,
+      lastRun: lastRunRow ? mapRun(lastRunRow) : null,
+    };
+  } finally {
+    local.close();
+  }
 }
 
 export async function resetSyncEngineForTests() {

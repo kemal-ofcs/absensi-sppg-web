@@ -6,6 +6,10 @@ export function createDesktopDevEnvironment(
   return {
     ...baseEnvironment,
     NEXT_PUBLIC_SPPG_RUNTIME: "desktop",
+    // WebView2 already forwards browser errors to the Tauri terminal. The
+    // Next.js development overlay itself can crash inside the webview before
+    // it finishes initializing ("Cannot access 'eW' before initialization").
+    NEXT_PRIVATE_DISABLE_DEV_OVERLAY_UX: "1",
   };
 }
 

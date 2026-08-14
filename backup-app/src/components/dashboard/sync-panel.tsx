@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { isTauri } from "@/core/env";
 import { useAuth } from "@/hooks/use-auth";
 import { getSyncStatus, runFullSync } from "@/lib/sync/actions";
-import type { SyncStatusResult } from "@/lib/sync/types";
+import type { SyncResult, SyncStatusResult } from "@/lib/sync/types";
 
 type NativeSyncConfigStatus = {
   configured: boolean;
@@ -31,6 +31,7 @@ export function SyncPanel() {
   const [runtimeStatus, setRuntimeStatus] = useState<SyncStatusResult | null>(
     null,
   );
+  const [lastResult, setLastResult] = useState<SyncResult | null>(null);
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -91,11 +92,12 @@ export function SyncPanel() {
     setSyncing(true);
     try {
       const result = await runFullSync();
+      setLastResult(result);
       toast.success(result.message);
-      await loadRuntimeStatus();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Sync failed");
     } finally {
+      await loadRuntimeStatus();
       setSyncing(false);
     }
   }
@@ -185,10 +187,49 @@ export function SyncPanel() {
                 "Packaged desktop runtime will report pending and failed rows here."}
             </p>
             {runtimeStatus ? (
-              <p className="mt-1 text-xs text-zinc-500">
-                Pending: {runtimeStatus.pending} · Failed:{" "}
-                {runtimeStatus.failed}
-              </p>
+              <div className="mt-2 space-y-2 text-xs text-zinc-500">
+                <p>
+                  Pending: {runtimeStatus.pending} · Failed:{" "}
+                  {runtimeStatus.failed}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(runtimeStatus.tables ?? []).map((table) => (
+                    <span
+                      key={table.table}
+                      className="rounded border border-zinc-800 px-2 py-1"
+                    >
+                      {table.table}: {table.pending} pending / {table.failed}{" "}
+                      failed
+                    </span>
+                  ))}
+                </div>
+                {runtimeStatus.lastRun ? (
+                  <p>
+                    Last run: {runtimeStatus.lastRun.status} · upload{" "}
+                    {runtimeStatus.lastRun.uploaded} · download{" "}
+                    {runtimeStatus.lastRun.downloaded} · conflict{" "}
+                    {runtimeStatus.lastRun.conflicts}
+                  </p>
+                ) : null}
+                {lastResult ? (
+                  <div>
+                    <p className="mb-1 font-medium text-zinc-400">
+                      Last sync by table
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {lastResult.tables.map((table) => (
+                        <span
+                          key={table.table}
+                          className="rounded border border-zinc-800 px-2 py-1"
+                        >
+                          {table.table}: ↑{table.uploaded} ↓{table.downloaded}{" "}
+                          conflict {table.conflicts} / failed {table.failed}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </div>
           <Button

@@ -41,6 +41,16 @@ export function toApiErrorResponse(error: unknown) {
   }
 
   const message = error instanceof Error ? error.message : "Operasi gagal.";
+  if (message.toLowerCase().includes("fetch failed")) {
+    return noStoreJson(
+      {
+        sukses: false,
+        pesan:
+          "Database server sedang tidak dapat dijangkau. Periksa koneksi internet lalu coba sinkronkan kembali.",
+      },
+      503,
+    );
+  }
   if (message.includes("UNIQUE")) {
     return noStoreJson(
       {

@@ -2,6 +2,8 @@ import path from "node:path";
 import type { NextConfig } from "next";
 
 const isDesktopBuild = process.env.SPPG_BUILD_TARGET === "desktop";
+const zxingBrowserModule = "@zxing/browser/es2015/index.js";
+const zxingLibraryModule = "@zxing/library/es2015/index.js";
 const zxingBrowserEntry = path.resolve(
   process.cwd(),
   "node_modules/@zxing/browser/es2015/index.js",
@@ -16,8 +18,8 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   turbopack: {
     resolveAlias: {
-      "@zxing/browser": zxingBrowserEntry,
-      "@zxing/library": zxingLibraryEntry,
+      "@zxing/browser": zxingBrowserModule,
+      "@zxing/library": zxingLibraryModule,
     },
   },
   webpack(config) {

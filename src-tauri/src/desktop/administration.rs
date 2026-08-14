@@ -146,7 +146,7 @@ pub fn create_correction(
         .query_row("SELECT update_terakhir FROM absensi_harian WHERE id_sesi = ? OR (id_karyawan = ? AND tanggal = ?) LIMIT 1;", params![session_id, employee_id, date], |row| row.get(0))
         .optional().map_err(|_| CommandError::internal())?;
     let (now, year, month): (String, i64, i64) = transaction.query_row(
-        "SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime'), CAST(substr(?,1,4) AS INTEGER), CAST(substr(?,6,2) AS INTEGER);",
+        "SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours'), CAST(substr(?,1,4) AS INTEGER), CAST(substr(?,6,2) AS INTEGER);",
         params![date, date], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).map_err(|_| CommandError::internal())?;
     let months = [
@@ -370,7 +370,7 @@ pub fn create_backup(
     }
     let now: String = transaction
         .query_row(
-            "SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime');",
+            "SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours');",
             [],
             |row| row.get(0),
         )
@@ -422,7 +422,7 @@ pub fn cancel_backup(
     let current_revision = revision(&transaction, "backup", id);
     let now: String = transaction
         .query_row(
-            "SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime');",
+            "SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours');",
             [],
             |row| row.get(0),
         )
@@ -541,7 +541,7 @@ pub fn import_offline(
             }
             let now: String = transaction
                 .query_row(
-                    "SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime');",
+                    "SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours');",
                     [],
                     |result| result.get(0),
                 )
@@ -699,7 +699,7 @@ pub fn dashboard_data(
         'persentaseKehadiran', CASE WHEN (SELECT COUNT(*) FROM master_data WHERE status_aktif = 'Aktif') > 0
           THEN ROUND(100.0 * SUM(CASE WHEN status_kehadiran = 'Hadir' THEN 1 ELSE 0 END) /
             (SELECT COUNT(*) FROM master_data WHERE status_aktif = 'Aktif')) ELSE 0 END
-      ) FROM absensi_harian WHERE tanggal = date('now','localtime');
+      ) FROM absensi_harian WHERE tanggal = date('now','+7 hours');
       "#,
             [], |row| row.get(0),
         ).map_err(|_| CommandError::internal())?;
@@ -709,7 +709,7 @@ pub fn dashboard_data(
     if kind == "scan-history" {
         let date = if text(filter, "tanggal").is_empty() {
             connection
-                .query_row("SELECT date('now','localtime');", [], |row| {
+                .query_row("SELECT date('now','+7 hours');", [], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|_| CommandError::internal())?
@@ -748,7 +748,7 @@ pub fn dashboard_data(
     if kind == "daily" {
         let date = if text(filter, "tanggal").is_empty() {
             connection
-                .query_row("SELECT date('now','localtime');", [], |row| {
+                .query_row("SELECT date('now','+7 hours');", [], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|_| CommandError::internal())?
@@ -782,14 +782,14 @@ pub fn dashboard_data(
             .unwrap_or_else(|| {
                 connection
                     .query_row(
-                        "SELECT CAST(strftime('%Y','now','localtime') AS INTEGER);",
+                        "SELECT CAST(strftime('%Y','now','+7 hours') AS INTEGER);",
                         [],
                         |row| row.get(0),
                     )
                     .unwrap_or_default()
             });
         let month_clause = if month.is_empty() {
-            "bulan = CASE strftime('%m','now','localtime') WHEN '01' THEN 'Januari' WHEN '02' THEN 'Februari' WHEN '03' THEN 'Maret' WHEN '04' THEN 'April' WHEN '05' THEN 'Mei' WHEN '06' THEN 'Juni' WHEN '07' THEN 'Juli' WHEN '08' THEN 'Agustus' WHEN '09' THEN 'September' WHEN '10' THEN 'Oktober' WHEN '11' THEN 'November' ELSE 'Desember' END".to_owned()
+            "bulan = CASE strftime('%m','now','+7 hours') WHEN '01' THEN 'Januari' WHEN '02' THEN 'Februari' WHEN '03' THEN 'Maret' WHEN '04' THEN 'April' WHEN '05' THEN 'Mei' WHEN '06' THEN 'Juni' WHEN '07' THEN 'Juli' WHEN '08' THEN 'Agustus' WHEN '09' THEN 'September' WHEN '10' THEN 'Oktober' WHEN '11' THEN 'November' ELSE 'Desember' END".to_owned()
         } else {
             format!("bulan = '{month}'")
         };
@@ -834,4 +834,103 @@ pub fn dashboard_data(
         "OPERATIONAL_VALIDATION_FAILED",
         "Jenis data dashboard tidak dikenali.",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use reqwest::Client;
+    use serde_json::json;
+    use tempfile::tempdir;
+    use url::Url;
+
+    use super::{dashboard_data, storage, DesktopState};
+
+    fn fixture() -> (tempfile::TempDir, DesktopState) {
+        let directory = tempdir().expect("temporary directory");
+        storage::initialize(directory.path()).expect("local schema");
+        let connection = storage::database(directory.path()).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          jam_kerja_normal_menit, istirahat_menit
+        ) VALUES (1, 1, 'Shift Pagi', '07:00', '15:00', 420, 60);
+        INSERT INTO master_data (
+          id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif
+        ) VALUES ('K001', 'K001', 'Karyawan Test', 'Dapur', 1, 'Aktif');
+        INSERT INTO absensi_harian (
+          tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+          status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
+          menit_terlambat, menit_datang_awal, jam_kerja, lembur,
+          jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
+          id_backup, id_karyawan_asal, tanggal_tugas
+        ) VALUES (
+          '2026-08-12', 'K001', 'Karyawan Test', 'Dapur',
+          '2026-08-12 07:00:00', '2026-08-12 16:00:00', 'Hadir', 'Lengkap',
+          'Pulang Lembur', 'Scanner', '2026-08-12 16:00:00', 0, 0,
+          420, 60, 0, 1, 'Agustus', 2026, 'NORMAL-20260812-K001-1',
+          'NORMAL', '', '', '2026-08-12'
+        );
+        INSERT INTO log_scan (
+          timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi,
+          jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan,
+          menit_terlambat, menit_datang_awal, id_referensi, kode_operator
+        ) VALUES (
+          '2026-08-13 00:30:00', '2026-08-12', '00:30:00', 'K001',
+          'Karyawan Test', 'Dapur', 'Pulang', 'Berhasil', 'Scanner',
+          'Pulang shift malam', 'Pulang Lembur', 0, 0, '', 'SPD001'
+        );
+        "#,
+            )
+            .expect("dashboard seed");
+        let state = DesktopState {
+            api_base_url: Url::parse("http://localhost:3000").expect("url"),
+            server_origin: "http://localhost:3000".into(),
+            offline_max_age_hours: 24,
+            data_dir: directory.path().to_path_buf(),
+            http: Client::new(),
+            session: Mutex::new(None),
+            vault_lock: Mutex::new(()),
+        };
+        (directory, state)
+    }
+
+    #[test]
+    fn dashboard_reads_status_minutes_and_work_date_without_reinterpreting_them() {
+        let (_directory, state) = fixture();
+        let daily = dashboard_data(&state, "daily", &json!({"tanggal": "2026-08-12"}))
+            .expect("daily report");
+        let daily_row = daily
+            .as_array()
+            .and_then(|rows| rows.first())
+            .expect("daily row");
+        assert_eq!(daily_row["status_absen"], "Lengkap");
+        assert_eq!(daily_row["jam_kerja"], 420);
+        assert_eq!(daily_row["lembur"], 60);
+
+        let monthly = dashboard_data(
+            &state,
+            "monthly",
+            &json!({"bulan": "Agustus", "tahun": 2026}),
+        )
+        .expect("monthly report");
+        let monthly_row = monthly
+            .as_array()
+            .and_then(|rows| rows.first())
+            .expect("monthly row");
+        assert_eq!(monthly_row["totalJamKerja"], 7.0);
+        assert_eq!(monthly_row["totalLembur"], 1.0);
+
+        let history = dashboard_data(&state, "scan-history", &json!({"tanggal": "2026-08-12"}))
+            .expect("scan history");
+        let history_row = history
+            .as_array()
+            .and_then(|rows| rows.first())
+            .expect("history row");
+        assert_eq!(history_row["tanggal_kerja"], "2026-08-12");
+        assert_eq!(history_row["timestamp_scan"], "2026-08-13 00:30:00");
+    }
 }

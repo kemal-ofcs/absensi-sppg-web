@@ -260,6 +260,9 @@ Cloud credentials must remain server/native-only. Never add a
 
 ## Secure desktop sync
 
+Kontrak implementasi dan checklist saat menambah tabel dirangkum di
+[`SYNC_CHECKPOINT.md`](./SYNC_CHECKPOINT.md).
+
 The desktop write path is always:
 
 1. write to local SQLite;
@@ -312,7 +315,12 @@ sufficient authorization by itself.
 - pending local rows that lose are recorded in `sync_conflicts` before being
   replaced;
 - audit payloads redact `password_hash`;
-- pull uses per-table delta cursors with a one-second safety overlap;
+- pull uses exact composite per-table cursors (`updated_at`, then `id`);
+- a failed pull row stops that table before the cursor advances, so a malformed
+  or temporarily conflicting cloud row cannot be skipped silently;
+- any failed push/pull row marks the run as failed instead of reporting a
+  misleading successful sync;
+- the desktop panel reports pending/failed queues per registered table;
 - important business rows use tombstones (`deleted_at`), not hard delete;
 - rows with `sync_status = error` are retried on the next push.
 

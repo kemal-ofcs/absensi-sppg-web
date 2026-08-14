@@ -11,6 +11,7 @@ export type { ScanTerminalInput } from "@/lib/contracts/scanner";
 
 export async function submitTerminalScan(
   input: ScanTerminalInput,
+  options?: { actorOperatorId?: number },
 ): Promise<ScanResult> {
   const payload: ScanPayload = {
     qrText: input.qrContent,
@@ -20,6 +21,6 @@ export async function submitTerminalScan(
     kodeOperator: input.kodeOperator || "OP001",
   };
 
-  const result = await prosesScanAbsensi(payload);
+  const result = await prosesScanAbsensi(payload, options);
   return result;
 }

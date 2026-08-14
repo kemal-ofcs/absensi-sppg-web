@@ -9,6 +9,7 @@ use super::{models::DesktopSession, storage};
 const BUILD_API_BASE_URL: Option<&str> = option_env!("SPPG_API_BASE_URL");
 const BUILD_DEV_API_BASE_URL: Option<&str> = option_env!("SPPG_DEV_API_BASE_URL");
 const BUILD_OFFLINE_MAX_AGE_HOURS: Option<&str> = option_env!("SPPG_OFFLINE_AUTH_MAX_AGE_HOURS");
+const DESKTOP_HTTP_TIMEOUT_SECONDS: u64 = 60;
 
 pub struct DesktopState {
     pub api_base_url: Url,
@@ -93,7 +94,10 @@ impl DesktopState {
         storage::initialize(&data_dir)?;
         let http = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(8))
-            .timeout(std::time::Duration::from_secs(20))
+            // Login server juga menyiapkan session dan dapat melewati 20 detik
+            // ketika koneksi database remote baru terbentuk. Jangan berpindah
+            // ke sesi offline saat respons online sebenarnya masih diproses.
+            .timeout(std::time::Duration::from_secs(DESKTOP_HTTP_TIMEOUT_SECONDS))
             .user_agent("Absensi-SPPG-Desktop/0.1")
             .build()
             .map_err(|_| "HTTP client Desktop tidak dapat dibuat.")?;

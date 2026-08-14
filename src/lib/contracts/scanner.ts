@@ -28,4 +28,5 @@ export interface ScanResult {
   shiftEfektif?: number;
   modeTugas?: "NORMAL" | "PENGGANTI";
   idSesi?: string;
+  revision?: number;
 }

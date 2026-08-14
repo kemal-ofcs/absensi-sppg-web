@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
+import { withTransientDatabaseRetry } from "@/lib/server/database-retry";
 import {
   ensureServerDatabaseInitialized,
   getServerDatabase,
@@ -19,7 +20,9 @@ export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
     assertSameOriginMutation(request);
-    const actor = await requireWebPermission(request, "sync.view");
+    const actor = await withTransientDatabaseRetry(() =>
+      requireWebPermission(request, "sync.view"),
+    );
     const body = await readJsonBody<unknown>(request, 262_144);
     let batch: ReturnType<typeof parseOperationalSyncBatch>;
     try {
@@ -27,13 +30,16 @@ export async function POST(request: NextRequest) {
     } catch {
       throw new ApiRequestError("Batch sinkronisasi tidak valid.", 400);
     }
-    await ensureServerDatabaseInitialized();
-    const results = [];
-    for (const event of batch.events) {
-      results.push(
-        await processOperationalSyncEvent(getServerDatabase(), actor, event),
-      );
-    }
+    const results = await withTransientDatabaseRetry(async () => {
+      await ensureServerDatabaseInitialized();
+      const eventResults = [];
+      for (const event of batch.events) {
+        eventResults.push(
+          await processOperationalSyncEvent(getServerDatabase(), actor, event),
+        );
+      }
+      return eventResults;
+    });
     return noStoreJson({ sukses: true, results });
   } catch (error) {
     return toApiErrorResponse(error);

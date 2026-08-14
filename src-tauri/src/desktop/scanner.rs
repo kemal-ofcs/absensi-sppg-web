@@ -4,7 +4,15 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{config::DesktopState, models::CommandError, storage, sync};
+use super::{
+    config::DesktopState,
+    models::CommandError,
+    storage, sync,
+    time_policy::{
+        decide_scan, determine_work_date, DecisionReason, LocalMoment, ScanDecision, ScanHistory,
+        ShiftKind, ShiftPolicy,
+    },
+};
 
 #[derive(Clone)]
 struct Employee {
@@ -18,19 +26,33 @@ struct Employee {
 
 #[derive(Clone)]
 struct Shift {
-    id: i64,
-    start: String,
-    normal_minutes: i64,
-    break_minutes: i64,
-    tolerance_minutes: i64,
+    policy: ShiftPolicy,
 }
 
 #[derive(Clone)]
 struct AttendanceState {
     check_in: String,
+    check_out: String,
     updated_at: String,
     source: String,
-    attendance_status: String,
+}
+
+struct Backup {
+    id: String,
+    task_date: String,
+    original_id: String,
+    replacement_name: String,
+    replacement_id: String,
+    shift_id: i64,
+    shift: Option<Shift>,
+}
+
+struct Session {
+    mode: &'static str,
+    shift_id: i64,
+    backup_id: String,
+    original_employee_id: String,
+    task_date: String,
 }
 
 #[derive(Serialize)]
@@ -64,9 +86,29 @@ fn failure(message: impl Into<String>, employee: Option<&Employee>) -> Value {
     })
 }
 
-fn minutes(value: &str) -> i64 {
-    let mut parts = value.split(':').filter_map(|part| part.parse::<i64>().ok());
-    parts.next().unwrap_or_default() * 60 + parts.next().unwrap_or_default()
+fn failure_with_context(
+    message: impl Into<String>,
+    employee: &Employee,
+    system_note: impl Into<String>,
+    detail: impl Into<String>,
+    session_id: Option<&str>,
+    shift_id: Option<i64>,
+    mode: Option<&str>,
+) -> Value {
+    json!({
+        "sukses": false,
+        "status": "Ditolak",
+        "jenisScan": "Scan Ditolak",
+        "idKaryawan": employee.id,
+        "nama": employee.name,
+        "divisi": employee.division,
+        "pesan": message.into(),
+        "catatanSistem": system_note.into(),
+        "keterangan": detail.into(),
+        "idSesi": session_id,
+        "shiftEfektif": shift_id,
+        "modeTugas": mode,
+    })
 }
 
 fn distance_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> i64 {
@@ -168,6 +210,33 @@ fn rejected_log(
     }
 }
 
+fn decision_log(
+    moment: &LocalMoment,
+    employee: &Employee,
+    operator: &str,
+    decision: &ScanDecision,
+    reference_id: &str,
+    system_note: String,
+) -> ScanLog {
+    ScanLog {
+        timestamp_scan: moment.timestamp.clone(),
+        tanggal_kerja: decision.work_date.clone(),
+        jam_scan: moment.time.clone(),
+        id_karyawan: employee.id.clone(),
+        nama: employee.name.clone(),
+        divisi: employee.division.clone(),
+        jenis_scan: decision.scan_type.clone(),
+        status_proses: decision.process_status.clone(),
+        sumber_data: "Scanner".into(),
+        catatan_sistem: system_note,
+        keterangan: decision.detail.clone(),
+        menit_terlambat: decision.late_minutes,
+        menit_datang_awal: decision.early_minutes,
+        id_referensi: reference_id.to_owned(),
+        kode_operator: operator.to_owned(),
+    }
+}
+
 fn persist_rejection(
     transaction: &Transaction<'_>,
     client_id: &str,
@@ -178,10 +247,215 @@ fn persist_rejection(
     enqueue_scan(transaction, client_id, local_id, log, None, None)
 }
 
+fn current_jakarta_moment(transaction: &Transaction<'_>) -> Result<LocalMoment, CommandError> {
+    transaction
+        .query_row(
+            r#"SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours'),
+                      date('now','+7 hours'), time('now','+7 hours');"#,
+            [],
+            |row| {
+                Ok(LocalMoment {
+                    timestamp: row.get(0)?,
+                    date: row.get(1)?,
+                    time: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|_| CommandError::internal())
+}
+
+fn load_shift(transaction: &Transaction<'_>, shift_id: i64) -> Result<Option<Shift>, CommandError> {
+    transaction
+        .query_row(
+            r#"
+      SELECT id_shift, kode_shift, jam_masuk, jam_pulang, awal_absen_menit,
+             batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit,
+             buffer_shift_malam_menit, offset_istirahat_mulai,
+             jam_kerja_normal_menit, istirahat_menit
+      FROM tbl_shift WHERE id_shift = ? OR kode_shift = ? LIMIT 1;
+      "#,
+            params![shift_id, shift_id],
+            |row| {
+                let code = row.get::<_, i64>(1)?;
+                let normal_work_minutes = row.get::<_, Option<i64>>(10)?.unwrap_or_default();
+                Ok(Shift {
+                    policy: ShiftPolicy {
+                        kind: if code == 4 || normal_work_minutes == 0 {
+                            ShiftKind::Flexible
+                        } else {
+                            ShiftKind::Regular
+                        },
+                        start: row.get(2)?,
+                        end: row.get(3)?,
+                        early_window_minutes: row.get::<_, Option<i64>>(4)?.unwrap_or(60),
+                        normal_entry_minutes: row.get::<_, Option<i64>>(5)?.unwrap_or(120),
+                        late_tolerance_minutes: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                        checkout_limit_minutes: row.get::<_, Option<i64>>(7)?.unwrap_or(240),
+                        night_buffer_minutes: row.get::<_, Option<i64>>(8)?.unwrap_or(120),
+                        break_offset_minutes: row.get::<_, Option<i64>>(9)?.unwrap_or(240),
+                        normal_work_minutes,
+                        break_minutes: row.get::<_, Option<i64>>(11)?.unwrap_or(60),
+                    },
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())
+}
+
+fn find_effective_backup(
+    transaction: &Transaction<'_>,
+    employee_id: &str,
+    moment: &LocalMoment,
+) -> Result<Option<Backup>, CommandError> {
+    let previous_date: String = transaction
+        .query_row("SELECT date(?, '-1 day');", [&moment.date], |row| {
+            row.get(0)
+        })
+        .map_err(|_| CommandError::internal())?;
+    let mut statement = transaction
+        .prepare(
+            r#"
+      SELECT id_backup, tanggal_tugas, id_karyawan_asal,
+             nama_karyawan_pengganti, id_karyawan_pengganti, id_shift_backup
+      FROM backup_karyawan
+      WHERE status_tugas = 'Aktif' AND tanggal_tugas IN (?, ?)
+        AND (id_karyawan_asal = ? OR id_karyawan_pengganti = ?)
+      ORDER BY tanggal_tugas DESC, id_backup DESC;
+      "#,
+        )
+        .map_err(|_| CommandError::internal())?;
+    let candidates = statement
+        .query_map(
+            params![moment.date, previous_date, employee_id, employee_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandError::internal())?;
+    drop(statement);
+
+    for (id, task_date, original_id, replacement_name, replacement_id, shift_id) in candidates {
+        let shift = load_shift(transaction, shift_id)?;
+        let matches = match shift.as_ref() {
+            Some(value) => determine_work_date(moment, &value.policy)
+                .map(|date| date == task_date)
+                .unwrap_or(task_date == moment.date),
+            None => task_date == moment.date,
+        };
+        if matches {
+            return Ok(Some(Backup {
+                id,
+                task_date,
+                original_id,
+                replacement_name,
+                replacement_id,
+                shift_id,
+                shift,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn rejected_decision_message(reason: DecisionReason) -> &'static str {
+    match reason {
+        DecisionReason::TooEarly => "Absensi belum dibuka untuk shift ini.",
+        DecisionReason::EntryWindowClosed => {
+            "Waktu absensi masuk sudah ditutup. Silakan hubungi operator."
+        }
+        DecisionReason::MultiScan => "Scan ditolak. Kemungkinan Anda melakukan scan masuk ulang.",
+        DecisionReason::CheckoutTooLate => "Scan ditolak. Batas waktu pulang shift sudah berakhir.",
+        DecisionReason::AlreadyCheckedOut => "Scan pulang sudah tercatat sebelumnya.",
+        _ => "Scan ditolak oleh aturan waktu shift.",
+    }
+}
+
+fn result_from_decision(
+    decision: &ScanDecision,
+    employee: &Employee,
+    session: &Session,
+    session_id: &str,
+) -> Value {
+    let mut message = if decision.allowed {
+        format!(
+            "Jam {} {} ({}) berhasil dicatat.\nStatus: {}",
+            decision.scan_type, employee.name, employee.id, decision.detail
+        )
+    } else {
+        rejected_decision_message(decision.reason).to_owned()
+    };
+    if decision.late_minutes > 0 {
+        message.push_str(&format!("\nTerlambat: {} menit.", decision.late_minutes));
+    }
+    if decision.early_minutes > 0 {
+        message.push_str(&format!("\nDatang awal: {} menit.", decision.early_minutes));
+    }
+    if decision.metrics.overtime_minutes > 0 {
+        message.push_str(&format!(
+            "\nLembur: {} menit.",
+            decision.metrics.overtime_minutes
+        ));
+    }
+    if decision.metrics.shortage_minutes > 0 {
+        message.push_str(&format!(
+            "\nJam kerja kurang: {} menit.",
+            decision.metrics.shortage_minutes
+        ));
+    }
+    json!({
+        "sukses": decision.allowed,
+        "status": decision.process_status,
+        "jenisScan": decision.scan_type,
+        "idKaryawan": employee.id,
+        "nama": employee.name,
+        "divisi": employee.division,
+        "pesan": message,
+        "catatanSistem": decision.system_note,
+        "keterangan": decision.detail,
+        "menitTerlambat": decision.late_minutes,
+        "menitDatangAwal": decision.early_minutes,
+        "jamKerja": decision.metrics.work_minutes,
+        "lembur": decision.metrics.overtime_minutes,
+        "jamKerjaKurang": decision.metrics.shortage_minutes,
+        "shiftEfektif": session.shift_id,
+        "modeTugas": session.mode,
+        "idSesi": session_id,
+    })
+}
+
 pub fn submit(
     state: &DesktopState,
     input: &Value,
     operator_code: &str,
+) -> Result<Value, CommandError> {
+    submit_internal(state, input, operator_code, None)
+}
+
+#[cfg(test)]
+fn submit_at(
+    state: &DesktopState,
+    input: &Value,
+    operator_code: &str,
+    moment: LocalMoment,
+) -> Result<Value, CommandError> {
+    submit_internal(state, input, operator_code, Some(&moment))
+}
+
+fn submit_internal(
+    state: &DesktopState,
+    input: &Value,
+    operator_code: &str,
+    moment_override: Option<&LocalMoment>,
 ) -> Result<Value, CommandError> {
     let qr = input
         .get("qrContent")
@@ -204,6 +478,10 @@ pub fn submit(
     let transaction = connection
         .transaction()
         .map_err(|_| CommandError::internal())?;
+    let moment = match moment_override {
+        Some(value) => value.clone(),
+        None => current_jakarta_moment(&transaction)?,
+    };
     let employee = transaction
         .query_row(
             r#"
@@ -230,37 +508,58 @@ pub fn submit(
             None,
         ));
     };
+    let base_shift = load_shift(&transaction, employee.shift_id)?;
+    let initial_work_date = base_shift
+        .as_ref()
+        .and_then(|shift| determine_work_date(&moment, &shift.policy).ok())
+        .unwrap_or_else(|| moment.date.clone());
+
     if employee.status.to_lowercase() != "aktif" {
-        return Ok(failure(
+        let note = "Karyawan berstatus nonaktif";
+        let log = rejected_log(
+            &moment.timestamp,
+            &initial_work_date,
+            &moment.time,
+            &employee,
+            operator_code,
+            note,
+            "",
+        );
+        persist_rejection(&transaction, &client_id, &log)?;
+        transaction.commit().map_err(|_| CommandError::internal())?;
+        return Ok(failure_with_context(
             "Scan ditolak: Karyawan berstatus non-aktif.",
-            Some(&employee),
+            &employee,
+            note,
+            "",
+            None,
+            None,
+            None,
         ));
     }
     if employee.token.trim() != parts[1] {
-        return Ok(failure(
+        let note = "Token QR tidak valid atau sudah diperbarui";
+        let log = rejected_log(
+            &moment.timestamp,
+            &initial_work_date,
+            &moment.time,
+            &employee,
+            operator_code,
+            note,
+            "",
+        );
+        persist_rejection(&transaction, &client_id, &log)?;
+        transaction.commit().map_err(|_| CommandError::internal())?;
+        return Ok(failure_with_context(
             "Akses ditolak: Token QR tidak valid / sudah diperbarui.",
-            Some(&employee),
+            &employee,
+            note,
+            "",
+            None,
+            None,
+            None,
         ));
     }
-
-    let (timestamp, date, time, year, month): (String, String, String, i64, i64) = transaction
-        .query_row(
-            r#"SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime'),
-                      date('now','localtime'), time('now','localtime'),
-                      CAST(strftime('%Y','now','localtime') AS INTEGER),
-                      CAST(strftime('%m','now','localtime') AS INTEGER);"#,
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .map_err(|_| CommandError::internal())?;
     let mut settings = HashMap::<String, String>::new();
     {
         let mut statement = transaction
@@ -298,9 +597,9 @@ pub fn submit(
         let lng = input.get("lng").and_then(Value::as_f64);
         let (Some(lat), Some(lng)) = (lat, lng) else {
             let log = rejected_log(
-                &timestamp,
-                &date,
-                &time,
+                &moment.timestamp,
+                &initial_work_date,
+                &moment.time,
                 &employee,
                 operator_code,
                 "GPS Tidak Terdeteksi",
@@ -308,17 +607,22 @@ pub fn submit(
             );
             persist_rejection(&transaction, &client_id, &log)?;
             transaction.commit().map_err(|_| CommandError::internal())?;
-            return Ok(failure(
+            return Ok(failure_with_context(
                 "Scan ditolak: Lokasi GPS HP Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi.",
-                Some(&employee),
+                &employee,
+                "GPS Tidak Terdeteksi",
+                "",
+                None,
+                None,
+                None,
             ));
         };
         let distance = distance_meters(lat, lng, office_lat, office_lng);
         if distance > radius {
             let log = rejected_log(
-                &timestamp,
-                &date,
-                &time,
+                &moment.timestamp,
+                &initial_work_date,
+                &moment.time,
                 &employee,
                 operator_code,
                 format!("Di luar radius kantor ({distance}m > {radius}m)"),
@@ -326,12 +630,136 @@ pub fn submit(
             );
             persist_rejection(&transaction, &client_id, &log)?;
             transaction.commit().map_err(|_| CommandError::internal())?;
-            return Ok(failure(
+            return Ok(failure_with_context(
                 format!("Scan ditolak: Posisi Anda di luar area kantor ({distance}m dari kantor, batas max: {radius}m)."),
-                Some(&employee),
+                &employee,
+                format!("Di luar radius kantor ({distance}m > {radius}m)"),
+                "",
+                None,
+                None,
+                None,
             ));
         }
     }
+
+    let backup = find_effective_backup(&transaction, &employee.id, &moment)?;
+    if let Some(backup) = backup.as_ref() {
+        if backup.original_id == employee.id {
+            let mut log = rejected_log(
+                &moment.timestamp,
+                &backup.task_date,
+                &moment.time,
+                &employee,
+                operator_code,
+                format!("Karyawan asal sedang digantikan. ID Backup: {}", backup.id),
+                "",
+            );
+            log.id_referensi = backup.id.clone();
+            persist_rejection(&transaction, &client_id, &log)?;
+            transaction.commit().map_err(|_| CommandError::internal())?;
+            return Ok(failure_with_context(
+                format!(
+                    "Scan ditolak: Anda sedang digantikan oleh {} (ID Backup: {}).",
+                    backup.replacement_name, backup.id
+                ),
+                &employee,
+                format!("Karyawan asal sedang digantikan. ID Backup: {}", backup.id),
+                "",
+                None,
+                None,
+                None,
+            ));
+        }
+    }
+
+    let session = if let Some(backup) = backup
+        .as_ref()
+        .filter(|value| value.replacement_id == employee.id && value.original_id != employee.id)
+    {
+        Session {
+            mode: "PENGGANTI",
+            shift_id: backup.shift_id,
+            backup_id: backup.id.clone(),
+            original_employee_id: backup.original_id.clone(),
+            task_date: backup.task_date.clone(),
+        }
+    } else {
+        Session {
+            mode: "NORMAL",
+            shift_id: employee.shift_id,
+            backup_id: String::new(),
+            original_employee_id: String::new(),
+            task_date: String::new(),
+        }
+    };
+    let shift = match backup
+        .as_ref()
+        .filter(|value| value.replacement_id == employee.id)
+    {
+        Some(value) => value.shift.clone(),
+        None => base_shift,
+    };
+    let Some(shift) = shift else {
+        let note = format!("Konfigurasi shift {} tidak ditemukan", session.shift_id);
+        let mut log = rejected_log(
+            &moment.timestamp,
+            &moment.date,
+            &moment.time,
+            &employee,
+            operator_code,
+            &note,
+            "",
+        );
+        log.id_referensi = session.backup_id.clone();
+        persist_rejection(&transaction, &client_id, &log)?;
+        transaction.commit().map_err(|_| CommandError::internal())?;
+        return Ok(failure_with_context(
+            "Absensi ditolak. Konfigurasi shift tidak valid.",
+            &employee,
+            note,
+            "",
+            None,
+            Some(session.shift_id),
+            Some(session.mode),
+        ));
+    };
+    let work_date = match determine_work_date(&moment, &shift.policy) {
+        Ok(value) => value,
+        Err(error) => {
+            let note = format!("Konfigurasi shift tidak valid: {error}");
+            let mut log = rejected_log(
+                &moment.timestamp,
+                &moment.date,
+                &moment.time,
+                &employee,
+                operator_code,
+                &note,
+                "",
+            );
+            log.id_referensi = session.backup_id.clone();
+            persist_rejection(&transaction, &client_id, &log)?;
+            transaction.commit().map_err(|_| CommandError::internal())?;
+            return Ok(failure_with_context(
+                "Absensi ditolak. Konfigurasi shift tidak valid.",
+                &employee,
+                note,
+                "",
+                None,
+                Some(session.shift_id),
+                Some(session.mode),
+            ));
+        }
+    };
+    let session_id = if session.mode == "PENGGANTI" {
+        format!("{}-PENGGANTI-{}", session.backup_id, employee.id)
+    } else {
+        format!(
+            "NORMAL-{}-{}-{}",
+            work_date.replace('-', ""),
+            employee.id,
+            session.shift_id
+        )
+    };
 
     let cooldown = settings
         .get("anti_double_scan_seconds")
@@ -343,213 +771,185 @@ pub fn submit(
       SELECT CAST((julianday(?) - julianday(timestamp_scan)) * 86400 AS INTEGER)
       FROM log_scan WHERE id_karyawan = ? AND sumber_data = 'Scanner'
         AND status_proses IN ('Berhasil', 'Perlu Verifikasi')
-      ORDER BY timestamp_scan DESC, id_log ASC LIMIT 1;
+      ORDER BY id_log DESC LIMIT 1;
       "#,
-            params![timestamp, employee.id],
+            params![moment.timestamp, employee.id],
             |row| row.get(0),
         )
         .optional()
         .map_err(|_| CommandError::internal())?;
-    if let Some(elapsed) = since_last {
-        if elapsed >= 0 && elapsed < cooldown {
+    if cooldown > 0 {
+        if let Some(elapsed) = since_last.filter(|value| *value >= 0 && *value < cooldown) {
             let remaining = cooldown - elapsed;
-            let log = rejected_log(
-                &timestamp,
-                &date,
-                &time,
+            let note = format!("Scan ganda dalam masa cooldown ({cooldown} detik)");
+            let mut log = rejected_log(
+                &moment.timestamp,
+                &work_date,
+                &moment.time,
                 &employee,
                 operator_code,
-                format!("Scan ganda dalam masa cooldown ({cooldown} detik)"),
+                &note,
                 "Duplikat diabaikan",
             );
+            log.id_referensi = session.backup_id.clone();
             persist_rejection(&transaction, &client_id, &log)?;
             transaction.commit().map_err(|_| CommandError::internal())?;
-            return Ok(failure(
+            return Ok(failure_with_context(
                 format!(
                     "Scan ganda terdeteksi. Silakan tunggu {remaining} detik sebelum scan ulang."
                 ),
-                Some(&employee),
-            ));
-        }
-    }
-
-    let backup = transaction
-        .query_row(
-            r#"
-      SELECT id_backup, id_karyawan_asal, nama_karyawan_pengganti,
-             id_karyawan_pengganti, id_shift_backup
-      FROM backup_karyawan
-      WHERE (id_karyawan_asal = ? OR id_karyawan_pengganti = ?)
-        AND tanggal_tugas = ? AND status_tugas = 'Aktif' LIMIT 1;
-      "#,
-            params![employee.id, employee.id, date],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|_| CommandError::internal())?;
-    let mut mode = "NORMAL";
-    let mut effective_shift = employee.shift_id;
-    let mut backup_id = String::new();
-    let mut original_employee = String::new();
-    if let Some((id, original, replacement_name, replacement, backup_shift)) = backup {
-        if original == employee.id {
-            let mut log = rejected_log(
-                &timestamp,
-                &date,
-                &time,
                 &employee,
-                operator_code,
-                format!("Sedang digantikan. ID Backup: {id}"),
-                "",
-            );
-            log.id_referensi = id.clone();
-            persist_rejection(&transaction, &client_id, &log)?;
-            transaction.commit().map_err(|_| CommandError::internal())?;
-            return Ok(failure(
-                format!("Scan ditolak: Anda sedang digantikan oleh {replacement_name} (ID Backup: {id})."),
-                Some(&employee),
+                note,
+                "Duplikat diabaikan",
+                Some(&session_id),
+                Some(session.shift_id),
+                Some(session.mode),
             ));
-        }
-        if replacement == employee.id {
-            mode = "PENGGANTI";
-            effective_shift = backup_shift;
-            backup_id = id;
-            original_employee = original;
         }
     }
 
-    let shift = transaction
-        .query_row(
-            r#"
-      SELECT id_shift, jam_masuk, jam_kerja_normal_menit,
-             istirahat_menit, toleransi_masuk_menit
-      FROM tbl_shift WHERE id_shift = ? LIMIT 1;
-      "#,
-            [effective_shift],
-            |row| {
-                Ok(Shift {
-                    id: row.get(0)?,
-                    start: row.get(1)?,
-                    normal_minutes: row.get(2)?,
-                    break_minutes: row.get(3)?,
-                    tolerance_minutes: row.get(4)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|_| CommandError::internal())?
-        .unwrap_or(Shift {
-            id: effective_shift,
-            start: "07:00".into(),
-            normal_minutes: 480,
-            break_minutes: 60,
-            tolerance_minutes: 0,
-        });
-    let session_id = if mode == "PENGGANTI" {
-        format!("{backup_id}-PENGGANTI-{}", employee.id)
-    } else {
-        format!(
-            "NORMAL-{}-{}-{}",
-            date.replace('-', ""),
-            employee.id,
-            shift.id
-        )
-    };
     let attendance_before = transaction
         .query_row(
             r#"
-      SELECT COALESCE(jam_masuk, ''), update_terakhir, sumber, status_absen
+      SELECT COALESCE(jam_masuk, ''), COALESCE(jam_pulang, ''),
+             update_terakhir, sumber
       FROM absensi_harian WHERE id_sesi = ? LIMIT 1;
       "#,
             [&session_id],
             |row| {
                 Ok(AttendanceState {
                     check_in: row.get(0)?,
-                    updated_at: row.get(1)?,
-                    source: row.get(2)?,
-                    attendance_status: row.get(3)?,
+                    check_out: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    source: row.get(3)?,
                 })
             },
         )
         .optional()
         .map_err(|_| CommandError::internal())?;
-    if attendance_before.as_ref().is_some_and(|item| {
-        item.source == "Koreksi Admin" && item.attendance_status == "Tidak Hadir"
-    }) {
-        let log = rejected_log(
-            &timestamp,
-            &date,
-            &time,
+    if attendance_before
+        .as_ref()
+        .is_some_and(|item| item.source == "Koreksi Admin")
+    {
+        let note = "Data absensi sudah dikoreksi admin";
+        let mut log = rejected_log(
+            &moment.timestamp,
+            &work_date,
+            &moment.time,
             &employee,
             operator_code,
-            "Data absensi sudah dikoreksi admin",
-            "Koreksi Admin memiliki prioritas tertinggi",
+            note,
+            "",
         );
+        log.id_referensi = session.backup_id.clone();
         persist_rejection(&transaction, &client_id, &log)?;
         transaction.commit().map_err(|_| CommandError::internal())?;
-        return Ok(failure(
-            "Scan ditolak: data absensi sudah dikoreksi admin. Silakan hubungi operator.",
-            Some(&employee),
+        return Ok(failure_with_context(
+            "Scan ditolak: Data absensi sudah dikoreksi Admin dan tidak boleh ditimpa scanner.",
+            &employee,
+            note,
+            "",
+            Some(&session_id),
+            Some(session.shift_id),
+            Some(session.mode),
         ));
     }
 
     let previous_update = attendance_before
         .as_ref()
         .map(|item| item.updated_at.clone());
-    let is_check_in = attendance_before
-        .as_ref()
-        .map(|item| item.check_in.is_empty())
-        .unwrap_or(true);
-    let current_minutes = minutes(&time);
-    let mut late = 0;
-    let mut early = 0;
-    let mut worked = 0;
-    let mut overtime = 0;
-    let mut shortage = 0;
-    let (scan_type, status, detail) = if is_check_in {
-        let difference = current_minutes - minutes(&shift.start);
-        let detail = if difference > shift.tolerance_minutes {
-            late = difference;
-            "Terlambat"
-        } else if difference < 0 {
-            early = -difference;
-            "Datang Lebih Awal"
-        } else {
-            "Tepat Waktu"
-        };
-        ("Masuk", "Belum Pulang", detail)
-    } else {
-        let check_in = attendance_before
+    let latest_history: Option<(String, String)> = transaction
+        .query_row(
+            r#"
+      SELECT timestamp_scan, jenis_scan FROM log_scan
+      WHERE tanggal_kerja = ? AND id_karyawan = ?
+        AND COALESCE(id_referensi, '') = ?
+        AND status_proses IN ('Berhasil', 'Perlu Verifikasi')
+        AND jenis_scan IN ('Masuk', 'Pulang')
+      ORDER BY id_log DESC LIMIT 1;
+      "#,
+            params![work_date, employee.id, session.backup_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+    let history = ScanHistory {
+        check_in: attendance_before
             .as_ref()
-            .map(|item| item.check_in.as_str())
-            .unwrap_or("");
-        let total: i64 = transaction
-            .query_row(
-                "SELECT MAX(0, CAST((julianday(?) - julianday(?)) * 1440 AS INTEGER));",
-                params![timestamp, check_in],
-                |row| row.get(0),
-            )
-            .unwrap_or_default();
-        worked = (total - shift.break_minutes).max(0);
-        let detail = if worked > shift.normal_minutes {
-            overtime = worked - shift.normal_minutes;
-            "Pulang Lembur"
-        } else if worked < shift.normal_minutes {
-            shortage = shift.normal_minutes - worked;
-            "Pulang Lebih Awal"
-        } else {
-            "Pulang Normal"
-        };
-        ("Pulang", "Lengkap", detail)
+            .and_then(|item| (!item.check_in.is_empty()).then(|| item.check_in.clone())),
+        check_out: attendance_before
+            .as_ref()
+            .and_then(|item| (!item.check_out.is_empty()).then(|| item.check_out.clone())),
+        last_scan: latest_history.as_ref().map(|item| item.0.clone()),
+        last_scan_kind: latest_history.as_ref().map(|item| item.1.clone()),
     };
+    let multi_scan_minutes = settings
+        .get("batas_multi_scan_menit")
+        .or_else(|| settings.get("BATAS_MULTI_SCAN_MENIT"))
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(5)
+        .max(0);
+    let decision = match decide_scan(&moment, &shift.policy, &history, multi_scan_minutes) {
+        Ok(value) => value,
+        Err(error) => {
+            let note = format!("Konfigurasi shift tidak valid: {error}");
+            let mut log = rejected_log(
+                &moment.timestamp,
+                &moment.date,
+                &moment.time,
+                &employee,
+                operator_code,
+                &note,
+                "",
+            );
+            log.id_referensi = session.backup_id.clone();
+            persist_rejection(&transaction, &client_id, &log)?;
+            transaction.commit().map_err(|_| CommandError::internal())?;
+            return Ok(failure_with_context(
+                "Absensi ditolak. Konfigurasi shift tidak valid.",
+                &employee,
+                note,
+                "",
+                Some(&session_id),
+                Some(session.shift_id),
+                Some(session.mode),
+            ));
+        }
+    };
+    if !decision.allowed {
+        let log = decision_log(
+            &moment,
+            &employee,
+            operator_code,
+            &decision,
+            &session.backup_id,
+            decision.system_note.clone(),
+        );
+        persist_rejection(&transaction, &client_id, &log)?;
+        transaction.commit().map_err(|_| CommandError::internal())?;
+        return Ok(result_from_decision(
+            &decision,
+            &employee,
+            &session,
+            &session_id,
+        ));
+    }
+
+    let is_check_in = decision.scan_type == "Masuk";
+    let status = if is_check_in {
+        "Belum Pulang"
+    } else if decision.process_status == "Perlu Verifikasi" {
+        "Perlu Verifikasi"
+    } else {
+        "Lengkap"
+    };
+    let date_parts = decision
+        .work_date
+        .split('-')
+        .filter_map(|part| part.parse::<i64>().ok())
+        .collect::<Vec<_>>();
+    let year = *date_parts.first().ok_or_else(CommandError::internal)?;
+    let month = *date_parts.get(1).ok_or_else(CommandError::internal)?;
     let month_names = [
         "Januari",
         "Februari",
@@ -567,13 +967,13 @@ pub fn submit(
     let month_name = month_names
         .get(month.saturating_sub(1) as usize)
         .unwrap_or(&"Januari");
-    let attendance_id = attendance_before
-        .as_ref()
-        .map(|_| 0)
-        .unwrap_or_else(sync::new_local_id);
-    if is_check_in {
-        transaction
-            .execute(
+    let task_date = if session.task_date.is_empty() {
+        decision.work_date.as_str()
+    } else {
+        session.task_date.as_str()
+    };
+    if attendance_before.is_none() {
+        transaction.execute(
                 r#"
         INSERT INTO absensi_harian (
           id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk,
@@ -581,32 +981,80 @@ pub fn submit(
           update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja,
           lembur, jam_kerja_kurang, id_shift, bulan, tahun, id_sesi,
           mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
-        ) VALUES (?, ?, ?, ?, ?, ?, '', 'Hadir', ?, ?, 'Scanner', ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id_sesi) DO UPDATE SET
-          jam_masuk = excluded.jam_masuk, status_kehadiran = 'Hadir',
-          status_absen = excluded.status_absen, keterangan = excluded.keterangan,
-          sumber = 'Scanner', update_terakhir = excluded.update_terakhir,
-          menit_terlambat = excluded.menit_terlambat,
-          menit_datang_awal = excluded.menit_datang_awal;
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Hadir', ?, ?, 'Scanner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
                 params![
-                    attendance_id, date, employee.id, employee.name, employee.division,
-                    timestamp, status, detail, timestamp, late, early, shift.id,
-                    month_name, year, session_id, mode, backup_id, original_employee, date,
+                    sync::new_local_id(), decision.work_date, employee.id, employee.name,
+                    employee.division,
+                    if is_check_in { moment.timestamp.as_str() } else { "" },
+                    if is_check_in { "" } else { moment.timestamp.as_str() },
+                    status, decision.detail, moment.timestamp, decision.late_minutes,
+                    decision.early_minutes, decision.metrics.work_minutes,
+                    decision.metrics.overtime_minutes, decision.metrics.shortage_minutes,
+                    session.shift_id, month_name, year, session_id, session.mode,
+                    session.backup_id, session.original_employee_id, task_date,
                 ],
             )
             .map_err(|_| CommandError::internal())?;
-    } else {
-        transaction
+    } else if is_check_in {
+        let updated = transaction
             .execute(
                 r#"
-        UPDATE absensi_harian SET jam_pulang = ?, status_absen = 'Lengkap',
-          keterangan = ?, sumber = 'Scanner', update_terakhir = ?, jam_kerja = ?,
-          lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;
+        UPDATE absensi_harian SET jam_masuk = ?, status_kehadiran = 'Hadir',
+          status_absen = ?, keterangan = ?, sumber = 'Scanner', update_terakhir = ?,
+          menit_terlambat = ?, menit_datang_awal = ?, id_shift = ?, mode_tugas = ?,
+          id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
+        WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';
         "#,
-                params![timestamp, detail, timestamp, worked, overtime, shortage, session_id],
+                params![
+                    moment.timestamp,
+                    status,
+                    decision.detail,
+                    moment.timestamp,
+                    decision.late_minutes,
+                    decision.early_minutes,
+                    session.shift_id,
+                    session.mode,
+                    session.backup_id,
+                    session.original_employee_id,
+                    task_date,
+                    session_id,
+                ],
             )
             .map_err(|_| CommandError::internal())?;
+        if updated != 1 {
+            return Err(CommandError::internal());
+        }
+    } else {
+        let updated = transaction
+            .execute(
+                r#"
+        UPDATE absensi_harian SET jam_pulang = ?, status_kehadiran = 'Hadir',
+          status_absen = ?, keterangan = ?, sumber = 'Scanner', update_terakhir = ?,
+          jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?, id_shift = ?,
+          mode_tugas = ?, id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
+        WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';
+        "#,
+                params![
+                    moment.timestamp,
+                    status,
+                    decision.detail,
+                    moment.timestamp,
+                    decision.metrics.work_minutes,
+                    decision.metrics.overtime_minutes,
+                    decision.metrics.shortage_minutes,
+                    session.shift_id,
+                    session.mode,
+                    session.backup_id,
+                    session.original_employee_id,
+                    task_date,
+                    session_id,
+                ],
+            )
+            .map_err(|_| CommandError::internal())?;
+        if updated != 1 {
+            return Err(CommandError::internal());
+        }
     }
     let attendance_json: String = transaction
         .query_row(
@@ -632,31 +1080,19 @@ pub fn submit(
         .map_err(|_| CommandError::internal())?;
     let attendance: Value =
         serde_json::from_str(&attendance_json).map_err(|_| CommandError::internal())?;
-    let system_note = if mode == "PENGGANTI" {
-        format!(
-            "Scan {} sebagai karyawan pengganti. ID Backup: {backup_id}",
-            scan_type.to_lowercase()
-        )
+    let system_note = if session.mode == "PENGGANTI" {
+        format!("{}. ID Backup: {}", decision.system_note, session.backup_id)
     } else {
-        format!("Scan {} berhasil", scan_type.to_lowercase())
+        decision.system_note.clone()
     };
-    let log = ScanLog {
-        timestamp_scan: timestamp.clone(),
-        tanggal_kerja: date.clone(),
-        jam_scan: time,
-        id_karyawan: employee.id.clone(),
-        nama: employee.name.clone(),
-        divisi: employee.division.clone(),
-        jenis_scan: scan_type.into(),
-        status_proses: "Berhasil".into(),
-        sumber_data: "Scanner".into(),
-        catatan_sistem: system_note.clone(),
-        keterangan: detail.into(),
-        menit_terlambat: late,
-        menit_datang_awal: early,
-        id_referensi: backup_id,
-        kode_operator: operator_code.to_owned(),
-    };
+    let log = decision_log(
+        &moment,
+        &employee,
+        operator_code,
+        &decision,
+        &session.backup_id,
+        system_note,
+    );
     let local_log_id = sync::new_local_id();
     insert_log(&transaction, local_log_id, &log)?;
     enqueue_scan(
@@ -668,42 +1104,12 @@ pub fn submit(
         previous_update.as_deref(),
     )?;
     transaction.commit().map_err(|_| CommandError::internal())?;
-
-    let mut message = format!(
-        "Jam {scan_type} {} ({}) berhasil dicatat.\nStatus: {detail}",
-        employee.name, employee.id
-    );
-    if late > 0 {
-        message.push_str(&format!("\nTerlambat: {late} menit."));
-    }
-    if early > 0 {
-        message.push_str(&format!("\nDatang awal: {early} menit."));
-    }
-    if overtime > 0 {
-        message.push_str(&format!("\nLembur: {overtime} menit."));
-    }
-    if shortage > 0 {
-        message.push_str(&format!("\nJam kerja kurang: {shortage} menit."));
-    }
-    Ok(json!({
-        "sukses": true,
-        "status": "Berhasil",
-        "jenisScan": scan_type,
-        "idKaryawan": employee.id,
-        "nama": employee.name,
-        "divisi": employee.division,
-        "pesan": message,
-        "catatanSistem": system_note,
-        "keterangan": detail,
-        "menitTerlambat": late,
-        "menitDatangAwal": early,
-        "jamKerja": worked,
-        "lembur": overtime,
-        "jamKerjaKurang": shortage,
-        "shiftEfektif": shift.id,
-        "modeTugas": mode,
-        "idSesi": session_id,
-    }))
+    Ok(result_from_decision(
+        &decision,
+        &employee,
+        &session,
+        &session_id,
+    ))
 }
 
 #[cfg(test)]
@@ -715,41 +1121,35 @@ mod tests {
     use tempfile::tempdir;
     use url::Url;
 
-    use super::{storage, submit, DesktopState};
+    use super::{storage, submit_at, DesktopState, LocalMoment};
 
     fn fixture() -> (tempfile::TempDir, DesktopState) {
         let directory = tempdir().expect("temporary directory");
         storage::initialize(directory.path()).expect("local schema");
         let connection = storage::database(directory.path()).expect("local database");
         connection
-            .execute(
+            .execute_batch(
                 r#"
         INSERT INTO tbl_shift (
           id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
-          jam_kerja_normal_menit, istirahat_menit
-        ) VALUES (1, 1, 'Shift Test', '00:00', '23:59', 480, 60);
-        "#,
-                [],
-            )
-            .expect("shift seed");
-        connection
-            .execute(
-                r#"
+          awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+          jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+          offset_istirahat_mulai, buffer_shift_malam_menit
+        ) VALUES (1, 1, 'Shift Test', '07:00', '15:00', 60, 15, 30,
+                  420, 60, 120, 240, 120);
+
         INSERT INTO master_data (
           id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif,
           token_absensi, qr_code
         ) VALUES ('K001', 'K001', 'Karyawan Test', 'Dapur', 1, 'Aktif',
                   'TOKEN-TEST', 'K001|TOKEN-TEST');
+
+        INSERT INTO setting_gex_system (key, value) VALUES
+          ('anti_double_scan_seconds', '60'),
+          ('batas_multi_scan_menit', '5');
         "#,
-                [],
             )
-            .expect("employee seed");
-        connection
-            .execute(
-                "INSERT INTO setting_gex_system (key, value) VALUES ('anti_double_scan_seconds', '60');",
-                [],
-            )
-            .expect("settings seed");
+            .expect("fixture seed");
         let state = DesktopState {
             api_base_url: Url::parse("http://localhost:3000").expect("url"),
             server_origin: "http://localhost:3000".into(),
@@ -762,12 +1162,44 @@ mod tests {
         (directory, state)
     }
 
+    fn moment(date: &str, time: &str) -> LocalMoment {
+        LocalMoment {
+            timestamp: format!("{date} {time}"),
+            date: date.into(),
+            time: time.into(),
+        }
+    }
+
+    fn scan(
+        state: &DesktopState,
+        employee: &str,
+        token: &str,
+        at: LocalMoment,
+    ) -> serde_json::Value {
+        submit_at(
+            state,
+            &json!({ "qrContent": format!("{employee}|{token}") }),
+            "SPD001",
+            at,
+        )
+        .expect("scan result")
+    }
+
     #[test]
     fn duplicate_is_logged_without_changing_daily_attendance() {
         let (_directory, state) = fixture();
-        let input = json!({ "qrContent": "K001|TOKEN-TEST" });
-        let first = submit(&state, &input, "SPD001").expect("first scan");
-        let duplicate = submit(&state, &input, "SPD001").expect("duplicate scan");
+        let first = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:00"),
+        );
+        let duplicate = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:30"),
+        );
         assert_eq!(
             first.get("sukses").and_then(|value| value.as_bool()),
             Some(true)
@@ -796,6 +1228,333 @@ mod tests {
                 row.get(0)
             })
             .expect("outbox count");
+        let payload_json: String = connection
+            .query_row(
+                "SELECT payload_json FROM desktop_sync_outbox WHERE json_type(payload_json, '$.attendance') = 'object' LIMIT 1;",
+                [],
+                |row| row.get(0),
+            )
+            .expect("successful scanner payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload_json).expect("valid outbox JSON");
         assert_eq!((logs, rejected, attendance, outbox), (2, 1, 1, 2));
+        assert_eq!(payload["log"]["jenis_scan"], "Masuk");
+        assert_eq!(payload["attendance"]["id_sesi"], first["idSesi"]);
+    }
+
+    #[test]
+    fn policy_rejection_is_logged_and_enqueued_without_attendance() {
+        let (_directory, state) = fixture();
+        let result = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "05:59:00"),
+        );
+        assert_eq!(result["jenisScan"], "Masuk Ditolak - Terlalu Awal");
+        assert_eq!(result["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let counts: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM log_scan), (SELECT COUNT(*) FROM absensi_harian), (SELECT COUNT(*) FROM desktop_sync_outbox);",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("counts");
+        assert_eq!(counts, (1, 0, 1));
+    }
+
+    #[test]
+    fn known_employee_rejections_are_logged_and_enqueued() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE master_data SET status_aktif = 'Nonaktif' WHERE id_unik = 'K001';",
+                [],
+            )
+            .expect("disable employee");
+        drop(connection);
+
+        let inactive = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:00"),
+        );
+        assert_eq!(inactive["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE master_data SET status_aktif = 'Aktif' WHERE id_unik = 'K001';",
+                [],
+            )
+            .expect("enable employee");
+        drop(connection);
+        let invalid_token = scan(&state, "K001", "SALAH", moment("2026-08-12", "07:01:00"));
+        assert_eq!(invalid_token["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let counts: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM log_scan), (SELECT COUNT(*) FROM absensi_harian), (SELECT COUNT(*) FROM desktop_sync_outbox);",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("known rejection counts");
+        assert_eq!(counts, (2, 0, 2));
+    }
+
+    #[test]
+    fn desktop_geofence_rejection_is_logged_without_attendance() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        INSERT OR REPLACE INTO setting_gex_system (key, value) VALUES
+          ('geofence_enabled', 'true'),
+          ('lat_kantor', '-6.200000'),
+          ('lng_kantor', '106.816666'),
+          ('radius_meter', '100');
+        "#,
+            )
+            .expect("geofence settings");
+        drop(connection);
+
+        let result = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:00"),
+        );
+        assert_eq!(result["sukses"], false);
+        assert_eq!(result["catatanSistem"], "GPS Tidak Terdeteksi");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let counts: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM log_scan), (SELECT COUNT(*) FROM absensi_harian), (SELECT COUNT(*) FROM desktop_sync_outbox);",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("geofence counts");
+        assert_eq!(counts, (1, 0, 1));
+    }
+
+    #[test]
+    fn multi_scan_uses_policy_after_cooldown() {
+        let (_directory, state) = fixture();
+        let first = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:00"),
+        );
+        let second = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:03:00"),
+        );
+        assert_eq!(first["jenisScan"], "Masuk");
+        assert_eq!(second["jenisScan"], "Multi Scan Ditolak");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let rejected: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM log_scan WHERE jenis_scan = 'Multi Scan Ditolak' AND status_proses = 'Ditolak';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("multi-scan log");
+        assert_eq!(rejected, 1);
+    }
+
+    #[test]
+    fn night_shift_keeps_one_session_on_the_entry_work_date() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE tbl_shift SET jam_masuk = '23:00', jam_pulang = '07:00' WHERE id_shift = 1;",
+                [],
+            )
+            .expect("night shift");
+        drop(connection);
+
+        let entry = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "23:00:00"),
+        );
+        let exit = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-13", "07:00:00"),
+        );
+        assert_eq!(entry["idSesi"], "NORMAL-20260812-K001-1");
+        assert_eq!(exit["idSesi"], "NORMAL-20260812-K001-1");
+        assert_eq!(exit["jenisScan"], "Pulang");
+        assert_eq!(exit["jamKerja"], 420);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let stored: (String, String, String) = connection
+            .query_row(
+                "SELECT tanggal, jam_masuk, jam_pulang FROM absensi_harian;",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("night attendance");
+        assert_eq!(
+            stored,
+            (
+                "2026-08-12".into(),
+                "2026-08-12 23:00:00".into(),
+                "2026-08-13 07:00:00".into()
+            )
+        );
+    }
+
+    #[test]
+    fn admin_correction_cannot_be_overwritten_by_scanner() {
+        let (_directory, state) = fixture();
+        scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "07:00:00"),
+        );
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE absensi_harian SET sumber = 'Koreksi Admin', keterangan = 'Dikunci admin' WHERE id_karyawan = 'K001';",
+                [],
+            )
+            .expect("admin correction");
+        drop(connection);
+
+        let result = scan(
+            &state,
+            "K001",
+            "TOKEN-TEST",
+            moment("2026-08-12", "15:00:00"),
+        );
+        assert_eq!(result["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let stored: (String, String, i64) = connection
+            .query_row(
+                "SELECT sumber, COALESCE(jam_pulang, ''), (SELECT COUNT(*) FROM desktop_sync_outbox) FROM absensi_harian WHERE id_karyawan = 'K001';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("protected attendance");
+        assert_eq!(stored, ("Koreksi Admin".into(), "".into(), 2));
+    }
+
+    #[test]
+    fn previous_day_night_backup_is_resolved_for_replacement() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+          jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+          offset_istirahat_mulai, buffer_shift_malam_menit
+        ) VALUES (2, 2, 'Shift Malam', '23:00', '07:00', 60, 15, 30,
+                  420, 60, 120, 240, 120);
+
+        INSERT INTO master_data (
+          id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif,
+          token_absensi, qr_code
+        ) VALUES ('K002', 'K002', 'Karyawan Pengganti', 'Dapur', 1, 'Aktif',
+                  'TOKEN-002', 'K002|TOKEN-002');
+
+        INSERT INTO backup_karyawan (
+          id_backup, tanggal_tugas, id_karyawan_asal, nama_karyawan_asal,
+          divisi_asal, id_shift_asal, id_karyawan_pengganti,
+          nama_karyawan_pengganti, divisi_pengganti, id_shift_normal_pengganti,
+          id_shift_backup, status_tugas, kode_operator, waktu_input
+        ) VALUES ('B001', '2026-08-12', 'K001', 'Karyawan Test', 'Dapur', 1,
+                  'K002', 'Karyawan Pengganti', 'Dapur', 1, 2, 'Aktif',
+                  'SPD001', '2026-08-12 08:00:00');
+        "#,
+            )
+            .expect("backup seed");
+        drop(connection);
+
+        let result = scan(
+            &state,
+            "K002",
+            "TOKEN-002",
+            moment("2026-08-13", "07:00:00"),
+        );
+        assert_eq!(result["sukses"], true);
+        assert_eq!(result["status"], "Perlu Verifikasi");
+        assert_eq!(result["modeTugas"], "PENGGANTI");
+        assert_eq!(result["shiftEfektif"], 2);
+        assert_eq!(result["idSesi"], "B001-PENGGANTI-K002");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let stored: (String, String, String, String) = connection
+            .query_row(
+                "SELECT tanggal, mode_tugas, id_backup, tanggal_tugas FROM absensi_harian WHERE id_karyawan = 'K002';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("backup attendance");
+        assert_eq!(
+            stored,
+            (
+                "2026-08-12".into(),
+                "PENGGANTI".into(),
+                "B001".into(),
+                "2026-08-12".into()
+            )
+        );
+    }
+
+    #[test]
+    fn attendance_log_and_outbox_are_rolled_back_together() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        CREATE TRIGGER reject_scanner_outbox
+        BEFORE INSERT ON desktop_sync_outbox
+        BEGIN
+          SELECT RAISE(ABORT, 'outbox failure');
+        END;
+        "#,
+            )
+            .expect("failure trigger");
+        drop(connection);
+
+        let result = submit_at(
+            &state,
+            &json!({ "qrContent": "K001|TOKEN-TEST" }),
+            "SPD001",
+            moment("2026-08-12", "07:00:00"),
+        );
+        assert!(result.is_err());
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let counts: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM absensi_harian), (SELECT COUNT(*) FROM log_scan), (SELECT COUNT(*) FROM desktop_sync_outbox);",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("rolled back counts");
+        assert_eq!(counts, (0, 0, 0));
     }
 }

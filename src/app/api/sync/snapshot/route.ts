@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
+import { withTransientDatabaseRetry } from "@/lib/server/database-retry";
 import {
   ensureServerDatabaseInitialized,
   getServerDatabase,
@@ -16,11 +17,14 @@ export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
     assertSameOriginMutation(request);
-    await requireWebPermission(request, "sync.view");
-    await ensureServerDatabaseInitialized();
+    const snapshot = await withTransientDatabaseRetry(async () => {
+      await requireWebPermission(request, "sync.view");
+      await ensureServerDatabaseInitialized();
+      return readOperationalSnapshot(getServerDatabase());
+    });
     return noStoreJson({
       sukses: true,
-      snapshot: await readOperationalSnapshot(getServerDatabase()),
+      snapshot,
     });
   } catch (error) {
     return toApiErrorResponse(error);

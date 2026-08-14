@@ -10,6 +10,21 @@ export interface SyncResult {
   downloaded: number;
   conflicts: number;
   failed: number;
+  tables: SyncTableRunSummary[];
+}
+
+export interface SyncTableRunSummary {
+  table: string;
+  uploaded: number;
+  downloaded: number;
+  conflicts: number;
+  failed: number;
+}
+
+export interface SyncTableQueueSummary {
+  table: string;
+  pending: number;
+  failed: number;
 }
 
 export interface SyncRunSummary {
@@ -31,5 +46,6 @@ export interface SyncStatusResult {
   message: string;
   pending: number;
   failed: number;
+  tables: SyncTableQueueSummary[];
   lastRun: SyncRunSummary | null;
 }

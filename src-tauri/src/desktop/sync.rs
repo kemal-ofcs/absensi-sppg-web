@@ -296,6 +296,49 @@ fn row_has_unsynced_change(
             return Ok(true);
         }
     }
+    if definition.domain == "attendance" {
+        let pending_attendance: bool = transaction
+            .query_row(
+                r#"
+        SELECT EXISTS(
+          SELECT 1 FROM desktop_sync_outbox
+          WHERE status IN ('pending', 'failed', 'conflict')
+            AND COALESCE(json_extract(payload_json, '$.attendance.id_sesi'), '') = ?
+        );
+        "#,
+                [key],
+                |result| result.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        if pending_attendance {
+            return Ok(true);
+        }
+    }
+    if definition.domain == "scan-log" {
+        let timestamp = entity_key(row, "timestamp_scan");
+        let employee_id = entity_key(row, "id_karyawan");
+        let scan_type = entity_key(row, "jenis_scan");
+        let reference_id = entity_key(row, "id_referensi");
+        let pending_log: bool = transaction
+            .query_row(
+                r#"
+        SELECT EXISTS(
+          SELECT 1 FROM desktop_sync_outbox
+          WHERE status IN ('pending', 'failed', 'conflict')
+            AND COALESCE(json_extract(payload_json, '$.log.timestamp_scan'), '') = ?
+            AND COALESCE(json_extract(payload_json, '$.log.id_karyawan'), '') = ?
+            AND COALESCE(json_extract(payload_json, '$.log.jenis_scan'), '') = ?
+            AND COALESCE(json_extract(payload_json, '$.log.id_referensi'), '') = ?
+        );
+        "#,
+                params![timestamp, employee_id, scan_type, reference_id],
+                |result| result.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        if pending_log {
+            return Ok(true);
+        }
+    }
     Ok(false)
 }
 
@@ -1374,6 +1417,150 @@ mod tests {
             )
             .expect("server shift name");
         assert_eq!(server_name, "Shift Server");
+    }
+
+    #[test]
+    fn snapshot_does_not_overwrite_pending_scanner_attendance_or_log() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        INSERT INTO absensi_harian (
+          id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk,
+          jam_pulang, status_kehadiran, status_absen, keterangan, sumber,
+          update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja,
+          lembur, jam_kerja_kurang, id_shift, bulan, tahun, id_sesi,
+          mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
+        ) VALUES (
+          -20, '2026-08-12', 'K001', 'Karyawan Lokal', 'Dapur',
+          '2026-08-12 07:00:00', '', 'Hadir', 'Belum Pulang',
+          'Data scanner lokal', 'Scanner', '2026-08-12 07:00:00',
+          0, 0, 0, 0, 420, 1, 'Agustus', 2026,
+          'NORMAL-20260812-K001-1', 'NORMAL', '', '', '2026-08-12'
+        );
+        INSERT INTO log_scan (
+          id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
+          nama, divisi, jenis_scan, status_proses, sumber_data,
+          catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
+          id_referensi, kode_operator
+        ) VALUES (
+          -10, '2026-08-12 07:00:00', '2026-08-12', '07:00:00',
+          'K001', 'Karyawan Lokal', 'Dapur', 'Masuk', 'Berhasil',
+          'Scanner', 'Log scanner lokal', 'Tepat Waktu', 0, 0, '', 'SPD001'
+        );
+        "#,
+            )
+            .expect("pending scanner rows");
+        let transaction = connection.transaction().expect("transaction");
+        enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "scan",
+            "scan:-10",
+            &json!({
+                "log": {
+                    "timestamp_scan": "2026-08-12 07:00:00",
+                    "tanggal_kerja": "2026-08-12",
+                    "jam_scan": "07:00:00",
+                    "id_karyawan": "K001",
+                    "nama": "Karyawan Lokal",
+                    "divisi": "Dapur",
+                    "jenis_scan": "Masuk",
+                    "status_proses": "Berhasil",
+                    "sumber_data": "Scanner",
+                    "catatan_sistem": "Log scanner lokal",
+                    "keterangan": "Tepat Waktu",
+                    "menit_terlambat": 0,
+                    "menit_datang_awal": 0,
+                    "id_referensi": "",
+                    "kode_operator": "SPD001"
+                },
+                "attendance": {
+                    "tanggal": "2026-08-12",
+                    "id_karyawan": "K001",
+                    "nama": "Karyawan Lokal",
+                    "kelas_divisi": "Dapur",
+                    "jam_masuk": "2026-08-12 07:00:00",
+                    "jam_pulang": "",
+                    "status_kehadiran": "Hadir",
+                    "status_absen": "Belum Pulang",
+                    "keterangan": "Data scanner lokal",
+                    "sumber": "Scanner",
+                    "update_terakhir": "2026-08-12 07:00:00",
+                    "menit_terlambat": 0,
+                    "menit_datang_awal": 0,
+                    "jam_kerja": 0,
+                    "lembur": 0,
+                    "jam_kerja_kurang": 420,
+                    "id_shift": 1,
+                    "bulan": "Agustus",
+                    "tahun": 2026,
+                    "id_sesi": "NORMAL-20260812-K001-1",
+                    "mode_tugas": "NORMAL",
+                    "id_backup": "",
+                    "id_karyawan_asal": "",
+                    "tanggal_tugas": "2026-08-12"
+                },
+                "attendanceBaseUpdatedAt": null
+            }),
+            None,
+        )
+        .expect("scanner outbox");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        let snapshot = json!({
+            "snapshot": {
+                "revision": 13,
+                "employees": [], "idCards": [], "shifts": [], "settings": [],
+                "backups": [], "corrections": [], "imports": [],
+                "attendance": [{
+                    "tanggal": "2026-08-12", "id_karyawan": "K001",
+                    "nama": "Karyawan Server", "kelas_divisi": "Dapur",
+                    "jam_masuk": "2026-08-12 07:05:00", "jam_pulang": "",
+                    "status_kehadiran": "Hadir", "status_absen": "Belum Pulang",
+                    "keterangan": "Snapshot server lama", "sumber": "Scanner",
+                    "update_terakhir": "2026-08-12 07:05:00",
+                    "menit_terlambat": 5, "menit_datang_awal": 0,
+                    "jam_kerja": 0, "lembur": 0, "jam_kerja_kurang": 420,
+                    "id_shift": 1, "bulan": "Agustus", "tahun": 2026,
+                    "id_sesi": "NORMAL-20260812-K001-1", "mode_tugas": "NORMAL",
+                    "id_backup": "", "id_karyawan_asal": "", "tanggal_tugas": "2026-08-12"
+                }],
+                "scanLogs": [{
+                    "id_log": 99, "timestamp_scan": "2026-08-12 07:00:00",
+                    "tanggal_kerja": "2026-08-12", "jam_scan": "07:00:00",
+                    "id_karyawan": "K001", "nama": "Karyawan Server",
+                    "divisi": "Dapur", "jenis_scan": "Masuk",
+                    "status_proses": "Berhasil", "sumber_data": "Scanner",
+                    "catatan_sistem": "Snapshot server", "keterangan": "Tepat Waktu",
+                    "menit_terlambat": 0, "menit_datang_awal": 0,
+                    "id_referensi": "", "kode_operator": "SPD001"
+                }]
+            }
+        });
+        apply_snapshot(&state, &snapshot).expect("protected scanner snapshot");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let attendance_note: String = connection
+            .query_row(
+                "SELECT keterangan FROM absensi_harian WHERE id_sesi = 'NORMAL-20260812-K001-1';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("local attendance");
+        let log: (i64, i64, String) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(id_log), MAX(catatan_sistem) FROM log_scan WHERE id_karyawan = 'K001';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("local log");
+        assert_eq!(attendance_note, "Data scanner lokal");
+        assert_eq!(log, (1, -10, "Log scanner lokal".into()));
     }
 
     #[test]

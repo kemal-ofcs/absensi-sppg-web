@@ -8,5 +8,6 @@ mod scanner;
 mod secrets;
 mod storage;
 mod sync;
+mod time_policy;
 
 pub use config::DesktopState;

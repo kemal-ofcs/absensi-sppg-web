@@ -3,6 +3,7 @@ import type { Client, Transaction } from "@libsql/client";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { assertActorPermission } from "@/lib/auth/permission-assertion";
 import type { PermissionKey } from "@/lib/rbac/catalog";
+import { isTransientDatabaseError } from "@/lib/server/database-retry";
 import {
   type OperationalSyncEvent,
   safeParseOperationalSyncEvent,
@@ -429,16 +430,12 @@ async function applyAttendance(
       throw new Error("Data ABSENSI_HARIAN belum lengkap.");
     }
     const existing = await transaction.execute({
-      sql: `SELECT sumber, status_absen, update_terakhir
+      sql: `SELECT sumber, update_terakhir
             FROM absensi_harian WHERE id_sesi = ? LIMIT 1;`,
       args: [idSesi],
     });
     const current = existing.rows[0];
-    if (
-      current &&
-      String(current.sumber) === "Koreksi Admin" &&
-      String(current.status_absen) === "Tidak Hadir"
-    ) {
+    if (current && String(current.sumber) === "Koreksi Admin") {
       throw new Error(
         "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa scanner.",
       );
@@ -1037,6 +1034,7 @@ export async function processOperationalSyncEvent(
       await transaction.commit();
       return result;
     } catch (error) {
+      if (isTransientDatabaseError(error)) throw error;
       const result: OperationalSyncResult = {
         eventId: event.eventId,
         status: "conflict",

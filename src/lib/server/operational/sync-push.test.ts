@@ -95,6 +95,59 @@ function scanEvent(overrides: Partial<OperationalSyncEvent> = {}) {
   } satisfies OperationalSyncEvent;
 }
 
+function successfulScanEvent(overrides: Partial<OperationalSyncEvent> = {}) {
+  return scanEvent({
+    eventId: `evt-${"4".repeat(64)}`,
+    entityKey: "scan:-200",
+    payload: {
+      log: {
+        timestamp_scan: "2026-08-10 15:00:00",
+        tanggal_kerja: "2026-08-10",
+        jam_scan: "15:00:00",
+        id_karyawan: "K001",
+        nama: "Karyawan Test",
+        divisi: "Dapur",
+        jenis_scan: "Pulang",
+        status_proses: "Berhasil",
+        sumber_data: "Scanner",
+        catatan_sistem: "Pulang dalam jendela normal",
+        keterangan: "Pulang Normal",
+        menit_terlambat: 0,
+        menit_datang_awal: 0,
+        id_referensi: "",
+      },
+      attendance: {
+        tanggal: "2026-08-10",
+        id_karyawan: "K001",
+        nama: "Karyawan Test",
+        kelas_divisi: "Dapur",
+        jam_masuk: "2026-08-10 07:00:00",
+        jam_pulang: "2026-08-10 15:00:00",
+        status_kehadiran: "Hadir",
+        status_absen: "Lengkap",
+        keterangan: "Pulang Normal",
+        sumber: "Scanner",
+        update_terakhir: "2026-08-10 15:00:00",
+        menit_terlambat: 0,
+        menit_datang_awal: 0,
+        jam_kerja: 420,
+        lembur: 0,
+        jam_kerja_kurang: 0,
+        id_shift: 1,
+        bulan: "Agustus",
+        tahun: 2026,
+        id_sesi: "NORMAL-20260810-K001-1",
+        mode_tugas: "NORMAL",
+        id_backup: "",
+        id_karyawan_asal: "",
+        tanggal_tugas: "2026-08-10",
+      },
+      attendanceBaseUpdatedAt: null,
+    },
+    ...overrides,
+  });
+}
+
 afterEach(async () => {
   while (clients.length > 0) clients.pop()?.close();
   await Bun.sleep(50);
@@ -293,7 +346,30 @@ describe("operational sync idempotency", () => {
     expect(Number(attendance.rows[0]?.total)).toBe(0);
   });
 
-  test("scan lokal tidak menimpa ketidakhadiran hasil Koreksi Admin", async () => {
+  test("retry scan berhasil tidak menggandakan LOG_SCAN atau ABSENSI_HARIAN", async () => {
+    const client = await fixture();
+    const input = successfulScanEvent();
+
+    const first = await processOperationalSyncEvent(client, actor, input);
+    const retry = await processOperationalSyncEvent(client, actor, input);
+
+    expect(first.status).toBe("applied");
+    expect(retry).toEqual(first);
+    const logs = await client.execute(
+      "SELECT COUNT(*) AS total FROM log_scan WHERE id_karyawan = 'K001';",
+    );
+    const attendance = await client.execute(
+      `SELECT COUNT(*) AS total, MAX(status_absen) AS status_absen,
+              MAX(jam_kerja) AS jam_kerja
+       FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';`,
+    );
+    expect(Number(logs.rows[0]?.total)).toBe(1);
+    expect(Number(attendance.rows[0]?.total)).toBe(1);
+    expect(attendance.rows[0]?.status_absen).toBe("Lengkap");
+    expect(Number(attendance.rows[0]?.jam_kerja)).toBe(420);
+  });
+
+  test("scan lokal tidak menimpa data hadir hasil Koreksi Admin", async () => {
     const client = await fixture();
     await client.execute(`
       INSERT INTO absensi_harian (
@@ -304,7 +380,7 @@ describe("operational sync idempotency", () => {
         id_backup, id_karyawan_asal, tanggal_tugas
       ) VALUES (
         '2026-08-10', 'K001', 'Karyawan Test', 'Dapur', '', '',
-        'Izin', 'Tidak Hadir', 'Dikoreksi admin', 'Koreksi Admin',
+        'Hadir', 'Lengkap', 'Jam dikoreksi admin', 'Koreksi Admin',
         '2026-08-10 07:30:00', 0, 0, 0, 0, 0, 1, 'Agustus', 2026,
         'NORMAL-20260810-K001-1', 'NORMAL', '', '', '2026-08-10'
       );
@@ -343,7 +419,7 @@ describe("operational sync idempotency", () => {
     const logs = await client.execute(
       "SELECT COUNT(*) AS total FROM log_scan WHERE id_karyawan = 'K001';",
     );
-    expect(attendance.rows[0]?.status_kehadiran).toBe("Izin");
+    expect(attendance.rows[0]?.status_kehadiran).toBe("Hadir");
     expect(attendance.rows[0]?.sumber).toBe("Koreksi Admin");
     expect(Number(logs.rows[0]?.total)).toBe(0);
   });

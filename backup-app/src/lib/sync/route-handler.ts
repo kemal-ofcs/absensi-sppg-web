@@ -23,6 +23,7 @@ export async function handleSyncAction(
       downloaded: 0,
       conflicts: 0,
       failed: 0,
+      tables: [],
     });
   }
 
@@ -31,7 +32,13 @@ export async function handleSyncAction(
   } catch (error) {
     console.error(`[SYNC_ROUTE:${action}]`, error);
     if (error instanceof SyncEngineError) {
-      const status = error.code === "SYNC_ALREADY_RUNNING" ? 409 : 503;
+      const status =
+        error.code === "SYNC_ALREADY_RUNNING"
+          ? 409
+          : error.code === "SYNC_PARTIAL_FAILURE" ||
+              error.code === "SYNC_PULL_ROW_FAILED"
+            ? 422
+            : 503;
       return apiError(error.message, status, error.code);
     }
     return apiError(
