@@ -7,13 +7,19 @@ interface EmployeeDraft {
 }
 
 interface ShiftDraft {
-  istirahat_menit?: number;
-  jam_kerja_normal_menit?: number;
-  jam_masuk: string;
-  jam_pulang: string;
   kode_shift: number;
   nama_shift: string;
+  jam_masuk: string;
+  jam_pulang: string;
+  awal_absen_menit?: number;
+  batas_masuk_menit?: number;
   toleransi_masuk_menit?: number;
+  jam_kerja_normal_menit?: number;
+  istirahat_menit?: number;
+  batas_pulang_menit?: number;
+  offset_istirahat_mulai?: number;
+  offset_generate_alfa?: number;
+  buffer_shift_malam_menit?: number;
 }
 
 export function createEmployeeIdentifiers(uuid: string) {
@@ -77,25 +83,37 @@ export function validateShiftDraft(data: ShiftDraft) {
     [
       keyof Pick<
         ShiftDraft,
-        "toleransi_masuk_menit" | "jam_kerja_normal_menit" | "istirahat_menit"
+        | "awal_absen_menit"
+        | "batas_masuk_menit"
+        | "toleransi_masuk_menit"
+        | "jam_kerja_normal_menit"
+        | "istirahat_menit"
+        | "batas_pulang_menit"
+        | "offset_istirahat_mulai"
+        | "offset_generate_alfa"
+        | "buffer_shift_malam_menit"
       >,
       number,
       number,
       string,
     ]
   > = [
-    ["toleransi_masuk_menit", 0, 1440, "Toleransi"],
-    ["jam_kerja_normal_menit", 1, 1440, "Durasi kerja"],
-    ["istirahat_menit", 0, 1440, "Durasi istirahat"],
+    ["awal_absen_menit", 0, 1440, "Awal Absen"],
+    ["batas_masuk_menit", 0, 1440, "Batas Masuk"],
+    ["toleransi_masuk_menit", 0, 1440, "Toleransi Terlambat"],
+    ["jam_kerja_normal_menit", 1, 1440, "Durasi Kerja Normal"],
+    ["istirahat_menit", 0, 1440, "Durasi Istirahat"],
+    ["batas_pulang_menit", 0, 1440, "Batas Pulang"],
+    ["offset_istirahat_mulai", 0, 1440, "Offset Istirahat Mulai"],
+    ["offset_generate_alfa", 0, 1440, "Offset Generate Alfa"],
+    ["buffer_shift_malam_menit", 0, 1440, "Buffer Deteksi Shift Malam"],
   ];
 
   for (const [field, minimum, maximum, label] of numericRules) {
     const value = data[field];
     if (
-      value === undefined ||
-      !Number.isFinite(value) ||
-      value < minimum ||
-      value > maximum
+      value !== undefined &&
+      (!Number.isFinite(value) || value < minimum || value > maximum)
     ) {
       errors[field] = `${label} harus antara ${minimum}–${maximum} menit.`;
     }

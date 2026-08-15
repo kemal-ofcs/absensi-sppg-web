@@ -97,8 +97,8 @@ export async function initDatabaseSchema(client: Client) {
         nama_shift TEXT NOT NULL,
         jam_masuk TEXT NOT NULL,
         jam_pulang TEXT NOT NULL,
-        awal_absen_menit INTEGER DEFAULT 60,
-        batas_masuk_menit INTEGER DEFAULT 120,
+        awal_absen_menit INTEGER DEFAULT 120,
+        batas_masuk_menit INTEGER DEFAULT 60,
         toleransi_masuk_menit INTEGER DEFAULT 0,
         jam_kerja_normal_menit INTEGER NOT NULL,
         istirahat_menit INTEGER DEFAULT 60,
@@ -259,9 +259,9 @@ async function seedDefaultData(client: Client) {
     await client.execute(`
       INSERT OR IGNORE INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit, offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit)
       VALUES 
-      (1, 'Shift 1 - Pagi Normal', '07:00', '15:00', 60, 120, 0, 480, 60, 240, 240, 180, 120),
-      (2, 'Shift 2 - Siang Normal', '15:00', '23:00', 60, 120, 0, 480, 60, 240, 240, 180, 120),
-      (3, 'Shift 3 - Malam', '23:00', '07:00', 60, 120, 0, 480, 60, 240, 240, 180, 120),
+      (1, 'Shift 1 - Pagi Normal', '07:00', '15:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
+      (2, 'Shift 2 - Siang Normal', '15:00', '23:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
+      (3, 'Shift 3 - Malam', '23:00', '07:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
       (4, 'Shift 4 - Fleksibel', '00:00', '23:59', 0, 1440, 0, 0, 0, 1440, 0, 0, 0);
     `);
   }

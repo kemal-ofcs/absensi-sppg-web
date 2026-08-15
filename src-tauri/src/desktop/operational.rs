@@ -417,6 +417,24 @@ fn insert_shift(
     id: i64,
     draft: &Value,
 ) -> Result<(), CommandError> {
+    let start = text(draft, "jam_masuk");
+    let end = text(draft, "jam_pulang");
+    let early = integer(draft, "awal_absen_menit", 120);
+    let ontime = integer(draft, "batas_masuk_menit", 60);
+    let late_tolerance = integer(draft, "toleransi_masuk_menit", 0);
+    let break_min = integer(draft, "istirahat_menit", 60);
+    let normal_work = if draft.get("jam_kerja_normal_menit").is_some()
+        && integer(draft, "jam_kerja_normal_menit", 0) > 0
+    {
+        integer(draft, "jam_kerja_normal_menit", 0)
+    } else {
+        super::time_policy::calculate_normal_work_minutes(start, end, break_min, ontime)
+    };
+    let checkout_limit = integer(draft, "batas_pulang_menit", 240);
+    let break_offset = integer(draft, "offset_istirahat_mulai", 240);
+    let alfa_offset = integer(draft, "offset_generate_alfa", 180);
+    let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
+
     transaction
         .execute(
             r#"
@@ -431,17 +449,17 @@ fn insert_shift(
                 id,
                 integer(draft, "kode_shift", 0),
                 text(draft, "nama_shift"),
-                text(draft, "jam_masuk"),
-                text(draft, "jam_pulang"),
-                integer(draft, "awal_absen_menit", 60),
-                integer(draft, "batas_masuk_menit", 120),
-                integer(draft, "toleransi_masuk_menit", 0),
-                integer(draft, "jam_kerja_normal_menit", 480),
-                integer(draft, "istirahat_menit", 60),
-                integer(draft, "batas_pulang_menit", 240),
-                integer(draft, "offset_istirahat_mulai", 240),
-                integer(draft, "offset_generate_alfa", 180),
-                integer(draft, "buffer_shift_malam_menit", 120),
+                start,
+                end,
+                early,
+                ontime,
+                late_tolerance,
+                normal_work,
+                break_min,
+                checkout_limit,
+                break_offset,
+                alfa_offset,
+                night_buffer,
             ],
         )
         .map_err(|error| {
@@ -461,20 +479,48 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let revision = base_revision(&transaction, "shift", &id.to_string());
+
+    let start = text(draft, "jam_masuk");
+    let end = text(draft, "jam_pulang");
+    let early = integer(draft, "awal_absen_menit", 120);
+    let ontime = integer(draft, "batas_masuk_menit", 60);
+    let late_tolerance = integer(draft, "toleransi_masuk_menit", 0);
+    let break_min = integer(draft, "istirahat_menit", 60);
+    let normal_work = if draft.get("jam_kerja_normal_menit").is_some()
+        && integer(draft, "jam_kerja_normal_menit", 0) > 0
+    {
+        integer(draft, "jam_kerja_normal_menit", 0)
+    } else {
+        super::time_policy::calculate_normal_work_minutes(start, end, break_min, ontime)
+    };
+    let checkout_limit = integer(draft, "batas_pulang_menit", 240);
+    let break_offset = integer(draft, "offset_istirahat_mulai", 240);
+    let alfa_offset = integer(draft, "offset_generate_alfa", 180);
+    let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
+
     transaction
         .execute(
             r#"
-      UPDATE tbl_shift SET nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
-        toleransi_masuk_menit = ?, jam_kerja_normal_menit = ?, istirahat_menit = ?
+      UPDATE tbl_shift SET 
+        nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
+        awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
+        jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
+        offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?
       WHERE id_shift = ?;
       "#,
             params![
                 text(draft, "nama_shift"),
-                text(draft, "jam_masuk"),
-                text(draft, "jam_pulang"),
-                integer(draft, "toleransi_masuk_menit", 0),
-                integer(draft, "jam_kerja_normal_menit", 480),
-                integer(draft, "istirahat_menit", 60),
+                start,
+                end,
+                early,
+                ontime,
+                late_tolerance,
+                normal_work,
+                break_min,
+                checkout_limit,
+                break_offset,
+                alfa_offset,
+                night_buffer,
                 id,
             ],
         )
@@ -491,6 +537,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true }))
 }
+
 
 pub fn delete_shift(state: &DesktopState, id: i64) -> Result<Value, CommandError> {
     let client_id = sync::ensure_client_id(state)?;

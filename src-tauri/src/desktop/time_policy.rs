@@ -95,6 +95,27 @@ pub fn determine_work_date(moment: &LocalMoment, shift: &ShiftPolicy) -> Result<
     }
 }
 
+pub fn calculate_normal_work_minutes(
+    start: &str,
+    end: &str,
+    break_minutes: i64,
+    entry_threshold_minutes: i64,
+) -> i64 {
+    let start_min = match clock_minutes(start) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    let mut end_min = match clock_minutes(end) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    if end_min < start_min {
+        end_min += 1440;
+    }
+    let total = end_min - start_min - break_minutes + entry_threshold_minutes;
+    total.max(0)
+}
+
 pub fn calculate_work(
     check_in: &str,
     check_out: &str,

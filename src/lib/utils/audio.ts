@@ -1,4 +1,4 @@
-// Web Audio API Synthesizer (Tanpa dependensi file audio eksternal)
+// Web Audio API Synthesizer & Speech Synthesis (TTS)
 
 class AudioSynthesizer {
   private audioCtx: AudioContext | null = null;
@@ -89,6 +89,33 @@ class AudioSynthesizer {
       osc.stop(now + 0.25);
     } catch {
       // Ignore audio autoplay policy errors
+    }
+  }
+
+  public speak(text: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel(); // Cancel prior speech
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "id-ID";
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+
+      // Cari suara bahasa Indonesia jika tersedia
+      const voices = window.speechSynthesis.getVoices();
+      const idVoice = voices.find(
+        (v) =>
+          v.lang.startsWith("id") ||
+          v.lang.includes("ID") ||
+          v.name.includes("Indonesian"),
+      );
+      if (idVoice) {
+        utterance.voice = idVoice;
+      }
+
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      // Ignore speech synthesis errors
     }
   }
 }

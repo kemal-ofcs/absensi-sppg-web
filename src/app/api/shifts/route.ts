@@ -15,6 +15,7 @@ import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 import { recordOperationalChange } from "@/lib/server/operational/change-log";
 import {
   hapusShift,
+  kalkulasiJamKerjaNormalMenit,
   type ShiftInput,
   tambahShift,
   updateShift,
@@ -33,17 +34,33 @@ interface ShiftMutationBody {
 
 function parseDraft(value: unknown): ShiftInput {
   const draft = (value ?? {}) as Record<string, unknown>;
+  const jamMasuk = typeof draft.jam_masuk === "string" ? draft.jam_masuk : "";
+  const jamPulang =
+    typeof draft.jam_pulang === "string" ? draft.jam_pulang : "";
+  const awalAbsen = Number(draft.awal_absen_menit ?? 120);
+  const batasMasuk = Number(draft.batas_masuk_menit ?? 60);
+  const istirahat = Number(draft.istirahat_menit ?? 60);
+
   const parsed: ShiftInput = {
     kode_shift: Number(draft.kode_shift),
     nama_shift:
       typeof draft.nama_shift === "string" ? draft.nama_shift.trim() : "",
-    jam_masuk: typeof draft.jam_masuk === "string" ? draft.jam_masuk : "",
-    jam_pulang: typeof draft.jam_pulang === "string" ? draft.jam_pulang : "",
-    awal_absen_menit: Number(draft.awal_absen_menit ?? 60),
-    batas_masuk_menit: Number(draft.batas_masuk_menit ?? 120),
+    jam_masuk: jamMasuk,
+    jam_pulang: jamPulang,
+    awal_absen_menit: awalAbsen,
+    batas_masuk_menit: batasMasuk,
     toleransi_masuk_menit: Number(draft.toleransi_masuk_menit ?? 0),
-    jam_kerja_normal_menit: Number(draft.jam_kerja_normal_menit ?? 480),
-    istirahat_menit: Number(draft.istirahat_menit ?? 60),
+    jam_kerja_normal_menit:
+      draft.jam_kerja_normal_menit !== undefined &&
+      Number(draft.jam_kerja_normal_menit) >= 0
+        ? Number(draft.jam_kerja_normal_menit)
+        : kalkulasiJamKerjaNormalMenit(
+            jamMasuk,
+            jamPulang,
+            istirahat,
+            batasMasuk,
+          ),
+    istirahat_menit: istirahat,
     batas_pulang_menit: Number(draft.batas_pulang_menit ?? 240),
     offset_istirahat_mulai: Number(draft.offset_istirahat_mulai ?? 240),
     offset_generate_alfa: Number(draft.offset_generate_alfa ?? 180),

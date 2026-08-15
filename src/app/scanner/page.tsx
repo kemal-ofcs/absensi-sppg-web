@@ -46,11 +46,19 @@ export default function ScannerPage() {
   const [scanHistory, setScanHistory] = useState<ScanLogItem[]>([]);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraMessage, setCameraMessage] = useState<string | null>(null);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const [scanFlashStatus, setScanFlashStatus] = useState<
+    "success" | "warning" | "error" | null
+  >(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const scannerControlsRef = useRef<IScannerControls | null>(null);
   const cameraScanLockedRef = useRef(false);
+  const lastScannedQrRef = useRef<string>("");
+  const lastScannedTimeRef = useRef<number>(0);
+
   const connectScannerInput = useCallback((node: HTMLInputElement | null) => {
     inputRef.current = node;
     node?.focus();
@@ -98,6 +106,27 @@ export default function ScannerPage() {
     };
   }, [isHydrated]);
 
+  // Load available video input devices
+  useEffect(() => {
+    if (
+      !isHydrated ||
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.enumerateDevices
+    )
+      return;
+
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((devices) => {
+        const videoDevs = devices.filter((d) => d.kind === "videoinput");
+        setCameraDevices(videoDevs);
+        if (videoDevs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(videoDevs[0]?.deviceId ?? "");
+        }
+      })
+      .catch(() => undefined);
+  }, [isHydrated, selectedDeviceId]);
+
   useEffect(() => stopCamera, [stopCamera]);
 
   const handleScanSubmit = useCallback(
@@ -122,14 +151,45 @@ export default function ScannerPage() {
         const result = await submitTerminalScan(input);
         setLastResult(result);
 
-        // Suara & Audio feedback
+        // Visual flash feedback
+        if (result.sukses) {
+          setScanFlashStatus("success");
+        } else if (
+          result.pesan.includes("Scan ganda") ||
+          result.pesan.includes("cooldown")
+        ) {
+          setScanFlashStatus("warning");
+        } else {
+          setScanFlashStatus("error");
+        }
+        setTimeout(() => setScanFlashStatus(null), 700);
+
+        // Suara & Audio feedback + TTS Pengumuman
         if (audioEnabled) {
           if (result.sukses) {
             audioSynth.playSuccessBeep();
-          } else if (result.pesan.includes("Scan ganda")) {
+            const namaPanggilan =
+              result.nama?.split(" ")[0] || result.nama || "Karyawan";
+            if (result.jenisScan === "Masuk") {
+              audioSynth.speak(
+                `Terima kasih, ${namaPanggilan}. Absen masuk tercatat.`,
+              );
+            } else if (result.jenisScan === "Pulang") {
+              audioSynth.speak(
+                `Terima kasih, ${namaPanggilan}. Absen pulang tercatat.`,
+              );
+            } else {
+              audioSynth.speak(`Terima kasih, ${namaPanggilan}.`);
+            }
+          } else if (
+            result.pesan.includes("Scan ganda") ||
+            result.pesan.includes("cooldown")
+          ) {
             audioSynth.playWarningBeep();
+            audioSynth.speak("Scan ganda terdeteksi. Silakan tunggu sebentar.");
           } else {
             audioSynth.playErrorBeep();
+            audioSynth.speak("Scan ditolak.");
           }
         }
 
@@ -158,6 +218,9 @@ export default function ScannerPage() {
       } catch (err: unknown) {
         const errMsg =
           err instanceof Error ? err.message : "Gagal memproses scan.";
+        setScanFlashStatus("error");
+        setTimeout(() => setScanFlashStatus(null), 700);
+
         setLastResult({
           sukses: false,
           status: "Error",
@@ -169,6 +232,7 @@ export default function ScannerPage() {
         });
         if (audioEnabled) {
           audioSynth.playErrorBeep();
+          audioSynth.speak("Terjadi kesalahan sistem.");
         }
       } finally {
         setIsProcessing(false);
@@ -178,9 +242,11 @@ export default function ScannerPage() {
     [isProcessing, gpsLocation, user, audioEnabled, mode],
   );
 
-  const startCamera = async () => {
+  const startCamera = async (deviceId?: string) => {
     setCameraMessage(null);
     cameraScanLockedRef.current = false;
+    lastScannedQrRef.current = "";
+    lastScannedTimeRef.current = 0;
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraMessage("Kamera tidak tersedia pada perangkat ini.");
@@ -193,24 +259,57 @@ export default function ScannerPage() {
         stopCamera();
         return;
       }
+
+      // Hentikan stream lama jika sedang berjalan sebelum ganti device
+      if (scannerControlsRef.current) {
+        scannerControlsRef.current.stop();
+        scannerControlsRef.current = null;
+      }
+
       const { BrowserQRCodeReader } = await import("@zxing/browser");
       const reader = new BrowserQRCodeReader(undefined, {
-        delayBetweenScanAttempts: 120,
+        delayBetweenScanAttempts: 100,
       });
+
+      const targetDeviceId = deviceId || selectedDeviceId;
+      const constraints: MediaStreamConstraints = {
+        audio: false,
+        video: targetDeviceId
+          ? { deviceId: { exact: targetDeviceId } }
+          : { facingMode: { ideal: "environment" } },
+      };
+
       const controls = await reader.decodeFromConstraints(
-        {
-          audio: false,
-          video: { facingMode: { ideal: "environment" } },
-        },
+        constraints,
         video,
         (result) => {
           const qrContent = result?.getText().trim();
-          if (!qrContent || cameraScanLockedRef.current) return;
+          if (!qrContent) return;
+
+          const now = Date.now();
+          // Cek apakah scan sedang diproses ATAU qr yang sama baru saja dipindai dalam 2 detik
+          if (
+            cameraScanLockedRef.current ||
+            (qrContent === lastScannedQrRef.current &&
+              now - lastScannedTimeRef.current < 2000)
+          ) {
+            return;
+          }
+
           cameraScanLockedRef.current = true;
-          stopCamera();
-          void handleScanSubmit(qrContent);
+          lastScannedQrRef.current = qrContent;
+          lastScannedTimeRef.current = now;
+
+          // Eksekusi proses scan secara asynchronous TANPA mematikan kamera!
+          void handleScanSubmit(qrContent).finally(() => {
+            // Beri jeda singkat agar kartu yang sama tidak langsung ter-scan ulang seketika
+            setTimeout(() => {
+              cameraScanLockedRef.current = false;
+            }, 1200);
+          });
         },
       );
+
       scannerControlsRef.current = controls;
       setCameraActive(true);
     } catch (error: unknown) {
@@ -309,7 +408,7 @@ export default function ScannerPage() {
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              Kamera QR
+              Kamera QR Otomatis
             </button>
             <button
               type="button"
@@ -332,27 +431,64 @@ export default function ScannerPage() {
             <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-4 sm:p-6">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                    Kamera pemindai QR
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Kamera Pemindai QR Berkelanjutan
                   </h2>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Hanya format QR Code yang diproses.
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Arahkan QR kartu ke kamera — sistem memindai terus menerus
+                    tanpa henti.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={cameraActive ? stopCamera : startCamera}
-                  disabled={isProcessing}
-                  className={`min-h-11 rounded-xl px-4 text-xs font-bold transition disabled:opacity-50 ${
-                    cameraActive
-                      ? "border border-rose-400/30 bg-rose-400/10 text-rose-200"
-                      : "bg-sky-400 text-slate-950 hover:bg-sky-300"
-                  }`}
-                >
-                  {cameraActive ? "Hentikan kamera" : "Mulai pindai QR"}
-                </button>
+
+                <div className="flex items-center gap-2">
+                  {/* Camera Device Selector if multiple cameras exist */}
+                  {cameraDevices.length > 1 ? (
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => {
+                        setSelectedDeviceId(e.target.value);
+                        if (cameraActive) {
+                          startCamera(e.target.value);
+                        }
+                      }}
+                      className="bg-slate-950 text-slate-300 text-[11px] border border-slate-700 rounded-lg px-2.5 py-1.5 outline-none font-mono"
+                    >
+                      {cameraDevices.map((dev, idx) => (
+                        <option key={dev.deviceId} value={dev.deviceId}>
+                          {dev.label || `Kamera ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={cameraActive ? stopCamera : () => startCamera()}
+                    disabled={isProcessing}
+                    className={`min-h-10 rounded-xl px-4 text-xs font-bold transition disabled:opacity-50 ${
+                      cameraActive
+                        ? "border border-rose-400/30 bg-rose-400/10 text-rose-200 hover:bg-rose-400/20"
+                        : "bg-sky-400 text-slate-950 hover:bg-sky-300 shadow-md shadow-sky-950"
+                    }`}
+                  >
+                    {cameraActive ? "Hentikan kamera" : "Mulai pindai QR"}
+                  </button>
+                </div>
               </div>
-              <div className="relative aspect-video overflow-hidden rounded-2xl border border-white/10 bg-slate-950">
+
+              {/* Camera Video Feed Container with Laser Scan Animation */}
+              <div
+                className={`relative aspect-video overflow-hidden rounded-2xl border transition-all duration-300 bg-slate-950 ${
+                  scanFlashStatus === "success"
+                    ? "border-emerald-400 ring-4 ring-emerald-500/40 shadow-2xl shadow-emerald-950"
+                    : scanFlashStatus === "warning"
+                      ? "border-amber-400 ring-4 ring-amber-500/40 shadow-2xl shadow-amber-950"
+                      : scanFlashStatus === "error"
+                        ? "border-rose-400 ring-4 ring-rose-500/40 shadow-2xl shadow-rose-950"
+                        : "border-white/10 shadow-inner"
+                }`}
+              >
                 <video
                   ref={videoRef}
                   muted
@@ -360,17 +496,49 @@ export default function ScannerPage() {
                   aria-label="Pratinjau kamera pemindai QR"
                   className="size-full object-cover"
                 />
+
                 {!cameraActive ? (
                   <div className="absolute inset-0 grid place-items-center p-6 text-center text-xs text-slate-500">
-                    Kamera belum aktif. Tekan “Mulai pindai QR” dan izinkan
-                    akses kamera.
+                    <div className="space-y-2">
+                      <div className="text-3xl">📷</div>
+                      <p className="font-semibold text-slate-400">
+                        Kamera belum aktif
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Tekan tombol “Mulai pindai QR” untuk mengaktifkan
+                        pemindaian otomatis.
+                      </p>
+                    </div>
                   </div>
                 ) : (
-                  <div className="pointer-events-none absolute inset-[18%] rounded-2xl border-2 border-sky-300 shadow-[0_0_0_999px_rgba(2,8,23,0.45)]" />
+                  <>
+                    {/* Targeting Reticle */}
+                    <div className="pointer-events-none absolute inset-[15%] rounded-2xl border-2 border-sky-400/80 shadow-[0_0_0_999px_rgba(2,8,23,0.5)]">
+                      {/* Corner Accents */}
+                      <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-sky-300"></div>
+                      <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-sky-300"></div>
+                      <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-sky-300"></div>
+                      <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-sky-300"></div>
+
+                      {/* Animated Laser Line */}
+                      <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-sky-400 to-transparent shadow-[0_0_8px_#38bdf8] animate-bounce"></div>
+                    </div>
+
+                    {/* Processing Overlay */}
+                    {isProcessing ? (
+                      <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center">
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 border border-sky-400/50 text-sky-300 text-xs font-mono">
+                          <div className="w-3 h-3 border-2 border-sky-400 border-t-transparent rounded-full animate-spin"></div>
+                          Memproses QR...
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
+
               {cameraMessage ? (
-                <output className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-3 text-xs text-amber-100">
+                <output className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-3 text-xs text-amber-100 block">
                   {cameraMessage}
                 </output>
               ) : null}
@@ -420,7 +588,8 @@ export default function ScannerPage() {
               className={`animate-fadeIn space-y-4 rounded-2xl border p-4 backdrop-blur-xl transition sm:p-6 ${
                 lastResult.sukses
                   ? "bg-sky-950/40 border-sky-500/60 shadow-2xl shadow-sky-950/80"
-                  : lastResult.pesan.includes("Scan ganda")
+                  : lastResult.pesan.includes("Scan ganda") ||
+                      lastResult.pesan.includes("cooldown")
                     ? "bg-amber-950/40 border-amber-500/60 shadow-2xl shadow-amber-950/80"
                     : "bg-rose-950/40 border-rose-500/60 shadow-2xl shadow-rose-950/80"
               }`}
@@ -431,14 +600,16 @@ export default function ScannerPage() {
                     className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg ${
                       lastResult.sukses
                         ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
-                        : lastResult.pesan.includes("Scan ganda")
+                        : lastResult.pesan.includes("Scan ganda") ||
+                            lastResult.pesan.includes("cooldown")
                           ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
                           : "bg-rose-500/20 text-rose-400 border border-rose-500/40"
                     }`}
                   >
                     {lastResult.sukses
                       ? "✓"
-                      : lastResult.pesan.includes("Scan ganda")
+                      : lastResult.pesan.includes("Scan ganda") ||
+                          lastResult.pesan.includes("cooldown")
                         ? "⏳"
                         : "✕"}
                   </div>
@@ -447,7 +618,8 @@ export default function ScannerPage() {
                       className={`font-bold text-base ${
                         lastResult.sukses
                           ? "text-sky-300"
-                          : lastResult.pesan.includes("Scan ganda")
+                          : lastResult.pesan.includes("Scan ganda") ||
+                              lastResult.pesan.includes("cooldown")
                             ? "text-amber-300"
                             : "text-rose-300"
                       }`}

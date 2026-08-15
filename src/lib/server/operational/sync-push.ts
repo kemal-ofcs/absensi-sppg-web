@@ -340,8 +340,8 @@ async function applyShift(
           text(payload, "nama_shift"),
           text(payload, "jam_masuk"),
           text(payload, "jam_pulang"),
-          number(payload, "awal_absen_menit", 60),
-          number(payload, "batas_masuk_menit", 120),
+          number(payload, "awal_absen_menit", 120),
+          number(payload, "batas_masuk_menit", 60),
           number(payload, "toleransi_masuk_menit"),
           number(payload, "jam_kerja_normal_menit", 480),
           number(payload, "istirahat_menit", 60),
@@ -358,17 +358,26 @@ async function applyShift(
     serverId = Number(event.entityKey);
     await transaction.execute({
       sql: `
-        UPDATE tbl_shift SET nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
-          toleransi_masuk_menit = ?, jam_kerja_normal_menit = ?,
-          istirahat_menit = ? WHERE id_shift = ?;
+        UPDATE tbl_shift SET 
+          nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
+          awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
+          jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
+          offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?
+        WHERE id_shift = ?;
       `,
       args: [
         text(payload, "nama_shift"),
         text(payload, "jam_masuk"),
         text(payload, "jam_pulang"),
+        number(payload, "awal_absen_menit", 120),
+        number(payload, "batas_masuk_menit", 60),
         number(payload, "toleransi_masuk_menit"),
         number(payload, "jam_kerja_normal_menit", 480),
         number(payload, "istirahat_menit", 60),
+        number(payload, "batas_pulang_menit", 240),
+        number(payload, "offset_istirahat_mulai", 240),
+        number(payload, "offset_generate_alfa", 180),
+        number(payload, "buffer_shift_malam_menit", 120),
         serverId,
       ],
     });
