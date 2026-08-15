@@ -30,6 +30,14 @@ export async function POST(request: NextRequest) {
       return noStoreJson({
         data: await getRekapHarian({
           tanggal: typeof body.tanggal === "string" ? body.tanggal : undefined,
+          tanggal_mulai:
+            typeof body.tanggal_mulai === "string"
+              ? body.tanggal_mulai
+              : undefined,
+          tanggal_selesai:
+            typeof body.tanggal_selesai === "string"
+              ? body.tanggal_selesai
+              : undefined,
           divisi: typeof body.divisi === "string" ? body.divisi : undefined,
         }),
       });
@@ -37,6 +45,14 @@ export async function POST(request: NextRequest) {
       return noStoreJson({
         data: await getRiwayatScan({
           tanggal: typeof body.tanggal === "string" ? body.tanggal : undefined,
+          tanggal_mulai:
+            typeof body.tanggal_mulai === "string"
+              ? body.tanggal_mulai
+              : undefined,
+          tanggal_selesai:
+            typeof body.tanggal_selesai === "string"
+              ? body.tanggal_selesai
+              : undefined,
           search: typeof body.search === "string" ? body.search : undefined,
           limit: Number(body.limit) || undefined,
           offset: Number(body.offset) || undefined,

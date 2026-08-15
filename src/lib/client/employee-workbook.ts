@@ -164,7 +164,10 @@ async function extractZipEntries(
       const rawData = bytes.subarray(dataStart, dataEnd);
       if (compression === 0) {
         entries.set(name, textDecoder.decode(rawData));
-      } else if (compression === 8 && typeof DecompressionStream !== "undefined") {
+      } else if (
+        compression === 8 &&
+        typeof DecompressionStream !== "undefined"
+      ) {
         try {
           const ds = new DecompressionStream("deflate-raw");
           const writer = ds.writable.getWriter();
@@ -282,9 +285,7 @@ export async function readEmployeeWorkbook(
     const text = await file.text();
     rows = text
       .split(/\r?\n/)
-      .map((line) =>
-        line.split(",").map((c) => c.replace(/^"|"$/g, "").trim()),
-      )
+      .map((line) => line.split(",").map((c) => c.replace(/^"|"$/g, "").trim()))
       .filter((r) => r.length > 0 && r.some((c) => c !== ""));
   } else {
     const buffer = await file.arrayBuffer();
@@ -424,7 +425,7 @@ async function saveWorkbook(
   filename: string,
 ): Promise<DownloadResult> {
   const xlsxBytes = createXlsxBuffer(HEADERS, rows);
-  const blob = new Blob([xlsxBytes], {
+  const blob = new Blob([xlsxBytes as unknown as BlobPart], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
   return await saveFileWithPicker(blob, filename, {

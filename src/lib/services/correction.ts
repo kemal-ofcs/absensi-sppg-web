@@ -133,13 +133,40 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   const bulanStr = monthNames[dateObj.getMonth()] || "Januari";
   const tahunNum = dateObj.getFullYear();
 
+  // Ambil data shift untuk kalkulasi metrik
+  const shiftRes = await db.execute({
+    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    args: [idShift],
+  });
+  const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
+  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
+  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+  const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+  const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+
+  const parseTimeToMinutes = (t: string | undefined | null): number | null => {
+    if (!t) return null;
+    const clean = t.includes(" ") ? t.split(" ")[1] : t;
+    const parts = clean.split(":");
+    if (parts.length < 2) return null;
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+
+  let scanKind: string = input.jenis_koreksi;
+  let calculatedLate = 0;
+  let calculatedEarly = 0;
+
   if (["Sakit", "Izin", "Dispen", "Alfa"].includes(input.jenis_koreksi)) {
     // ---- KOREKSI SAKIT / IZIN / DISPEN / ALFA ----
     if (existRecord) {
       await db.execute({
         sql: `UPDATE absensi_harian SET 
               jam_masuk = '', jam_pulang = '', status_kehadiran = ?, status_absen = 'Tidak Hadir',
-              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?
+              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
+              menit_terlambat = 0, menit_datang_awal = 0, jam_kerja = 0, lembur = 0, jam_kerja_kurang = 0
               WHERE id_absensi = ?;`,
         args: [
           input.jenis_koreksi,
@@ -171,24 +198,98 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
         ],
       });
     }
-  } else if (
-    input.jenis_koreksi === "Lupa Absen Masuk" ||
-    input.jenis_koreksi === "Kendala Sistem - Jam Masuk"
-  ) {
-    // ---- KOREKSI LUPA ABSEN MASUK ----
-    const jamMasukKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
+  } else {
+    // ---- KOREKSI WAKTU / JAM ----
+    let checkInVal = existRecord ? String(existRecord.jam_masuk || "") : "";
+    let checkOutVal = existRecord ? String(existRecord.jam_pulang || "") : "";
+
+    const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+    const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
+    const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
+    const isOvernightShift = shiftOutMin < shiftInMin;
+
+    const nextDate = (() => {
+      const d = new Date(input.tanggal);
+      d.setDate(d.getDate() + 1);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    if (
+      input.jenis_koreksi === "Lupa Absen Masuk" ||
+      input.jenis_koreksi === "Kendala Sistem - Jam Masuk" ||
+      input.jenis_koreksi === "Terlambat"
+    ) {
+      scanKind = "Masuk";
+      checkInVal = `${input.tanggal} ${input.jam_koreksi}:00`;
+    } else if (
+      input.jenis_koreksi === "Lupa Absen Pulang" ||
+      input.jenis_koreksi === "Kendala Sistem - Jam Pulang"
+    ) {
+      scanKind = "Pulang";
+      const outTimeMin = parseTimeToMinutes(input.jam_koreksi) ?? 0;
+      const inTimeMin = parseTimeToMinutes(checkInVal) ?? shiftInMin;
+      const isCrossDay = isOvernightShift || outTimeMin < inTimeMin;
+      const targetDate = isCrossDay ? nextDate : input.tanggal;
+      checkOutVal = `${targetDate} ${input.jam_koreksi}:00`;
+    }
+
+    const inMin = parseTimeToMinutes(checkInVal);
+    const outMin = parseTimeToMinutes(checkOutVal);
+
+    if (inMin !== null) {
+      if (inMin > shiftInMin + toleransiShiftMin) {
+        calculatedLate = inMin - shiftInMin;
+      } else if (inMin < shiftInMin) {
+        calculatedEarly = shiftInMin - inMin;
+      }
+    }
+
+    let calculatedWork = 0;
+    let calculatedOvertime = 0;
+    let calculatedShortage = 0;
+
+    if (inMin !== null && outMin !== null) {
+      let duration = outMin - inMin;
+      if (duration < 0 || isOvernightShift) {
+        if (duration < 0) {
+          duration += 1440;
+        } else if (
+          checkOutVal.startsWith(nextDate) &&
+          checkInVal.startsWith(input.tanggal)
+        ) {
+          duration += 1440;
+        }
+      }
+      calculatedWork = Math.max(0, duration - breakShiftMin);
+      calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
+      calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
+    }
+
+    const statusAbsen =
+      checkInVal && checkOutVal
+        ? "Lengkap"
+        : checkInVal
+          ? "Belum Pulang"
+          : "Perlu Verifikasi";
 
     if (existRecord) {
       await db.execute({
         sql: `UPDATE absensi_harian SET 
-              jam_masuk = ?, status_kehadiran = 'Hadir', 
-              status_absen = CASE WHEN jam_pulang != '' THEN 'Lengkap' ELSE 'Belum Pulang' END,
-              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?
+              jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir', 
+              status_absen = ?, keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
+              menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?
               WHERE id_absensi = ?;`,
         args: [
-          jamMasukKoreksi,
+          checkInVal,
+          checkOutVal,
+          statusAbsen,
           input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
           nowStr,
+          calculatedLate,
+          calculatedEarly,
+          calculatedWork,
+          calculatedOvertime,
+          calculatedShortage,
           Number(existRecord.id_absensi),
         ],
       });
@@ -199,118 +300,22 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                 menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
                 id_shift, bulan, tahun, id_sesi, mode_tugas
-              ) VALUES (?, ?, ?, ?, ?, '', 'Hadir', 'Belum Pulang', ?, 'Koreksi Admin', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
+              ) VALUES (?, ?, ?, ?, ?, ?, 'Hadir', ?, ?, 'Koreksi Admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NORMAL');`,
         args: [
           input.tanggal,
           idUnik,
           nama,
           divisi,
-          jamMasukKoreksi,
+          checkInVal,
+          checkOutVal,
+          statusAbsen,
           input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
           nowStr,
-          idShift,
-          bulanStr,
-          tahunNum,
-          idSesi,
-        ],
-      });
-    }
-  } else if (
-    input.jenis_koreksi === "Lupa Absen Pulang" ||
-    input.jenis_koreksi === "Kendala Sistem - Jam Pulang"
-  ) {
-    // ---- KOREKSI LUPA ABSEN PULANG ----
-    const jamPulangKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
-
-    if (existRecord) {
-      await db.execute({
-        sql: `UPDATE absensi_harian SET 
-              jam_pulang = ?, status_absen = 'Lengkap', 
-              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?
-              WHERE id_absensi = ?;`,
-        args: [
-          jamPulangKoreksi,
-          input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
-          nowStr,
-          Number(existRecord.id_absensi),
-        ],
-      });
-    } else {
-      await db.execute({
-        sql: `INSERT INTO absensi_harian (
-                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
-                status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
-                menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
-                id_shift, bulan, tahun, id_sesi, mode_tugas
-              ) VALUES (?, ?, ?, ?, '', ?, 'Hadir', 'Lengkap', ?, 'Koreksi Admin', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
-        args: [
-          input.tanggal,
-          idUnik,
-          nama,
-          divisi,
-          jamPulangKoreksi,
-          input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
-          nowStr,
-          idShift,
-          bulanStr,
-          tahunNum,
-          idSesi,
-        ],
-      });
-    }
-  } else if (input.jenis_koreksi === "Terlambat") {
-    const shiftRes = await db.execute({
-      sql: "SELECT jam_masuk, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-      args: [idShift],
-    });
-    if (shiftRes.rows.length === 0) {
-      return { sukses: false, pesan: "Konfigurasi shift tidak ditemukan." };
-    }
-    const [hour, minute] = String(input.jam_koreksi).split(":").map(Number);
-    const [shiftHour, shiftMinute] = String(shiftRes.rows[0].jam_masuk)
-      .split(":")
-      .map(Number);
-    const arrivalMinutes = hour * 60 + minute;
-    const shiftMinutes = shiftHour * 60 + shiftMinute;
-    const normalLimit =
-      shiftMinutes + Number(shiftRes.rows[0].batas_masuk_menit ?? 0);
-    const menitTerlambat = Math.max(0, arrivalMinutes - normalLimit);
-    const menitDatangAwal = Math.max(0, shiftMinutes - arrivalMinutes);
-    const jamMasukKoreksi = `${input.tanggal} ${input.jam_koreksi}:00`;
-    if (existRecord) {
-      await db.execute({
-        sql: `UPDATE absensi_harian SET jam_masuk = ?, status_kehadiran = 'Hadir',
-              status_absen = CASE WHEN jam_pulang != '' THEN 'Lengkap' ELSE 'Belum Pulang' END,
-              keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
-              menit_terlambat = ?, menit_datang_awal = ? WHERE id_absensi = ?;`,
-        args: [
-          jamMasukKoreksi,
-          input.keterangan_admin || "Koreksi Admin - Terlambat",
-          nowStr,
-          menitTerlambat,
-          menitDatangAwal,
-          Number(existRecord.id_absensi),
-        ],
-      });
-    } else {
-      await db.execute({
-        sql: `INSERT INTO absensi_harian (
-                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
-                status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
-                menit_terlambat, menit_datang_awal, jam_kerja, lembur,
-                jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas
-              ) VALUES (?, ?, ?, ?, ?, '', 'Hadir', 'Belum Pulang', ?,
-                'Koreksi Admin', ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
-        args: [
-          input.tanggal,
-          idUnik,
-          nama,
-          divisi,
-          jamMasukKoreksi,
-          input.keterangan_admin || "Koreksi Admin - Terlambat",
-          nowStr,
-          menitTerlambat,
-          menitDatangAwal,
+          calculatedLate,
+          calculatedEarly,
+          calculatedWork,
+          calculatedOvertime,
+          calculatedShortage,
           idShift,
           bulanStr,
           tahunNum,
@@ -320,23 +325,30 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     }
   }
 
-  // 5. Audit Log ke log_scan
+  // 5. Audit Log ke log_scan (Deduplikasi log koreksi sebelumnya pada tanggal & jenis scan yang sama)
+  await db.execute({
+    sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND (jenis_scan = ? OR sumber_data = 'Koreksi Admin');",
+    args: [input.tanggal, idUnik, scanKind],
+  });
+
   await db.execute({
     sql: `INSERT INTO log_scan (
             timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi,
             jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan,
             menit_terlambat, menit_datang_awal, id_referensi, kode_operator
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Koreksi Admin', ?, ?, 0, 0, ?, ?);`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Koreksi Admin', ?, ?, ?, ?, ?, ?);`,
     args: [
       nowStr,
       input.tanggal,
-      input.jam_koreksi || "00:00:00",
+      input.jam_koreksi ? `${input.jam_koreksi}:00` : "00:00:00",
       idUnik,
       nama,
       divisi,
-      input.jenis_koreksi,
+      scanKind,
       `Koreksi Admin - ${input.jenis_koreksi}`,
-      input.keterangan_admin || input.jenis_koreksi,
+      input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
+      calculatedLate,
+      calculatedEarly,
       idReferensi,
       input.kode_operator,
     ],

@@ -73,27 +73,35 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
 
 export async function getRekapHarian(filter?: {
   tanggal?: string;
+  tanggal_mulai?: string;
+  tanggal_selesai?: string;
   divisi?: string;
 }) {
   await ensureDbInitialized();
-
-  const tanggalStr = filter?.tanggal || formatTanggalOperasional(new Date());
 
   let query = `
     SELECT a.*, m.kode_karyawan, s.nama_shift, s.kode_shift
     FROM absensi_harian a
     LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
     LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift
-    WHERE a.tanggal = ?
   `;
-  const params: (string | number | boolean | null)[] = [tanggalStr];
+  const params: (string | number | boolean | null)[] = [];
+
+  if (filter?.tanggal_mulai && filter?.tanggal_selesai) {
+    query += " WHERE a.tanggal >= ? AND a.tanggal <= ?";
+    params.push(filter.tanggal_mulai, filter.tanggal_selesai);
+  } else {
+    const tanggalStr = filter?.tanggal || formatTanggalOperasional(new Date());
+    query += " WHERE a.tanggal = ?";
+    params.push(tanggalStr);
+  }
 
   if (filter?.divisi) {
     query += " AND a.kelas_divisi = ?";
     params.push(filter.divisi);
   }
 
-  query += " ORDER BY a.nama ASC;";
+  query += " ORDER BY a.update_terakhir DESC, a.tanggal DESC, a.nama ASC;";
 
   const res = await db.execute({ sql: query, args: params });
   return res.rows as unknown as Record<string, unknown>[];
@@ -101,15 +109,40 @@ export async function getRekapHarian(filter?: {
 
 export async function getRiwayatScan(filter?: {
   tanggal?: string;
+  tanggal_mulai?: string;
+  tanggal_selesai?: string;
   search?: string;
   limit?: number;
   offset?: number;
 }) {
   await ensureDbInitialized();
-  const tanggal = filter?.tanggal || formatTanggalOperasional(new Date());
   const search = filter?.search?.trim() || "";
   const limit = Math.min(500, Math.max(1, filter?.limit || 200));
   const offset = Math.max(0, filter?.offset || 0);
+
+  let whereClause = "";
+  const params: (string | number | boolean | null)[] = [];
+
+  if (filter?.tanggal_mulai && filter?.tanggal_selesai) {
+    whereClause = "tanggal_kerja >= ? AND tanggal_kerja <= ?";
+    params.push(filter.tanggal_mulai, filter.tanggal_selesai);
+  } else {
+    const tanggal = filter?.tanggal || formatTanggalOperasional(new Date());
+    whereClause = "tanggal_kerja = ?";
+    params.push(tanggal);
+  }
+
+  params.push(
+    search,
+    `%${search}%`,
+    `%${search}%`,
+    `%${search}%`,
+    `%${search}%`,
+    `%${search}%`,
+    limit,
+    offset,
+  );
+
   const result = await db.execute({
     sql: `
       SELECT id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
@@ -117,22 +150,12 @@ export async function getRiwayatScan(filter?: {
         catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
         id_referensi, kode_operator
       FROM log_scan
-      WHERE tanggal_kerja = ?
+      WHERE ${whereClause}
         AND (? = '' OR nama LIKE ? OR id_karyawan LIKE ? OR divisi LIKE ? OR id_referensi LIKE ? OR kode_operator LIKE ?)
       ORDER BY timestamp_scan DESC, id_log DESC
       LIMIT ? OFFSET ?;
     `,
-    args: [
-      tanggal,
-      search,
-      `%${search}%`,
-      `%${search}%`,
-      `%${search}%`,
-      `%${search}%`,
-      `%${search}%`,
-      limit,
-      offset,
-    ],
+    args: params,
   });
   return result.rows as unknown as Record<string, unknown>[];
 }

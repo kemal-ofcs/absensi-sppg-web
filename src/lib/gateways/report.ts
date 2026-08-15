@@ -20,11 +20,18 @@ async function query<T>(kind: string, filter: Record<string, unknown> = {}) {
 
 export const getDashboardMetrics = () => query<DashboardMetrics>("metrics");
 export const getRekapHarian = (
-  filter: { tanggal?: string; divisi?: string } = {},
+  filter: {
+    tanggal?: string;
+    tanggal_mulai?: string;
+    tanggal_selesai?: string;
+    divisi?: string;
+  } = {},
 ) => query<Record<string, unknown>[]>("daily", filter);
 export const getRiwayatScan = (
   filter: {
     tanggal?: string;
+    tanggal_mulai?: string;
+    tanggal_selesai?: string;
     search?: string;
     limit?: number;
     offset?: number;

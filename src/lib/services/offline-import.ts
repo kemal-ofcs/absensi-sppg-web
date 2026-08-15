@@ -149,11 +149,66 @@ async function processRow(
       ),
     );
   const shiftResult = await transaction.execute({
-    sql: "SELECT jam_kerja_normal_menit, istirahat_menit FROM tbl_shift WHERE id_shift = ?;",
+    sql: "SELECT id_shift, nama_shift, kode_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
     args: [shiftId],
   });
-  const normal = Number(shiftResult.rows[0]?.jam_kerja_normal_menit ?? 480);
-  const breakMinutes = Number(shiftResult.rows[0]?.istirahat_menit ?? 60);
+  const shiftData = shiftResult.rows[0];
+  if (!shiftData) return fail(`Shift #${shiftId} tidak ditemukan.`);
+
+  const normal = Number(shiftData?.jam_kerja_normal_menit ?? 480);
+  const breakMinutes = Number(shiftData?.istirahat_menit ?? 60);
+  const toleransi = Number(shiftData?.toleransi_masuk_menit ?? 0);
+  const awalAbsen = Number(shiftData?.awal_absen_menit ?? 60);
+  const batasMasuk = Number(shiftData?.batas_masuk_menit ?? 360);
+  const batasPulang = Number(shiftData?.batas_pulang_menit ?? 360);
+  const shiftJamMasuk = String(shiftData?.jam_masuk || "07:00");
+  const shiftJamPulang = String(shiftData?.jam_pulang || "15:00");
+
+  const parseTimeMin = (t: string) => {
+    const parts = t.trim().split(":");
+    return Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+  };
+  const shiftMasukMin = parseTimeMin(shiftJamMasuk);
+  const shiftPulangMin = parseTimeMin(shiftJamPulang);
+
+  // Shift Window Validation for Hadir
+  if (statusAttendance === "Hadir") {
+    if (row.jam_masuk) {
+      const userMasukMin = parseTimeMin(row.jam_masuk);
+      let diff = userMasukMin - shiftMasukMin;
+      if (diff < -720) diff += 1440;
+      if (diff > 720) diff -= 1440;
+      if (diff < -awalAbsen || diff > batasMasuk + toleransi) {
+        return fail(
+          `Jam masuk (${row.jam_masuk}) di luar rentang jadwal ${shiftData.nama_shift || `Shift ${shiftId}`} (Jam Masuk: ${shiftJamMasuk}).`,
+        );
+      }
+    }
+    if (row.jam_pulang) {
+      const userPulangMin = parseTimeMin(row.jam_pulang);
+      let diff = userPulangMin - shiftPulangMin;
+      if (diff < -720) diff += 1440;
+      if (diff > 720) diff -= 1440;
+      if (diff < -120 || diff > batasPulang) {
+        return fail(
+          `Jam pulang (${row.jam_pulang}) di luar rentang jadwal ${shiftData.nama_shift || `Shift ${shiftId}`} (Jam Pulang: ${shiftJamPulang}).`,
+        );
+      }
+    }
+  }
+
+  let menitTerlambat = 0;
+  let menitDatangAwal = 0;
+
+  if (row.jam_masuk) {
+    const userMasukMin = parseTimeMin(row.jam_masuk);
+    if (userMasukMin > shiftMasukMin + toleransi) {
+      menitTerlambat = userMasukMin - shiftMasukMin;
+    } else if (userMasukMin < shiftMasukMin) {
+      menitDatangAwal = shiftMasukMin - userMasukMin;
+    }
+  }
+
   worked = worked > 0 ? Math.max(0, worked - breakMinutes) : 0;
   const overtime = Math.max(0, worked - normal);
   const shortage = checkIn && checkOut ? Math.max(0, normal - worked) : 0;
@@ -164,11 +219,12 @@ async function processRow(
       update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup,
       id_karyawan_asal, tanggal_tugas)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
       jam_pulang = excluded.jam_pulang, status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
       sumber = 'Import Offline', update_terakhir = excluded.update_terakhir,
+      menit_terlambat = excluded.menit_terlambat, menit_datang_awal = excluded.menit_datang_awal,
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
     args: [
@@ -182,6 +238,8 @@ async function processRow(
       statusRecord,
       row.keterangan ?? "",
       now,
+      menitTerlambat,
+      menitDatangAwal,
       worked,
       overtime,
       shortage,
@@ -201,13 +259,17 @@ async function processRow(
   ] as const) {
     if (!time) continue;
     await transaction.execute({
+      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = 'Import Offline';",
+      args: [row.tanggal, id, kind],
+    });
+    await transaction.execute({
       sql: `INSERT INTO log_scan (timestamp_scan, tanggal_kerja, jam_scan,
         id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data,
         catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
         id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil',
-        'Import Offline', ?, ?, 0, 0, ?, ?);`,
+        'Import Offline', ?, ?, ?, ?, ?, ?);`,
       args: [
-        now,
+        time,
         row.tanggal,
         time.slice(11),
         id,
@@ -218,6 +280,8 @@ async function processRow(
           ? `Import Offline sebagai karyawan pengganti. ID Backup: ${backupId}`
           : "Import Offline",
         row.keterangan ?? statusAttendance,
+        kind === "Masuk" ? menitTerlambat : 0,
+        kind === "Masuk" ? menitDatangAwal : 0,
         backupId,
         operator,
       ],

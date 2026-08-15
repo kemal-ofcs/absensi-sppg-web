@@ -198,60 +198,160 @@ pub fn create_correction(
     let mut late = 0_i64;
     let mut early = 0_i64;
     let scan_kind;
+    let shift_config: (String, String, i64, i64, i64, i64) = transaction
+        .query_row(
+            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ?;",
+            [shift_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60));
+
+    let to_minutes = |value: &str| {
+        let clean = if value.contains(' ') {
+            value.split(' ').nth(1).unwrap_or(value)
+        } else if value.contains('T') {
+            value.split('T').nth(1).unwrap_or(value)
+        } else {
+            value
+        };
+        clean
+            .split(':')
+            .filter_map(|part| part.parse::<i64>().ok())
+            .take(2)
+            .enumerate()
+            .map(|(index, value)| if index == 0 { value * 60 } else { value })
+            .sum::<i64>()
+    };
+
+    let clean_time = |value: &str| -> String {
+        if value.contains(' ') {
+            value.split(' ').nth(1).unwrap_or(value).to_owned()
+        } else if value.contains('T') {
+            value.split('T').nth(1).unwrap_or(value).to_owned()
+        } else {
+            value.to_owned()
+        }
+    };
+
     if matches!(correction_type, "Sakit" | "Izin" | "Dispen" | "Alfa") {
         scan_kind = correction_type;
         transaction.execute(
             "UPDATE absensi_harian SET jam_masuk = '', jam_pulang = '', status_kehadiran = ?, status_absen = 'Tidak Hadir', keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?, menit_terlambat = 0, menit_datang_awal = 0, jam_kerja = 0, lembur = 0, jam_kerja_kurang = 0 WHERE id_sesi = ?;",
             params![correction_type, note, now, session_id],
         ).map_err(|_| CommandError::internal())?;
-    } else if matches!(
-        correction_type,
-        "Lupa Absen Masuk" | "Kendala Sistem - Jam Masuk" | "Terlambat"
-    ) {
-        scan_kind = "Masuk";
-        let shift: Option<(String, i64)> = transaction
+    } else {
+        let (current_in, current_out): (String, String) = transaction
             .query_row(
-                "SELECT jam_masuk, batas_masuk_menit FROM tbl_shift WHERE id_shift = ?;",
-                [shift_id],
+                "SELECT COALESCE(jam_masuk, ''), COALESCE(jam_pulang, '') FROM absensi_harian WHERE id_sesi = ?;",
+                [&session_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()
-            .map_err(|_| CommandError::internal())?;
-        if let Some((start, normal_window)) = shift {
-            let to_minutes = |value: &str| {
-                value
-                    .split(':')
-                    .filter_map(|part| part.parse::<i64>().ok())
-                    .take(2)
-                    .enumerate()
-                    .map(|(index, value)| if index == 0 { value * 60 } else { value })
-                    .sum::<i64>()
-            };
+            .unwrap_or_default();
+
+        let shift_start_min = to_minutes(&shift_config.0);
+        let shift_end_min = to_minutes(&shift_config.1);
+        let is_overnight_shift = shift_end_min < shift_start_min;
+
+        let next_date: String = transaction
+            .query_row("SELECT date(?, '+1 day');", [date], |row| row.get(0))
+            .unwrap_or_else(|_| date.to_owned());
+
+        let check_in = if matches!(
+            correction_type,
+            "Lupa Absen Masuk" | "Kendala Sistem - Jam Masuk" | "Terlambat"
+        ) {
+            scan_kind = "Masuk";
             let arrival = to_minutes(correction_time);
-            let start_minutes = to_minutes(&start);
-            late = (arrival - start_minutes - normal_window).max(0);
-            early = (start_minutes - arrival).max(0);
+            let tolerance = shift_config.4;
+            if arrival > shift_start_min + tolerance {
+                late = (arrival - shift_start_min).max(0);
+            } else if arrival < shift_start_min {
+                early = (shift_start_min - arrival).max(0);
+            }
+            if correction_time.len() == 5 {
+                format!("{date} {correction_time}:00")
+            } else {
+                format!("{date} {correction_time}")
+            }
+        } else {
+            scan_kind = "Pulang";
+            current_in.clone()
+        };
+
+        let check_out = if matches!(
+            correction_type,
+            "Lupa Absen Pulang" | "Kendala Sistem - Jam Pulang"
+        ) {
+            let out_time_min = to_minutes(correction_time);
+            let in_time_min = if !check_in.is_empty() {
+                to_minutes(&clean_time(&check_in))
+            } else {
+                shift_start_min
+            };
+            let is_cross_day = is_overnight_shift || out_time_min < in_time_min;
+            let target_date = if is_cross_day { &next_date } else { date };
+            if correction_time.len() == 5 {
+                format!("{target_date} {correction_time}:00")
+            } else {
+                format!("{target_date} {correction_time}")
+            }
+        } else if !current_out.is_empty() {
+            let out_time_min = to_minutes(&clean_time(&current_out));
+            let in_time_min = to_minutes(&clean_time(&check_in));
+            let is_cross_day = is_overnight_shift || out_time_min < in_time_min;
+            let target_date = if is_cross_day { &next_date } else { date };
+            let raw_time = clean_time(&current_out);
+            format!("{target_date} {raw_time}")
+        } else {
+            String::new()
+        };
+
+        let has_check_in = !check_in.is_empty();
+        let has_check_out = !check_out.is_empty();
+
+        let mut worked = 0;
+        let mut overtime = 0;
+        let mut shortage = 0;
+
+        if has_check_in && has_check_out {
+            let in_min = to_minutes(&clean_time(&check_in));
+            let out_min = to_minutes(&clean_time(&check_out));
+            let total_presence = if out_min < in_min || is_overnight_shift {
+                if out_min < in_min {
+                    (out_min + 1440) - in_min
+                } else if check_out.starts_with(&next_date) && check_in.starts_with(date) {
+                    (out_min + 1440) - in_min
+                } else {
+                    out_min - in_min
+                }
+            } else {
+                (out_min - in_min).max(0)
+            };
+
+            let break_min = shift_config.3;
+            let normal_work_min = shift_config.2;
+
+            if total_presence > 0 {
+                worked = (total_presence - break_min).max(0);
+            }
+            overtime = (worked - normal_work_min).max(0);
+            shortage = (normal_work_min - worked).max(0);
         }
-        let check_in = format!("{date} {correction_time}:00");
+
+        let record_status = if has_check_in && has_check_out {
+            "Lengkap"
+        } else if has_check_in {
+            "Belum Pulang"
+        } else {
+            "Perlu Verifikasi"
+        };
+
         transaction.execute(
-            "UPDATE absensi_harian SET jam_masuk = ?, status_kehadiran = 'Hadir', status_absen = CASE WHEN COALESCE(jam_pulang, '') != '' THEN 'Lengkap' ELSE 'Belum Pulang' END, keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ? WHERE id_sesi = ?;",
-            params![check_in, note, now, late, early, session_id],
-        ).map_err(|_| CommandError::internal())?;
-    } else {
-        scan_kind = "Pulang";
-        let check_out = format!("{date} {correction_time}:00");
-        let has_check_in: bool = transaction
-            .query_row(
-                "SELECT COALESCE(jam_masuk, '') != '' FROM absensi_harian WHERE id_sesi = ?;",
-                [&session_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        transaction.execute(
-            "UPDATE absensi_harian SET jam_pulang = ?, status_kehadiran = CASE WHEN ? THEN 'Hadir' ELSE 'Perlu Verifikasi' END, status_absen = CASE WHEN ? THEN 'Lengkap' ELSE 'Perlu Verifikasi' END, keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ? WHERE id_sesi = ?;",
-            params![check_out, has_check_in, has_check_in, note, now, session_id],
+            "UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir', status_absen = ?, keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;",
+            params![check_in, check_out, record_status, note, now, late, early, worked, overtime, shortage, session_id],
         ).map_err(|_| CommandError::internal())?;
     }
+
     let correction_id = sync::new_local_id();
     transaction.execute(
         "INSERT INTO koreksi_admin (id_koreksi, id_referensi, tanggal, id_karyawan, nama, divisi, jenis_koreksi, jam_koreksi, keterangan_admin, status_proses, timestamp, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, ?);",
@@ -266,11 +366,16 @@ pub fn create_correction(
         "keterangan": note, "menit_terlambat": late, "menit_datang_awal": early,
         "id_referensi": reference, "kode_operator": operator,
     });
+    transaction.execute(
+        "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND (jenis_scan = ? OR sumber_data = 'Koreksi Admin');",
+        params![date, employee_id, &scan_kind],
+    ).map_err(|_| CommandError::internal())?;
     let local_log_id = sync::new_local_id();
     transaction.execute(
         "INSERT INTO log_scan (id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan, menit_terlambat, menit_datang_awal, id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Koreksi Admin', ?, ?, ?, ?, ?, ?);",
         params![local_log_id, text(&log, "timestamp_scan"), date, text(&log, "jam_scan"), employee_id, name, division, scan_kind, text(&log, "catatan_sistem"), note, late, early, reference, operator],
     ).map_err(|_| CommandError::internal())?;
+
     let attendance = attendance_json(&transaction, &session_id)?;
     let correction = json!({
         "id_referensi": reference, "tanggal": date, "id_karyawan": employee_id,
@@ -580,7 +685,85 @@ pub fn import_offline(
                     }
                 )
             };
-            let shift = transaction.query_row("SELECT jam_kerja_normal_menit, istirahat_menit FROM tbl_shift WHERE id_shift = ?;", [shift_id], |result| Ok((result.get::<_, i64>(0)?, result.get::<_, i64>(1)?))).unwrap_or((480, 60));
+            let shift: (String, String, i64, i64, i64, i64, i64, i64) = transaction
+                .query_row(
+                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+                    [shift_id],
+                    |result| Ok((result.get(0)?, result.get(1)?, result.get(2)?, result.get(3)?, result.get(4)?, result.get(5)?, result.get(6)?, result.get(7)?)),
+                )
+                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 360, 360));
+
+            let to_min = |val: &str| -> i64 {
+                val.split(':')
+                    .filter_map(|p| p.parse::<i64>().ok())
+                    .take(2)
+                    .enumerate()
+                    .map(|(idx, v)| if idx == 0 { v * 60 } else { v })
+                    .sum()
+            };
+
+            let attendance_status = if text(row, "status_kehadiran").is_empty() {
+                "Hadir"
+            } else {
+                text(row, "status_kehadiran")
+            };
+
+            if attendance_status == "Hadir" {
+                if !check_in_time.is_empty() {
+                    let user_in = to_min(&check_in_time);
+                    let shift_in = to_min(&shift.0);
+                    let mut diff = user_in - shift_in;
+                    if diff < -720 {
+                        diff += 1440;
+                    }
+                    if diff > 720 {
+                        diff -= 1440;
+                    }
+                    if diff < -shift.5 || diff > shift.6 + shift.4 {
+                        return Err(CommandError::new(
+                            "OPERATIONAL_VALIDATION_FAILED",
+                            format!(
+                                "Jam masuk ({check_in_time}) di luar rentang jadwal Shift {shift_id} (Jam Masuk: {}).",
+                                shift.0
+                            ),
+                        ));
+                    }
+                }
+                if !check_out_time.is_empty() {
+                    let user_out = to_min(&check_out_time);
+                    let shift_out = to_min(&shift.1);
+                    let mut diff = user_out - shift_out;
+                    if diff < -720 {
+                        diff += 1440;
+                    }
+                    if diff > 720 {
+                        diff -= 1440;
+                    }
+                    if diff < -120 || diff > shift.7 {
+                        return Err(CommandError::new(
+                            "OPERATIONAL_VALIDATION_FAILED",
+                            format!(
+                                "Jam pulang ({check_out_time}) di luar rentang jadwal Shift {shift_id} (Jam Pulang: {}).",
+                                shift.1
+                            ),
+                        ));
+                    }
+                }
+            }
+
+            let mut late = 0_i64;
+            let mut early = 0_i64;
+
+            if !check_in_time.is_empty() {
+                let user_in = to_min(&check_in_time);
+                let shift_in = to_min(&shift.0);
+                if user_in > shift_in + shift.4 {
+                    late = (user_in - shift_in).max(0);
+                } else if user_in < shift_in {
+                    early = (shift_in - user_in).max(0);
+                }
+            }
+
             let total: i64 = if !check_in.is_empty() && !check_out.is_empty() {
                 transaction
                     .query_row(
@@ -593,14 +776,9 @@ pub fn import_offline(
                 0
             };
             let worked = if total > 0 {
-                (total - shift.1).max(0)
+                (total - shift.3).max(0)
             } else {
                 0
-            };
-            let attendance_status = if text(row, "status_kehadiran").is_empty() {
-                "Hadir"
-            } else {
-                text(row, "status_kehadiran")
             };
             let record_status = if !text(row, "status_absen").is_empty() {
                 text(row, "status_absen")
@@ -633,8 +811,8 @@ pub fn import_offline(
                 "Desember",
             ];
             transaction.execute(
-                "INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber, update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = CASE WHEN excluded.jam_masuk != '' THEN excluded.jam_masuk ELSE absensi_harian.jam_masuk END, jam_pulang = CASE WHEN excluded.jam_pulang != '' THEN excluded.jam_pulang ELSE absensi_harian.jam_pulang END, status_kehadiran = excluded.status_kehadiran, status_absen = excluded.status_absen, keterangan = excluded.keterangan, sumber = 'Import Offline', update_terakhir = excluded.update_terakhir, jam_kerja = excluded.jam_kerja, lembur = excluded.lembur, jam_kerja_kurang = excluded.jam_kerja_kurang;",
-                params![sync::new_local_id(), date, id, name, division, check_in, check_out, attendance_status, record_status, text(row, "keterangan"), now, worked, (worked - shift.0).max(0), if total > 0 { (shift.0 - worked).max(0) } else { 0 }, shift_id, months.get(month.saturating_sub(1) as usize).unwrap_or(&"Januari"), year, session_id, mode, backup_id, original_id, date],
+                "INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber, update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = CASE WHEN excluded.jam_masuk != '' THEN excluded.jam_masuk ELSE absensi_harian.jam_masuk END, jam_pulang = CASE WHEN excluded.jam_pulang != '' THEN excluded.jam_pulang ELSE absensi_harian.jam_pulang END, status_kehadiran = excluded.status_kehadiran, status_absen = excluded.status_absen, keterangan = excluded.keterangan, sumber = 'Import Offline', update_terakhir = excluded.update_terakhir, menit_terlambat = excluded.menit_terlambat, menit_datang_awal = excluded.menit_datang_awal, jam_kerja = excluded.jam_kerja, lembur = excluded.lembur, jam_kerja_kurang = excluded.jam_kerja_kurang;",
+                params![sync::new_local_id(), date, id, name, division, check_in, check_out, attendance_status, record_status, text(row, "keterangan"), now, late, early, worked, (worked - shift.2).max(0), if total > 0 { (shift.2 - worked).max(0) } else { 0 }, shift_id, months.get(month.saturating_sub(1) as usize).unwrap_or(&"Januari"), year, session_id, mode, backup_id, original_id, date],
             ).map_err(|_| CommandError::internal())?;
             let attendance = attendance_json(&transaction, &session_id)?;
             let mut logs = Vec::new();
@@ -642,9 +820,14 @@ pub fn import_offline(
                 if value.is_empty() {
                     continue;
                 }
-                let log = json!({ "timestamp_scan": now, "tanggal_kerja": date, "jam_scan": &value[11..], "id_karyawan": id, "nama": name, "divisi": division, "jenis_scan": kind, "status_proses": "Berhasil", "sumber_data": "Import Offline", "catatan_sistem": if backup_id.is_empty() { "Import Offline".to_owned() } else { format!("Import Offline sebagai karyawan pengganti. ID Backup: {backup_id}") }, "keterangan": text(row, "keterangan"), "menit_terlambat": 0, "menit_datang_awal": 0, "id_referensi": backup_id, "kode_operator": operator });
-                transaction.execute("INSERT INTO log_scan (id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan, menit_terlambat, menit_datang_awal, id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Import Offline', ?, ?, 0, 0, ?, ?);", params![sync::new_local_id(), now, date, &value[11..], id, name, division, kind, text(&log, "catatan_sistem"), text(row, "keterangan"), backup_id, operator]).map_err(|_| CommandError::internal())?;
+                let log_late = if kind == "Masuk" { late } else { 0 };
+                let log_early = if kind == "Masuk" { early } else { 0 };
+                let log_timestamp = value.to_owned();
+                let log = json!({ "timestamp_scan": log_timestamp, "tanggal_kerja": date, "jam_scan": &value[11..], "id_karyawan": id, "nama": name, "divisi": division, "jenis_scan": kind, "status_proses": "Berhasil", "sumber_data": "Import Offline", "catatan_sistem": if backup_id.is_empty() { "Import Offline".to_owned() } else { format!("Import Offline sebagai karyawan pengganti. ID Backup: {backup_id}") }, "keterangan": text(row, "keterangan"), "menit_terlambat": log_late, "menit_datang_awal": log_early, "id_referensi": backup_id, "kode_operator": operator });
+                transaction.execute("DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = 'Import Offline';", params![date, id, kind]).map_err(|_| CommandError::internal())?;
+                transaction.execute("INSERT INTO log_scan (id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan, menit_terlambat, menit_datang_awal, id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Import Offline', ?, ?, ?, ?, ?, ?);", params![sync::new_local_id(), log_timestamp, date, &value[11..], id, name, division, kind, text(&log, "catatan_sistem"), text(row, "keterangan"), log_late, log_early, backup_id, operator]).map_err(|_| CommandError::internal())?;
                 logs.push(log);
+
             }
             let import = json!({ "event_key": event_key, "timestamp_input": now, "tanggal": date, "id_unik": id, "nama": name, "divisi": division, "jam_masuk": check_in_time, "jam_pulang": check_out_time, "status_kehadiran": attendance_status, "status_absen": record_status, "keterangan": text(row, "keterangan"), "status_proses": "Sudah Diproses", "diproses_pada": now, "pesan_error": "", "kode_operator": operator });
             transaction.execute("INSERT INTO import_offline (id_import, event_key, timestamp_input, tanggal, id_unik, nama, divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, status_proses, diproses_pada, pesan_error, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, '', ?);", params![sync::new_local_id(), event_key, now, date, id, name, division, check_in_time, check_out_time, attendance_status, record_status, text(row, "keterangan"), now, operator]).map_err(|_| CommandError::internal())?;
@@ -707,16 +890,25 @@ pub fn dashboard_data(
     }
     let division = text(filter, "divisi").replace("'", "''");
     if kind == "scan-history" {
-        let date = if text(filter, "tanggal").is_empty() {
-            connection
-                .query_row("SELECT date('now','+7 hours');", [], |row| {
-                    row.get::<_, String>(0)
-                })
-                .map_err(|_| CommandError::internal())?
+        let date_clause = if !text(filter, "tanggal_mulai").is_empty()
+            && !text(filter, "tanggal_selesai").is_empty()
+        {
+            let start = text(filter, "tanggal_mulai").replace('\'', "''");
+            let end = text(filter, "tanggal_selesai").replace('\'', "''");
+            format!("tanggal_kerja BETWEEN '{start}' AND '{end}'")
         } else {
-            text(filter, "tanggal").replace("'", "''")
+            let date = if text(filter, "tanggal").is_empty() {
+                connection
+                    .query_row("SELECT date('now','+7 hours');", [], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .map_err(|_| CommandError::internal())?
+            } else {
+                text(filter, "tanggal").replace('\'', "''")
+            };
+            format!("tanggal_kerja = '{date}'")
         };
-        let search = text(filter, "search").replace("'", "''");
+        let search = text(filter, "search").replace('\'', "''");
         let limit = filter
             .get("limit")
             .and_then(Value::as_i64)
@@ -749,7 +941,7 @@ pub fn dashboard_data(
             'id_referensi', COALESCE(id_referensi,''),
             'kode_operator', COALESCE(kode_operator,'')
           )
-          FROM log_scan WHERE tanggal_kerja = '{date}'
+          FROM log_scan WHERE {date_clause}
             AND ('{search}' = '' OR nama LIKE '%{search}%' OR id_karyawan LIKE '%{search}%'
               OR divisi LIKE '%{search}%' OR id_referensi LIKE '%{search}%' OR kode_operator LIKE '%{search}%')
           ORDER BY timestamp_scan DESC, id_log DESC LIMIT {limit} OFFSET {offset};
@@ -758,14 +950,23 @@ pub fn dashboard_data(
         );
     }
     if kind == "daily" {
-        let date = if text(filter, "tanggal").is_empty() {
-            connection
-                .query_row("SELECT date('now','+7 hours');", [], |row| {
-                    row.get::<_, String>(0)
-                })
-                .map_err(|_| CommandError::internal())?
+        let date_clause = if !text(filter, "tanggal_mulai").is_empty()
+            && !text(filter, "tanggal_selesai").is_empty()
+        {
+            let start = text(filter, "tanggal_mulai").replace('\'', "''");
+            let end = text(filter, "tanggal_selesai").replace('\'', "''");
+            format!("a.tanggal BETWEEN '{start}' AND '{end}'")
         } else {
-            text(filter, "tanggal").replace("'", "''")
+            let date = if text(filter, "tanggal").is_empty() {
+                connection
+                    .query_row("SELECT date('now','+7 hours');", [], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .map_err(|_| CommandError::internal())?
+            } else {
+                text(filter, "tanggal").replace('\'', "''")
+            };
+            format!("a.tanggal = '{date}'")
         };
         return rows_as_json(
             &connection,
@@ -802,8 +1003,8 @@ pub fn dashboard_data(
             'kode_shift', COALESCE(s.kode_shift, a.id_shift)
           )
           FROM absensi_harian a LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
-          LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift WHERE a.tanggal = '{date}'
-          AND ('{division}' = '' OR a.kelas_divisi = '{division}') ORDER BY a.nama;
+          LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift WHERE {date_clause}
+          AND ('{division}' = '' OR a.kelas_divisi = '{division}') ORDER BY a.update_terakhir DESC, a.tanggal DESC, a.nama;
         "#
             ),
         );

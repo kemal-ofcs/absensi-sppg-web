@@ -51,12 +51,7 @@ export default function IdCardsPage() {
       );
     }
     const qrPng = await createQrPng(payload);
-    return await createIdCardPng({
-      nama: String(row.nama ?? ""),
-      divisi: String(row.divisi ?? ""),
-      idUnik: String(row.id_unik ?? ""),
-      qrPngDataUrl: qrPng,
-    });
+    return await createIdCardPng(row, qrPng);
   };
 
   const saveCard = async (row: Record<string, unknown>) => {
