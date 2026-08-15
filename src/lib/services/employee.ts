@@ -291,7 +291,7 @@ export async function updateKaryawan(
       args,
     });
 
-    // Update nama & divisi di id_card
+    // Update nama & divisi di id_card, absensi_harian, log_scan, dan backup_karyawan
     if (data.nama || data.divisi) {
       const idCardUpdates: string[] = [];
       const idCardArgs: (string | number | boolean | null)[] = [];
@@ -308,6 +308,90 @@ export async function updateKaryawan(
         sql: `UPDATE id_card SET ${idCardUpdates.join(", ")} WHERE id_unik = ?;`,
         args: idCardArgs,
       });
+
+      // Update absensi_harian
+      if (data.nama && data.divisi) {
+        await db.execute({
+          sql: "UPDATE absensi_harian SET nama = ?, kelas_divisi = ? WHERE id_karyawan = ?;",
+          args: [data.nama, data.divisi, id_unik],
+        });
+      } else if (data.nama) {
+        await db.execute({
+          sql: "UPDATE absensi_harian SET nama = ? WHERE id_karyawan = ?;",
+          args: [data.nama, id_unik],
+        });
+      } else if (data.divisi) {
+        await db.execute({
+          sql: "UPDATE absensi_harian SET kelas_divisi = ? WHERE id_karyawan = ?;",
+          args: [data.divisi, id_unik],
+        });
+      }
+
+      // Update log_scan
+      if (data.nama && data.divisi) {
+        await db.execute({
+          sql: "UPDATE log_scan SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+          args: [data.nama, data.divisi, id_unik],
+        });
+      } else if (data.nama) {
+        await db.execute({
+          sql: "UPDATE log_scan SET nama = ? WHERE id_karyawan = ?;",
+          args: [data.nama, id_unik],
+        });
+      } else if (data.divisi) {
+        await db.execute({
+          sql: "UPDATE log_scan SET divisi = ? WHERE id_karyawan = ?;",
+          args: [data.divisi, id_unik],
+        });
+      }
+
+      // Update backup_karyawan
+      if (data.nama && data.divisi) {
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET nama_karyawan_pengganti = ?, divisi_pengganti = ? WHERE id_karyawan_pengganti = ?;",
+          args: [data.nama, data.divisi, id_unik],
+        });
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET nama_karyawan_asal = ?, divisi_asal = ? WHERE id_karyawan_asal = ?;",
+          args: [data.nama, data.divisi, id_unik],
+        });
+      } else if (data.nama) {
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET nama_karyawan_pengganti = ? WHERE id_karyawan_pengganti = ?;",
+          args: [data.nama, id_unik],
+        });
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET nama_karyawan_asal = ? WHERE id_karyawan_asal = ?;",
+          args: [data.nama, id_unik],
+        });
+      } else if (data.divisi) {
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET divisi_pengganti = ? WHERE id_karyawan_pengganti = ?;",
+          args: [data.divisi, id_unik],
+        });
+        await db.execute({
+          sql: "UPDATE backup_karyawan SET divisi_asal = ? WHERE id_karyawan_asal = ?;",
+          args: [data.divisi, id_unik],
+        });
+      }
+
+      // Update koreksi_admin
+      if (data.nama && data.divisi) {
+        await db.execute({
+          sql: "UPDATE koreksi_admin SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+          args: [data.nama, data.divisi, id_unik],
+        });
+      } else if (data.nama) {
+        await db.execute({
+          sql: "UPDATE koreksi_admin SET nama = ? WHERE id_karyawan = ?;",
+          args: [data.nama, id_unik],
+        });
+      } else if (data.divisi) {
+        await db.execute({
+          sql: "UPDATE koreksi_admin SET divisi = ? WHERE id_karyawan = ?;",
+          args: [data.divisi, id_unik],
+        });
+      }
     }
   }
 

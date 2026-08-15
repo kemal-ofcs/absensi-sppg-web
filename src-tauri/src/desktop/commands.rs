@@ -669,3 +669,12 @@ pub async fn desktop_retry_failed_sync(
     sync::retry_failed(&state, event_id.as_deref())?;
     desktop_sync_now(state).await
 }
+
+#[tauri::command]
+pub fn desktop_save_file(
+    filename: String,
+    base64_data: String,
+) -> Result<Value, CommandError> {
+    operational::save_desktop_file(&filename, &base64_data)
+}
+

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { canAccessArea } from "@/lib/auth/access";
-import { downloadDataUrl } from "@/lib/client/download";
+import { saveFileWithPicker } from "@/lib/client/download";
 import { createIdCardPng } from "@/lib/client/id-card";
 import { createQrPng, employeeQrPayload } from "@/lib/client/qr-code";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -25,12 +25,12 @@ export default function IdCardsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
-      setRows(await getDaftarIdCard({ search: appliedSearch }));
-      setError(null);
+      setRows(await getDaftarIdCard({ search: appliedSearch || undefined }));
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "ID card gagal dimuat.",
+        cause instanceof Error ? cause.message : "Gagal memuat daftar ID card.",
       );
     } finally {
       setLoading(false);
@@ -38,28 +38,51 @@ export default function IdCardsPage() {
   }, [appliedSearch]);
 
   useEffect(() => {
-    if (hydrated && isAuthenticated) void load();
-  }, [hydrated, isAuthenticated, load]);
+    if (hydrated && isAuthenticated && canAccessArea(user, "idcards")) {
+      void load();
+    }
+  }, [hydrated, isAuthenticated, user, load]);
 
   const renderCard = async (row: Record<string, unknown>) => {
     const payload = employeeQrPayload(row);
-    if (!payload) throw new Error("Token QR karyawan belum tersedia.");
-    const qr = await createQrPng(payload, 512);
-    return createIdCardPng(row, qr);
+    if (!payload) {
+      throw new Error(
+        "Data token QR belum tersedia. Generate token QR karyawan terlebih dahulu.",
+      );
+    }
+    const qrPng = await createQrPng(payload);
+    return await createIdCardPng({
+      nama: String(row.nama ?? ""),
+      divisi: String(row.divisi ?? ""),
+      idUnik: String(row.id_unik ?? ""),
+      qrPngDataUrl: qrPng,
+    });
   };
 
   const saveCard = async (row: Record<string, unknown>) => {
     const id = String(row.id_unik);
+    const nama = String(row.nama || id);
     setWorkingId(id);
     try {
       const png = await renderCard(row);
-      downloadDataUrl(png, `id-card-${id}.png`);
+      const safeNama = nama.replace(/[/\\?%*:|"<>]/g, "-").trim();
+      const res = await saveFileWithPicker(png, `id-card-${safeNama}.png`, {
+        description: "Gambar ID Card (PNG)",
+        accept: { "image/png": [".png"] },
+      });
+      if (res.cancelled) {
+        return;
+      }
       await updateStatusIdCard({
         id_unik: id,
         idcard_status: "Berhasil",
         idcard_catatan: "PNG dibuat dari aplikasi",
       });
-      setMessage(`ID card ${String(row.nama)} berhasil disimpan sebagai PNG.`);
+      if (res.path) {
+        setMessage(`ID card ${nama} berhasil disimpan di: ${res.path}`);
+      } else {
+        setMessage(`ID card ${nama} berhasil disimpan sebagai PNG.`);
+      }
       await load();
     } catch (cause) {
       setError(
@@ -71,27 +94,80 @@ export default function IdCardsPage() {
   };
 
   const printCard = async (row: Record<string, unknown>) => {
-    const popup = window.open("", "_blank", "width=1100,height=750");
-    if (!popup) {
-      setError("Jendela cetak diblokir browser. Izinkan pop-up lalu ulangi.");
-      return;
-    }
     const id = String(row.id_unik);
     setWorkingId(id);
     try {
       const png = await renderCard(row);
-      popup.document.write(
-        `<title>ID Card Karyawan</title><style>@page{size:85.6mm 54mm;margin:0}body{margin:0;display:grid;place-items:center}img{width:85.6mm;height:54mm}</style><img src="${png}" onload="window.print();window.close()">`,
-      );
-      popup.document.close();
+      let iframe = document.getElementById(
+        "id-card-print-frame",
+      ) as HTMLIFrameElement | null;
+      if (!iframe) {
+        iframe = document.createElement("iframe");
+        iframe.id = "id-card-print-frame";
+        iframe.style.position = "fixed";
+        iframe.style.right = "0";
+        iframe.style.bottom = "0";
+        iframe.style.width = "0";
+        iframe.style.height = "0";
+        iframe.style.border = "0";
+        document.body.appendChild(iframe);
+      }
+
+      const frameDoc = iframe.contentWindow?.document || iframe.contentDocument;
+      if (!frameDoc) {
+        throw new Error("Gagal menginisialisasi modul pencetakan.");
+      }
+
+      frameDoc.open();
+      frameDoc.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>ID Card - ${String(row.nama || id)}</title>
+          <style>
+            @page {
+              size: 85.6mm 54mm;
+              margin: 0;
+            }
+            @media print {
+              body, html {
+                margin: 0;
+                padding: 0;
+                width: 85.6mm;
+                height: 54mm;
+              }
+            }
+            body {
+              margin: 0;
+              padding: 0;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              background: white;
+            }
+            img {
+              width: 85.6mm;
+              height: 54mm;
+              object-fit: cover;
+              display: block;
+            }
+          </style>
+        </head>
+        <body>
+          <img src="${png}" onload="window.focus(); window.print();" />
+        </body>
+        </html>
+      `);
+      frameDoc.close();
+
       await updateStatusIdCard({
         id_unik: id,
         idcard_status: "Berhasil",
         idcard_catatan: "Siap/cetak dari aplikasi",
       });
+      setMessage(`ID card ${String(row.nama)} siap dicetak.`);
       await load();
     } catch (cause) {
-      popup.close();
       setError(
         cause instanceof Error ? cause.message : "ID card gagal dicetak.",
       );

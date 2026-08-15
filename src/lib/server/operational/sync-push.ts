@@ -278,6 +278,26 @@ async function applyEmployee(
       sql: "UPDATE id_card SET nama = ?, divisi = ? WHERE id_unik = ?;",
       args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
     });
+    await transaction.execute({
+      sql: "UPDATE absensi_harian SET nama = ?, kelas_divisi = ? WHERE id_karyawan = ?;",
+      args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
+    });
+    await transaction.execute({
+      sql: "UPDATE log_scan SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+      args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
+    });
+    await transaction.execute({
+      sql: "UPDATE backup_karyawan SET nama_karyawan_pengganti = ?, divisi_pengganti = ? WHERE id_karyawan_pengganti = ?;",
+      args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
+    });
+    await transaction.execute({
+      sql: "UPDATE backup_karyawan SET nama_karyawan_asal = ?, divisi_asal = ? WHERE id_karyawan_asal = ?;",
+      args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
+    });
+    await transaction.execute({
+      sql: "UPDATE koreksi_admin SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+      args: [text(payload, "nama"), text(payload, "divisi"), event.entityKey],
+    });
   } else if (event.operation === "status") {
     const status = text(payload, "status_aktif");
     if (status !== "Aktif" && status !== "Nonaktif") {

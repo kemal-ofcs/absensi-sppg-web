@@ -55,6 +55,7 @@ pub fn run() {
             desktop::commands::desktop_sync_now,
             desktop::commands::desktop_get_sync_conflicts,
             desktop::commands::desktop_retry_failed_sync,
+            desktop::commands::desktop_save_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

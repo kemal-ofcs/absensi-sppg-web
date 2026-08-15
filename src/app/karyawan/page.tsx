@@ -9,7 +9,7 @@ import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Modal } from "@/components/ui/Modal";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
-import { downloadDataUrl } from "@/lib/client/download";
+import { saveFileWithPicker } from "@/lib/client/download";
 import {
   downloadEmployeeTemplate,
   exportEmployees,
@@ -220,6 +220,64 @@ export default function KaryawanPage() {
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    try {
+      const res = await downloadEmployeeTemplate();
+      if (res.cancelled) return;
+      if (res.path) {
+        setAlertMsg(`Template Excel berhasil disimpan di: ${res.path}`);
+      } else {
+        setAlertMsg("Template Excel berhasil diunduh.");
+      }
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Gagal mengunduh template Excel.",
+      );
+    }
+  };
+
+  const handleExportEmployees = async () => {
+    try {
+      const res = await exportEmployees(karyawanList);
+      if (res.cancelled) return;
+      if (res.path) {
+        setAlertMsg(`Data karyawan berhasil diekspor ke: ${res.path}`);
+      } else {
+        setAlertMsg("Data karyawan berhasil diekspor.");
+      }
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Gagal mengekspor data Excel.",
+      );
+    }
+  };
+
+  const handleSaveQrPng = async () => {
+    if (!qrPreview) return;
+    try {
+      const safeNama = qrPreview.nama.replace(/[/\\?%*:|"<>]/g, "-").trim();
+      const res = await saveFileWithPicker(
+        qrPreview.png,
+        `qr-${safeNama || qrPreview.id}.png`,
+        {
+          description: "Gambar QR Absensi (PNG)",
+          accept: { "image/png": [".png"] },
+        },
+      );
+      if (res.cancelled) return;
+      if (res.path) {
+        setAlertMsg(`QR ${qrPreview.nama} berhasil disimpan di: ${res.path}`);
+      } else {
+        setAlertMsg(`QR ${qrPreview.nama} berhasil disimpan.`);
+      }
+      setQrPreview(null);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Gagal menyimpan QR PNG.",
+      );
+    }
+  };
+
   const handleShowQr = async (row: Record<string, unknown>) => {
     try {
       const cards = await getDaftarIdCard({ search: String(row.id_unik) });
@@ -297,18 +355,19 @@ export default function KaryawanPage() {
             </button>
             <button
               type="button"
-              onClick={() => void downloadEmployeeTemplate()}
+              onClick={handleDownloadTemplate}
               className="px-3.5 py-2 bg-slate-800 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700"
             >
               Template
             </button>
             <button
               type="button"
-              onClick={() => void exportEmployees(karyawanList)}
+              onClick={handleExportEmployees}
               className="px-3.5 py-2 bg-slate-800 text-sky-300 font-semibold text-xs rounded-xl border border-sky-500/40"
             >
               Export Excel
             </button>
+
             <button
               type="button"
               onClick={handleGenerateMassal}
@@ -532,9 +591,7 @@ export default function KaryawanPage() {
             <p className="font-mono text-xs text-slate-400">{qrPreview.id}</p>
             <button
               type="button"
-              onClick={() =>
-                downloadDataUrl(qrPreview.png, `qr-${qrPreview.id}.png`)
-              }
+              onClick={handleSaveQrPng}
               className="rounded-xl bg-sky-400 px-5 py-2 text-xs font-bold text-slate-950"
             >
               Simpan QR sebagai PNG

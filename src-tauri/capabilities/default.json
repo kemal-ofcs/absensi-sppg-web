@@ -43,6 +43,8 @@
     "allow-desktop-get-sync-status",
     "allow-desktop-sync-now",
     "allow-desktop-get-sync-conflicts",
-    "allow-desktop-retry-failed-sync"
+    "allow-desktop-retry-failed-sync",
+    "allow-desktop-save-file"
   ]
 }
+

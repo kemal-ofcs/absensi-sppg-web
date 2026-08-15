@@ -244,12 +244,45 @@ pub fn update_employee(
             ],
         )
         .map_err(|_| CommandError::internal())?;
+    let nama = text(draft, "nama");
+    let divisi = text(draft, "divisi");
     transaction
         .execute(
             "UPDATE id_card SET nama = ?, divisi = ? WHERE id_unik = ?;",
-            params![text(draft, "nama"), text(draft, "divisi"), id],
+            params![nama, divisi, id],
         )
         .map_err(|_| CommandError::internal())?;
+    transaction
+        .execute(
+            "UPDATE absensi_harian SET nama = ?, kelas_divisi = ? WHERE id_karyawan = ?;",
+            params![nama, divisi, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    transaction
+        .execute(
+            "UPDATE log_scan SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+            params![nama, divisi, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    transaction
+        .execute(
+            "UPDATE backup_karyawan SET nama_karyawan_pengganti = ?, divisi_pengganti = ? WHERE id_karyawan_pengganti = ?;",
+            params![nama, divisi, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    transaction
+        .execute(
+            "UPDATE backup_karyawan SET nama_karyawan_asal = ?, divisi_asal = ? WHERE id_karyawan_asal = ?;",
+            params![nama, divisi, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    transaction
+        .execute(
+            "UPDATE koreksi_admin SET nama = ?, divisi = ? WHERE id_karyawan = ?;",
+            params![nama, divisi, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+
     sync::enqueue(
         &transaction,
         &client_id,
@@ -732,3 +765,61 @@ pub fn update_id_card(state: &DesktopState, draft: &Value) -> Result<Value, Comm
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true }))
 }
+
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let clean = if let Some(idx) = input.find(";base64,") {
+        &input[idx + 8..]
+    } else {
+        input.trim()
+    };
+    let mut out = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in clean.as_bytes() {
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\r' | b'\n' | b' ' => continue,
+            _ => return None,
+        };
+        buf = (buf << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    Some(out)
+}
+
+pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, CommandError> {
+    let bytes = decode_base64(base64_data).ok_or_else(|| {
+        CommandError::new("DESKTOP_SAVE_FAILED", "Format base64 file tidak valid.")
+    })?;
+
+    let download_dir = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+
+    if !download_dir.exists() {
+        let _ = std::fs::create_dir_all(&download_dir);
+    }
+
+    let sanitized_filename = filename.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    let target_path = download_dir.join(&sanitized_filename);
+
+    std::fs::write(&target_path, &bytes).map_err(|e| {
+        CommandError::new("DESKTOP_SAVE_FAILED", &format!("Gagal menulis file: {}", e))
+    })?;
+
+    Ok(json!({
+        "sukses": true,
+        "path": target_path.to_string_lossy().to_string(),
+        "filename": sanitized_filename
+    }))
+}
+
