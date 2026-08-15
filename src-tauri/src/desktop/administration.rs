@@ -731,15 +731,27 @@ pub fn dashboard_data(
             &connection,
             &format!(
                 r#"
-          SELECT json_object('id_log', id_log, 'timestamp_scan', timestamp_scan,
-            'tanggal_kerja', tanggal_kerja, 'jam_scan', jam_scan,
-            'id_karyawan', id_karyawan, 'nama', nama, 'divisi', divisi,
-            'jenis_scan', jenis_scan, 'status_proses', status_proses,
-            'sumber_data', sumber_data, 'catatan_sistem', COALESCE(catatan_sistem,''),
-            'keterangan', COALESCE(keterangan,''), 'kode_operator', COALESCE(kode_operator,''))
+          SELECT json_object(
+            'id_log', id_log,
+            'timestamp_scan', timestamp_scan,
+            'tanggal_kerja', tanggal_kerja,
+            'jam_scan', jam_scan,
+            'id_karyawan', id_karyawan,
+            'nama', nama,
+            'divisi', divisi,
+            'jenis_scan', jenis_scan,
+            'status_proses', status_proses,
+            'sumber_data', sumber_data,
+            'catatan_sistem', COALESCE(catatan_sistem,''),
+            'keterangan', COALESCE(keterangan,''),
+            'menit_terlambat', COALESCE(menit_terlambat, 0),
+            'menit_datang_awal', COALESCE(menit_datang_awal, 0),
+            'id_referensi', COALESCE(id_referensi,''),
+            'kode_operator', COALESCE(kode_operator,'')
+          )
           FROM log_scan WHERE tanggal_kerja = '{date}'
             AND ('{search}' = '' OR nama LIKE '%{search}%' OR id_karyawan LIKE '%{search}%'
-              OR divisi LIKE '%{search}%')
+              OR divisi LIKE '%{search}%' OR id_referensi LIKE '%{search}%' OR kode_operator LIKE '%{search}%')
           ORDER BY timestamp_scan DESC, id_log DESC LIMIT {limit} OFFSET {offset};
         "#
             ),
@@ -759,14 +771,36 @@ pub fn dashboard_data(
             &connection,
             &format!(
                 r#"
-          SELECT json_object('id_absensi', a.id_absensi, 'tanggal', a.tanggal,
-            'id_karyawan', a.id_karyawan, 'nama', a.nama, 'kelas_divisi', a.kelas_divisi,
-            'jam_masuk', COALESCE(a.jam_masuk,''), 'jam_pulang', COALESCE(a.jam_pulang,''),
-            'status_kehadiran', a.status_kehadiran, 'status_absen', a.status_absen,
-            'keterangan', COALESCE(a.keterangan,''), 'sumber', a.sumber,
-            'menit_terlambat', a.menit_terlambat, 'jam_kerja', a.jam_kerja,
-            'lembur', a.lembur, 'kode_karyawan', COALESCE(m.kode_karyawan,''),
-            'nama_shift', COALESCE(s.nama_shift,''))
+          SELECT json_object(
+            'id_absensi', a.id_absensi,
+            'tanggal', a.tanggal,
+            'id_karyawan', a.id_karyawan,
+            'nama', a.nama,
+            'kelas_divisi', a.kelas_divisi,
+            'jam_masuk', COALESCE(a.jam_masuk,''),
+            'jam_pulang', COALESCE(a.jam_pulang,''),
+            'status_kehadiran', a.status_kehadiran,
+            'status_absen', a.status_absen,
+            'keterangan', COALESCE(a.keterangan,''),
+            'sumber', a.sumber,
+            'update_terakhir', COALESCE(a.update_terakhir,''),
+            'menit_terlambat', a.menit_terlambat,
+            'menit_datang_awal', COALESCE(a.menit_datang_awal, 0),
+            'jam_kerja', a.jam_kerja,
+            'lembur', a.lembur,
+            'jam_kerja_kurang', COALESCE(a.jam_kerja_kurang, 0),
+            'id_shift', a.id_shift,
+            'bulan', COALESCE(a.bulan,''),
+            'tahun', a.tahun,
+            'id_sesi', COALESCE(a.id_sesi,''),
+            'mode_tugas', COALESCE(a.mode_tugas,'NORMAL'),
+            'id_backup', COALESCE(a.id_backup,''),
+            'id_karyawan_asal', COALESCE(a.id_karyawan_asal,''),
+            'tanggal_tugas', COALESCE(a.tanggal_tugas,''),
+            'kode_karyawan', COALESCE(m.kode_karyawan,''),
+            'nama_shift', COALESCE(s.nama_shift,''),
+            'kode_shift', COALESCE(s.kode_shift, a.id_shift)
+          )
           FROM absensi_harian a LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
           LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift WHERE a.tanggal = '{date}'
           AND ('{division}' = '' OR a.kelas_divisi = '{division}') ORDER BY a.nama;
@@ -774,6 +808,7 @@ pub fn dashboard_data(
             ),
         );
     }
+
     if kind == "monthly" {
         let month = text(filter, "bulan").replace("'", "''");
         let year = filter

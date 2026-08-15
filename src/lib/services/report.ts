@@ -80,7 +80,7 @@ export async function getRekapHarian(filter?: {
   const tanggalStr = filter?.tanggal || formatTanggalOperasional(new Date());
 
   let query = `
-    SELECT a.*, m.kode_karyawan, s.nama_shift
+    SELECT a.*, m.kode_karyawan, s.nama_shift, s.kode_shift
     FROM absensi_harian a
     LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
     LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift
@@ -114,16 +114,19 @@ export async function getRiwayatScan(filter?: {
     sql: `
       SELECT id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
         nama, divisi, jenis_scan, status_proses, sumber_data,
-        catatan_sistem, keterangan, kode_operator
+        catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
+        id_referensi, kode_operator
       FROM log_scan
       WHERE tanggal_kerja = ?
-        AND (? = '' OR nama LIKE ? OR id_karyawan LIKE ? OR divisi LIKE ?)
+        AND (? = '' OR nama LIKE ? OR id_karyawan LIKE ? OR divisi LIKE ? OR id_referensi LIKE ? OR kode_operator LIKE ?)
       ORDER BY timestamp_scan DESC, id_log DESC
       LIMIT ? OFFSET ?;
     `,
     args: [
       tanggal,
       search,
+      `%${search}%`,
+      `%${search}%`,
       `%${search}%`,
       `%${search}%`,
       `%${search}%`,
