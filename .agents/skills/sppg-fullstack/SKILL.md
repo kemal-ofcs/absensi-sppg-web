@@ -34,18 +34,21 @@ Whenever a table, column, enum, or index is added, renamed, or modified:
 
 ---
 
-## 2. Codebase Exploration & Anti-Duplication Rule (Single Source of Truth)
+## 2. Codebase Exploration, Anti-Duplication, & Architecture Preservation
 
-**Never assume or create duplicate functions, utilities, or constants.**
+**DILARANG berasumsi. WAJIB memeriksa struktur kode, nama tabel, kolom skema, tipe data, serta helper/fungsi yang sudah ada terlebih dahulu.**
 
-Before implementing any logic:
-1. **Search First**: Use `grep_search` to check if a helper or logic already exists:
-   - Time & Shift calculation: `src/lib/attendance/time-policy.ts` (Web) & `src-tauri/src/desktop/time_policy.rs` (Rust).
+Sebelum menulis atau mengubah kode apapun:
+1. **Search & Inspect First**: Selalu cari dan teliti struktur kode asli terlebih dahulu (`grep_search` & `view_file`):
+   - Waktu & Shift: `src/lib/attendance/time-policy.ts` (Web) & `src-tauri/src/desktop/time_policy.rs` (Rust).
+   - Operasional & Koreksi: `src/lib/services/correction.ts`, `src/lib/services/backup.ts`, `src/lib/services/offline-import.ts`.
    - Permission & RBAC: `src/lib/auth/access.ts` (Web) & `src-tauri/src/desktop/auth.rs` (Rust).
    - Export & Formatting: `src/lib/client/excel-export.ts`, `src/lib/client/employee-workbook.ts`.
-   - Validation: `src/lib/validations/stabilization.ts`.
-2. **Reuse Existing Functions**: Always import and call established helpers.
-3. **No Dual Implementations**: If logic is needed across multiple components, elevate it to a shared module in `src/lib/` or `src-tauri/src/desktop/` instead of writing duplicate inline implementations.
+   - Skema & Validasi: `src/lib/db-schema.ts`, `src-tauri/src/desktop/storage.rs`, `src/lib/validations/stabilization.ts`.
+2. **Reuse Existing Functions (Single Source of Truth)**: Selalu gunakan helper dan fungsi yang sudah ada, jangan membuat fungsi duplikat atau menuliskan nama fungsi yang tidak diekspor.
+3. **Pelestarian Arsitektur Lama (Zero-Regress)**:
+   - DIWAJIBKAN untuk mempertahankan struktur dan arsitektur lama yang sudah berjalan stabil.
+   - DILARANG menghapus atau mengubah arsitektur tanpa konfirmasi dan persetujuan eksplisit dari User.
 
 ---
 
@@ -56,6 +59,7 @@ Backend logic and database synchronization must adhere to strict defensive progr
 1. **Atomic Transaction Isolation**:
    - All multi-table mutations (e.g. employee creation + ID card generation + sync outbox queue) must execute inside a single atomic database transaction (`connection.transaction()` in Rust / `db.batch()` in Web).
    - If any step fails, roll back completely to prevent orphan records.
+
 2. **Sync Outbox & Conflict Resolution**:
    - Every local write operation on Desktop/Mobile must enqueue a record into `desktop_sync_outbox` with unique event ID (`sync::new_event_id`), client ID, domain, operation, and timestamp.
    - Sync conflict priority: `Koreksi Admin` > `Import Offline / Manual` > `Scanner Terminal` > `Generate Sistem`.
@@ -63,9 +67,17 @@ Backend logic and database synchronization must adhere to strict defensive progr
    - **Overnight Shift (Shift 3)**: When cross-midnight occurs (`jam_pulang < jam_masuk`), the scan out date belongs to the following day ($H+1$), and duration is calculated as $(out\_min + 1440) - in\_min$.
    - **Negative Duration Guard**: Never produce negative work minutes (`Math.max(0, ...)` / `max(0, ...)`).
    - **Role-Based Permission Enforcement**: Verify operator active status and granular permission before executing any privileged action.
-4. **Deduplication & Replay Attack Prevention**:
-   - Before inserting a manual entry or admin correction into `log_scan`, always delete prior provisional logs for the same `(tanggal_kerja, id_karyawan, jenis_scan)` to prevent duplicate entries.
-5. **Concurrency & Double-Click Protection**:
+4. **Per-Shift Auto Multi-Session & Consecutive Shifts**:
+   - Every shift configuration in `tbl_shift` has an `izinkan_multi_sesi` toggle (0 = Nonaktif, 1 = Aktif).
+   - Only shifts with `izinkan_multi_sesi = 1` (e.g. Satpam 24-jam) permit automatic transition to the next shift on scan after completion.
+   - Shifts with `izinkan_multi_sesi = 0` (Office, Production) safely reject subsequent scans after check-out (`ALREADY_CHECKED_OUT`) to protect against accidental double-taps.
+5. **Operational Workflows (Koreksi Admin, Backup, Import Manual)**:
+   - Always normalize dates (`DD/MM/YYYY` -> `YYYY-MM-DD`) across all input channels.
+   - An employee with an active backup assignment in `backup_karyawan` is blocked from regular check-in/import, while the replacement employee assumes the backup shift (`mode_tugas = 'PENGGANTI'`, `id_backup = 'BCK-...'`).
+   - If a replacement employee works both their own regular shift and a backup shift on the same day, they produce 2 distinct attendance records with isolated `log_scan` references (`id_referensi`).
+6. **Deduplication & Replay Attack Prevention**:
+   - Before inserting a manual entry or admin correction into `log_scan`, always delete prior provisional logs matching `(tanggal_kerja, id_karyawan, jenis_scan, COALESCE(id_referensi, '') = ?)`.
+7. **Concurrency & Double-Click Protection**:
    - UI forms must use an immediate synchronous `isSubmittingRef = useRef(false)` lock to block rapid duplicate submissions.
 
 ---
@@ -97,11 +109,11 @@ Before completing any task:
    - Use `const` for non-reassigned variables (`useConst`).
    - Do not attach `onClick` to non-interactive elements (`<tr>`, `<td>`, `<div>`) without keyboard accessibility (`useKeyWithClickEvents`).
    - Avoid double blank lines (`\n\n\n`) and blank lines at opening braces.
-   - Limit lines to 80 characters max with parenthesis wrapping.
+   - Run `bun run format` (`biome format --write`) to auto-format any styling issues.
 2. **Spreadsheet Client Safety**:
    - Never import `exceljs` into `"use client"` files. Use the native Central Directory parser in `src/lib/client/employee-workbook.ts`.
 3. **Execute Quality Gate Command**:
    ```bash
    bun run check
    ```
-   Ensure Biome linting, TypeScript typechecking, Bun unit tests, and Rust Cargo tests all pass with 0 errors and 0 warnings.
+   Ensure Biome linting, TypeScript typechecking, Bun unit tests (`*.test.ts` & `*.test.tsx`), and Rust Cargo tests all pass with 0 errors and 0 warnings.

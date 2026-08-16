@@ -9,6 +9,7 @@ const WEB_SESSION_MIGRATION_VERSION = 2;
 const LOGIN_RATE_LIMIT_MIGRATION_VERSION = 3;
 const OPERATIONAL_SYNC_MIGRATION_VERSION = 4;
 const OFFLINE_IMPORT_MIGRATION_VERSION = 5;
+const OPERATIONAL_COLUMNS_MIGRATION_VERSION = 6;
 
 const SYSTEM_ROLES = [
   {
@@ -37,7 +38,16 @@ const SYSTEM_ROLES = [
   },
 ] as const;
 
+async function hasTable(client: Client, table: string) {
+  const result = await client.execute({
+    sql: "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type = 'table' AND name = ?;",
+    args: [table],
+  });
+  return Number(result.rows[0]?.cnt ?? 0) > 0;
+}
+
 async function hasColumn(client: Client, table: string, column: string) {
+  if (!(await hasTable(client, table))) return true; // table will be created with all columns
   const result = await client.execute(`PRAGMA table_info(${table});`);
   return result.rows.some((row) => String(row.name) === column);
 }
@@ -305,6 +315,38 @@ export async function runDatabaseMigrations(client: Client) {
       "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
     );
   }
+
+  if (!(await hasColumn(client, "absensi_harian", "mode_tugas"))) {
+    await client.execute(
+      "ALTER TABLE absensi_harian ADD COLUMN mode_tugas TEXT DEFAULT 'NORMAL';",
+    );
+  }
+  if (!(await hasColumn(client, "absensi_harian", "id_backup"))) {
+    await client.execute(
+      "ALTER TABLE absensi_harian ADD COLUMN id_backup TEXT;",
+    );
+  }
+  if (!(await hasColumn(client, "absensi_harian", "id_karyawan_asal"))) {
+    await client.execute(
+      "ALTER TABLE absensi_harian ADD COLUMN id_karyawan_asal TEXT;",
+    );
+  }
+  if (!(await hasColumn(client, "absensi_harian", "tanggal_tugas"))) {
+    await client.execute(
+      "ALTER TABLE absensi_harian ADD COLUMN tanggal_tugas DATE;",
+    );
+  }
+  if (!(await hasColumn(client, "master_data", "status_backup"))) {
+    await client.execute(
+      "ALTER TABLE master_data ADD COLUMN status_backup TEXT DEFAULT 'NORMAL';",
+    );
+  }
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'operational-columns-foundation', ?);`,
+    args: [OPERATIONAL_COLUMNS_MIGRATION_VERSION, now],
+  });
 
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_master_operator_role_id ON master_operator(role_id);",

@@ -1,7 +1,7 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 const REQUIRED_TABLE_COUNT = 18;
 
 export async function isDatabaseSchemaReady(client: Client) {
@@ -119,8 +119,6 @@ export async function initDatabaseSchema(client: Client) {
       );
     `);
 
-    await runDatabaseMigrations(client);
-
     // 6. log_scan
     await client.execute(`
       CREATE TABLE IF NOT EXISTS log_scan (
@@ -230,6 +228,8 @@ export async function initDatabaseSchema(client: Client) {
         status TEXT NOT NULL
       );
     `);
+
+    await runDatabaseMigrations(client);
 
     // Indices for ultra-fast queries
     await client.execute(

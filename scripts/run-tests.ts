@@ -6,11 +6,15 @@ function collectTests(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) return collectTests(path);
-    return entry.isFile() && entry.name.endsWith(".test.ts") ? [path] : [];
+    return entry.isFile() &&
+      (entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.tsx"))
+      ? [path]
+      : [];
   });
 }
 
 const tests = collectTests(join(process.cwd(), "src"));
+
 if (tests.length === 0) {
   throw new Error("Tidak ada file test aplikasi utama yang ditemukan.");
 }

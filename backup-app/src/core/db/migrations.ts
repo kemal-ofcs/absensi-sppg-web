@@ -116,18 +116,38 @@ async function createIdentityTables(db: DatabaseLike) {
     )
   `);
 
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY NOT NULL,
+      sku TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'General',
+      price INTEGER NOT NULL DEFAULT 0,
+      stock INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      version INTEGER NOT NULL DEFAULT 1,
+      hlc TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      deleted_at INTEGER,
+      sync_status TEXT NOT NULL DEFAULT 'pending'
+    )
+  `);
+
   for (const table of [
     "users",
     "roles",
     "permissions",
     "user_roles",
     "role_permissions",
+    "products",
   ]) {
     await db.execute(`
       CREATE INDEX IF NOT EXISTS ${table}_sync_queue_idx
       ON ${table}(sync_status, updated_at, id)
     `);
   }
+
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_cursors (

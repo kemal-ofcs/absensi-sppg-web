@@ -1,17 +1,18 @@
-# Hybrid Starter App
+# Hybrid Starter App (Next.js 16 + Tauri v2 + Offline SQLite + Turso Sync)
 
-A reusable Next.js + Tauri foundation for applications that need a cloud web
-runtime and an offline-first desktop runtime.
+Fondasi aplikasi hybrid yang dapat langsung disalin untuk membangun produk baru (seperti **POS / Kasir**, **Inventori**, **Manajemen Toko**, **Klinik**, dsb.) dengan dukungan **Offline-First SQLite Lokal** dan **Cloud Sync Turso/libSQL**.
 
-## Included
+> 💡 **Mau langsung buat aplikasi baru?** Baca panduan 1 menit di **[QUICK_START.md](./QUICK_START.md)**.
 
-- Next.js 16 and React 19
-- Tauri v2 packaged desktop runtime
-- Turso/libSQL web database
-- local SQLite desktop database
-- separate web and desktop authentication transports
-- secure identity sync registry with delta cursors and conflict audit
-- generic RBAC and an empty protected dashboard
+## Fitur Utama
+
+- **Frontend**: Next.js 16 (App Router) + React 19 + Tailwind CSS v4 + Radix UI / Shadcn.
+- **Desktop & Mobile**: Tauri v2 dengan SQLite lokal terkompilasi (`hybrid-starter.db`).
+- **Cloud Database**: Turso / libSQL dengan koneksi server aman.
+- **Sinkronisasi Otomatis**: Sync registry ketat (Zod allowlist, delta cursor `(updated_at, id)`, HLC conflict audit, dan rollback protection).
+- **Autentikasi & RBAC**: Login offline desktop + Web NextAuth/Argon2, role management (`super_admin`, `admin`, `manager`, `staff`, `cashier`, `viewer`).
+- **Contoh Modul POS Siap Pakai**: Modul `products` lengkap dengan Drizzle schema, CRUD service, dan UI interaktif di dashboard.
+
 
 ## Development login
 

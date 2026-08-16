@@ -61,8 +61,21 @@ const rolePermissionSchema = z
   })
   .strict();
 
+const productSchema = z
+  .object({
+    ...commonFields,
+    sku: z.string().trim().min(1).max(100),
+    name: z.string().trim().min(1).max(200),
+    category: z.string().trim().min(1).max(100),
+    price: z.number().int().nonnegative(),
+    stock: z.number().int(),
+    is_active: z.union([z.literal(0), z.literal(1)]),
+  })
+  .strict();
+
 export type SyncDatabaseRecord = z.infer<typeof roleSchema> &
   Record<string, unknown>;
+
 
 export type SyncTableConfig = {
   name: string;
@@ -155,7 +168,27 @@ export const SYNC_TABLES = [
     schema: rolePermissionSchema,
     sensitiveColumns: [],
   },
+  {
+    name: "products",
+    columns: [
+      "id",
+      "sku",
+      "name",
+      "category",
+      "price",
+      "stock",
+      "is_active",
+      "version",
+      "hlc",
+      "created_at",
+      "updated_at",
+      "deleted_at",
+    ],
+    schema: productSchema,
+    sensitiveColumns: [],
+  },
 ] as const satisfies readonly SyncTableConfig[];
+
 
 export function normalizeSyncRow(row: Record<string, unknown>) {
   return Object.fromEntries(

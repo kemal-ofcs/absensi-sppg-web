@@ -47,12 +47,19 @@ yarn-error.log*
 # desktop build output
 /src-tauri/target/
 /src-tauri/desktop-runtime/*.tar
+/src-tauri/gen/
 *.db
+*.db-*
+*.db-shm
+*.db-wal
+*.db-info
 *.sqlite
 *.sqlite3
+*.sqlite-*
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
 
-.vercel
+# logs
+*.log

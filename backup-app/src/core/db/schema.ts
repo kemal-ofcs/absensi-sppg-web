@@ -178,6 +178,29 @@ export const syncConflicts = sqliteTable("sync_conflicts", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+export const products = sqliteTable(
+  "products",
+  {
+    id: text("id").primaryKey().$defaultFn(generateId),
+    sku: text("sku").notNull(),
+    name: text("name").notNull(),
+    category: text("category").notNull().default("General"),
+    price: integer("price").notNull().default(0),
+    stock: integer("stock").notNull().default(0),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+    ...syncMetadata,
+  },
+  (table) => ({
+    skuUnique: uniqueIndex("products_sku_unique").on(table.sku),
+    syncQueueIndex: index("products_sync_queue_idx").on(
+      table.syncStatus,
+      table.updatedAt,
+      table.id,
+    ),
+  }),
+);
+
+
 export const usersRelations = relations(users, ({ many }) => ({
   userRoles: many(userRoles),
 }));
@@ -191,3 +214,6 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RoleRecord = typeof roles.$inferSelect;
 export type PermissionRecord = typeof permissions.$inferSelect;
+export type Product = typeof products.$inferSelect;
+export type NewProduct = typeof products.$inferInsert;
+

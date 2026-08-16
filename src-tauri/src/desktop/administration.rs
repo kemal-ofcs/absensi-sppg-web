@@ -1276,7 +1276,9 @@ mod tests {
     use tempfile::tempdir;
     use url::Url;
 
-    use super::{dashboard_data, storage, DesktopState};
+    use super::{
+        create_backup, create_correction, dashboard_data, import_offline, storage, DesktopState,
+    };
 
     fn fixture() -> (tempfile::TempDir, DesktopState) {
         let directory = tempdir().expect("temporary directory");
@@ -1287,11 +1289,15 @@ mod tests {
                 r#"
         INSERT INTO tbl_shift (
           id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
-          jam_kerja_normal_menit, istirahat_menit
-        ) VALUES (1, 1, 'Shift Pagi', '07:00', '15:00', 420, 60);
+          jam_kerja_normal_menit, istirahat_menit, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit
+        ) VALUES 
+          (1, 1, 'Shift Pagi', '07:00', '15:00', 420, 60, 120, 60, 15, 240),
+          (2, 2, 'Shift Siang', '15:00', '23:00', 420, 60, 120, 60, 15, 240);
         INSERT INTO master_data (
           id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif
-        ) VALUES ('K001', 'K001', 'Karyawan Test', 'Dapur', 1, 'Aktif');
+        ) VALUES 
+          ('K001', 'K001', 'Karyawan Test', 'Dapur', 1, 'Aktif'),
+          ('K002', 'K002', 'Karyawan Pengganti', 'Dapur', 1, 'Aktif');
         INSERT INTO absensi_harian (
           tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
           status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
@@ -1364,4 +1370,88 @@ mod tests {
         assert_eq!(history_row["tanggal_kerja"], "2026-08-12");
         assert_eq!(history_row["timestamp_scan"], "2026-08-13 00:30:00");
     }
+
+    #[test]
+    fn create_backup_and_correction_workflow_in_rust() {
+        let (_directory, state) = fixture();
+
+        // 1. Buat Penugasan Backup
+        let backup_draft = json!({
+            "tanggal_tugas": "15/08/2026",
+            "id_karyawan_asal": "K001",
+            "id_karyawan_pengganti": "K002",
+            "id_shift_backup": 2,
+            "alasan_backup": "Sakit",
+            "kode_operator": "SPD001",
+        });
+        let backup_res = create_backup(&state, &backup_draft, "SPD001").expect("create backup");
+        assert!(backup_res["sukses"].as_bool().unwrap_or(false), "backup harus sukses");
+        let id_backup = backup_res["id_backup"].as_str().expect("id_backup harus ada").to_owned();
+
+        // 2. Buat Koreksi Admin Entri Manual untuk Karyawan Pengganti (Shift 2)
+        // Jam 15:30 seharusnya masuk ke window Shift 2 (15:00-23:00) bukan Shift 1 (07:00-15:00)
+        let correction_draft = json!({
+            "tanggal": "15/08/2026",
+            "id_karyawan": "K002",
+            "jenis_koreksi": "Terlambat",
+            "jam_koreksi": "15:30",
+            "keterangan_admin": "Koreksi manual hadir shift 2",
+            "kode_operator": "SPD001",
+            "id_shift": 2,
+            "mode_tugas": "PENGGANTI",
+        });
+        let corr_res = create_correction(&state, &correction_draft, "SPD001").expect("create correction");
+        assert!(corr_res["sukses"].as_bool().unwrap_or(false), "koreksi harus sukses");
+
+        // Verifikasi ke DB: absensi_harian harus mode PENGGANTI dengan shift 2
+        let connection = storage::database(&state.data_dir).expect("db");
+        let (mode, shift): (String, i64) = connection
+            .query_row(
+                "SELECT mode_tugas, id_shift FROM absensi_harian WHERE id_karyawan = 'K002' AND tanggal = '2026-08-15' LIMIT 1;",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("absensi harus ada setelah koreksi");
+        assert_eq!(mode, "PENGGANTI", "mode_tugas harus PENGGANTI karena backup aktif");
+        assert_eq!(shift, 2, "id_shift harus 2 (shift backup)");
+        assert_eq!(id_backup.is_empty(), false, "id_backup tidak boleh kosong");
+    }
+
+
+    #[test]
+    fn import_offline_persists_separate_rows_for_normal_and_backup_shifts() {
+        let (_directory, state) = fixture();
+
+        // 1. Buat penugasan backup
+        let backup_draft = json!({
+            "tanggal_tugas": "2026-08-15",
+            "id_karyawan_asal": "K001",
+            "id_karyawan_pengganti": "K002",
+            "id_shift_backup": 2,
+            "kode_operator": "SPD001",
+        });
+        create_backup(&state, &backup_draft, "SPD001").expect("create backup");
+
+        // 2. Import offline 2 baris (Shift 1 & Shift 2) pada tanggal yang sama
+        let rows = vec![
+            json!({
+                "tanggal": "15/08/2026",
+                "id_unik": "K002",
+                "jam_masuk": "07:00",
+                "jam_pulang": "15:00",
+                "status_kehadiran": "Hadir",
+            }),
+            json!({
+                "tanggal": "15/08/2026",
+                "id_unik": "K002",
+                "jam_masuk": "15:00",
+                "jam_pulang": "23:00",
+                "status_kehadiran": "Hadir",
+            }),
+        ];
+        let import_res = import_offline(&state, &rows, "SPD001").expect("import offline");
+        assert_eq!(import_res["berhasil"], 2);
+        assert_eq!(import_res["gagal"], 0);
+    }
 }
+

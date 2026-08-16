@@ -13,10 +13,14 @@
     "build:desktop": "bun run scripts/release/run-desktop-build.ts",
     "start": "next start",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "desktop": "tauri dev",
     "lint": "biome check .",
     "format": "biome format --write",
-    "test": "bunx vitest",
+    "typecheck": "tsc --noEmit",
+    "test": "bunx vitest run",
+    "test:watch": "bunx vitest",
     "test:ui": "bunx vitest --ui",
     "test:e2e": "npx playwright test",
     "test:e2e:smoke": "bunx playwright test --grep @smoke --reporter=list",
@@ -24,7 +28,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "typecheck": "bunx tsc --noEmit"
+    "check": "bun run lint && bun run typecheck && bun run test"
+
   },
   "dependencies": {
     "@libsql/client": "^0.17.0",

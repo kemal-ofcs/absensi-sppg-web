@@ -2,6 +2,7 @@
 
 import { LogOut } from "lucide-react";
 import { SyncPanel } from "@/components/dashboard/sync-panel";
+import { ProductManagement } from "@/modules/products/product-management";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -20,8 +21,8 @@ export function StarterDashboard() {
       <div className="mx-auto max-w-4xl space-y-6">
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
-            <p className="text-sm text-cyan-400">Foundation ready</p>
-            <h1 className="text-3xl font-semibold">Starter dashboard</h1>
+            <p className="text-sm text-cyan-400">Hybrid Foundation Ready</p>
+            <h1 className="text-3xl font-semibold">Starter Dashboard</h1>
           </div>
           <Button variant="outline" onClick={() => void logout()}>
             <LogOut className="mr-2 h-4 w-4" />
@@ -32,8 +33,7 @@ export function StarterDashboard() {
           <CardHeader>
             <CardTitle>Authenticated successfully</CardTitle>
             <CardDescription className="text-zinc-400">
-              Add your application modules under src/modules and link them from
-              this shell.
+              Aplikasi hybrid siap dikembangkan. Tambahkan modul baru Anda di <code>src/modules</code>.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -44,21 +44,28 @@ export function StarterDashboard() {
               </div>
               <div>
                 <dt className="text-zinc-500">Role</dt>
-                <dd>{user?.role}</dd>
+                <dd className="capitalize">{user?.role}</dd>
               </div>
               <div>
                 <dt className="text-zinc-500">Runtime</dt>
-                <dd>{isTauri() ? "Desktop / SQLite" : "Web / Turso"}</dd>
+                <dd>{isTauri() ? "Desktop / SQLite Lokal" : "Web / Turso Cloud"}</dd>
               </div>
             </dl>
           </CardContent>
         </Card>
+
+        {/* Demo Modul Produk POS / Sync */}
+        <ProductManagement />
+
+        {/* Panel Sinkronisasi Cloud */}
         <SyncPanel />
+
         <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-4 text-sm text-amber-100">
-          Starter credential: <code>admin</code> / <code>admin123</code>.
-          Replace it before production.
+          Kredensial Default Starter: <code>admin</code> / <code>admin123</code>.
+          Ganti password sebelum deploy ke production.
         </div>
       </div>
     </main>
   );
 }
+
