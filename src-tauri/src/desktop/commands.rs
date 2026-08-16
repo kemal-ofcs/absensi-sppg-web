@@ -398,6 +398,16 @@ pub fn desktop_create_employee(
 }
 
 #[tauri::command]
+pub fn desktop_import_employees(
+    state: State<'_, DesktopState>,
+    drafts: Vec<Value>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.manage")?;
+    operational::import_employees(&state, &drafts)
+}
+
+
+#[tauri::command]
 pub fn desktop_update_employee(
     state: State<'_, DesktopState>,
     id_unik: String,

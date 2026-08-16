@@ -105,18 +105,17 @@ export async function generateTokenMassal() {
 
 export async function importKaryawanMassal(drafts: KaryawanInput[]) {
   if (isDesktopRuntime()) {
-    let berhasil = 0;
-    let dilewati = 0;
-    for (const draft of drafts) {
-      try {
-        await invokeDesktop("desktop_create_employee", { draft });
-        berhasil++;
-      } catch {
-        dilewati++;
-      }
-    }
+    const result = await invokeDesktop<{
+      sukses: boolean;
+      berhasil: number;
+      dilewati: number;
+    }>("desktop_import_employees", { drafts });
     kickDesktopSync();
-    return { sukses: true as const, berhasil, dilewati };
+    return {
+      sukses: true as const,
+      berhasil: result.berhasil,
+      dilewati: result.dilewati,
+    };
   }
   return requestWebApi<{
     sukses: true;

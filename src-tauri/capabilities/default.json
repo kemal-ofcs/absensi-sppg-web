@@ -21,7 +21,9 @@
     "allow-desktop-delete-role",
     "allow-desktop-get-employees",
     "allow-desktop-create-employee",
+    "allow-desktop-import-employees",
     "allow-desktop-update-employee",
+
     "allow-desktop-set-employee-status",
     "allow-desktop-generate-employee-tokens",
     "allow-desktop-get-shifts",

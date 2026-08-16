@@ -35,6 +35,14 @@ import {
   validateEmployeeDraft,
 } from "@/lib/validations/stabilization";
 
+function formatDisplayDate(dateStr: unknown): string {
+  if (!dateStr || typeof dateStr !== "string") return "-";
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(dateStr)) return dateStr;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return dateStr;
+}
+
 export default function KaryawanPage() {
   const isHydrated = useHydrated();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -48,12 +56,19 @@ export default function KaryawanPage() {
   const [search, setSearch] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
+  const [filterDivisi, setFilterDivisi] = useState<string>("");
   const importInputRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef<boolean>(false);
+
   const [qrPreview, setQrPreview] = useState<{
     id: string;
     nama: string;
     png: string;
   } | null>(null);
+  const [detailKaryawan, setDetailKaryawan] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [bulkWorking, setBulkWorking] = useState(false);
 
   // Modal State
@@ -70,7 +85,11 @@ export default function KaryawanPage() {
     lp: "L",
     id_shift: 1,
     status_aktif: "Aktif",
+    tanggal_daftar: new Date().toLocaleDateString("en-CA"),
     catatan: "",
+    jenis_personil: "Pegawai",
+    tanggal_mulai_aktif: new Date().toLocaleDateString("en-CA"),
+    tanggal_selesai_aktif: "",
   });
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -82,6 +101,7 @@ export default function KaryawanPage() {
       const [data, shifts] = await Promise.all([
         getDaftarKaryawan({
           search: appliedSearch,
+          divisi: filterDivisi || undefined,
           status_aktif: filterStatus || undefined,
         }),
         getDaftarShift(),
@@ -98,18 +118,28 @@ export default function KaryawanPage() {
     } finally {
       setLoading(false);
     }
-  }, [appliedSearch, filterStatus]);
+  }, [appliedSearch, filterDivisi, filterStatus]);
 
   useEffect(() => {
     if (isHydrated && isAuthenticated) {
-      loadData();
+      void loadData();
     }
   }, [isHydrated, isAuthenticated, loadData]);
+
+  // Extract unique divisions for filter
+  const divisions = Array.from(
+    new Set(
+      karyawanList
+        .map((k) => String(k.divisi || "").trim())
+        .filter((d) => d && d !== "-"),
+    ),
+  ).sort();
 
   const openAddModal = () => {
     setIsEditing(false);
     setEditId(null);
     const identifiers = createEmployeeIdentifiers(crypto.randomUUID());
+    const todayStr = new Date().toLocaleDateString("en-CA");
     setFormData({
       id_unik: identifiers.idUnik,
       kode_karyawan: identifiers.kodeKaryawan,
@@ -120,7 +150,11 @@ export default function KaryawanPage() {
       lp: "L",
       id_shift: Number(shiftList[0]?.id_shift || 1),
       status_aktif: "Aktif",
+      tanggal_daftar: todayStr,
       catatan: "",
+      jenis_personil: "Pegawai",
+      tanggal_mulai_aktif: todayStr,
+      tanggal_selesai_aktif: "",
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -141,7 +175,11 @@ export default function KaryawanPage() {
       lp: (row.lp as "L" | "P") || "L",
       id_shift: Number(row.id_shift || 1),
       status_aktif: (row.status_aktif as "Aktif" | "Nonaktif") || "Aktif",
+      tanggal_daftar: String(row.tanggal_daftar || ""),
       catatan: String(row.catatan || ""),
+      jenis_personil: String(row.jenis_personil || "Pegawai"),
+      tanggal_mulai_aktif: String(row.tanggal_mulai_aktif || ""),
+      tanggal_selesai_aktif: String(row.tanggal_selesai_aktif || ""),
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -150,6 +188,7 @@ export default function KaryawanPage() {
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
     const validationErrors = validateEmployeeDraft(formData);
     if (Object.keys(validationErrors).length > 0) {
       setFormErrors(validationErrors);
@@ -157,6 +196,7 @@ export default function KaryawanPage() {
       return;
     }
 
+    isSubmittingRef.current = true;
     try {
       if (isEditing && editId) {
         await updateKaryawan(editId, formData);
@@ -171,23 +211,34 @@ export default function KaryawanPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Gagal menyimpan data.";
       setErrorMsg(msg);
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   const handleToggleStatus = async (id_unik: string, currentStatus: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     const nextStatus = currentStatus === "Aktif" ? "Nonaktif" : "Aktif";
     try {
       await toggleStatusKaryawan(id_unik, nextStatus);
       await loadData();
+      if (detailKaryawan && detailKaryawan.id_unik === id_unik) {
+        setDetailKaryawan({ ...detailKaryawan, status_aktif: nextStatus });
+      }
       setAlertMsg(`Status karyawan berhasil diubah menjadi ${nextStatus}.`);
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : "Gagal mengubah status karyawan.",
       );
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   const handleGenerateMassal = async () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     try {
       const res = await generateTokenMassal();
       setAlertMsg(
@@ -198,6 +249,8 @@ export default function KaryawanPage() {
       setErrorMsg(
         err instanceof Error ? err.message : "Gagal membuat token QR massal.",
       );
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
@@ -328,13 +381,13 @@ export default function KaryawanPage() {
             👥 Manajemen Master Data Karyawan
           </h1>
           <p className="text-xs text-slate-400">
-            Kelola profil karyawan, penugasan shift, status aktif, dan QR Code
-            absensi.
+            Kelola profil lengkap 14 parameter karyawan, shift kerja, status
+            keaktifan, dan QR token absensi.
           </p>
         </div>
 
         {canManage ? (
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <input
               ref={importInputRef}
               type="file"
@@ -349,23 +402,23 @@ export default function KaryawanPage() {
               type="button"
               disabled={bulkWorking}
               onClick={() => importInputRef.current?.click()}
-              className="px-3.5 py-2 bg-slate-800 text-emerald-300 font-semibold text-xs rounded-xl border border-emerald-500/40 disabled:opacity-50"
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold text-xs rounded-xl border border-emerald-500/40 disabled:opacity-50 transition shadow-sm"
             >
-              {bulkWorking ? "Memproses..." : "Import Excel"}
+              {bulkWorking ? "⏳ Memproses..." : "📥 Import Excel"}
             </button>
             <button
               type="button"
               onClick={handleDownloadTemplate}
-              className="px-3.5 py-2 bg-slate-800 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700"
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700 transition"
             >
-              Template
+              📄 Template
             </button>
             <button
               type="button"
               onClick={handleExportEmployees}
-              className="px-3.5 py-2 bg-slate-800 text-sky-300 font-semibold text-xs rounded-xl border border-sky-500/40"
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs rounded-xl border border-sky-500/40 transition shadow-sm"
             >
-              Export Excel
+              📊 Export Excel
             </button>
 
             <button
@@ -373,7 +426,7 @@ export default function KaryawanPage() {
               onClick={handleGenerateMassal}
               className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs rounded-xl border border-amber-500/40 transition shadow-sm"
             >
-              ⚡ Generate QR Token Massal
+              ⚡ Generate QR Massal
             </button>
 
             <button
@@ -381,7 +434,7 @@ export default function KaryawanPage() {
               onClick={openAddModal}
               className="px-4 py-2 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-sky-950/60 flex items-center gap-1.5 active:scale-95"
             >
-              ➕ Tambah Karyawan Baru
+              ➕ Tambah Karyawan
             </button>
           </div>
         ) : null}
@@ -405,37 +458,42 @@ export default function KaryawanPage() {
           event.preventDefault();
           setAppliedSearch(search.trim());
         }}
-        className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-md sm:flex-row"
+        className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-md sm:flex-row font-mono text-xs"
       >
         <div className="flex w-full gap-2 sm:max-w-md">
-          <label htmlFor="employee-search" className="sr-only">
-            Cari karyawan
-          </label>
           <input
-            id="employee-search"
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari Nama, NIK, atau Divisi..."
-            className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 text-xs text-white outline-none transition focus:border-sky-500"
+            placeholder="Cari ID, Kode, Nama, Divisi, Jabatan..."
+            className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 text-xs text-white outline-none transition focus:border-sky-500 placeholder:text-slate-600"
           />
           <button
             type="submit"
-            className="min-h-11 rounded-xl bg-sky-500 px-4 text-xs font-bold text-slate-950 hover:bg-sky-400"
+            className="min-h-10 rounded-xl bg-sky-500 px-4 text-xs font-bold text-slate-950 hover:bg-sky-400"
           >
             Cari
           </button>
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <label htmlFor="employee-status-filter" className="sr-only">
-            Filter status karyawan
-          </label>
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <select
-            id="employee-status-filter"
+            value={filterDivisi}
+            onChange={(e) => setFilterDivisi(e.target.value)}
+            className="min-h-10 rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500"
+          >
+            <option value="">Semua Divisi</option>
+            {divisions.map((div) => (
+              <option key={div} value={div}>
+                {div}
+              </option>
+            ))}
+          </select>
+
+          <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
-            className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500 sm:w-auto"
+            className="min-h-10 rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500"
           >
             <option value="">Semua Status</option>
             <option value="Aktif">Status: Aktif</option>
@@ -444,8 +502,21 @@ export default function KaryawanPage() {
         </div>
       </form>
 
-      {/* Employee Table Container */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+      {/* Main Full 14-Column Table Container */}
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3 text-xs font-mono text-slate-400 bg-slate-950/40">
+          <span>
+            Menampilkan {karyawanList.length} karyawan terdaftar (
+            {karyawanList.filter((k) => k.status_aktif === "Aktif").length}{" "}
+            Aktif)
+          </span>
+          {appliedSearch ? (
+            <span className="text-sky-400">
+              Pencarian: &quot;{appliedSearch}&quot;
+            </span>
+          ) : null}
+        </div>
+
         {loading ? (
           <div className="py-20 flex flex-col items-center justify-center space-y-3">
             <div className="w-8 h-8 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
@@ -454,25 +525,38 @@ export default function KaryawanPage() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
-                  <th className="p-4">ID / NIK</th>
-                  <th className="p-4">Kode</th>
-                  <th className="p-4">Nama Karyawan</th>
-                  <th className="p-4">Divisi & Jabatan</th>
-                  <th className="p-4">Shift Kerja</th>
-                  <th className="p-4">Status QR</th>
-                  <th className="p-4">Status</th>
-                  <th className="p-4 text-right">Aksi</th>
+          <div className="overflow-x-auto max-h-[65vh]">
+            <table className="w-full min-w-[1950px] text-left text-xs font-mono border-collapse">
+              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-10 border-b border-slate-800 shadow-md">
+                <tr>
+                  <th className="p-3.5">ID Unik / NIK</th>
+                  <th className="p-3.5">Kode</th>
+                  <th className="p-3.5">Nama Karyawan</th>
+                  <th className="p-3.5">Divisi</th>
+                  <th className="p-3.5">Jabatan</th>
+                  <th className="p-3.5">No. HP</th>
+                  <th className="p-3.5 text-center">L/P</th>
+                  <th className="p-3.5">Shift Kerja</th>
+                  <th className="p-3.5">Status</th>
+                  <th className="p-3.5">Tgl Daftar</th>
+                  <th className="p-3.5">Catatan</th>
+                  <th className="p-3.5">Personil</th>
+                  <th className="p-3.5">Mulai Aktif</th>
+                  <th className="p-3.5">Selesai Aktif</th>
+                  <th className="p-3.5">Status QR</th>
+                  <th className="p-3.5 text-right sticky right-0 bg-slate-950/95 z-20">
+                    Aksi
+                  </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
+              <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {karyawanList.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-12 text-center text-slate-500">
-                      Tidak ada data karyawan yang ditemukan.
+                    <td
+                      colSpan={16}
+                      className="p-12 text-center text-slate-500"
+                    >
+                      Tidak ada data karyawan yang sesuai dengan filter.
                     </td>
                   </tr>
                 ) : (
@@ -481,33 +565,53 @@ export default function KaryawanPage() {
                       key={String(row.id_unik)}
                       className="hover:bg-slate-800/40 transition"
                     >
-                      <td className="p-4 text-sky-400 font-bold">
+                      {/* 1. ID Unik */}
+                      <td className="p-3.5 text-sky-400 font-bold whitespace-nowrap">
                         {String(row.id_unik)}
                       </td>
-                      <td className="p-4 text-slate-300">
+                      {/* 2. Kode Karyawan */}
+                      <td className="p-3.5 text-slate-300 whitespace-nowrap">
                         {String(row.kode_karyawan || "-")}
                       </td>
-                      <td className="p-4 text-white font-semibold flex items-center gap-2">
-                        <span className="w-5 h-5 bg-slate-800 text-slate-300 rounded-full flex items-center justify-center text-[10px] font-bold">
-                          {String(row.lp) === "P" ? "👩" : "👨"}
-                        </span>
-                        {String(row.nama)}
-                      </td>
-                      <td className="p-4 text-slate-300">
-                        <div>{String(row.divisi)}</div>
-                        <div className="text-[10px] text-slate-500">
-                          {String(row.jabatan_status || "Staff")}
+                      {/* 3. Nama */}
+                      <td className="p-3.5 text-white font-bold whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-5 h-5 bg-slate-800 text-slate-300 rounded-full flex items-center justify-center text-[10px]">
+                            {String(row.lp) === "P" ? "👩" : "👨"}
+                          </span>
+                          <span>{String(row.nama)}</span>
                         </div>
                       </td>
-                      <td className="p-4 text-amber-300 font-semibold">
-                        {String(row.nama_shift || "Shift 1 Pagi")}
+                      {/* 4. Divisi */}
+                      <td className="p-3.5 text-slate-300 whitespace-nowrap">
+                        {String(row.divisi || "-")}
                       </td>
-                      <td className="p-4">
-                        <span className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded-md text-[10px]">
-                          {String(row.status_qr || "Generated")}
+                      {/* 5. Jabatan */}
+                      <td className="p-3.5 text-slate-400 whitespace-nowrap">
+                        {String(row.jabatan_status || "Staff")}
+                      </td>
+                      {/* 6. No HP */}
+                      <td className="p-3.5 text-slate-300 whitespace-nowrap">
+                        {String(row.no_hp || "-")}
+                      </td>
+                      {/* 7. L/P */}
+                      <td className="p-3.5 text-center whitespace-nowrap">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            row.lp === "P"
+                              ? "bg-fuchsia-950 text-fuchsia-300 border border-fuchsia-800"
+                              : "bg-blue-950 text-blue-300 border border-blue-800"
+                          }`}
+                        >
+                          {String(row.lp || "L")}
                         </span>
                       </td>
-                      <td className="p-4">
+                      {/* 8. Shift */}
+                      <td className="p-3.5 text-amber-300 font-semibold whitespace-nowrap">
+                        {String(row.nama_shift || "Shift 1 Pagi")}
+                      </td>
+                      {/* 9. Status Aktif */}
+                      <td className="p-3.5 whitespace-nowrap">
                         {canManage ? (
                           <button
                             type="button"
@@ -526,32 +630,77 @@ export default function KaryawanPage() {
                             {String(row.status_aktif || "Aktif")}
                           </button>
                         ) : (
-                          <span>{String(row.status_aktif || "Aktif")}</span>
-                        )}
-                      </td>
-                      <td className="p-4 text-right">
-                        {canManage ? (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => void handleShowQr(row)}
-                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg text-xs transition"
-                            >
-                              Lihat QR
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(row)}
-                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition"
-                            >
-                              Edit
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-[10px] text-slate-500">
-                            Lihat saja
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              row.status_aktif === "Aktif"
+                                ? "text-emerald-400"
+                                : "text-rose-400"
+                            }`}
+                          >
+                            {String(row.status_aktif || "Aktif")}
                           </span>
                         )}
+                      </td>
+                      {/* 10. Tgl Daftar */}
+                      <td className="p-3.5 text-slate-400 whitespace-nowrap">
+                        {formatDisplayDate(row.tanggal_daftar)}
+                      </td>
+                      {/* 11. Catatan */}
+                      <td
+                        className="p-3.5 text-slate-400 max-w-[160px] truncate"
+                        title={String(row.catatan || "")}
+                      >
+                        {String(row.catatan || "-")}
+                      </td>
+                      {/* 12. Jenis Personil */}
+                      <td className="p-3.5 text-slate-300 whitespace-nowrap">
+                        <span className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded text-[10px]">
+                          {String(row.jenis_personil || "Pegawai")}
+                        </span>
+                      </td>
+                      {/* 13. Mulai Aktif */}
+                      <td className="p-3.5 text-emerald-400 whitespace-nowrap">
+                        {formatDisplayDate(row.tanggal_mulai_aktif)}
+                      </td>
+                      {/* 14. Selesai Aktif */}
+                      <td className="p-3.5 text-amber-400 whitespace-nowrap">
+                        {formatDisplayDate(row.tanggal_selesai_aktif)}
+                      </td>
+                      {/* 15. Status QR */}
+                      <td className="p-3.5 whitespace-nowrap">
+                        <span className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded-md text-[10px]">
+                          {String(row.status_qr || "Generated")}
+                        </span>
+                      </td>
+                      {/* 16. Aksi */}
+                      <td className="p-3.5 text-right whitespace-nowrap sticky right-0 bg-slate-900/95 z-10 border-l border-slate-800/80">
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setDetailKaryawan(row)}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                          >
+                            <span>👁️</span> Detail
+                          </button>
+                          {canManage ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void handleShowQr(row)}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                              >
+                                <span>🔲</span> QR
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(row)}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                              >
+                                <span>✏️</span> Edit
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -573,9 +722,173 @@ export default function KaryawanPage() {
         </div>
       ) : null}
 
+      {/* DETAIL KARYAWAN MODAL */}
+      {detailKaryawan ? (
+        <Modal
+          title={`Profil Lengkap: ${String(detailKaryawan.nama || "")}`}
+          titleId="detail-employee-title"
+          onClose={() => setDetailKaryawan(null)}
+        >
+          <div className="space-y-4 text-xs font-mono">
+            {/* Profile Header Box */}
+            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-sky-950 border border-sky-800 text-sky-300 text-xl font-bold flex items-center justify-center">
+                  {String(detailKaryawan.lp) === "P" ? "👩" : "👨"}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    {String(detailKaryawan.nama || "-")}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {String(detailKaryawan.divisi || "-")} •{" "}
+                    {String(detailKaryawan.jabatan_status || "Staff")}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <span
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold border ${
+                    detailKaryawan.status_aktif === "Aktif"
+                      ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                      : "bg-rose-950 text-rose-300 border-rose-800"
+                  }`}
+                >
+                  {String(detailKaryawan.status_aktif || "Aktif")}
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  {String(detailKaryawan.jenis_personil || "Pegawai")}
+                </span>
+              </div>
+            </div>
+
+            {/* 14 Attributes Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  ID Unik / NIK
+                </span>
+                <span className="text-white font-bold">
+                  {String(detailKaryawan.id_unik || "-")}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Kode Karyawan
+                </span>
+                <span className="text-white font-bold">
+                  {String(detailKaryawan.kode_karyawan || "-")}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Nomor HP
+                </span>
+                <span className="text-white font-bold">
+                  {String(detailKaryawan.no_hp || "-")}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Jenis Kelamin
+                </span>
+                <span className="text-white font-bold">
+                  {detailKaryawan.lp === "P" ? "Perempuan" : "Laki-laki"}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Shift Kerja
+                </span>
+                <span className="text-amber-300 font-bold">
+                  {String(detailKaryawan.nama_shift || "Shift 1 Pagi")}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Tanggal Daftar
+                </span>
+                <span className="text-slate-300 font-bold">
+                  {formatDisplayDate(detailKaryawan.tanggal_daftar)}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Mulai Aktif
+                </span>
+                <span className="text-emerald-400 font-bold">
+                  {formatDisplayDate(detailKaryawan.tanggal_mulai_aktif)}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Selesai Aktif
+                </span>
+                <span className="text-amber-400 font-bold">
+                  {formatDisplayDate(detailKaryawan.tanggal_selesai_aktif)}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[10px] text-slate-500 block uppercase">
+                  Status QR Token
+                </span>
+                <span className="text-sky-300 font-bold">
+                  {String(detailKaryawan.status_qr || "Generated")}
+                </span>
+              </div>
+            </div>
+
+            {/* Catatan */}
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
+              <span className="text-[10px] text-slate-500 block uppercase mb-1">
+                Catatan Karyawan
+              </span>
+              <p className="text-slate-300">
+                {String(detailKaryawan.catatan || "Tidak ada catatan khusus.")}
+              </p>
+            </div>
+
+            {/* Modal Bottom Actions */}
+            <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleShowQr(detailKaryawan)}
+                  className="px-3 py-1.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 rounded-xl font-bold border border-emerald-700/60 flex items-center gap-1.5"
+                >
+                  <span>🔲</span> Lihat QR
+                </button>
+                {canManage ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const row = detailKaryawan;
+                      setDetailKaryawan(null);
+                      openEditModal(row);
+                    }}
+                    className="px-3 py-1.5 bg-sky-950 hover:bg-sky-900 text-sky-300 rounded-xl font-bold border border-sky-700/60 flex items-center gap-1.5"
+                  >
+                    <span>✏️</span> Edit Data
+                  </button>
+                ) : null}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setDetailKaryawan(null)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {/* QR PREVIEW MODAL */}
       {qrPreview ? (
         <Modal
-          title={`QR ${qrPreview.nama}`}
+          title={`QR Token Absensi: ${qrPreview.nama}`}
           titleId="qr-preview-title"
           onClose={() => setQrPreview(null)}
         >
@@ -586,24 +899,30 @@ export default function KaryawanPage() {
               alt={`QR absensi ${qrPreview.nama}`}
               width={320}
               height={320}
-              className="rounded-xl bg-white p-3"
+              className="rounded-xl bg-white p-3 shadow-2xl"
             />
-            <p className="font-mono text-xs text-slate-400">{qrPreview.id}</p>
+            <p className="font-mono text-xs text-slate-400 font-bold">
+              NIK: {qrPreview.id}
+            </p>
             <button
               type="button"
               onClick={handleSaveQrPng}
-              className="rounded-xl bg-sky-400 px-5 py-2 text-xs font-bold text-slate-950"
+              className="rounded-xl bg-sky-500 hover:bg-sky-400 px-5 py-2.5 text-xs font-bold text-slate-950 shadow-lg shadow-sky-950 transition"
             >
-              Simpan QR sebagai PNG
+              📥 Simpan QR sebagai PNG
             </button>
           </div>
         </Modal>
       ) : null}
 
-      {/* Add / Edit Employee Modal */}
+      {/* ADD / EDIT EMPLOYEE MODAL (ALL 14 FIELDS) */}
       {showModal && canManage ? (
         <Modal
-          title={isEditing ? "Edit data karyawan" : "Tambah karyawan baru"}
+          title={
+            isEditing
+              ? `Edit Karyawan: ${formData.nama}`
+              : "Tambah Karyawan Baru"
+          }
           titleId="employee-modal-title"
           descriptionId="employee-modal-description"
           onClose={() => setShowModal(false)}
@@ -612,8 +931,8 @@ export default function KaryawanPage() {
             id="employee-modal-description"
             className="mb-4 text-xs leading-5 text-slate-400"
           >
-            Lengkapi identitas kerja dan shift karyawan. ID yang dibuat otomatis
-            dapat disesuaikan sebelum disimpan.
+            Lengkapi 14 parameter identitas kerja, kontak, shift, dan masa aktif
+            karyawan.
           </p>
           {errorMsg ? (
             <FeedbackBanner tone="error" onDismiss={() => setErrorMsg(null)}>
@@ -622,13 +941,14 @@ export default function KaryawanPage() {
           ) : null}
           <form
             onSubmit={handleFormSubmit}
-            className="space-y-4 text-xs font-mono"
+            className="space-y-3.5 text-xs font-mono"
           >
+            {/* ID & Kode */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label
                   htmlFor="employee-id"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   ID Unik / NIK:
                 </label>
@@ -641,13 +961,13 @@ export default function KaryawanPage() {
                     setFormData({ ...formData, id_unik: e.target.value })
                   }
                   aria-invalid={!!formErrors.id_unik}
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500 disabled:opacity-50"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500 disabled:opacity-50"
                 />
               </div>
               <div>
                 <label
                   htmlFor="employee-code"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   Kode Karyawan:
                 </label>
@@ -659,15 +979,16 @@ export default function KaryawanPage() {
                     setFormData({ ...formData, kode_karyawan: e.target.value })
                   }
                   aria-invalid={!!formErrors.kode_karyawan}
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 />
               </div>
             </div>
 
+            {/* Nama Lengkap */}
             <div>
               <label
                 htmlFor="employee-name"
-                className="text-slate-400 block mb-1"
+                className="text-slate-400 block mb-1 font-semibold"
               >
                 Nama Lengkap Karyawan:
               </label>
@@ -680,15 +1001,16 @@ export default function KaryawanPage() {
                 }
                 placeholder="Masukkan nama lengkap..."
                 aria-invalid={!!formErrors.nama}
-                className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
               />
             </div>
 
+            {/* Divisi & Jabatan */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label
                   htmlFor="employee-division"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   Divisi:
                 </label>
@@ -700,13 +1022,13 @@ export default function KaryawanPage() {
                     setFormData({ ...formData, divisi: e.target.value })
                   }
                   aria-invalid={!!formErrors.divisi}
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 />
               </div>
               <div>
                 <label
                   htmlFor="employee-position"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   Jabatan:
                 </label>
@@ -717,16 +1039,17 @@ export default function KaryawanPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, jabatan_status: e.target.value })
                   }
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* Gender, Shift & Personil */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label
                   htmlFor="employee-gender"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   Jenis Kelamin:
                 </label>
@@ -739,7 +1062,7 @@ export default function KaryawanPage() {
                       lp: e.target.value as "L" | "P",
                     })
                   }
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 >
                   <option value="L">Laki-laki (L)</option>
                   <option value="P">Perempuan (P)</option>
@@ -748,7 +1071,7 @@ export default function KaryawanPage() {
               <div>
                 <label
                   htmlFor="employee-shift"
-                  className="text-slate-400 block mb-1"
+                  className="text-slate-400 block mb-1 font-semibold"
                 >
                   Shift Kerja:
                 </label>
@@ -762,7 +1085,7 @@ export default function KaryawanPage() {
                     })
                   }
                   aria-invalid={!!formErrors.id_shift}
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 >
                   {shiftList.map((s) => (
                     <option key={String(s.id_shift)} value={Number(s.id_shift)}>
@@ -772,13 +1095,35 @@ export default function KaryawanPage() {
                   ))}
                 </select>
               </div>
+              <div>
+                <label
+                  htmlFor="employee-personnel"
+                  className="text-slate-400 block mb-1 font-semibold"
+                >
+                  Jenis Personil:
+                </label>
+                <select
+                  id="employee-personnel"
+                  value={formData.jenis_personil || "Pegawai"}
+                  onChange={(e) =>
+                    setFormData({ ...formData, jenis_personil: e.target.value })
+                  }
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                >
+                  <option value="Pegawai">Pegawai</option>
+                  <option value="Kontrak">Kontrak</option>
+                  <option value="Magang">Magang</option>
+                  <option value="Harian">Harian</option>
+                </select>
+              </div>
             </div>
 
+            {/* No HP & Status Aktif */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label
                   htmlFor="employee-phone"
-                  className="mb-1 block text-slate-400"
+                  className="mb-1 block text-slate-400 font-semibold"
                 >
                   Nomor HP:
                 </label>
@@ -789,27 +1134,96 @@ export default function KaryawanPage() {
                   onChange={(event) =>
                     setFormData({ ...formData, no_hp: event.target.value })
                   }
-                  autoComplete="tel"
-                  className="min-h-11 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                  placeholder="08xxxxxxxxxx"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 />
               </div>
               <div>
                 <label
-                  htmlFor="employee-notes"
-                  className="mb-1 block text-slate-400"
+                  htmlFor="employee-status"
+                  className="mb-1 block text-slate-400 font-semibold"
                 >
-                  Catatan:
+                  Status Keaktifan:
                 </label>
-                <textarea
-                  id="employee-notes"
-                  value={formData.catatan}
-                  onChange={(event) =>
-                    setFormData({ ...formData, catatan: event.target.value })
+                <select
+                  id="employee-status"
+                  value={formData.status_aktif || "Aktif"}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      status_aktif: e.target.value as "Aktif" | "Nonaktif",
+                    })
                   }
-                  rows={2}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-white outline-none focus:border-sky-500"
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                >
+                  <option value="Aktif">Aktif</option>
+                  <option value="Nonaktif">Nonaktif</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Tanggal Mulai & Selesai Aktif */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="employee-start-date"
+                  className="mb-1 block text-slate-400 font-semibold"
+                >
+                  Tanggal Mulai Aktif:
+                </label>
+                <input
+                  id="employee-start-date"
+                  type="date"
+                  value={formData.tanggal_mulai_aktif || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      tanggal_mulai_aktif: e.target.value,
+                    })
+                  }
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 />
               </div>
+              <div>
+                <label
+                  htmlFor="employee-end-date"
+                  className="mb-1 block text-slate-400 font-semibold"
+                >
+                  Tanggal Selesai Aktif (Opsional):
+                </label>
+                <input
+                  id="employee-end-date"
+                  type="date"
+                  value={formData.tanggal_selesai_aktif || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      tanggal_selesai_aktif: e.target.value,
+                    })
+                  }
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                />
+              </div>
+            </div>
+
+            {/* Catatan */}
+            <div>
+              <label
+                htmlFor="employee-notes"
+                className="mb-1 block text-slate-400 font-semibold"
+              >
+                Catatan:
+              </label>
+              <textarea
+                id="employee-notes"
+                value={formData.catatan}
+                onChange={(event) =>
+                  setFormData({ ...formData, catatan: event.target.value })
+                }
+                rows={2}
+                placeholder="Catatan tambahan karyawan..."
+                className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-white outline-none focus:border-sky-500"
+              />
             </div>
 
             <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
@@ -822,9 +1236,9 @@ export default function KaryawanPage() {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-500 shadow-md shadow-sky-950"
+                className="px-5 py-2 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-500 shadow-md shadow-sky-950 transition"
               >
-                Simpan Data
+                {isEditing ? "Simpan Perubahan" : "Tambah Karyawan"}
               </button>
             </div>
           </form>

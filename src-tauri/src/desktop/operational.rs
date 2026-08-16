@@ -205,7 +205,137 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
     Ok(json!({ "sukses": true, "id_unik": id, "token_absensi": token }))
 }
 
+pub fn import_employees(
+    state: &DesktopState,
+    drafts: &[Value],
+) -> Result<Value, CommandError> {
+    if drafts.is_empty() {
+        return Ok(json!({ "sukses": true, "berhasil": 0, "dilewati": 0 }));
+    }
+    if drafts.len() > 500 {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "Maksimal 500 karyawan per proses import.",
+        ));
+    }
+
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let today: String = connection
+        .query_row("SELECT date('now', 'localtime');", [], |row| row.get(0))
+        .map_err(|_| CommandError::internal())?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let mut berhasil = 0_i64;
+    let mut dilewati = 0_i64;
+    let now = storage::now_epoch_seconds();
+
+    for draft in drafts {
+        let id = text(draft, "id_unik");
+        let code = text(draft, "kode_karyawan");
+        let name = text(draft, "nama");
+        let division = text(draft, "divisi");
+        let shift_id = integer(draft, "id_shift", 1);
+
+        if id.is_empty() || code.is_empty() || name.len() < 2 || division.is_empty() || shift_id == 0 {
+            dilewati += 1;
+            continue;
+        }
+
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ? OR kode_karyawan = ?);",
+                params![id, code],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if exists {
+            dilewati += 1;
+            continue;
+        }
+
+        let event_id = sync::new_event_id(&client_id, "employee", "create");
+        let token = token_from_event(&event_id);
+        let qr_code = format!("{id}|{token}");
+
+        let reg_date = text(draft, "tanggal_daftar");
+        let reg_date = if reg_date.is_empty() { &today } else { reg_date };
+
+        let start_date = text(draft, "tanggal_mulai_aktif");
+        let start_date = if start_date.is_empty() { reg_date } else { start_date };
+
+        let mut payload = draft.as_object().cloned().unwrap_or_else(Map::new);
+        payload.insert("token_absensi".into(), Value::String(token.clone()));
+        payload.insert("qr_code".into(), Value::String(qr_code.clone()));
+        let payload = Value::Object(payload);
+
+        let insert_res = transaction.execute(
+            r#"
+            INSERT INTO master_data (
+                id_unik, kode_karyawan, nama, divisi, jabatan_status, no_hp, lp,
+                id_shift, status_aktif, tanggal_daftar, catatan, token_absensi, qr_code,
+                status_qr, jenis_personil, tanggal_mulai_aktif, tanggal_selesai_aktif,
+                status_backup
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Generated', ?, ?, ?, 'NORMAL');
+            "#,
+            params![
+                id,
+                code,
+                name,
+                division,
+                if text(draft, "jabatan_status").is_empty() { "Staff" } else { text(draft, "jabatan_status") },
+                text(draft, "no_hp"),
+                if text(draft, "lp").to_uppercase() == "P" { "P" } else { "L" },
+                shift_id,
+                if text(draft, "status_aktif") == "Nonaktif" { "Nonaktif" } else { "Aktif" },
+                reg_date,
+                text(draft, "catatan"),
+                token,
+                qr_code,
+                if text(draft, "jenis_personil").is_empty() { "Pegawai" } else { text(draft, "jenis_personil") },
+                start_date,
+                text(draft, "tanggal_selesai_aktif"),
+            ],
+        );
+
+        if insert_res.is_err() {
+            dilewati += 1;
+            continue;
+        }
+
+        let _ = transaction.execute(
+            "INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) VALUES (?, ?, ?, 'Belum', ?);",
+            params![id, name, division, reg_date],
+        );
+
+        let _ = transaction.execute(
+            r#"
+            INSERT INTO desktop_sync_outbox (
+                event_id, client_id, domain, operation, entity_key, payload_json,
+                status, attempt_count, created_at, updated_at
+            ) VALUES (?, ?, 'employee', 'create', ?, ?, 'pending', 0, ?, ?);
+            "#,
+            params![event_id, client_id, id, payload.to_string(), now, now],
+        );
+
+        berhasil += 1;
+    }
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+
+    Ok(json!({
+        "sukses": true,
+        "berhasil": berhasil,
+        "dilewati": dilewati,
+    }))
+}
+
 pub fn update_employee(
+
     state: &DesktopState,
     id: &str,
     draft: &Value,

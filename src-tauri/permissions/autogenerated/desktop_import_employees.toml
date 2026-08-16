@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-import-employees"
+description = "Enables the desktop_import_employees command without any pre-configured scope."
+commands.allow = ["desktop_import_employees"]
+
+[[permission]]
+identifier = "deny-desktop-import-employees"
+description = "Denies the desktop_import_employees command without any pre-configured scope."
+commands.deny = ["desktop_import_employees"]

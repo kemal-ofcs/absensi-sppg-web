@@ -16,7 +16,9 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_delete_role",
     "desktop_get_employees",
     "desktop_create_employee",
+    "desktop_import_employees",
     "desktop_update_employee",
+
     "desktop_set_employee_status",
     "desktop_generate_employee_tokens",
     "desktop_get_shifts",

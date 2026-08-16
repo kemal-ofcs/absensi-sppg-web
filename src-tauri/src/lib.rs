@@ -32,8 +32,10 @@ pub fn run() {
             desktop::commands::desktop_delete_role,
             desktop::commands::desktop_get_employees,
             desktop::commands::desktop_create_employee,
+            desktop::commands::desktop_import_employees,
             desktop::commands::desktop_update_employee,
             desktop::commands::desktop_set_employee_status,
+
             desktop::commands::desktop_generate_employee_tokens,
             desktop::commands::desktop_get_shifts,
             desktop::commands::desktop_create_shift,
