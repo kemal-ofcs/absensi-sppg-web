@@ -56,7 +56,7 @@ async function processRow(
 ) {
   const eventKey = `IMP-${randomUUID()}`;
   const now = new Date().toISOString();
-  const date = normalizeDate(row.tanggal);
+  let date = normalizeDate(row.tanggal);
   const fail = async (message: string) => {
     await transaction.execute({
       sql: `INSERT INTO import_offline (event_key, timestamp_input, tanggal, id_unik,
@@ -175,22 +175,86 @@ async function processRow(
       shiftId = normalShiftId;
     }
   }
-  const sessionId =
+
+  let sessionId =
     mode === "PENGGANTI"
       ? `${backupId}-PENGGANTI-${id}`
       : `NORMAL-${date.replaceAll("-", "")}-${id}-${shiftId}`;
+
   const existingResult = await transaction.execute({
     sql: "SELECT * FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
     args: [sessionId],
   });
-  const existing = existingResult.rows[0];
+  let existing = existingResult.rows[0] as Record<string, unknown> | undefined;
+
+  // If not found by exact sessionId, and this row is completing a partial record (e.g. only jam_pulang or only jam_masuk):
+  if (
+    !existing &&
+    ((!row.jam_masuk && row.jam_pulang) || (row.jam_masuk && !row.jam_pulang))
+  ) {
+    const unclosedResult = await transaction.execute({
+      sql: `SELECT * FROM absensi_harian 
+            WHERE id_karyawan = ? AND tanggal = ? 
+              AND ((jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '')) 
+                OR ((jam_masuk IS NULL OR jam_masuk = '') AND jam_pulang != '')) 
+            LIMIT 1;`,
+      args: [id, date],
+    });
+    if (unclosedResult.rows.length > 0) {
+      existing = unclosedResult.rows[0] as Record<string, unknown>;
+      sessionId = String(existing.id_sesi);
+      mode = String(existing.mode_tugas || "NORMAL");
+      backupId = String(existing.id_backup || "");
+      originalId = String(existing.id_karyawan_asal || "");
+      shiftId = Number(existing.id_shift || shiftId);
+      date = String(existing.tanggal || date);
+    } else if (!row.jam_masuk && row.jam_pulang) {
+      const prevDate = (() => {
+        const d = new Date(date);
+        d.setDate(d.getDate() - 1);
+        return d.toISOString().slice(0, 10);
+      })();
+      const unclosedPrevRes = await transaction.execute({
+        sql: `SELECT * FROM absensi_harian 
+              WHERE id_karyawan = ? AND tanggal = ? 
+                AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '') 
+              LIMIT 1;`,
+        args: [id, prevDate],
+      });
+      if (unclosedPrevRes.rows.length > 0) {
+        existing = unclosedPrevRes.rows[0] as Record<string, unknown>;
+        sessionId = String(existing.id_sesi);
+        mode = String(existing.mode_tugas || "NORMAL");
+        backupId = String(existing.id_backup || "");
+        originalId = String(existing.id_karyawan_asal || "");
+        shiftId = Number(existing.id_shift || shiftId);
+        date = prevDate;
+      }
+    }
+  }
+
   if (existing && String(existing.sumber) === "Koreksi Admin")
     return fail("Data sudah dikoreksi admin; import tidak boleh menimpa.");
+
+  const shiftResult = await transaction.execute({
+    sql: "SELECT id_shift, nama_shift, kode_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+    args: [shiftId],
+  });
+  const shiftRowData = shiftResult.rows[0] as
+    | Record<string, unknown>
+    | undefined;
+  const isOvernightShift = Boolean(
+    shiftRowData?.jam_masuk &&
+      shiftRowData?.jam_pulang &&
+      String(shiftRowData.jam_pulang) < String(shiftRowData.jam_masuk),
+  );
+
   const checkIn = row.jam_masuk
     ? timestamp(date, row.jam_masuk)
     : String(existing?.jam_masuk ?? "");
   const nextDay = Boolean(
-    row.jam_masuk && row.jam_pulang && row.jam_pulang < row.jam_masuk,
+    (row.jam_masuk && row.jam_pulang && row.jam_pulang < row.jam_masuk) ||
+      (checkIn && row.jam_pulang && isOvernightShift),
   );
   const checkOut = row.jam_pulang
     ? timestamp(date, row.jam_pulang, nextDay)
@@ -205,19 +269,16 @@ async function processRow(
         ? "Belum Pulang"
         : "Perlu Verifikasi");
   let worked = 0;
-  if (checkIn && checkOut)
-    worked = Math.max(
-      0,
-      Math.floor(
-        (new Date(`${checkOut.replace(" ", "T")}+07:00`).getTime() -
-          new Date(`${checkIn.replace(" ", "T")}+07:00`).getTime()) /
-          60000,
-      ),
-    );
-  const shiftResult = await transaction.execute({
-    sql: "SELECT id_shift, nama_shift, kode_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
-    args: [shiftId],
-  });
+  if (checkIn && checkOut) {
+    const inDate = new Date(`${checkIn.replace(" ", "T")}+07:00`).getTime();
+    const outDate = new Date(`${checkOut.replace(" ", "T")}+07:00`).getTime();
+    let diffMinutes = Math.floor((outDate - inDate) / 60000);
+    if (diffMinutes < 0) {
+      diffMinutes += 1440;
+    }
+    worked = Math.max(0, diffMinutes);
+  }
+
   const shiftData = shiftResult.rows[0];
   if (!shiftData) return fail(`Shift #${shiftId} tidak ditemukan.`);
 
@@ -266,8 +327,12 @@ async function processRow(
   let menitTerlambat = 0;
   let menitDatangAwal = 0;
 
-  if (row.jam_masuk) {
-    const userMasukMin = parseTimeMin(row.jam_masuk);
+  if (checkIn) {
+    const checkInTime = checkIn.includes(" ") ? checkIn.split(" ")[1] : checkIn;
+    let userMasukMin = parseTimeMin(checkInTime);
+    if (isOvernightShift && userMasukMin < shiftMasukMin - 720) {
+      userMasukMin += 1440;
+    }
     if (userMasukMin > shiftMasukMin + toleransi) {
       menitTerlambat = userMasukMin - shiftMasukMin;
     } else if (userMasukMin < shiftMasukMin) {

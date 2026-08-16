@@ -555,6 +555,33 @@ fn civil_from_days(mut days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+pub fn is_checkout_window_expired(
+    session_date: &str,
+    moment: &LocalMoment,
+    shift: &ShiftPolicy,
+) -> bool {
+    if shift.kind == ShiftKind::Flexible {
+        return false;
+    }
+    let shift_in = match clock_minutes(&shift.start) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let shift_out_base = match clock_minutes(&shift.end) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let is_night = shift_out_base < shift_in;
+    let shift_out = if is_night { shift_out_base + 1440 } else { shift_out_base };
+    let buffer = if is_night { shift.night_buffer_minutes } else { 0 };
+    let latest_checkout = shift_out + shift.checkout_limit_minutes + buffer;
+
+    let diff_days = days_between(session_date, &moment.date).unwrap_or(0);
+    let moment_min = clock_minutes(&moment.time).unwrap_or(0);
+    let current_minute_on_timeline = diff_days * 1440 + moment_min;
+    current_minute_on_timeline > latest_checkout
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,8 +27,12 @@ export async function POST(request: NextRequest) {
     let batch: ReturnType<typeof parseOperationalSyncBatch>;
     try {
       batch = parseOperationalSyncBatch(body);
-    } catch {
-      throw new ApiRequestError("Batch sinkronisasi tidak valid.", 400);
+    } catch (error) {
+      console.error("SYNC PUSH VALIDATION ERROR:", error);
+      throw new ApiRequestError(
+        `Batch sinkronisasi tidak valid: ${error instanceof Error ? error.message : String(error)}`,
+        400,
+      );
     }
     const results = await withTransientDatabaseRetry(async () => {
       await ensureServerDatabaseInitialized();

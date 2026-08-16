@@ -56,6 +56,7 @@ export default function ScannerPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const scannerControlsRef = useRef<IScannerControls | null>(null);
   const cameraScanLockedRef = useRef(false);
+  const isSubmittingRef = useRef(false);
   const lastScannedQrRef = useRef<string>("");
   const lastScannedTimeRef = useRef<number>(0);
 
@@ -132,8 +133,9 @@ export default function ScannerPage() {
   const handleScanSubmit = useCallback(
     async (payload: string) => {
       const cleanPayload = payload.trim();
-      if (!cleanPayload || isProcessing) return;
+      if (!cleanPayload || isSubmittingRef.current) return;
 
+      isSubmittingRef.current = true;
       setIsProcessing(true);
       setScanInput("");
 
@@ -156,7 +158,8 @@ export default function ScannerPage() {
           setScanFlashStatus("success");
         } else if (
           result.pesan.includes("Scan ganda") ||
-          result.pesan.includes("cooldown")
+          result.pesan.includes("cooldown") ||
+          result.pesan.includes("Multi Scan Ditolak")
         ) {
           setScanFlashStatus("warning");
         } else {
@@ -183,7 +186,8 @@ export default function ScannerPage() {
             }
           } else if (
             result.pesan.includes("Scan ganda") ||
-            result.pesan.includes("cooldown")
+            result.pesan.includes("cooldown") ||
+            result.pesan.includes("Multi Scan Ditolak")
           ) {
             audioSynth.playWarningBeep();
             audioSynth.speak("Scan ganda terdeteksi. Silakan tunggu sebentar.");
@@ -235,11 +239,12 @@ export default function ScannerPage() {
           audioSynth.speak("Terjadi kesalahan sistem.");
         }
       } finally {
+        isSubmittingRef.current = false;
         setIsProcessing(false);
         if (mode === "reader") inputRef.current?.focus();
       }
     },
-    [isProcessing, gpsLocation, user, audioEnabled, mode],
+    [gpsLocation, user, audioEnabled, mode],
   );
 
   const startCamera = async (deviceId?: string) => {
@@ -268,7 +273,7 @@ export default function ScannerPage() {
 
       const { BrowserQRCodeReader } = await import("@zxing/browser");
       const reader = new BrowserQRCodeReader(undefined, {
-        delayBetweenScanAttempts: 100,
+        delayBetweenScanAttempts: 150,
       });
 
       const targetDeviceId = deviceId || selectedDeviceId;
@@ -287,11 +292,12 @@ export default function ScannerPage() {
           if (!qrContent) return;
 
           const now = Date.now();
-          // Cek apakah scan sedang diproses ATAU qr yang sama baru saja dipindai dalam 2 detik
+          // Cek apakah scan sedang diproses ATAU qr yang sama baru saja dipindai dalam 2.5 detik
           if (
             cameraScanLockedRef.current ||
+            isSubmittingRef.current ||
             (qrContent === lastScannedQrRef.current &&
-              now - lastScannedTimeRef.current < 2000)
+              now - lastScannedTimeRef.current < 2500)
           ) {
             return;
           }
@@ -305,7 +311,7 @@ export default function ScannerPage() {
             // Beri jeda singkat agar kartu yang sama tidak langsung ter-scan ulang seketika
             setTimeout(() => {
               cameraScanLockedRef.current = false;
-            }, 1200);
+            }, 1500);
           });
         },
       );
@@ -326,7 +332,11 @@ export default function ScannerPage() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleScanSubmit(scanInput);
+      const val = scanInput.trim();
+      if (val && !isSubmittingRef.current) {
+        setScanInput("");
+        void handleScanSubmit(val);
+      }
     }
   };
 

@@ -63,6 +63,7 @@ const shiftFields = {
   offset_istirahat_mulai: optionalNumber,
   offset_generate_alfa: optionalNumber,
   buffer_shift_malam_menit: optionalNumber,
+  izinkan_multi_sesi: optionalNumber,
 };
 
 const shiftCreatePayload = z
@@ -170,6 +171,8 @@ const backupSchema = z
     kode_operator: optionalShortText,
     waktu_input: optionalShortText,
     catatan: optionalLongText,
+    waktu_dibatalkan: optionalShortText,
+    operator_pembatalan: optionalShortText,
   })
   .strict();
 

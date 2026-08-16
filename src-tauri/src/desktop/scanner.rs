@@ -9,8 +9,8 @@ use super::{
     models::CommandError,
     storage, sync,
     time_policy::{
-        decide_scan, determine_work_date, DecisionReason, LocalMoment, ScanDecision, ScanHistory,
-        ShiftKind, ShiftPolicy,
+        decide_scan, determine_work_date, is_checkout_window_expired, DecisionReason,
+        LocalMoment, ScanDecision, ScanHistory, ShiftKind, ShiftPolicy,
     },
 };
 
@@ -412,18 +412,21 @@ fn find_effective_backup(
             .unwrap_or(false);
 
         if has_open_checkin {
-            let work_date = determine_work_date(moment, &shift_val.policy)
-                .unwrap_or_else(|_| task_date.clone());
-            if work_date == task_date || task_date == moment.date {
-                return Ok(Some(Backup {
-                    id,
-                    task_date,
-                    original_id,
-                    replacement_name,
-                    replacement_id,
-                    shift_id,
-                    shift,
-                }));
+            let expired = is_checkout_window_expired(&task_date, moment, &shift_val.policy);
+            if !expired {
+                let work_date = determine_work_date(moment, &shift_val.policy)
+                    .unwrap_or_else(|_| task_date.clone());
+                if work_date == task_date || task_date == moment.date {
+                    return Ok(Some(Backup {
+                        id,
+                        task_date,
+                        original_id,
+                        replacement_name,
+                        replacement_id,
+                        shift_id,
+                        shift,
+                    }));
+                }
             }
         }
 
@@ -791,18 +794,43 @@ fn submit_internal(
             .optional()
             .map_err(|_| CommandError::internal())?;
 
-        if let Some(open) = open_session {
+        let open_valid = if let Some(open) = open_session {
             let open_shift = load_shift(&transaction, open.1)?;
-            (
-                Session {
-                    mode: if open.4 == "PENGGANTI" { "PENGGANTI" } else { "NORMAL" },
-                    shift_id: open.1,
-                    backup_id: open.5,
-                    original_employee_id: open.6,
-                    task_date: open.2,
-                },
-                open_shift,
-            )
+            let expired = open_shift
+                .as_ref()
+                .map(|s| is_checkout_window_expired(&open.2, &moment, &s.policy))
+                .unwrap_or(true);
+            if expired {
+                let now: String = transaction
+                    .query_row(
+                        "SELECT strftime('%Y-%m-%d %H:%M:%S','now','+7 hours');",
+                        [],
+                        |result| result.get(0),
+                    )
+                    .unwrap_or_default();
+                let _ = transaction.execute(
+                    "UPDATE absensi_harian SET status_absen = 'Belum Pulang', keterangan = CASE WHEN keterangan IS NULL OR keterangan = '' OR keterangan = '-' THEN 'Belum Pulang' ELSE keterangan END, update_terakhir = ? WHERE id_sesi = ?;",
+                    params![now, &open.0],
+                );
+                None
+            } else {
+                Some((
+                    Session {
+                        mode: if open.4 == "PENGGANTI" { "PENGGANTI" } else { "NORMAL" },
+                        shift_id: open.1,
+                        backup_id: open.5,
+                        original_employee_id: open.6,
+                        task_date: open.2,
+                    },
+                    open_shift,
+                ))
+            }
+        } else {
+            None
+        };
+
+        if let Some((valid_session, valid_shift)) = open_valid {
+            (valid_session, valid_shift)
         } else {
             let base_date = match base_shift.as_ref() {
                 Some(s) => match determine_work_date(&moment, &s.policy) {

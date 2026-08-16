@@ -4,6 +4,7 @@ import {
   formatJamOperasional,
   formatTanggalOperasional,
   formatTimestampOperasional,
+  OPERATIONAL_TIME_ZONE,
   putuskanScanWaktu,
   type ScanHistory,
   type ShiftTimePolicy,
@@ -224,8 +225,14 @@ async function processInTransaction(
     });
   }
 
-  let session: SessionContext;
-  let shiftRow: Row | null;
+  let session: SessionContext = {
+    modeTugas: "NORMAL",
+    shiftEfektif: employee.idShift,
+    idBackup: "",
+    idKaryawanAsal: "",
+    tanggalTugas: "",
+  };
+  let shiftRow: Row | null = baseShiftRow;
 
   if (backup) {
     session = {
@@ -245,23 +252,44 @@ async function processInTransaction(
             ORDER BY tanggal DESC LIMIT 1;`,
       args: [employee.id],
     });
-    const openSession = openRes.rows[0] as Row | undefined;
+    let openSession = openRes.rows[0] as Row | undefined;
 
     if (openSession) {
       const openShiftId = Number(openSession.id_shift);
       const openShiftRow = await getShiftRow(transaction, openShiftId);
-      session = {
-        modeTugas:
-          (openSession.mode_tugas as "NORMAL" | "PENGGANTI") || "NORMAL",
-        shiftEfektif: openShiftId,
-        idBackup: String(openSession.id_backup || ""),
-        idKaryawanAsal: String(openSession.id_karyawan_asal || ""),
-        tanggalTugas: String(
-          openSession.tanggal_tugas || openSession.tanggal || "",
-        ),
-      };
-      shiftRow = openShiftRow;
-    } else {
+      const expired = isCheckoutWindowExpired(
+        String(openSession.tanggal),
+        waktuScan,
+        openShiftRow,
+      );
+
+      if (expired) {
+        // Auto-seal expired session as Belum Pulang
+        await transaction.execute({
+          sql: `UPDATE absensi_harian
+                SET status_absen = 'Belum Pulang',
+                    keterangan = CASE WHEN keterangan IS NULL OR keterangan = '' OR keterangan = '-' THEN 'Belum Pulang' ELSE keterangan END,
+                    update_terakhir = strftime('%Y-%m-%d %H:%M:%S', 'now', '+7 hours')
+                WHERE id_sesi = ?;`,
+          args: [String(openSession.id_sesi)],
+        });
+        openSession = undefined;
+      } else {
+        session = {
+          modeTugas:
+            (openSession.mode_tugas as "NORMAL" | "PENGGANTI") || "NORMAL",
+          shiftEfektif: openShiftId,
+          idBackup: String(openSession.id_backup || ""),
+          idKaryawanAsal: String(openSession.id_karyawan_asal || ""),
+          tanggalTugas: String(
+            openSession.tanggal_tugas || openSession.tanggal || "",
+          ),
+        };
+        shiftRow = openShiftRow;
+      }
+    }
+
+    if (!openSession) {
       const baseDate = safeWorkDate(waktuScan, baseShiftRow);
       const baseIdSesi = `NORMAL-${baseDate.replaceAll("-", "")}-${employee.id}-${employee.idShift}`;
       const baseSessionRes = await transaction.execute({
@@ -511,6 +539,48 @@ function isCheckInWindowMatch(waktuScan: Date, shiftRow: Row | null): boolean {
   }
 }
 
+function isCheckoutWindowExpired(
+  sessionDate: string,
+  waktuScan: Date,
+  shiftRow: Row | null,
+): boolean {
+  if (!shiftRow) return true;
+  const policy = mapShiftPolicy(shiftRow);
+  if (policy.kind === "flexible") return false;
+
+  const parseClock = (clock: string) => {
+    const parts = clock.split(":");
+    return Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+  };
+
+  const jamMasuk = parseClock(policy.jamMasuk);
+  const jamPulangDasar = parseClock(policy.jamPulang);
+  const jamPulang =
+    jamPulangDasar < jamMasuk ? jamPulangDasar + 1440 : jamPulangDasar;
+  const batasAkhirPulang =
+    jamPulang +
+    policy.batasPulangMenit +
+    (jamPulangDasar < jamMasuk ? policy.bufferShiftMalamMenit : 0);
+
+  const scanFormatted = formatTanggalOperasional(waktuScan);
+  const diffDays = Math.round(
+    (new Date(scanFormatted).getTime() - new Date(sessionDate).getTime()) /
+      86400000,
+  );
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: OPERATIONAL_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .format(waktuScan)
+    .split(":");
+  const currentMinuteOfDay = Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+  const currentMinuteOnTimeline = diffDays * 1440 + currentMinuteOfDay;
+
+  return currentMinuteOnTimeline > batasAkhirPulang;
+}
+
 async function findEffectiveBackup(
   transaction: Transaction,
   employeeId: string,
@@ -561,7 +631,15 @@ async function findEffectiveBackup(
       args: [backupSessionId],
     });
     if (openRes.rows.length > 0) {
-      return { row: candidate, shiftRow };
+      if (
+        !isCheckoutWindowExpired(
+          String(candidate.tanggal_tugas),
+          waktuScan,
+          shiftRow,
+        )
+      ) {
+        return { row: candidate, shiftRow };
+      }
     }
 
     try {
