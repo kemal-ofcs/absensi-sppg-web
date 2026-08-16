@@ -434,15 +434,37 @@ async function findEffectiveBackup(
       continue;
     }
 
+    if (String(candidate.id_karyawan_asal) === employeeId) {
+      try {
+        const date = tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow));
+        if (date === String(candidate.tanggal_tugas)) {
+          return { row: candidate, shiftRow };
+        }
+      } catch {
+        if (String(candidate.tanggal_tugas) === calendarDate) {
+          return { row: candidate, shiftRow };
+        }
+      }
+      continue;
+    }
+
+    // Employee is replacement (pengganti)
+    const backupSessionId = `${candidate.id_backup}-PENGGANTI-${employeeId}`;
+    const openRes = await transaction.execute({
+      sql: "SELECT 1 FROM absensi_harian WHERE id_sesi = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '') LIMIT 1;",
+      args: [backupSessionId],
+    });
+    if (openRes.rows.length > 0) {
+      return { row: candidate, shiftRow };
+    }
+
     try {
       const date = tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow));
       if (date === String(candidate.tanggal_tugas)) {
         return { row: candidate, shiftRow };
       }
     } catch {
-      if (String(candidate.tanggal_tugas) === calendarDate) {
-        return { row: candidate, shiftRow };
-      }
+      // ignore
     }
   }
 
@@ -467,6 +489,7 @@ async function getScanHistory(
           ORDER BY id_log DESC LIMIT 1;`,
     args: [input.tanggalKerja, input.employeeId, input.idReferensi],
   });
+
   const latest = result.rows[0];
 
   return {

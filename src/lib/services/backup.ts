@@ -19,8 +19,19 @@ export function generateIdBackup(): string {
   return `BCK-${dateStr}-${randomNum}`;
 }
 
+function normalizeDate(raw: string): string {
+  const clean = raw.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(clean)) {
+    const [d, m, y] = clean.split("/");
+    return `${y}-${m}-${d}`;
+  }
+  return clean;
+}
+
 export async function buatPenugasanBackup(input: PenugasanBackupInput) {
   await ensureDbInitialized();
+
+  const date = normalizeDate(input.tanggal_tugas);
 
   // 1. Validasi Karyawan Asal & Karyawan Pengganti
   const asalRes = await db.execute({
@@ -72,7 +83,7 @@ export async function buatPenugasanBackup(input: PenugasanBackupInput) {
     `,
     args: [
       idBackup,
-      input.tanggal_tugas,
+      date,
       String(asal.id_unik),
       String(asal.nama),
       String(asal.divisi),

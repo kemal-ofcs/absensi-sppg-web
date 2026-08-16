@@ -27,8 +27,19 @@ export function generateIdReferensiKoreksi(): string {
   return `KOR-${dateStr}-${randomNum}`;
 }
 
+function normalizeDate(raw: string): string {
+  const clean = raw.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(clean)) {
+    const [d, m, y] = clean.split("/");
+    return `${y}-${m}-${d}`;
+  }
+  return clean;
+}
+
 export async function prosesKoreksiAdmin(input: KoreksiInput) {
   await ensureDbInitialized();
+
+  const date = normalizeDate(input.tanggal);
 
   if (
     [
@@ -78,6 +89,90 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   const divisi = String(emp.divisi);
   const idShift = Number(emp.id_shift || 1);
 
+  // Check backup_karyawan on date
+  const backupRes = await db.execute({
+    sql: `SELECT * FROM backup_karyawan WHERE tanggal_tugas = ? AND status_tugas = 'Aktif'
+          AND (id_karyawan_asal = ? OR id_karyawan_pengganti = ?) LIMIT 1;`,
+    args: [date, idUnik, idUnik],
+  });
+  const backup = backupRes.rows[0];
+  if (backup && String(backup.id_karyawan_asal) === idUnik) {
+    return {
+      sukses: false,
+      pesan: `Gagal: Karyawan '${nama}' sedang digantikan oleh karyawan lain pada tanggal ${date}. (ID Backup: ${backup.id_backup})`,
+    };
+  }
+
+  let effectiveShiftId = idShift;
+  let modeTugas = "NORMAL";
+  let backupId = "";
+  let originalId = "";
+
+  if (backup) {
+    const backupShiftId = Number(backup.id_shift_backup);
+    const normalShiftId = idShift;
+
+    const backupShiftRes = await db.execute({
+      sql: "SELECT jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+      args: [backupShiftId],
+    });
+    const normalShiftRes = await db.execute({
+      sql: "SELECT jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+      args: [normalShiftId],
+    });
+    const bShift = backupShiftRes.rows[0];
+    const nShift = normalShiftRes.rows[0];
+
+    const checkTime = input.jam_koreksi || "";
+    const isCheckIn = [
+      "Lupa Absen Masuk",
+      "Kendala Sistem - Jam Masuk",
+      "Terlambat",
+    ].includes(input.jenis_koreksi);
+
+    const checkShiftMatch = (s: Record<string, unknown> | undefined) => {
+      if (!s || !checkTime) return false;
+      const parts = checkTime.trim().split(":");
+      const userMin = Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+      if (isCheckIn) {
+        const sParts = String(s.jam_masuk || "07:00").split(":");
+        const sIn = Number(sParts[0] || 0) * 60 + Number(sParts[1] || 0);
+        let diff = userMin - sIn;
+        if (diff < -720) diff += 1440;
+        if (diff > 720) diff -= 1440;
+        return (
+          diff >= -Number(s.awal_absen_menit ?? 60) &&
+          diff <=
+            Number(s.batas_masuk_menit ?? 360) +
+              Number(s.toleransi_masuk_menit ?? 0)
+        );
+      }
+      const sParts = String(s.jam_pulang || "15:00").split(":");
+      const sOut = Number(sParts[0] || 0) * 60 + Number(sParts[1] || 0);
+      let diff = userMin - sOut;
+      if (diff < -720) diff += 1440;
+      if (diff > 720) diff -= 1440;
+      return diff >= -120 && diff <= Number(s.batas_pulang_menit ?? 360);
+    };
+
+    const matchesBackup = checkShiftMatch(
+      bShift as Record<string, unknown> | undefined,
+    );
+    const matchesNormal = checkShiftMatch(
+      nShift as Record<string, unknown> | undefined,
+    );
+
+    if (matchesBackup && !matchesNormal) {
+      modeTugas = "PENGGANTI";
+      backupId = String(backup.id_backup);
+      originalId = String(backup.id_karyawan_asal);
+      effectiveShiftId = backupShiftId;
+    } else {
+      modeTugas = "NORMAL";
+      effectiveShiftId = normalShiftId;
+    }
+  }
+
   const idReferensi = generateIdReferensiKoreksi();
   const nowStr = new Date().toISOString();
 
@@ -91,7 +186,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     `,
     args: [
       idReferensi,
-      input.tanggal,
+      date,
       idUnik,
       nama,
       divisi,
@@ -104,10 +199,14 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   });
 
   // 4. Update tabel absensi_harian
-  const idSesi = `NORMAL-${input.tanggal.replace(/-/g, "")}-${idUnik}-${idShift}`;
+  const idSesi =
+    modeTugas === "PENGGANTI"
+      ? `${backupId}-PENGGANTI-${idUnik}`
+      : `NORMAL-${date.replace(/-/g, "")}-${idUnik}-${effectiveShiftId}`;
+
   const existRes = await db.execute({
-    sql: "SELECT * FROM absensi_harian WHERE id_sesi = ? OR (id_karyawan = ? AND tanggal = ?) LIMIT 1;",
-    args: [idSesi, idUnik, input.tanggal],
+    sql: "SELECT * FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
+    args: [idSesi],
   });
 
   const existRecord =
@@ -129,14 +228,14 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     "November",
     "Desember",
   ];
-  const dateObj = new Date(input.tanggal);
+  const dateObj = new Date(date);
   const bulanStr = monthNames[dateObj.getMonth()] || "Januari";
   const tahunNum = dateObj.getFullYear();
 
   // Ambil data shift untuk kalkulasi metrik
   const shiftRes = await db.execute({
     sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-    args: [idShift],
+    args: [effectiveShiftId],
   });
   const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
   const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
@@ -181,20 +280,24 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
                 tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                 menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
-                id_shift, bulan, tahun, id_sesi, mode_tugas
-              ) VALUES (?, ?, ?, ?, '', '', ?, 'Tidak Hadir', ?, 'Koreksi Admin', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
+                id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
+              ) VALUES (?, ?, ?, ?, '', '', ?, 'Tidak Hadir', ?, 'Koreksi Admin', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?);`,
         args: [
-          input.tanggal,
+          date,
           idUnik,
           nama,
           divisi,
           input.jenis_koreksi,
           input.keterangan_admin || input.jenis_koreksi,
           nowStr,
-          idShift,
+          effectiveShiftId,
           bulanStr,
           tahunNum,
           idSesi,
+          modeTugas,
+          backupId,
+          originalId,
+          modeTugas === "PENGGANTI" ? date : "",
         ],
       });
     }
@@ -209,7 +312,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     const isOvernightShift = shiftOutMin < shiftInMin;
 
     const nextDate = (() => {
-      const d = new Date(input.tanggal);
+      const d = new Date(date);
       d.setDate(d.getDate() + 1);
       return d.toISOString().slice(0, 10);
     })();
@@ -220,7 +323,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       input.jenis_koreksi === "Terlambat"
     ) {
       scanKind = "Masuk";
-      checkInVal = `${input.tanggal} ${input.jam_koreksi}:00`;
+      checkInVal = `${date} ${input.jam_koreksi}:00`;
     } else if (
       input.jenis_koreksi === "Lupa Absen Pulang" ||
       input.jenis_koreksi === "Kendala Sistem - Jam Pulang"
@@ -229,7 +332,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       const outTimeMin = parseTimeToMinutes(input.jam_koreksi) ?? 0;
       const inTimeMin = parseTimeToMinutes(checkInVal) ?? shiftInMin;
       const isCrossDay = isOvernightShift || outTimeMin < inTimeMin;
-      const targetDate = isCrossDay ? nextDate : input.tanggal;
+      const targetDate = isCrossDay ? nextDate : date;
       checkOutVal = `${targetDate} ${input.jam_koreksi}:00`;
     }
 
@@ -255,7 +358,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
           duration += 1440;
         } else if (
           checkOutVal.startsWith(nextDate) &&
-          checkInVal.startsWith(input.tanggal)
+          checkInVal.startsWith(date)
         ) {
           duration += 1440;
         }
@@ -299,10 +402,10 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
                 tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                 menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
-                id_shift, bulan, tahun, id_sesi, mode_tugas
-              ) VALUES (?, ?, ?, ?, ?, ?, 'Hadir', ?, ?, 'Koreksi Admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NORMAL');`,
+                id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
+              ) VALUES (?, ?, ?, ?, ?, ?, 'Hadir', ?, ?, 'Koreksi Admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         args: [
-          input.tanggal,
+          date,
           idUnik,
           nama,
           divisi,
@@ -316,19 +419,28 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
           calculatedWork,
           calculatedOvertime,
           calculatedShortage,
-          idShift,
+          effectiveShiftId,
           bulanStr,
           tahunNum,
           idSesi,
+          modeTugas,
+          backupId,
+          originalId,
+          modeTugas === "PENGGANTI" ? date : "",
         ],
       });
     }
   }
 
-  // 5. Audit Log ke log_scan (Deduplikasi log koreksi sebelumnya pada tanggal & jenis scan yang sama)
+  // 5. Audit Log ke log_scan (Deduplikasi log koreksi sebelumnya pada tanggal, karyawan, dan referensi)
   await db.execute({
-    sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND (jenis_scan = ? OR sumber_data = 'Koreksi Admin');",
-    args: [input.tanggal, idUnik, scanKind],
+    sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND (jenis_scan = ? OR sumber_data = 'Koreksi Admin') AND COALESCE(id_referensi, '') = ?;",
+    args: [
+      date,
+      idUnik,
+      scanKind,
+      modeTugas === "PENGGANTI" ? backupId : idReferensi,
+    ],
   });
 
   await db.execute({
@@ -339,7 +451,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Koreksi Admin', ?, ?, ?, ?, ?, ?);`,
     args: [
       nowStr,
-      input.tanggal,
+      date,
       input.jam_koreksi ? `${input.jam_koreksi}:00` : "00:00:00",
       idUnik,
       nama,
@@ -349,7 +461,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       input.keterangan_admin || `Koreksi Admin - ${input.jenis_koreksi}`,
       calculatedLate,
       calculatedEarly,
-      idReferensi,
+      modeTugas === "PENGGANTI" ? backupId : idReferensi,
       input.kode_operator,
     ],
   });

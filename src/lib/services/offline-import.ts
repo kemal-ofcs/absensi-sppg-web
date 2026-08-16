@@ -40,6 +40,15 @@ function timestamp(date: string, time: string, nextDay = false) {
   return `${value.toISOString().slice(0, 10)} ${normalized}`;
 }
 
+function normalizeDate(raw: string): string {
+  const clean = raw.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(clean)) {
+    const [d, m, y] = clean.split("/");
+    return `${y}-${m}-${d}`;
+  }
+  return clean;
+}
+
 async function processRow(
   transaction: Transaction,
   row: OfflineImportRow,
@@ -47,6 +56,7 @@ async function processRow(
 ) {
   const eventKey = `IMP-${randomUUID()}`;
   const now = new Date().toISOString();
+  const date = normalizeDate(row.tanggal);
   const fail = async (message: string) => {
     await transaction.execute({
       sql: `INSERT INTO import_offline (event_key, timestamp_input, tanggal, id_unik,
@@ -56,7 +66,7 @@ async function processRow(
       args: [
         eventKey,
         now,
-        row.tanggal,
+        date,
         row.id_unik,
         row.nama ?? "",
         row.divisi ?? "",
@@ -72,7 +82,7 @@ async function processRow(
     });
     return { sukses: false, eventKey, pesan: message };
   };
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.tanggal) || !row.id_unik)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !row.id_unik)
     return fail("Tanggal atau ID tidak valid.");
   if (
     (!row.jam_masuk && !row.jam_pulang) ||
@@ -97,7 +107,7 @@ async function processRow(
   const backupResult = await transaction.execute({
     sql: `SELECT * FROM backup_karyawan WHERE tanggal_tugas = ? AND status_tugas = 'Aktif'
           AND (id_karyawan_asal = ? OR id_karyawan_pengganti = ?) LIMIT 1;`,
-    args: [row.tanggal, id, id],
+    args: [date, id, id],
   });
   const backup = backupResult.rows[0];
   if (backup && String(backup.id_karyawan_asal) === id)
@@ -105,15 +115,70 @@ async function processRow(
       `Import ditolak: karyawan sedang digantikan. ID Backup: ${backup.id_backup}`,
     );
   if (backup) {
-    mode = "PENGGANTI";
-    backupId = String(backup.id_backup);
-    originalId = String(backup.id_karyawan_asal);
-    shiftId = Number(backup.id_shift_backup);
+    const backupShiftId = Number(backup.id_shift_backup);
+    const normalShiftId = Number(employee.id_shift);
+
+    const backupShiftRes = await transaction.execute({
+      sql: "SELECT jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+      args: [backupShiftId],
+    });
+    const normalShiftRes = await transaction.execute({
+      sql: "SELECT jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+      args: [normalShiftId],
+    });
+    const bShift = backupShiftRes.rows[0];
+    const nShift = normalShiftRes.rows[0];
+
+    const checkTime = row.jam_masuk || row.jam_pulang || "";
+    const isCheckIn = Boolean(row.jam_masuk);
+
+    const checkShiftMatch = (s: Record<string, unknown> | undefined) => {
+      if (!s || !checkTime) return false;
+      const parseMin = (t: string) => {
+        const parts = t.trim().split(":");
+        return Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+      };
+      const userMin = parseMin(checkTime);
+      if (isCheckIn) {
+        const sIn = parseMin(String(s.jam_masuk || "07:00"));
+        let diff = userMin - sIn;
+        if (diff < -720) diff += 1440;
+        if (diff > 720) diff -= 1440;
+        return (
+          diff >= -Number(s.awal_absen_menit ?? 60) &&
+          diff <=
+            Number(s.batas_masuk_menit ?? 360) +
+              Number(s.toleransi_masuk_menit ?? 0)
+        );
+      }
+      const sOut = parseMin(String(s.jam_pulang || "15:00"));
+      let diff = userMin - sOut;
+      if (diff < -720) diff += 1440;
+      if (diff > 720) diff -= 1440;
+      return diff >= -120 && diff <= Number(s.batas_pulang_menit ?? 360);
+    };
+
+    const matchesBackup = checkShiftMatch(
+      bShift as Record<string, unknown> | undefined,
+    );
+    const matchesNormal = checkShiftMatch(
+      nShift as Record<string, unknown> | undefined,
+    );
+
+    if (matchesBackup && !matchesNormal) {
+      mode = "PENGGANTI";
+      backupId = String(backup.id_backup);
+      originalId = String(backup.id_karyawan_asal);
+      shiftId = backupShiftId;
+    } else {
+      mode = "NORMAL";
+      shiftId = normalShiftId;
+    }
   }
   const sessionId =
     mode === "PENGGANTI"
       ? `${backupId}-PENGGANTI-${id}`
-      : `NORMAL-${row.tanggal.replaceAll("-", "")}-${id}-${shiftId}`;
+      : `NORMAL-${date.replaceAll("-", "")}-${id}-${shiftId}`;
   const existingResult = await transaction.execute({
     sql: "SELECT * FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
     args: [sessionId],
@@ -122,14 +187,15 @@ async function processRow(
   if (existing && String(existing.sumber) === "Koreksi Admin")
     return fail("Data sudah dikoreksi admin; import tidak boleh menimpa.");
   const checkIn = row.jam_masuk
-    ? timestamp(row.tanggal, row.jam_masuk)
+    ? timestamp(date, row.jam_masuk)
     : String(existing?.jam_masuk ?? "");
   const nextDay = Boolean(
     row.jam_masuk && row.jam_pulang && row.jam_pulang < row.jam_masuk,
   );
   const checkOut = row.jam_pulang
-    ? timestamp(row.tanggal, row.jam_pulang, nextDay)
+    ? timestamp(date, row.jam_pulang, nextDay)
     : String(existing?.jam_pulang ?? "");
+
   const statusAttendance = row.status_kehadiran?.trim() || "Hadir";
   const statusRecord =
     row.status_absen?.trim() ||
@@ -212,7 +278,7 @@ async function processRow(
   worked = worked > 0 ? Math.max(0, worked - breakMinutes) : 0;
   const overtime = Math.max(0, worked - normal);
   const shortage = checkIn && checkOut ? Math.max(0, normal - worked) : 0;
-  const [year, month] = row.tanggal.split("-").map(Number);
+  const [year, month] = date.split("-").map(Number);
   await transaction.execute({
     sql: `INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi,
       jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber,
@@ -228,7 +294,7 @@ async function processRow(
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
     args: [
-      row.tanggal,
+      date,
       id,
       name,
       division,
@@ -250,7 +316,7 @@ async function processRow(
       mode,
       backupId,
       originalId,
-      row.tanggal,
+      mode === "PENGGANTI" ? date : "",
     ],
   });
   for (const [kind, time] of [
@@ -259,8 +325,8 @@ async function processRow(
   ] as const) {
     if (!time) continue;
     await transaction.execute({
-      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = 'Import Offline';",
-      args: [row.tanggal, id, kind],
+      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND COALESCE(id_referensi, '') = ? AND sumber_data = 'Import Offline';",
+      args: [date, id, kind, backupId],
     });
     await transaction.execute({
       sql: `INSERT INTO log_scan (timestamp_scan, tanggal_kerja, jam_scan,
@@ -270,7 +336,7 @@ async function processRow(
         'Import Offline', ?, ?, ?, ?, ?, ?);`,
       args: [
         time,
-        row.tanggal,
+        date,
         time.slice(11),
         id,
         name,
@@ -287,6 +353,7 @@ async function processRow(
       ],
     });
   }
+
   await transaction.execute({
     sql: `INSERT INTO import_offline (event_key, timestamp_input, tanggal, id_unik,
       nama, divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen,
@@ -295,7 +362,7 @@ async function processRow(
     args: [
       eventKey,
       now,
-      row.tanggal,
+      date,
       id,
       name,
       division,
@@ -321,6 +388,7 @@ export async function prosesImportOffline(
   operator: string,
 ) {
   await ensureDbInitialized();
+
   const results = [];
   for (const row of rows) {
     const transaction = await db.transaction("write");

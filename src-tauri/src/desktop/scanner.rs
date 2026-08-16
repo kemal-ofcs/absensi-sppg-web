@@ -346,24 +346,72 @@ fn find_effective_backup(
 
     for (id, task_date, original_id, replacement_name, replacement_id, shift_id) in candidates {
         let shift = load_shift(transaction, shift_id)?;
-        let matches = match shift.as_ref() {
-            Some(value) => determine_work_date(moment, &value.policy)
-                .map(|date| date == task_date)
-                .unwrap_or(task_date == moment.date),
-            None => task_date == moment.date,
+        let Some(shift_val) = shift.as_ref() else {
+            continue;
         };
-        if matches {
-            return Ok(Some(Backup {
-                id,
-                task_date,
-                original_id,
-                replacement_name,
-                replacement_id,
-                shift_id,
-                shift,
-            }));
+
+        if original_id == employee_id {
+            let matches = determine_work_date(moment, &shift_val.policy)
+                .map(|date| date == task_date)
+                .unwrap_or(task_date == moment.date);
+            if matches {
+                return Ok(Some(Backup {
+                    id,
+                    task_date,
+                    original_id,
+                    replacement_name,
+                    replacement_id,
+                    shift_id,
+                    shift,
+                }));
+            }
+            continue;
+        }
+
+        // Employee is replacement_id (pengganti)
+        let backup_session_id = format!("{id}-PENGGANTI-{employee_id}");
+        let has_open_checkin: bool = transaction
+            .query_row(
+                "SELECT 1 FROM absensi_harian WHERE id_sesi = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '') LIMIT 1;",
+                [&backup_session_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap_or(None)
+            .unwrap_or(false);
+
+        if has_open_checkin {
+            let work_date = determine_work_date(moment, &shift_val.policy)
+                .unwrap_or_else(|_| task_date.clone());
+            if work_date == task_date || task_date == moment.date {
+                return Ok(Some(Backup {
+                    id,
+                    task_date,
+                    original_id,
+                    replacement_name,
+                    replacement_id,
+                    shift_id,
+                    shift,
+                }));
+            }
+        }
+
+        let calculated_work_date = determine_work_date(moment, &shift_val.policy);
+        if let Ok(calc_date) = calculated_work_date {
+            if calc_date == task_date {
+                return Ok(Some(Backup {
+                    id,
+                    task_date,
+                    original_id,
+                    replacement_name,
+                    replacement_id,
+                    shift_id,
+                    shift,
+                }));
+            }
         }
     }
+
     Ok(None)
 }
 
