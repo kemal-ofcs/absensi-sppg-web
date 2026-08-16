@@ -20,6 +20,7 @@ interface ShiftDraft {
   offset_istirahat_mulai?: number;
   offset_generate_alfa?: number;
   buffer_shift_malam_menit?: number;
+  izinkan_multi_sesi?: number | boolean;
 }
 
 export function createEmployeeIdentifiers(uuid: string) {
@@ -62,6 +63,7 @@ export function validateShiftDraft(data: ShiftDraft) {
   if (!Number.isInteger(data.kode_shift) || data.kode_shift < 1) {
     errors.kode_shift = "Kode shift harus berupa angka positif.";
   }
+
   if (data.nama_shift.trim().length < 2) {
     errors.nama_shift = "Nama shift minimal 2 karakter.";
   }

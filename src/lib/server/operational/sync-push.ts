@@ -352,8 +352,8 @@ async function applyShift(
           kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
           batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
           istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-          offset_generate_alfa, buffer_shift_malam_menit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
         args: [
           code,
@@ -369,6 +369,7 @@ async function applyShift(
           number(payload, "offset_istirahat_mulai", 240),
           number(payload, "offset_generate_alfa", 180),
           number(payload, "buffer_shift_malam_menit", 120),
+          number(payload, "izinkan_multi_sesi", 0),
         ],
       });
       serverId = Number(result.lastInsertRowid);
@@ -382,7 +383,8 @@ async function applyShift(
           nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
           awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
           jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
-          offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?
+          offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?,
+          izinkan_multi_sesi = ?
         WHERE id_shift = ?;
       `,
       args: [
@@ -398,6 +400,7 @@ async function applyShift(
         number(payload, "offset_istirahat_mulai", 240),
         number(payload, "offset_generate_alfa", 180),
         number(payload, "buffer_shift_malam_menit", 120),
+        number(payload, "izinkan_multi_sesi", 0),
         serverId,
       ],
     });
@@ -417,6 +420,7 @@ async function applyShift(
   } else {
     throw new Error("Operasi Shift tidak dikenali.");
   }
+
   const changeEvent = { ...event, entityKey };
   const revision = await appendChange(transaction, actor, changeEvent, payload);
   return {

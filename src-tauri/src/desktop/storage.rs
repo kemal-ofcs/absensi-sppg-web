@@ -111,8 +111,10 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         batas_pulang_menit INTEGER DEFAULT 240,
         offset_istirahat_mulai INTEGER DEFAULT 240,
         offset_generate_alfa INTEGER DEFAULT 180,
-        buffer_shift_malam_menit INTEGER DEFAULT 120
+        buffer_shift_malam_menit INTEGER DEFAULT 120,
+        izinkan_multi_sesi INTEGER DEFAULT 0
       );
+
       CREATE TABLE IF NOT EXISTS setting_gex_system (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -288,6 +290,22 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       "#,
         )
         .map_err(|_| "Schema keamanan Desktop tidak dapat diinisialisasi.".to_owned())?;
+
+    let has_multi_session: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('tbl_shift') WHERE name = 'izinkan_multi_sesi';",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !has_multi_session {
+        let _ = connection.execute(
+            "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+            [],
+        );
+    }
+
     Ok(())
 }
 
@@ -299,6 +317,7 @@ pub fn save_credential_index(
     let transaction = connection
         .transaction()
         .map_err(|_| CommandError::internal())?;
+
     transaction
         .execute(
             r#"

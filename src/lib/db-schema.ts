@@ -105,8 +105,10 @@ export async function initDatabaseSchema(client: Client) {
         batas_pulang_menit INTEGER DEFAULT 240,
         offset_istirahat_mulai INTEGER DEFAULT 240,
         offset_generate_alfa INTEGER DEFAULT 180,
-        buffer_shift_malam_menit INTEGER DEFAULT 120
+        buffer_shift_malam_menit INTEGER DEFAULT 120,
+        izinkan_multi_sesi INTEGER DEFAULT 0
       );
+
     `);
 
     // 5. setting_gex_system

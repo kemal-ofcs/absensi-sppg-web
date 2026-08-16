@@ -303,7 +303,38 @@ fn load_shift(transaction: &Transaction<'_>, shift_id: i64) -> Result<Option<Shi
         .map_err(|_| CommandError::internal())
 }
 
+fn is_check_in_window_matched(time_str: &str, shift: &Shift) -> bool {
+    let parse_min = |val: &str| -> i64 {
+        let clean = if val.contains(' ') {
+            val.split(' ').nth(1).unwrap_or(val)
+        } else if val.contains('T') {
+            val.split('T').nth(1).unwrap_or(val)
+        } else {
+            val
+        };
+        clean
+            .split(':')
+            .filter_map(|p| p.parse::<i64>().ok())
+            .take(2)
+            .enumerate()
+            .map(|(idx, v)| if idx == 0 { v * 60 } else { v })
+            .sum()
+    };
+    let user_min = parse_min(time_str);
+    let shift_in = parse_min(&shift.policy.start);
+    let mut diff = user_min - shift_in;
+    if diff < -720 {
+        diff += 1440;
+    }
+    if diff > 720 {
+        diff -= 1440;
+    }
+    diff >= -shift.policy.early_window_minutes
+        && diff <= (shift.policy.normal_entry_minutes + shift.policy.late_tolerance_minutes)
+}
+
 fn find_effective_backup(
+
     transaction: &Transaction<'_>,
     employee_id: &str,
     moment: &LocalMoment,
@@ -720,33 +751,147 @@ fn submit_internal(
         }
     }
 
-    let session = if let Some(backup) = backup
+    let (session, shift) = if let Some(backup) = backup
         .as_ref()
         .filter(|value| value.replacement_id == employee.id && value.original_id != employee.id)
     {
-        Session {
-            mode: "PENGGANTI",
-            shift_id: backup.shift_id,
-            backup_id: backup.id.clone(),
-            original_employee_id: backup.original_id.clone(),
-            task_date: backup.task_date.clone(),
-        }
+        (
+            Session {
+                mode: "PENGGANTI",
+                shift_id: backup.shift_id,
+                backup_id: backup.id.clone(),
+                original_employee_id: backup.original_id.clone(),
+                task_date: backup.task_date.clone(),
+            },
+            backup.shift.clone(),
+        )
     } else {
-        Session {
-            mode: "NORMAL",
-            shift_id: employee.shift_id,
-            backup_id: String::new(),
-            original_employee_id: String::new(),
-            task_date: String::new(),
+        let open_session: Option<(String, i64, String, String, String, String, String)> = transaction
+            .query_row(
+                r#"
+                SELECT id_sesi, id_shift, tanggal, jam_masuk, mode_tugas, id_backup, id_karyawan_asal
+                FROM absensi_harian
+                WHERE id_karyawan = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '')
+                  AND (sumber IS NULL OR sumber != 'Koreksi Admin')
+                ORDER BY tanggal DESC LIMIT 1;
+                "#,
+                params![employee.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_else(|| "NORMAL".to_owned()),
+                        row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|_| CommandError::internal())?;
+
+        if let Some(open) = open_session {
+            let open_shift = load_shift(&transaction, open.1)?;
+            (
+                Session {
+                    mode: if open.4 == "PENGGANTI" { "PENGGANTI" } else { "NORMAL" },
+                    shift_id: open.1,
+                    backup_id: open.5,
+                    original_employee_id: open.6,
+                    task_date: open.2,
+                },
+                open_shift,
+            )
+        } else {
+            let base_date = match base_shift.as_ref() {
+                Some(s) => match determine_work_date(&moment, &s.policy) {
+                    Ok(d) => d,
+                    Err(_) => moment.date.clone(),
+                },
+                None => moment.date.clone(),
+            };
+            let base_session_id = format!(
+                "NORMAL-{}-{}-{}",
+                base_date.replace('-', ""),
+                employee.id,
+                employee.shift_id
+            );
+            let base_completed: bool = transaction
+                .query_row(
+                    "SELECT 1 FROM absensi_harian WHERE id_sesi = ? AND jam_masuk != '' AND jam_pulang != '' LIMIT 1;",
+                    params![base_session_id],
+                    |_| Ok(true),
+                )
+                .optional()
+                .map_err(|_| CommandError::internal())?
+                .unwrap_or(false);
+
+            if base_completed {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT id_shift FROM tbl_shift WHERE id_shift != ? AND kode_shift != 4 AND jam_kerja_normal_menit > 0 AND (izinkan_multi_sesi = 1 OR izinkan_multi_sesi = '1' OR izinkan_multi_sesi = 'true') ORDER BY id_shift ASC;"
+                    )
+                    .map_err(|_| CommandError::internal())?;
+
+                let candidate_shift_ids = statement
+                    .query_map(params![employee.shift_id], |row| row.get::<_, i64>(0))
+                    .map_err(|_| CommandError::internal())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| CommandError::internal())?;
+                drop(statement);
+
+                let mut matched_shift = None;
+                let mut matched_shift_id = employee.shift_id;
+
+                for c_id in candidate_shift_ids {
+                    if let Ok(Some(cand_shift)) = load_shift(&transaction, c_id) {
+                        if is_check_in_window_matched(&moment.time, &cand_shift) {
+                            matched_shift = Some(cand_shift);
+                            matched_shift_id = c_id;
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(cand_shift) = matched_shift {
+                    (
+                        Session {
+                            mode: "NORMAL",
+                            shift_id: matched_shift_id,
+                            backup_id: String::new(),
+                            original_employee_id: String::new(),
+                            task_date: String::new(),
+                        },
+                        Some(cand_shift),
+                    )
+                } else {
+                    (
+                        Session {
+                            mode: "NORMAL",
+                            shift_id: employee.shift_id,
+                            backup_id: String::new(),
+                            original_employee_id: String::new(),
+                            task_date: String::new(),
+                        },
+                        base_shift,
+                    )
+                }
+            } else {
+                (
+                    Session {
+                        mode: "NORMAL",
+                        shift_id: employee.shift_id,
+                        backup_id: String::new(),
+                        original_employee_id: String::new(),
+                        task_date: String::new(),
+                    },
+                    base_shift,
+                )
+            }
         }
     };
-    let shift = match backup
-        .as_ref()
-        .filter(|value| value.replacement_id == employee.id)
-    {
-        Some(value) => value.shift.clone(),
-        None => base_shift,
-    };
+
     let Some(shift) = shift else {
         let note = format!("Konfigurasi shift {} tidak ditemukan", session.shift_id);
         let mut log = rejected_log(
@@ -771,6 +916,7 @@ fn submit_internal(
             Some(session.mode),
         ));
     };
+
     let work_date = match determine_work_date(&moment, &shift.policy) {
         Ok(value) => value,
         Err(error) => {
@@ -798,6 +944,7 @@ fn submit_internal(
             ));
         }
     };
+
     let session_id = if session.mode == "PENGGANTI" {
         format!("{}-PENGGANTI-{}", session.backup_id, employee.id)
     } else {

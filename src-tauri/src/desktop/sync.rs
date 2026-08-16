@@ -87,11 +87,13 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "offset_istirahat_mulai",
             "offset_generate_alfa",
             "buffer_shift_malam_menit",
+            "izinkan_multi_sesi",
         ],
         conflict_column: "id_shift",
         entity_column: "id_shift",
         delete_missing: true,
     },
+
     SnapshotTable {
         payload_key: "settings",
         domain: "setting",

@@ -65,6 +65,11 @@ function parseDraft(value: unknown): ShiftInput {
     offset_istirahat_mulai: Number(draft.offset_istirahat_mulai ?? 240),
     offset_generate_alfa: Number(draft.offset_generate_alfa ?? 180),
     buffer_shift_malam_menit: Number(draft.buffer_shift_malam_menit ?? 120),
+    izinkan_multi_sesi:
+      draft.izinkan_multi_sesi === true ||
+      Number(draft.izinkan_multi_sesi) === 1
+        ? 1
+        : 0,
   };
   const message = firstValidationMessage(validateShiftDraft(parsed));
   if (message) throw new ApiRequestError(message, 400);
@@ -82,6 +87,7 @@ export async function POST(request: NextRequest) {
   try {
     const actor = await prepare(request);
     const body = await readJsonBody<ShiftMutationBody>(request);
+
     const draft = parseDraft(body.draft);
     const result = await tambahShift(draft);
     const revision = await recordOperationalChange(getServerDatabase(), {

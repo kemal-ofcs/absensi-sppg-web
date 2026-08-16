@@ -439,4 +439,42 @@ describe("guard dan konsistensi integrasi Web", () => {
     expect(await tableCount("log_scan")).toBe(0);
     expect(await tableCount("sync_change_log")).toBe(0);
   });
+
+  test("auto multi-sesi aktif ketika shift target memiliki izinkan_multi_sesi = 1", async () => {
+    // Shift 1: 07:00 - 15:00, Shift 2: 15:00 - 23:00 (izinkan_multi_sesi = 1)
+    await client.execute(
+      "UPDATE tbl_shift SET izinkan_multi_sesi = 1 WHERE kode_shift = 2;",
+    );
+
+    // 1. Scan Masuk Shift 1
+    const in1 = await scanAt(jakarta("2026-08-12", "07:00"));
+    expect(in1.sukses).toBe(true);
+    expect(in1.shiftEfektif).toBe(1);
+
+    // 2. Scan Pulang Shift 1
+    const out1 = await scanAt(jakarta("2026-08-12", "15:00"));
+    expect(out1.sukses).toBe(true);
+    expect(out1.shiftEfektif).toBe(1);
+
+    // 3. Scan Masuk Shift 2 (Auto Multi-Sesi)
+    const in2 = await scanAt(jakarta("2026-08-12", "15:02"));
+    expect(in2.sukses).toBe(true);
+    expect(in2.shiftEfektif).toBe(2);
+    expect(in2.idSesi).toBe(`NORMAL-20260812-${EMPLOYEE.id}-2`);
+  });
+
+  test("scan ulang setelah pulang ditolak aman jika shift target izinkan_multi_sesi = 0", async () => {
+    // Pastikan semua shift izinkan_multi_sesi = 0
+    await client.execute("UPDATE tbl_shift SET izinkan_multi_sesi = 0;");
+
+    // 1. Scan Masuk Shift 1
+    await scanAt(jakarta("2026-08-12", "07:00"));
+    // 2. Scan Pulang Shift 1
+    await scanAt(jakarta("2026-08-12", "15:00"));
+
+    // 3. Scan Ulang tidak sengaja jam 15:02 (bukan multi-sesi)
+    const res = await scanAt(jakarta("2026-08-12", "15:02"));
+    expect(res.sukses).toBe(false);
+    expect(res.pesan).toContain("Scan pulang sudah tercatat");
+  });
 });

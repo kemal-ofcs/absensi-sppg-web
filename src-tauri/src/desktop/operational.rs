@@ -597,6 +597,15 @@ fn insert_shift(
     let break_offset = integer(draft, "offset_istirahat_mulai", 240);
     let alfa_offset = integer(draft, "offset_generate_alfa", 180);
     let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
+    let multi_session = if draft
+        .get("izinkan_multi_sesi")
+        .map(|v| v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1)
+        .unwrap_or(false)
+    {
+        1
+    } else {
+        0
+    };
 
     transaction
         .execute(
@@ -605,8 +614,9 @@ fn insert_shift(
         id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
         awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
         jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
-        offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
+        izinkan_multi_sesi
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       "#,
             params![
                 id,
@@ -623,6 +633,7 @@ fn insert_shift(
                 break_offset,
                 alfa_offset,
                 night_buffer,
+                multi_session,
             ],
         )
         .map_err(|error| {
@@ -660,6 +671,15 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
     let break_offset = integer(draft, "offset_istirahat_mulai", 240);
     let alfa_offset = integer(draft, "offset_generate_alfa", 180);
     let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
+    let multi_session = if draft
+        .get("izinkan_multi_sesi")
+        .map(|v| v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1)
+        .unwrap_or(false)
+    {
+        1
+    } else {
+        0
+    };
 
     transaction
         .execute(
@@ -668,7 +688,8 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
         nama_shift = ?, jam_masuk = ?, jam_pulang = ?,
         awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
         jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
-        offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?
+        offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?,
+        izinkan_multi_sesi = ?
       WHERE id_shift = ?;
       "#,
             params![
@@ -684,10 +705,12 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
                 break_offset,
                 alfa_offset,
                 night_buffer,
+                multi_session,
                 id,
             ],
         )
         .map_err(|_| CommandError::internal())?;
+
     sync::enqueue(
         &transaction,
         &client_id,

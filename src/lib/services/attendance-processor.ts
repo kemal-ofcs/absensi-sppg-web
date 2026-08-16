@@ -224,22 +224,103 @@ async function processInTransaction(
     });
   }
 
-  const session: SessionContext = backup
-    ? {
-        modeTugas: "PENGGANTI",
-        shiftEfektif: Number(backup.row.id_shift_backup),
-        idBackup: String(backup.row.id_backup),
-        idKaryawanAsal: String(backup.row.id_karyawan_asal),
-        tanggalTugas: String(backup.row.tanggal_tugas),
-      }
-    : {
-        modeTugas: "NORMAL",
-        shiftEfektif: employee.idShift,
-        idBackup: "",
-        idKaryawanAsal: "",
-        tanggalTugas: "",
+  let session: SessionContext;
+  let shiftRow: Row | null;
+
+  if (backup) {
+    session = {
+      modeTugas: "PENGGANTI",
+      shiftEfektif: Number(backup.row.id_shift_backup),
+      idBackup: String(backup.row.id_backup),
+      idKaryawanAsal: String(backup.row.id_karyawan_asal),
+      tanggalTugas: String(backup.row.tanggal_tugas),
+    };
+    shiftRow = backup.shiftRow ?? baseShiftRow;
+  } else {
+    const openRes = await transaction.execute({
+      sql: `SELECT id_sesi, id_shift, tanggal, jam_masuk, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
+            FROM absensi_harian
+            WHERE id_karyawan = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '')
+              AND (sumber IS NULL OR sumber != 'Koreksi Admin')
+            ORDER BY tanggal DESC LIMIT 1;`,
+      args: [employee.id],
+    });
+    const openSession = openRes.rows[0] as Row | undefined;
+
+    if (openSession) {
+      const openShiftId = Number(openSession.id_shift);
+      const openShiftRow = await getShiftRow(transaction, openShiftId);
+      session = {
+        modeTugas:
+          (openSession.mode_tugas as "NORMAL" | "PENGGANTI") || "NORMAL",
+        shiftEfektif: openShiftId,
+        idBackup: String(openSession.id_backup || ""),
+        idKaryawanAsal: String(openSession.id_karyawan_asal || ""),
+        tanggalTugas: String(
+          openSession.tanggal_tugas || openSession.tanggal || "",
+        ),
       };
-  const shiftRow = backup?.shiftRow ?? baseShiftRow;
+      shiftRow = openShiftRow;
+    } else {
+      const baseDate = safeWorkDate(waktuScan, baseShiftRow);
+      const baseIdSesi = `NORMAL-${baseDate.replaceAll("-", "")}-${employee.id}-${employee.idShift}`;
+      const baseSessionRes = await transaction.execute({
+        sql: "SELECT jam_masuk, jam_pulang FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
+        args: [baseIdSesi],
+      });
+      const baseCompleted =
+        baseSessionRes.rows.length > 0 &&
+        Boolean(baseSessionRes.rows[0]?.jam_masuk) &&
+        Boolean(baseSessionRes.rows[0]?.jam_pulang);
+
+      if (baseCompleted) {
+        const allShiftsRes = await transaction.execute({
+          sql: `SELECT * FROM tbl_shift
+                WHERE id_shift != ? AND kode_shift != 4 AND jam_kerja_normal_menit > 0
+                  AND (izinkan_multi_sesi = 1 OR izinkan_multi_sesi = '1' OR izinkan_multi_sesi = 'true')
+                ORDER BY id_shift ASC;`,
+          args: [employee.idShift],
+        });
+
+        let matchedShiftRow: Row | null = null;
+        for (const cand of allShiftsRes.rows as Row[]) {
+          if (isCheckInWindowMatch(waktuScan, cand)) {
+            matchedShiftRow = cand;
+            break;
+          }
+        }
+
+        if (matchedShiftRow) {
+          session = {
+            modeTugas: "NORMAL",
+            shiftEfektif: Number(matchedShiftRow.id_shift),
+            idBackup: "",
+            idKaryawanAsal: "",
+            tanggalTugas: "",
+          };
+          shiftRow = matchedShiftRow;
+        } else {
+          session = {
+            modeTugas: "NORMAL",
+            shiftEfektif: employee.idShift,
+            idBackup: "",
+            idKaryawanAsal: "",
+            tanggalTugas: "",
+          };
+          shiftRow = baseShiftRow;
+        }
+      } else {
+        session = {
+          modeTugas: "NORMAL",
+          shiftEfektif: employee.idShift,
+          idBackup: "",
+          idKaryawanAsal: "",
+          tanggalTugas: "",
+        };
+        shiftRow = baseShiftRow;
+      }
+    }
+  }
 
   if (!shiftRow) {
     return logKnownRejection(transaction, {
@@ -258,6 +339,7 @@ async function processInTransaction(
 
   let shiftPolicy: ShiftTimePolicy;
   let tanggalKerja: string;
+
   try {
     shiftPolicy = mapShiftPolicy(shiftRow);
     tanggalKerja = tentukanTanggalKerja(waktuScan, shiftPolicy);
@@ -280,6 +362,7 @@ async function processInTransaction(
     session.modeTugas === "PENGGANTI"
       ? `${session.idBackup}-PENGGANTI-${employee.id}`
       : `NORMAL-${tanggalKerja.replaceAll("-", "")}-${employee.id}-${session.shiftEfektif}`;
+
   const cooldownSeconds = settingNumber(settings.anti_double_scan_seconds, 60);
   const latestScanResult = await transaction.execute({
     sql: `SELECT timestamp_scan FROM log_scan
@@ -406,6 +489,28 @@ async function processInTransaction(
   return resultFromDecision(keputusan, employee, session, idSesi);
 }
 
+function isCheckInWindowMatch(waktuScan: Date, shiftRow: Row | null): boolean {
+  if (!shiftRow) return false;
+  try {
+    const policy = mapShiftPolicy(shiftRow);
+    const timeStr = formatJamOperasional(waktuScan);
+    const parts = timeStr.trim().split(":");
+    const userMin = Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+    const shiftInParts = policy.jamMasuk.trim().split(":");
+    const shiftIn =
+      Number(shiftInParts[0] || 0) * 60 + Number(shiftInParts[1] || 0);
+    let diff = userMin - shiftIn;
+    if (diff < -720) diff += 1440;
+    if (diff > 720) diff -= 1440;
+    return (
+      diff >= -policy.awalAbsenMenit &&
+      diff <= policy.batasMasukMenit + policy.toleransiMasukMenit
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function findEffectiveBackup(
   transaction: Transaction,
   employeeId: string,
@@ -427,6 +532,7 @@ async function findEffectiveBackup(
       transaction,
       Number(candidate.id_shift_backup),
     );
+
     if (!shiftRow) {
       if (String(candidate.tanggal_tugas) === calendarDate) {
         return { row: candidate, shiftRow: null };

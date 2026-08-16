@@ -82,6 +82,7 @@ export default function ShiftPage() {
     offset_istirahat_mulai: 240,
     offset_generate_alfa: 180,
     buffer_shift_malam_menit: 120,
+    izinkan_multi_sesi: 0,
   });
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -175,6 +176,7 @@ export default function ShiftPage() {
       offset_istirahat_mulai: 240,
       offset_generate_alfa: 180,
       buffer_shift_malam_menit: 120,
+      izinkan_multi_sesi: 0,
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -211,6 +213,11 @@ export default function ShiftPage() {
       offset_istirahat_mulai: Number(row.offset_istirahat_mulai ?? 240),
       offset_generate_alfa: Number(row.offset_generate_alfa ?? 180),
       buffer_shift_malam_menit: Number(row.buffer_shift_malam_menit ?? 120),
+      izinkan_multi_sesi:
+        Number(row.izinkan_multi_sesi || 0) === 1 ||
+        row.izinkan_multi_sesi === true
+          ? 1
+          : 0,
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -468,11 +475,25 @@ export default function ShiftPage() {
                         {Number(row.offset_generate_alfa ?? 180)} menit
                       </span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between border-b border-slate-800/60 pb-1">
                       <span>Buffer Shift Malam:</span>
                       <span className="text-indigo-300">
                         {Number(row.buffer_shift_malam_menit ?? 120)} menit
                       </span>
+                    </div>
+                    <div className="flex justify-between items-center pt-0.5">
+                      <span>Auto Multi-Sesi:</span>
+                      {Number(row.izinkan_multi_sesi || 0) === 1 ||
+                      row.izinkan_multi_sesi === true ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 font-bold text-[10px] border border-emerald-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                          Aktif
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 font-medium text-[10px]">
+                          Nonaktif
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -503,6 +524,7 @@ export default function ShiftPage() {
               {errorMsg}
             </FeedbackBanner>
           ) : null}
+
           <form
             onSubmit={handleFormSubmit}
             className="space-y-4 text-xs font-mono max-h-[70vh] overflow-y-auto pr-1"
@@ -818,6 +840,41 @@ export default function ShiftPage() {
               </div>
             </div>
 
+            {/* Toggle Auto Multi-Sesi */}
+            <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-2xl flex items-center justify-between gap-3">
+              <div>
+                <label
+                  htmlFor="shift-multi-session-toggle"
+                  className="text-sm font-semibold text-slate-200 block"
+                >
+                  Izinkan Auto Multi-Sesi (Turun Shift)
+                </label>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                  Jika aktif, karyawan yang selesai bekerja pada shift ini dapat
+                  langsung scan masuk ke shift berikutnya secara otomatis tanpa
+                  form backup manual.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  id="shift-multi-session-toggle"
+                  type="checkbox"
+                  checked={
+                    Number(formData.izinkan_multi_sesi || 0) === 1 ||
+                    formData.izinkan_multi_sesi === true
+                  }
+                  onChange={(e) =>
+                    updateFormField(
+                      "izinkan_multi_sesi",
+                      e.target.checked ? 1 : 0,
+                    )
+                  }
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
             {/* Modal Action Buttons */}
             <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-2">
               {isEditing && editId ? (
@@ -872,6 +929,7 @@ export default function ShiftPage() {
               <p className="font-bold text-sm text-rose-300 flex items-center gap-2">
                 <span>⚠️</span> Hapus Shift {deleteConfirmShift.nama}?
               </p>
+
               <p className="text-xs text-rose-200/90 leading-relaxed font-sans">
                 Anda akan menghapus konfigurasi{" "}
                 <strong>

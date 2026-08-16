@@ -16,6 +16,7 @@ export interface ShiftInput {
   offset_istirahat_mulai?: number;
   offset_generate_alfa?: number;
   buffer_shift_malam_menit?: number;
+  izinkan_multi_sesi?: number | boolean;
 }
 
 /**
@@ -25,6 +26,7 @@ export function ubahJamKeMenit(
   nilaiJam: string | null | undefined,
 ): number | null {
   if (!nilaiJam) return null;
+
   const match = /^(\d{2}):(\d{2})(?::\d{2})?$/.exec(nilaiJam.trim());
   if (!match) return null;
   const jam = Number.parseInt(match[1], 10);
@@ -105,8 +107,8 @@ export async function tambahShift(data: ShiftInput) {
         kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
         batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
         istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-        offset_generate_alfa, buffer_shift_malam_menit
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     args: [
       data.kode_shift,
@@ -122,6 +124,9 @@ export async function tambahShift(data: ShiftInput) {
       data.offset_istirahat_mulai ?? 240,
       data.offset_generate_alfa ?? 180,
       data.buffer_shift_malam_menit ?? 120,
+      data.izinkan_multi_sesi === true || Number(data.izinkan_multi_sesi) === 1
+        ? 1
+        : 0,
     ],
   });
 
@@ -181,6 +186,14 @@ export async function updateShift(id_shift: number, data: Partial<ShiftInput>) {
   if (data.buffer_shift_malam_menit !== undefined) {
     updates.push("buffer_shift_malam_menit = ?");
     args.push(data.buffer_shift_malam_menit);
+  }
+  if (data.izinkan_multi_sesi !== undefined) {
+    updates.push("izinkan_multi_sesi = ?");
+    args.push(
+      data.izinkan_multi_sesi === true || Number(data.izinkan_multi_sesi) === 1
+        ? 1
+        : 0,
+    );
   }
 
   if (updates.length > 0) {

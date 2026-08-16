@@ -300,9 +300,16 @@ export async function runDatabaseMigrations(client: Client) {
     args: [OFFLINE_IMPORT_MIGRATION_VERSION, now],
   });
 
+  if (!(await hasColumn(client, "tbl_shift", "izinkan_multi_sesi"))) {
+    await client.execute(
+      "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+    );
+  }
+
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_master_operator_role_id ON master_operator(role_id);",
   );
+
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_role_permission_role ON role_permission(role_id, is_allowed);",
   );
