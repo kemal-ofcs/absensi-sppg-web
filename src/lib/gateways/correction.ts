@@ -42,3 +42,19 @@ export async function prosesKoreksiAdmin(
     id_referensi?: string;
   }>("/api/corrections", "POST", input);
 }
+
+export async function hapusKoreksiAdmin(idReferensi: string) {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; pesan: string }>(
+      "desktop_delete_correction",
+      { idReferensi },
+    );
+    if (result.sukses) kickSync();
+    return result;
+  }
+  return requestWebApi<{ sukses: boolean; pesan: string }>(
+    "/api/operational",
+    "DELETE",
+    { id_referensi: idReferensi },
+  );
+}

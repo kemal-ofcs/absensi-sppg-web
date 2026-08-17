@@ -28,6 +28,26 @@ export const PERMISSION_CATALOG = [
     name: "Lihat audit absensi",
     group: "Operasional",
   },
+  {
+    key: "operational.edit",
+    name: "Edit Data Operasional",
+    group: "Operasional",
+  },
+  {
+    key: "operational.delete",
+    name: "Hapus Data Operasional",
+    group: "Operasional",
+  },
+  {
+    key: "history.edit",
+    name: "Edit Riwayat Absensi",
+    group: "Riwayat",
+  },
+  {
+    key: "history.delete",
+    name: "Hapus Riwayat Absensi",
+    group: "Riwayat",
+  },
   { key: "operators.view", name: "Lihat Master Operator", group: "Sistem" },
   { key: "operators.manage", name: "Kelola Master Operator", group: "Sistem" },
   { key: "roles.manage", name: "Kelola Role & Akses", group: "Sistem" },
@@ -49,6 +69,13 @@ export const SUPERADMIN_ONLY_PERMISSIONS = new Set<PermissionKey>([
   "roles.manage",
 ]);
 
+export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
+  "history.edit",
+  "history.delete",
+  "operational.edit",
+  "operational.delete",
+]);
+
 export const SYSTEM_ROLE_KEYS = [
   "superadmin",
   "admin",
@@ -64,7 +91,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
 > = {
   admin: PERMISSION_CATALOG.filter(
     ({ key }) =>
-      !SUPERADMIN_ONLY_PERMISSIONS.has(key) && key !== "diagnostics.view",
+      !SUPERADMIN_ONLY_PERMISSIONS.has(key) &&
+      key !== "diagnostics.view" &&
+      !SENSITIVE_MUTATION_PERMISSIONS.has(key),
   ).map(({ key }) => key),
   operator: [
     "home.view",

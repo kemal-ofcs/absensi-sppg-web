@@ -14,10 +14,13 @@ import {
 } from "@/lib/gateways/backup";
 import {
   getDaftarKoreksi,
+  hapusKoreksiAdmin,
   prosesKoreksiAdmin,
 } from "@/lib/gateways/correction";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
 import {
+  getDaftarImport,
+  hapusImportOffline,
   type OfflineImportRow,
   prosesImportOffline,
 } from "@/lib/gateways/offline-import";
@@ -43,6 +46,46 @@ export default function OperationalPage() {
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
   const [busy, setBusy] = useState(false);
   const isSubmittingRef = useRef(false);
+
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    type?: "correction" | "import";
+    idReferensi: string;
+    title: string;
+    subtitle: string;
+  } | null>(null);
+
+  const handleDeleteConfirmed = async () => {
+    if (!deleteConfirm || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setBusy(true);
+    setFeedback(null);
+    try {
+      if (deleteConfirm.type === "import") {
+        const result = await hapusImportOffline(deleteConfirm.idReferensi);
+        setFeedback({
+          tone: result.sukses ? "success" : "error",
+          text: result.pesan,
+        });
+      } else {
+        const result = await hapusKoreksiAdmin(deleteConfirm.idReferensi);
+        setFeedback({
+          tone: result.sukses ? "success" : "error",
+          text: result.pesan,
+        });
+      }
+      setDeleteConfirm(null);
+      await load();
+    } catch (err: unknown) {
+      setFeedback({
+        tone: "error",
+        text:
+          err instanceof Error ? err.message : "Gagal menghapus data riwayat.",
+      });
+    } finally {
+      setBusy(false);
+      isSubmittingRef.current = false;
+    }
+  };
 
   // Form State: Koreksi Admin
   const [correction, setCorrection] = useState({
@@ -115,10 +158,14 @@ export default function OperationalPage() {
     }
   };
 
-  const load = () =>
+  const load = (currentTab: Tab = tab) =>
     run(async () => {
       const data =
-        tab === "backup" ? await getDaftarBackup() : await getDaftarKoreksi();
+        currentTab === "backup"
+          ? await getDaftarBackup()
+          : currentTab === "import"
+            ? await getDaftarImport()
+            : await getDaftarKoreksi();
       setRecords(data);
       setFeedback({
         tone: "success",
@@ -363,6 +410,7 @@ export default function OperationalPage() {
             onClick={() => {
               setTab(value);
               setRecords([]);
+              void load(value);
             }}
             className={`rounded-xl px-4 py-2.5 font-bold transition ${
               tab === value
@@ -952,12 +1000,17 @@ export default function OperationalPage() {
       <section className="app-panel rounded-3xl p-5 bg-slate-900/80 border border-slate-800 space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <h2 className="font-bold text-white text-sm">
-            📋 Log Riwayat {tab === "backup" ? "Backup" : "Koreksi Admin"}
+            📋 Log Riwayat{" "}
+            {tab === "backup"
+              ? "Backup"
+              : tab === "import"
+                ? "Import Manual"
+                : "Koreksi Admin"}
           </h2>
           <button
             type="button"
             disabled={busy}
-            onClick={load}
+            onClick={() => void load(tab)}
             className="rounded-xl border border-white/10 px-4 py-2 text-xs font-mono font-bold bg-slate-800 hover:bg-slate-700 text-sky-300 transition"
           >
             🔄 Muat Data
@@ -1049,6 +1102,9 @@ export default function OperationalPage() {
                   <th className="p-2.5">Jam Koreksi</th>
                   <th className="p-2.5">Keterangan</th>
                   <th className="p-2.5">Operator</th>
+                  {hasPermission(user, "operational.delete") ? (
+                    <th className="p-2.5 text-center">Aksi</th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
@@ -1073,6 +1129,119 @@ export default function OperationalPage() {
                     <td className="p-2.5 text-slate-400">
                       {String(item.kode_operator || "-")}
                     </td>
+                    {hasPermission(user, "operational.delete") ? (
+                      <td className="p-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDeleteConfirm({
+                              type: "correction",
+                              idReferensi: String(item.id_referensi || ""),
+                              title: `Hapus Koreksi: ${item.id_referensi}`,
+                              subtitle: `${item.nama} (${item.id_karyawan}) · ${item.jenis_koreksi} pada ${item.tanggal}`,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1 mx-auto"
+                          title="Hapus baris koreksi ini"
+                        >
+                          <span>🗑️</span>
+                          <span>Hapus</span>
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : tab === "import" && records.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono text-slate-300">
+              <thead className="border-b border-slate-800 text-slate-400 bg-slate-950/40">
+                <tr>
+                  <th className="p-2.5">Event Key</th>
+                  <th className="p-2.5">Tanggal</th>
+                  <th className="p-2.5">Karyawan</th>
+                  <th className="p-2.5">Divisi</th>
+                  <th className="p-2.5">Jam Masuk</th>
+                  <th className="p-2.5">Jam Pulang</th>
+                  <th className="p-2.5">Kehadiran</th>
+                  <th className="p-2.5">Status</th>
+                  <th className="p-2.5">Keterangan</th>
+                  <th className="p-2.5">Operator</th>
+                  {hasPermission(user, "operational.delete") ? (
+                    <th className="p-2.5 text-center">Aksi</th>
+                  ) : null}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {records.map((item) => (
+                  <tr key={String(item.event_key || item.id_import)}>
+                    <td
+                      className="p-2.5 text-sky-400 font-bold max-w-[140px] truncate"
+                      title={String(item.event_key || "")}
+                    >
+                      {String(item.event_key || item.id_import || "-")}
+                    </td>
+                    <td className="p-2.5">{String(item.tanggal)}</td>
+                    <td className="p-2.5 font-bold text-white">
+                      {String(item.nama)} ({String(item.id_unik)})
+                    </td>
+                    <td className="p-2.5 text-slate-400">
+                      {String(item.divisi || "-")}
+                    </td>
+                    <td className="p-2.5 text-emerald-300 font-bold">
+                      {String(item.jam_masuk || "-")}
+                    </td>
+                    <td className="p-2.5 text-amber-300 font-bold">
+                      {String(item.jam_pulang || "-")}
+                    </td>
+                    <td className="p-2.5">
+                      <span className="px-2 py-0.5 rounded bg-sky-950 border border-sky-800 text-sky-300 text-[11px]">
+                        {String(item.status_kehadiran || "Hadir")}
+                      </span>
+                    </td>
+                    <td className="p-2.5">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          item.status_proses === "Sudah Diproses" ||
+                          item.status_proses === "Berhasil"
+                            ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                            : "bg-rose-950 text-rose-300 border border-rose-800"
+                        }`}
+                      >
+                        {String(item.status_proses || item.status_absen || "-")}
+                      </span>
+                    </td>
+                    <td
+                      className="p-2.5 text-slate-400 max-w-xs truncate"
+                      title={String(item.pesan_error || item.keterangan || "")}
+                    >
+                      {String(item.pesan_error || item.keterangan || "-")}
+                    </td>
+                    <td className="p-2.5 text-slate-400">
+                      {String(item.kode_operator || "-")}
+                    </td>
+                    {hasPermission(user, "operational.delete") ? (
+                      <td className="p-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDeleteConfirm({
+                              type: "import",
+                              idReferensi: String(item.event_key || ""),
+                              title: `Hapus Import: ${item.event_key || item.id_import}`,
+                              subtitle: `${item.nama} (${item.id_unik}) · Masuk: ${item.jam_masuk || "-"}, Pulang: ${item.jam_pulang || "-"} pada ${item.tanggal}`,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1 mx-auto"
+                          title="Hapus baris import ini"
+                        >
+                          <span>🗑️</span>
+                          <span>Hapus</span>
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -1084,6 +1253,72 @@ export default function OperationalPage() {
           </p>
         )}
       </section>
+
+      {/* Modal Konfirmasi Hapus Riwayat */}
+      {deleteConfirm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-3xl border border-rose-800/60 bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="border-b border-slate-800 pb-3 flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-2xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-xl shrink-0">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Konfirmasi Hapus{" "}
+                  {deleteConfirm.type === "import"
+                    ? "Import Manual"
+                    : "Koreksi"}
+                </h3>
+                <p className="text-xs text-rose-300 mt-0.5 font-mono">
+                  {deleteConfirm.title}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800 text-xs font-mono text-slate-300 space-y-1">
+              <p>{deleteConfirm.subtitle}</p>
+              <p className="text-amber-400 text-[11px] pt-1">
+                Menghapus{" "}
+                {deleteConfirm.type === "import" ? "rekaman import" : "koreksi"}{" "}
+                akan membatalkan efeknya pada absensi harian dan mencatat jejak
+                audit operator.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold transition disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={handleDeleteConfirmed}
+                className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-mono font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {busy ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🗑️</span>
+                    <span>
+                      Ya, Hapus{" "}
+                      {deleteConfirm.type === "import" ? "Import" : "Koreksi"}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AppShell>
   );
 }

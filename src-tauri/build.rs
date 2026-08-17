@@ -28,9 +28,15 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_submit_qr_scan",
     "desktop_get_corrections",
     "desktop_create_correction",
+    "desktop_delete_correction",
+    "desktop_update_attendance",
+    "desktop_delete_attendance",
+    "desktop_delete_log_scan",
+    "desktop_delete_import_offline",
     "desktop_get_backups",
     "desktop_create_backup",
     "desktop_cancel_backup",
+    "desktop_get_imports",
     "desktop_import_offline",
     "desktop_get_dashboard_data",
     "desktop_get_id_cards",
@@ -43,6 +49,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_sync_now",
     "desktop_get_sync_conflicts",
     "desktop_retry_failed_sync",
+    "desktop_resolve_sync_conflicts",
+    "desktop_clear_failed_sync",
 ];
 
 fn local_build_values() -> HashMap<String, String> {

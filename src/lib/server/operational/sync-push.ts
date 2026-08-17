@@ -27,7 +27,28 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   backup: "backups.manage",
   "offline-import": "corrections.manage",
   "id-card": "employees.manage",
+  "log-scan": "history.delete",
 };
+
+function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
+  if (event.domain === "attendance") {
+    if (event.operation === "update") return "history.edit";
+    if (event.operation === "delete") return "history.delete";
+    return "scanner.use";
+  }
+  if (event.domain === "correction") {
+    if (event.operation === "delete") return "operational.delete";
+    return "corrections.manage";
+  }
+  if (event.domain === "offline-import") {
+    if (event.operation === "delete") return "operational.delete";
+    return "corrections.manage";
+  }
+  if (event.domain === "log-scan") {
+    return "history.delete";
+  }
+  return DOMAIN_PERMISSION[event.domain] ?? null;
+}
 
 function text(payload: Record<string, unknown>, key: string) {
   return typeof payload[key] === "string" ? payload[key].trim() : "";
@@ -437,6 +458,59 @@ async function applyAttendance(
   actor: OperatorUser,
   event: OperationalSyncEvent,
 ) {
+  if (event.operation === "delete") {
+    const sessionId = text(event.payload, "id_sesi") || event.entityKey;
+    await transaction.execute({
+      sql: "DELETE FROM absensi_harian WHERE id_sesi = ?;",
+      args: [sessionId],
+    });
+    const revision = await appendChange(
+      transaction,
+      actor,
+      event,
+      event.payload,
+    );
+    return { revision, payload: { id_sesi: sessionId } };
+  }
+  if (event.operation === "update") {
+    const sessionId = text(event.payload, "id_sesi") || event.entityKey;
+    await transaction.execute({
+      sql: `UPDATE absensi_harian SET
+        jam_masuk = COALESCE(?, jam_masuk),
+        jam_pulang = COALESCE(?, jam_pulang),
+        status_kehadiran = COALESCE(?, status_kehadiran),
+        status_absen = COALESCE(?, status_absen),
+        keterangan = COALESCE(?, keterangan),
+        update_terakhir = ?
+      WHERE id_sesi = ?;`,
+      args: [
+        event.payload.jam_masuk !== undefined
+          ? text(event.payload, "jam_masuk")
+          : null,
+        event.payload.jam_pulang !== undefined
+          ? text(event.payload, "jam_pulang")
+          : null,
+        event.payload.status_kehadiran !== undefined
+          ? text(event.payload, "status_kehadiran")
+          : null,
+        event.payload.status_absen !== undefined
+          ? text(event.payload, "status_absen")
+          : null,
+        event.payload.keterangan !== undefined
+          ? text(event.payload, "keterangan")
+          : null,
+        new Date().toISOString(),
+        sessionId,
+      ],
+    });
+    const revision = await appendChange(
+      transaction,
+      actor,
+      event,
+      event.payload,
+    );
+    return { revision, payload: { id_sesi: sessionId } };
+  }
   if (event.operation !== "scan") {
     throw new Error("Operasi absensi tidak dikenali.");
   }
@@ -582,6 +656,155 @@ async function applyCorrection(
   actor: OperatorUser,
   event: OperationalSyncEvent,
 ) {
+  if (event.operation === "delete") {
+    const reference = text(event.payload, "id_referensi") || event.entityKey;
+    const korRes = await transaction.execute({
+      sql: "SELECT id_karyawan, tanggal FROM koreksi_admin WHERE id_referensi = ? LIMIT 1;",
+      args: [reference],
+    });
+    const kor = korRes.rows[0];
+
+    await transaction.execute({
+      sql: "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+      args: [reference],
+    });
+    await transaction.execute({
+      sql: "DELETE FROM log_scan WHERE id_referensi = ?;",
+      args: [reference],
+    });
+
+    if (kor) {
+      const idKaryawan = String(kor.id_karyawan);
+      const tanggal = String(kor.tanggal);
+      const remRes = await transaction.execute({
+        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+        args: [idKaryawan, tanggal],
+      });
+      const absRes = await transaction.execute({
+        sql: "SELECT * FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day')) ORDER BY (CASE WHEN tanggal = ? THEN 0 ELSE 1 END) ASC LIMIT 1;",
+        args: [idKaryawan, tanggal, tanggal, tanggal],
+      });
+      if (absRes.rows.length > 0) {
+        const abs = absRes.rows[0] as Record<string, unknown>;
+        const idSesi = String(abs.id_sesi);
+        if (remRes.rows.length === 0) {
+          await transaction.execute({
+            sql: "DELETE FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day'));",
+            args: [idKaryawan, tanggal, tanggal],
+          });
+        } else {
+          const inLog = remRes.rows.find(
+            (r) => String(r.jenis_scan) === "Masuk",
+          );
+          const outLog = remRes.rows.find(
+            (r) => String(r.jenis_scan) === "Pulang",
+          );
+          const inVal = inLog
+            ? `${tanggal} ${String(inLog.jam_scan).slice(0, 8)}`
+            : "";
+          const outVal = outLog
+            ? `${tanggal} ${String(outLog.jam_scan).slice(0, 8)}`
+            : "";
+          const statusAbsen =
+            inVal && outVal
+              ? "Lengkap"
+              : inVal
+                ? "Belum Pulang"
+                : "Perlu Verifikasi";
+
+          const idShift = Number(abs.id_shift || 1);
+          const shiftRes = await transaction.execute({
+            sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+            args: [idShift],
+          });
+          const shiftData = shiftRes.rows[0] as
+            | Record<string, unknown>
+            | undefined;
+          const normalShiftMin = Number(
+            shiftData?.jam_kerja_normal_menit ?? 480,
+          );
+          const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+          const toleransiShiftMin = Number(
+            shiftData?.toleransi_masuk_menit ?? 0,
+          );
+          const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+          const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+
+          const parseMin = (t: string | undefined | null): number | null => {
+            if (!t) return null;
+            const clean = t.includes(" ") ? t.split(" ")[1] : t;
+            const parts = clean.split(":");
+            if (parts.length < 2) return null;
+            const h = Number(parts[0]);
+            const m = Number(parts[1]);
+            if (Number.isNaN(h) || Number.isNaN(m)) return null;
+            return h * 60 + m;
+          };
+
+          const shiftInMin = parseMin(shiftJamMasukStr) ?? 420;
+          const shiftOutMin = parseMin(shiftJamPulangStr) ?? 900;
+          const isOvernightShift = shiftOutMin < shiftInMin;
+
+          let calculatedLate = 0;
+          let calculatedEarly = 0;
+          let calculatedWork = 0;
+          let calculatedOvertime = 0;
+          let calculatedShortage = 0;
+
+          const inMin = parseMin(inVal);
+          const outMin = parseMin(outVal);
+
+          if (inMin !== null) {
+            let userInTimeline = inMin;
+            if (isOvernightShift && userInTimeline < shiftInMin - 720) {
+              userInTimeline += 1440;
+            }
+            if (userInTimeline > shiftInMin + toleransiShiftMin) {
+              calculatedLate = userInTimeline - shiftInMin;
+            } else if (userInTimeline < shiftInMin) {
+              calculatedEarly = shiftInMin - userInTimeline;
+            }
+          }
+
+          if (inMin !== null && outMin !== null) {
+            let duration = outMin - inMin;
+            if (duration < 0) {
+              duration += 1440;
+            }
+            calculatedWork = Math.max(0, duration - breakShiftMin);
+            calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
+            calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
+          }
+
+          await transaction.execute({
+            sql: `UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
+                  status_absen = ?, update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ?,
+                  jam_kerja = ?, lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;`,
+            args: [
+              inVal,
+              outVal,
+              statusAbsen,
+              new Date().toISOString(),
+              calculatedLate,
+              calculatedEarly,
+              calculatedWork,
+              calculatedOvertime,
+              calculatedShortage,
+              idSesi,
+            ],
+          });
+        }
+      }
+    }
+
+    const revision = await appendChange(
+      transaction,
+      actor,
+      event,
+      event.payload,
+    );
+    return { revision, payload: { id_referensi: reference } };
+  }
   if (event.operation !== "create") {
     throw new Error("Operasi Koreksi Admin tidak dikenali.");
   }
@@ -801,6 +1024,158 @@ async function applyOfflineImport(
   actor: OperatorUser,
   event: OperationalSyncEvent,
 ) {
+  if (event.operation === "delete") {
+    const eventKey = text(event.payload, "event_key") || event.entityKey;
+    const impRes = await transaction.execute({
+      sql: "SELECT id_unik, tanggal FROM import_offline WHERE event_key = ? LIMIT 1;",
+      args: [eventKey],
+    });
+    const imp = impRes.rows[0];
+
+    await transaction.execute({
+      sql: "DELETE FROM import_offline WHERE event_key = ?;",
+      args: [eventKey],
+    });
+    if (imp) {
+      const idUnik = String(imp.id_unik);
+      const tanggal = String(imp.tanggal);
+      await transaction.execute({
+        sql: "DELETE FROM log_scan WHERE id_referensi = ? OR (id_karyawan = ? AND tanggal_kerja = ? AND sumber_data = 'Import Offline');",
+        args: [eventKey, idUnik, tanggal],
+      });
+      const remRes = await transaction.execute({
+        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+        args: [idUnik, tanggal],
+      });
+      const absRes = await transaction.execute({
+        sql: "SELECT * FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day')) ORDER BY (CASE WHEN tanggal = ? THEN 0 ELSE 1 END) ASC LIMIT 1;",
+        args: [idUnik, tanggal, tanggal, tanggal],
+      });
+      if (absRes.rows.length > 0) {
+        const abs = absRes.rows[0] as Record<string, unknown>;
+        const idSesi = String(abs.id_sesi);
+        if (remRes.rows.length === 0) {
+          await transaction.execute({
+            sql: "DELETE FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day'));",
+            args: [idUnik, tanggal, tanggal],
+          });
+        } else {
+          const inLog = remRes.rows.find(
+            (r) => String(r.jenis_scan) === "Masuk",
+          );
+          const outLog = remRes.rows.find(
+            (r) => String(r.jenis_scan) === "Pulang",
+          );
+          const inVal = inLog
+            ? `${tanggal} ${String(inLog.jam_scan).slice(0, 8)}`
+            : "";
+          const outVal = outLog
+            ? `${tanggal} ${String(outLog.jam_scan).slice(0, 8)}`
+            : "";
+          const statusAbsen =
+            inVal && outVal
+              ? "Lengkap"
+              : inVal
+                ? "Belum Pulang"
+                : "Perlu Verifikasi";
+
+          const idShift = Number(abs.id_shift || 1);
+          const shiftRes = await transaction.execute({
+            sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+            args: [idShift],
+          });
+          const shiftData = shiftRes.rows[0] as
+            | Record<string, unknown>
+            | undefined;
+          const normalShiftMin = Number(
+            shiftData?.jam_kerja_normal_menit ?? 480,
+          );
+          const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+          const toleransiShiftMin = Number(
+            shiftData?.toleransi_masuk_menit ?? 0,
+          );
+          const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+          const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+
+          const parseMin = (t: string | undefined | null): number | null => {
+            if (!t) return null;
+            const clean = t.includes(" ") ? t.split(" ")[1] : t;
+            const parts = clean.split(":");
+            if (parts.length < 2) return null;
+            const h = Number(parts[0]);
+            const m = Number(parts[1]);
+            if (Number.isNaN(h) || Number.isNaN(m)) return null;
+            return h * 60 + m;
+          };
+
+          const shiftInMin = parseMin(shiftJamMasukStr) ?? 420;
+          const shiftOutMin = parseMin(shiftJamPulangStr) ?? 900;
+          const isOvernightShift = shiftOutMin < shiftInMin;
+
+          let calculatedLate = 0;
+          let calculatedEarly = 0;
+          let calculatedWork = 0;
+          let calculatedOvertime = 0;
+          let calculatedShortage = 0;
+
+          const inMin = parseMin(inVal);
+          const outMin = parseMin(outVal);
+
+          if (inMin !== null) {
+            let userInTimeline = inMin;
+            if (isOvernightShift && userInTimeline < shiftInMin - 720) {
+              userInTimeline += 1440;
+            }
+            if (userInTimeline > shiftInMin + toleransiShiftMin) {
+              calculatedLate = userInTimeline - shiftInMin;
+            } else if (userInTimeline < shiftInMin) {
+              calculatedEarly = shiftInMin - userInTimeline;
+            }
+          }
+
+          if (inMin !== null && outMin !== null) {
+            let duration = outMin - inMin;
+            if (duration < 0) {
+              duration += 1440;
+            }
+            calculatedWork = Math.max(0, duration - breakShiftMin);
+            calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
+            calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
+          }
+
+          await transaction.execute({
+            sql: `UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
+                  status_absen = ?, update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ?,
+                  jam_kerja = ?, lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;`,
+            args: [
+              inVal,
+              outVal,
+              statusAbsen,
+              new Date().toISOString(),
+              calculatedLate,
+              calculatedEarly,
+              calculatedWork,
+              calculatedOvertime,
+              calculatedShortage,
+              idSesi,
+            ],
+          });
+        }
+      }
+    } else {
+      await transaction.execute({
+        sql: "DELETE FROM log_scan WHERE id_referensi = ?;",
+        args: [eventKey],
+      });
+    }
+    const revision = await appendChange(
+      transaction,
+      actor,
+      event,
+      event.payload,
+    );
+    return { revision, payload: { event_key: eventKey } };
+  }
   const importValue = event.payload.import;
   const attendanceValue = event.payload.attendance;
   const logsValue = event.payload.logs;
@@ -854,20 +1229,21 @@ async function applyOfflineImport(
       text(imported, "status_kehadiran"),
       text(imported, "status_absen"),
       text(imported, "keterangan"),
-      text(imported, "diproses_pada"),
+      text(imported, "diproses_pada") || new Date().toISOString(),
       actor.kode_operator,
     ],
   });
   const logIds: number[] = [];
-  for (const value of logsValue) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const log = value as Record<string, unknown>;
-    const result = await transaction.execute({
-      sql: `INSERT INTO log_scan (timestamp_scan, tanggal_kerja, jam_scan,
-        id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data,
-        catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
-        id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline',
-        ?, ?, ?, ?, ?, ?);`,
+  for (const logItem of logsValue) {
+    if (!logItem || typeof logItem !== "object" || Array.isArray(logItem)) {
+      continue;
+    }
+    const log = logItem as Record<string, unknown>;
+    const logRes = await transaction.execute({
+      sql: `INSERT INTO log_scan (timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
+        nama, divisi, jenis_scan, status_proses, sumber_data, catatan_sistem,
+        keterangan, menit_terlambat, menit_datang_awal, id_referensi, kode_operator)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil', 'Import Offline', ?, ?, ?, ?, ?, ?);`,
       args: [
         text(log, "timestamp_scan"),
         text(log, "tanggal_kerja"),
@@ -876,7 +1252,6 @@ async function applyOfflineImport(
         text(log, "nama"),
         text(log, "divisi"),
         text(log, "jenis_scan"),
-        text(log, "status_proses") || "Berhasil",
         text(log, "catatan_sistem"),
         text(log, "keterangan"),
         number(log, "menit_terlambat"),
@@ -885,7 +1260,7 @@ async function applyOfflineImport(
         actor.kode_operator,
       ],
     });
-    logIds.push(Number(result.lastInsertRowid));
+    logIds.push(Number(logRes.lastInsertRowid));
   }
   await transaction.execute({
     sql: `INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi,
@@ -937,6 +1312,36 @@ async function applyOfflineImport(
       id_sesi: sessionId,
     },
   };
+}
+
+async function applyLogScan(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  if (event.operation !== "delete") {
+    throw new Error("Operasi Log Scan tidak dikenali.");
+  }
+  const idLog = number(event.payload, "id_log", 0);
+  const ref = text(event.payload, "id_referensi");
+  if (idLog > 0) {
+    await transaction.execute({
+      sql: "DELETE FROM log_scan WHERE id_log = ?;",
+      args: [idLog],
+    });
+  } else if (ref) {
+    await transaction.execute({
+      sql: "DELETE FROM log_scan WHERE id_referensi = ?;",
+      args: [ref],
+    });
+  } else {
+    await transaction.execute({
+      sql: "DELETE FROM log_scan WHERE id_log = ?;",
+      args: [event.entityKey],
+    });
+  }
+  const revision = await appendChange(transaction, actor, event, event.payload);
+  return { revision, payload: { entityKey: event.entityKey } };
 }
 
 async function applyIdCard(
@@ -993,6 +1398,9 @@ async function applyEvent(
   if (event.domain === "offline-import") {
     return applyOfflineImport(transaction, actor, event);
   }
+  if (event.domain === "log-scan") {
+    return applyLogScan(transaction, actor, event);
+  }
   if (event.domain === "id-card") return applyIdCard(transaction, actor, event);
   throw new Error(
     `Domain '${event.domain}' belum didukung oleh endpoint sync.`,
@@ -1017,7 +1425,7 @@ export async function processOperationalSyncEvent(
     };
   }
   const event = parsedEvent.data as OperationalSyncEvent;
-  const permission = DOMAIN_PERMISSION[event.domain];
+  const permission = permissionForEvent(event);
   if (!permission) {
     return {
       eventId: event.eventId,

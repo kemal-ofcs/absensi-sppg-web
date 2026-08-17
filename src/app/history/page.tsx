@@ -1,13 +1,19 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
-import { canAccessArea } from "@/lib/auth/access";
+import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
-import { getRekapHarian, getRiwayatScan } from "@/lib/gateways/report";
+import {
+  editAbsensiHarian,
+  getRekapHarian,
+  getRiwayatScan,
+  hapusAbsensiHarian,
+  hapusLogScan,
+} from "@/lib/gateways/report";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
 const SCAN_PAGE_SIZE = 500;
@@ -37,9 +43,22 @@ function formatDisplayDate(dateStr: unknown): string {
 
 function formatDisplayDateTime(dtStr: unknown): string {
   if (!dtStr || typeof dtStr !== "string") return "-";
-  if (/^\d{2}\/\d{2}\/\d{4}/.test(dtStr)) return dtStr;
-  const d = new Date(dtStr);
-  if (Number.isNaN(d.getTime())) return dtStr;
+  const s = dtStr.trim();
+  if (!s || s === "-") return "-";
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return s;
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
+  if (m) {
+    const d = m[3];
+    const mo = m[2];
+    const y = m[1];
+    const h = m[4] || "00";
+    const min = m[5] || "00";
+    const sec = (m[6] || "00").slice(0, 2);
+    return `${d}/${mo}/${y} ${h}:${min}:${sec}`;
+  }
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
@@ -47,16 +66,19 @@ function formatDisplayDateTime(dtStr: unknown): string {
 function formatTimeOnly(timeStr: unknown): string {
   if (!timeStr || typeof timeStr !== "string") return "-";
   const s = timeStr.trim();
-  if (!s) return "-";
-  if (s.includes(" ")) {
-    const parts = s.split(" ");
-    return parts[1] || s;
-  }
-  if (s.includes("T")) {
-    const timePart = s.split("T")[1]?.split(".")[0]?.split("Z")[0];
-    return timePart || s;
-  }
-  return s;
+  if (!s || s === "-") return "-";
+  const clean = s.includes(" ")
+    ? s.split(" ")[1]
+    : s.includes("T")
+      ? s.split("T")[1]?.split(".")[0]?.split("Z")[0] || ""
+      : s;
+  if (!clean) return "-";
+  const parts = clean.split(":");
+  if (parts.length < 2) return clean;
+  const h = parts[0].padStart(2, "0");
+  const m = parts[1].padStart(2, "0");
+  const sec = parts[2] ? parts[2].slice(0, 2).padStart(2, "0") : "00";
+  return `${h}:${m}:${sec}`;
 }
 
 function formatMinutesToHours(min: unknown): string {
@@ -85,6 +107,84 @@ export default function HistoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+
+  const isSubmittingRef = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  // Edit Modal State
+  const [editData, setEditData] = useState<{
+    id_sesi: string;
+    nama: string;
+    id_karyawan: string;
+    tanggal: string;
+    jam_masuk: string;
+    jam_pulang: string;
+    status_kehadiran: string;
+    status_absen: string;
+    keterangan: string;
+  } | null>(null);
+
+  // Delete Confirm State
+  const [deleteData, setDeleteData] = useState<{
+    type: "scan" | "daily";
+    id: string | number;
+    title: string;
+    subtitle: string;
+  } | null>(null);
+
+  const handleSaveEdit = async () => {
+    if (!editData || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setActionBusy(true);
+    setError(null);
+    try {
+      const result = await editAbsensiHarian(editData.id_sesi, {
+        jam_masuk: editData.jam_masuk,
+        jam_pulang: editData.jam_pulang,
+        status_kehadiran: editData.status_kehadiran || undefined,
+        status_absen: editData.status_absen || undefined,
+        keterangan: editData.keterangan || undefined,
+      });
+      if (result.sukses) {
+        setSuccessMsg(result.pesan);
+        setEditData(null);
+        void load();
+      } else {
+        setError(result.pesan);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Gagal mengedit absensi.");
+    } finally {
+      setActionBusy(false);
+      isSubmittingRef.current = false;
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteData || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setActionBusy(true);
+    setError(null);
+    try {
+      const result =
+        deleteData.type === "scan"
+          ? await hapusLogScan(deleteData.id)
+          : await hapusAbsensiHarian(String(deleteData.id));
+
+      if (result.sukses) {
+        setSuccessMsg(result.pesan);
+        setDeleteData(null);
+        void load();
+      } else {
+        setError(result.pesan);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Gagal menghapus data.");
+    } finally {
+      setActionBusy(false);
+      isSubmittingRef.current = false;
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -855,13 +955,18 @@ export default function HistoryPage() {
                   <th className="p-3.5 text-right">Datang Awal</th>
                   <th className="p-3.5">ID Referensi</th>
                   <th className="p-3.5">Operator</th>
+                  {hasPermission(user, "history.delete") ? (
+                    <th className="p-3.5 text-center sticky right-0 bg-slate-950/95 z-20 shadow-md">
+                      Aksi
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {filteredRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={15}
+                      colSpan={hasPermission(user, "history.delete") ? 16 : 15}
                       className="p-8 text-center text-slate-500 font-mono"
                     >
                       {loading
@@ -946,6 +1051,26 @@ export default function HistoryPage() {
                       <td className="p-3.5 text-slate-400 whitespace-nowrap">
                         {String(row.kode_operator || "-")}
                       </td>
+                      {hasPermission(user, "history.delete") ? (
+                        <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDeleteData({
+                                type: "scan",
+                                id: Number(row.id_log),
+                                title: `Hapus Log Scan #${row.id_log}`,
+                                subtitle: `${row.nama} (${row.id_karyawan}) - Scan ${row.jenis_scan} pukul ${formatTimeOnly(row.jam_scan)}`,
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1 mx-auto"
+                            title="Hapus baris log scan ini"
+                          >
+                            <span>🗑️</span>
+                            <span>Hapus</span>
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))
                 )}
@@ -979,13 +1104,24 @@ export default function HistoryPage() {
                   <th className="p-3.5">ID Backup</th>
                   <th className="p-3.5">Karyawan Asal</th>
                   <th className="p-3.5">Tanggal Tugas</th>
+                  {hasPermission(user, "history.edit") ||
+                  hasPermission(user, "history.delete") ? (
+                    <th className="p-3.5 text-center sticky right-0 bg-slate-950/95 z-20 shadow-md">
+                      Aksi
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {filteredRows.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={23}
+                      colSpan={
+                        hasPermission(user, "history.edit") ||
+                        hasPermission(user, "history.delete")
+                          ? 24
+                          : 23
+                      }
                       className="p-8 text-center text-slate-500 font-mono"
                     >
                       {loading
@@ -1108,6 +1244,64 @@ export default function HistoryPage() {
                         <td className="p-3.5 text-slate-400 whitespace-nowrap">
                           {formatDisplayDate(row.tanggal_tugas)}
                         </td>
+                        {hasPermission(user, "history.edit") ||
+                        hasPermission(user, "history.delete") ? (
+                          <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {hasPermission(user, "history.edit") ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditData({
+                                      id_sesi: String(row.id_sesi || ""),
+                                      nama: String(row.nama || ""),
+                                      id_karyawan: String(
+                                        row.id_karyawan || "",
+                                      ),
+                                      tanggal: String(row.tanggal || ""),
+                                      jam_masuk: formatTimeOnly(
+                                        row.jam_masuk,
+                                      ).replace("-", ""),
+                                      jam_pulang: formatTimeOnly(
+                                        row.jam_pulang,
+                                      ).replace("-", ""),
+                                      status_kehadiran: String(
+                                        row.status_kehadiran || "Hadir",
+                                      ),
+                                      status_absen: String(
+                                        row.status_absen || "Lengkap",
+                                      ),
+                                      keterangan: String(row.keterangan || ""),
+                                    })
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-amber-950/80 hover:bg-amber-900 border border-amber-800 text-amber-300 text-[11px] font-bold transition flex items-center gap-1"
+                                  title="Edit data absensi ini"
+                                >
+                                  <span>✏️</span>
+                                  <span>Edit</span>
+                                </button>
+                              ) : null}
+                              {hasPermission(user, "history.delete") ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDeleteData({
+                                      type: "daily",
+                                      id: String(row.id_sesi || ""),
+                                      title: `Hapus Absensi: ${row.nama}`,
+                                      subtitle: `Tanggal: ${formatDisplayDate(row.tanggal)} | Sesi: ${row.id_sesi}`,
+                                    })
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1"
+                                  title="Hapus data absensi harian ini"
+                                >
+                                  <span>🗑️</span>
+                                  <span>Hapus</span>
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        ) : null}
                       </tr>
                     );
                   })
@@ -1117,6 +1311,209 @@ export default function HistoryPage() {
           )}
         </div>
       </div>
+
+      {/* Modal Edit Absensi Harian */}
+      {editData ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>✏️</span>
+                  <span>Edit Data Absensi</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {editData.nama} ({editData.id_karyawan}) ·{" "}
+                  {formatDisplayDate(editData.tanggal)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditData(null)}
+                className="text-slate-400 hover:text-white text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+              <div>
+                <span className="text-slate-400 block mb-1 font-semibold">
+                  Jam Masuk (HH:mm)
+                </span>
+                <input
+                  aria-label="Jam Masuk"
+                  type="time"
+                  className="min-h-10 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                  value={editData.jam_masuk}
+                  onChange={(e) =>
+                    setEditData({ ...editData, jam_masuk: e.target.value })
+                  }
+                />
+              </div>
+
+              <div>
+                <span className="text-slate-400 block mb-1 font-semibold">
+                  Jam Pulang (HH:mm)
+                </span>
+                <input
+                  aria-label="Jam Pulang"
+                  type="time"
+                  className="min-h-10 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                  value={editData.jam_pulang}
+                  onChange={(e) =>
+                    setEditData({ ...editData, jam_pulang: e.target.value })
+                  }
+                />
+              </div>
+
+              <div>
+                <span className="text-slate-400 block mb-1 font-semibold">
+                  Status Kehadiran
+                </span>
+                <select
+                  aria-label="Status Kehadiran"
+                  className="min-h-10 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                  value={editData.status_kehadiran}
+                  onChange={(e) =>
+                    setEditData({
+                      ...editData,
+                      status_kehadiran: e.target.value,
+                    })
+                  }
+                >
+                  <option value="Hadir">Hadir</option>
+                  <option value="Sakit">Sakit</option>
+                  <option value="Izin">Izin</option>
+                  <option value="Dispen">Dispen</option>
+                  <option value="Alfa">Alfa</option>
+                </select>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block mb-1 font-semibold">
+                  Status Absen
+                </span>
+                <select
+                  aria-label="Status Absen"
+                  className="min-h-10 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                  value={editData.status_absen}
+                  onChange={(e) =>
+                    setEditData({ ...editData, status_absen: e.target.value })
+                  }
+                >
+                  <option value="Lengkap">Lengkap</option>
+                  <option value="Belum Pulang">Belum Pulang</option>
+                  <option value="Tidak Hadir">Tidak Hadir</option>
+                  <option value="Perlu Verifikasi">Perlu Verifikasi</option>
+                </select>
+              </div>
+
+              <div className="col-span-2">
+                <span className="text-slate-400 block mb-1 font-semibold">
+                  Keterangan
+                </span>
+                <input
+                  aria-label="Keterangan"
+                  type="text"
+                  placeholder="Keterangan koreksi / edit..."
+                  className="min-h-10 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                  value={editData.keterangan}
+                  onChange={(e) =>
+                    setEditData({ ...editData, keterangan: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setEditData(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold transition disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={handleSaveEdit}
+                className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-mono font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {actionBusy ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>💾</span>
+                    <span>Simpan Perubahan</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Modal Konfirmasi Hapus */}
+      {deleteData ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-3xl border border-rose-800/60 bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="border-b border-slate-800 pb-3 flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-2xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-xl shrink-0">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Konfirmasi Hapus Data
+                </h3>
+                <p className="text-xs text-rose-300 mt-0.5 font-mono">
+                  {deleteData.title}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800 text-xs font-mono text-slate-300 space-y-1">
+              <p>{deleteData.subtitle}</p>
+              <p className="text-amber-400 text-[11px] pt-1">
+                Tindakan ini permanen dan akan mencatat jejak audit operator.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setDeleteData(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold transition disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-mono font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {actionBusy ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🗑️</span>
+                    <span>Ya, Hapus Data</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AppShell>
   );
 }

@@ -36,6 +36,17 @@ function normalizeDate(raw: string): string {
   return clean;
 }
 
+const parseTimeToMinutes = (t: string | undefined | null): number | null => {
+  if (!t) return null;
+  const clean = t.includes(" ") ? t.split(" ")[1] : t;
+  const parts = clean.split(":");
+  if (parts.length < 2) return null;
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+};
+
 export async function prosesKoreksiAdmin(input: KoreksiInput) {
   await ensureDbInitialized();
 
@@ -375,9 +386,16 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     ) {
       scanKind = "Pulang";
       const outTimeMin = parseTimeToMinutes(input.jam_koreksi) ?? 0;
-      const inTimeMin = parseTimeToMinutes(checkInVal) ?? shiftInMin;
-      const isCrossDay = isOvernightShift || outTimeMin < inTimeMin;
-      const outDate = isCrossDay ? nextDate : targetDate;
+      const inTimeMin = parseTimeToMinutes(checkInVal);
+      const isCrossDay =
+        inTimeMin !== null
+          ? outTimeMin < inTimeMin
+          : isOvernightShift && outTimeMin < shiftInMin;
+      const outDate = isCrossDay
+        ? nextDate
+        : targetDate !== date
+          ? date
+          : targetDate;
       checkOutVal = `${outDate} ${input.jam_koreksi}:00`;
     }
 
@@ -402,15 +420,14 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
 
     if (inMin !== null && outMin !== null) {
       let duration = outMin - inMin;
-      if (duration < 0 || isOvernightShift) {
-        if (duration < 0) {
-          duration += 1440;
-        } else if (
-          checkOutVal.startsWith(nextDate) &&
-          checkInVal.startsWith(targetDate)
-        ) {
-          duration += 1440;
-        }
+      if (duration < 0) {
+        duration += 1440;
+      } else if (
+        checkOutVal.startsWith(nextDate) &&
+        checkInVal.startsWith(targetDate) &&
+        nextDate !== targetDate
+      ) {
+        duration += 1440;
       }
       calculatedWork = Math.max(0, duration - breakShiftMin);
       calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
@@ -544,4 +561,167 @@ export async function getDaftarKoreksi(filter?: {
 
   const res = await db.execute({ sql: query, args: params });
   return res.rows as unknown as Record<string, unknown>[];
+}
+
+export async function hapusKoreksiAdmin(
+  idReferensi: string,
+  kodeOperator = "SYSTEM",
+) {
+  await ensureDbInitialized();
+
+  const korRes = await db.execute({
+    sql: "SELECT * FROM koreksi_admin WHERE id_referensi = ? LIMIT 1;",
+    args: [idReferensi],
+  });
+
+  if (korRes.rows.length === 0) {
+    return {
+      sukses: false,
+      pesan: "Data koreksi admin tidak ditemukan.",
+    };
+  }
+
+  const kor = korRes.rows[0] as Record<string, unknown>;
+  const idKaryawan = String(kor.id_karyawan);
+  const tanggal = String(kor.tanggal);
+  const nowStr = new Date().toISOString();
+
+  // 1. Hapus dari tabel koreksi_admin
+  await db.execute({
+    sql: "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+    args: [idReferensi],
+  });
+
+  // 2. Hapus log scan terkait koreksi ini
+  await db.execute({
+    sql: "DELETE FROM log_scan WHERE id_referensi = ?;",
+    args: [idReferensi],
+  });
+
+  // 3. Cek remaining scan logs untuk karyawan di tanggal tersebut
+  const remainRes = await db.execute({
+    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+    args: [idKaryawan, tanggal],
+  });
+
+  const absRes = await db.execute({
+    sql: "SELECT * FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day')) ORDER BY (CASE WHEN tanggal = ? THEN 0 ELSE 1 END) ASC LIMIT 1;",
+    args: [idKaryawan, tanggal, tanggal, tanggal],
+  });
+
+  if (absRes.rows.length > 0) {
+    const abs = absRes.rows[0] as Record<string, unknown>;
+    const idSesi = String(abs.id_sesi);
+
+    if (remainRes.rows.length === 0) {
+      await db.execute({
+        sql: "DELETE FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day'));",
+        args: [idKaryawan, tanggal, tanggal],
+      });
+    } else {
+      const inLog = remainRes.rows.find(
+        (r) => String(r.jenis_scan) === "Masuk",
+      );
+      const outLog = remainRes.rows.find(
+        (r) => String(r.jenis_scan) === "Pulang",
+      );
+
+      const inVal = inLog
+        ? `${tanggal} ${String(inLog.jam_scan).slice(0, 8)}`
+        : "";
+      const outVal = outLog
+        ? `${tanggal} ${String(outLog.jam_scan).slice(0, 8)}`
+        : "";
+      const statusAbsen =
+        inVal && outVal
+          ? "Lengkap"
+          : inVal
+            ? "Belum Pulang"
+            : "Perlu Verifikasi";
+
+      const idShift = Number(abs.id_shift || 1);
+      const shiftRes = await db.execute({
+        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+        args: [idShift],
+      });
+      const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
+      const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
+      const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+      const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+      const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+      const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+      const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
+      const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
+      const isOvernightShift = shiftOutMin < shiftInMin;
+
+      let calculatedLate = 0;
+      let calculatedEarly = 0;
+      let calculatedWork = 0;
+      let calculatedOvertime = 0;
+      let calculatedShortage = 0;
+
+      const inMin = parseTimeToMinutes(inVal);
+      const outMin = parseTimeToMinutes(outVal);
+
+      if (inMin !== null) {
+        let userInTimeline = inMin;
+        if (isOvernightShift && userInTimeline < shiftInMin - 720) {
+          userInTimeline += 1440;
+        }
+        if (userInTimeline > shiftInMin + toleransiShiftMin) {
+          calculatedLate = userInTimeline - shiftInMin;
+        } else if (userInTimeline < shiftInMin) {
+          calculatedEarly = shiftInMin - userInTimeline;
+        }
+      }
+
+      if (inMin !== null && outMin !== null) {
+        let duration = outMin - inMin;
+        if (duration < 0) duration += 1440;
+        calculatedWork = Math.max(0, duration - breakShiftMin);
+        calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
+        calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
+      }
+
+      await db.execute({
+        sql: `UPDATE absensi_harian SET
+              jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
+              status_absen = ?, sumber = 'Scanner', update_terakhir = ?,
+              menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?
+              WHERE id_sesi = ?;`,
+        args: [
+          inVal,
+          outVal,
+          statusAbsen,
+          nowStr,
+          calculatedLate,
+          calculatedEarly,
+          calculatedWork,
+          calculatedOvertime,
+          calculatedShortage,
+          idSesi,
+        ],
+      });
+    }
+  }
+
+  // 4. Audit Log
+  await db.execute({
+    sql: `INSERT INTO audit_absensi (
+          waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
+        ) VALUES (?, 'Hapus Koreksi', ?, ?, ?, ?, ?, 'Berhasil');`,
+    args: [
+      nowStr,
+      tanggal,
+      idKaryawan,
+      String(kor.nama),
+      idReferensi,
+      `Koreksi '${kor.jenis_koreksi}' dihapus oleh Operator ${kodeOperator}.`,
+    ],
+  });
+
+  return {
+    sukses: true,
+    pesan: `Koreksi admin ${idReferensi} berhasil dihapus.`,
+  };
 }

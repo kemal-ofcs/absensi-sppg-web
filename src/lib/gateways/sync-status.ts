@@ -55,3 +55,15 @@ export async function retryFailedSync(eventId?: string) {
   if (!isDesktopRuntime()) return null;
   return invokeDesktop<SyncStatus>("desktop_retry_failed_sync", { eventId });
 }
+
+export async function resolveSyncConflicts(eventId?: string) {
+  if (!isDesktopRuntime()) return null;
+  return invokeDesktop<SyncStatus>("desktop_resolve_sync_conflicts", {
+    eventId,
+  });
+}
+
+export async function clearFailedSync(eventId?: string) {
+  if (!isDesktopRuntime()) return null;
+  return invokeDesktop<SyncStatus>("desktop_clear_failed_sync", { eventId });
+}

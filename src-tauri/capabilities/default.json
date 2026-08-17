@@ -33,9 +33,15 @@
     "allow-desktop-submit-qr-scan",
     "allow-desktop-get-corrections",
     "allow-desktop-create-correction",
+    "allow-desktop-delete-correction",
+    "allow-desktop-update-attendance",
+    "allow-desktop-delete-attendance",
+    "allow-desktop-delete-log-scan",
+    "allow-desktop-delete-import-offline",
     "allow-desktop-get-backups",
     "allow-desktop-create-backup",
     "allow-desktop-cancel-backup",
+    "allow-desktop-get-imports",
     "allow-desktop-import-offline",
     "allow-desktop-get-dashboard-data",
     "allow-desktop-get-id-cards",
@@ -48,6 +54,8 @@
     "allow-desktop-sync-now",
     "allow-desktop-get-sync-conflicts",
     "allow-desktop-retry-failed-sync",
+    "allow-desktop-resolve-sync-conflicts",
+    "allow-desktop-clear-failed-sync",
     "allow-desktop-save-file"
   ]
 }

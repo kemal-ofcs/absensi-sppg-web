@@ -241,7 +241,44 @@ export const operationalSyncEventSchema = z.union([
   eventSchema("shift", "update", shiftUpdatePayload),
   eventSchema("shift", "delete", z.object({ id_shift: finiteNumber }).strict()),
   eventSchema("attendance", "scan", attendanceScanPayload),
+  eventSchema(
+    "attendance",
+    "update",
+    z
+      .object({
+        id_sesi: shortText.min(1),
+        jam_masuk: optionalShortText,
+        jam_pulang: optionalShortText,
+        status_kehadiran: optionalShortText,
+        status_absen: optionalShortText,
+        keterangan: optionalLongText,
+      })
+      .strict(),
+  ),
+  eventSchema(
+    "attendance",
+    "delete",
+    z.object({ id_sesi: shortText.min(1) }).strict(),
+  ),
+  eventSchema(
+    "log-scan",
+    "delete",
+    z
+      .object({
+        id_log: optionalNumber,
+        id_referensi: optionalShortText,
+        id_karyawan: optionalShortText,
+        tanggal_kerja: optionalShortText,
+        timestamp_scan: optionalShortText,
+      })
+      .strict(),
+  ),
   eventSchema("correction", "create", correctionCreatePayload),
+  eventSchema(
+    "correction",
+    "delete",
+    z.object({ id_referensi: shortText.min(1) }).strict(),
+  ),
   eventSchema("backup", "create", z.object({ backup: backupSchema }).strict()),
   eventSchema(
     "backup",
@@ -265,6 +302,11 @@ export const operationalSyncEventSchema = z.union([
         attendanceBaseUpdatedAt: optionalShortText,
       })
       .strict(),
+  ),
+  eventSchema(
+    "offline-import",
+    "delete",
+    z.object({ event_key: shortText.min(1) }).strict(),
   ),
   eventSchema(
     "id-card",

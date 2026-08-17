@@ -22,9 +22,11 @@ import {
   saveScannerSafetySettings,
 } from "@/lib/gateways/scanner-settings";
 import {
+  clearFailedSync,
   getSyncConflicts,
   getSyncStatus,
   isDesktopSyncAvailable,
+  resolveSyncConflicts,
   retryFailedSync,
   type SyncConflict,
   type SyncStatus,
@@ -191,6 +193,54 @@ export default function SettingsPage() {
     }
   };
 
+  const resolveConflicts = async (eventId?: string) => {
+    setSyncBusy(true);
+    try {
+      const status = await resolveSyncConflicts(eventId);
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: eventId
+          ? "Konflik berhasil diselesaikan (mengikuti master server)."
+          : "Semua konflik berhasil diselesaikan (mengikuti master server).",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyelesaikan konflik sinkronisasi.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const clearFailed = async () => {
+    setSyncBusy(true);
+    try {
+      const status = await clearFailedSync();
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: "Antrean gagal berhasil dibersihkan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal membersihkan antrean gagal.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
   const handleLogoUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -254,10 +304,16 @@ export default function SettingsPage() {
     const coordinates = await getCurrentCoordinates();
     setGeofenceBusy(false);
     if (!coordinates) {
+      const isDesktop =
+        typeof window !== "undefined" &&
+        (window.navigator.userAgent.includes("Tauri") ||
+          !window.navigator.onLine ||
+          window.location.protocol === "tauri:");
       setFeedback({
         type: "error",
-        message:
-          "Lokasi perangkat tidak tersedia. Izinkan GPS/lokasi lalu coba lagi.",
+        message: isDesktop
+          ? "Lokasi tidak dapat dideteksi. Di Desktop/Windows, pastikan izin 'Lokasi' untuk aplikasi ini sudah diaktifkan di Pengaturan Windows → Privasi & keamanan → Lokasi, lalu coba lagi."
+          : "Lokasi tidak dapat dideteksi. Pastikan Anda mengizinkan akses lokasi di browser (klik ikon kunci / info di bilah alamat), lalu coba lagi. Jika menggunakan VPN atau firewall, nonaktifkan sementara.",
       });
       return;
     }
@@ -823,14 +879,24 @@ export default function SettingsPage() {
               </button>
               {hasPermission(user, "sync.retry") &&
               (syncStatus?.failed ?? 0) > 0 ? (
-                <button
-                  type="button"
-                  disabled={syncBusy || !isOnline}
-                  onClick={retryFailed}
-                  className="min-h-10 rounded-xl bg-amber-300 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
-                >
-                  Coba ulang gagal
-                </button>
+                <>
+                  <button
+                    type="button"
+                    disabled={syncBusy || !isOnline}
+                    onClick={retryFailed}
+                    className="min-h-10 rounded-xl bg-amber-300 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
+                  >
+                    Coba ulang gagal
+                  </button>
+                  <button
+                    type="button"
+                    disabled={syncBusy}
+                    onClick={clearFailed}
+                    className="min-h-10 rounded-xl border border-rose-400/40 bg-rose-400/10 px-4 text-xs font-bold text-rose-200 hover:bg-rose-400/20 disabled:opacity-50"
+                  >
+                    Bersihkan antrean gagal
+                  </button>
+                </>
               ) : null}
             </div>
           </div>
@@ -883,21 +949,55 @@ export default function SettingsPage() {
           </div>
           {conflicts.length > 0 ? (
             <div className="mt-5 rounded-2xl border border-rose-400/20 bg-rose-400/5 p-4">
-              <p className="text-sm font-black text-rose-100">
-                Konflik perlu ditinjau ({conflicts.length})
-              </p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-black text-rose-100">
+                    Konflik perlu ditinjau ({conflicts.length})
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    Konflik terjadi saat data lokal berbeda versi dengan master
+                    server.
+                  </p>
+                </div>
+                {hasPermission(user, "sync.retry") ? (
+                  <button
+                    type="button"
+                    disabled={syncBusy}
+                    onClick={() => resolveConflicts()}
+                    className="min-h-9 self-start rounded-xl bg-rose-400/20 px-3.5 text-xs font-black text-rose-100 hover:bg-rose-400/30 disabled:opacity-50 sm:self-auto"
+                  >
+                    Selesaikan Semua (Ikuti Server)
+                  </button>
+                ) : null}
+              </div>
               <ul className="mt-3 space-y-2 text-xs text-rose-100/80">
                 {conflicts.slice(0, 10).map((item) => (
-                  <li key={item.eventId}>
-                    <span className="font-bold">
-                      {item.domain} · {item.entityKey}
-                    </span>{" "}
-                    — {item.reason}
+                  <li
+                    key={item.eventId}
+                    className="flex flex-col gap-1 rounded-xl border border-rose-400/10 bg-slate-950/40 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <span className="font-bold">
+                        {item.domain} · {item.entityKey}
+                      </span>{" "}
+                      — {item.reason}
+                    </div>
+                    {hasPermission(user, "sync.retry") ? (
+                      <button
+                        type="button"
+                        disabled={syncBusy}
+                        onClick={() => resolveConflicts(item.eventId)}
+                        className="self-end shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 sm:self-auto"
+                      >
+                        Selesaikan
+                      </button>
+                    ) : null}
                   </li>
                 ))}
               </ul>
               <p className="mt-3 text-xs text-slate-400">
-                Konflik tidak ditimpa atau dicoba ulang otomatis.
+                Menyelesaikan konflik akan menandai antrean selesai dan
+                mempertahankan snapshot master dari server.
               </p>
             </div>
           ) : null}

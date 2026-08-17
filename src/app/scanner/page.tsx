@@ -6,13 +6,13 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
-import { useAuth } from "@/lib/context/AuthContext";
-import type { ScanResult } from "@/lib/contracts/scanner";
 import {
-  getCurrentCoordinates,
-  type ScanTerminalInput,
-  submitTerminalScan,
-} from "@/lib/gateways/scanner";
+  getCachedCoordinates,
+  watchCoordinates,
+} from "@/lib/client/geolocation";
+import { useAuth } from "@/lib/context/AuthContext";
+import type { ScanResult, ScanTerminalInput } from "@/lib/contracts/scanner";
+import { submitTerminalScan } from "@/lib/gateways/scanner";
 import { useClock } from "@/lib/hooks/useClock";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { audioSynth } from "@/lib/utils/audio";
@@ -59,6 +59,9 @@ export default function ScannerPage() {
   const isSubmittingRef = useRef(false);
   const lastScannedQrRef = useRef<string>("");
   const lastScannedTimeRef = useRef<number>(0);
+  // Cached GPS — updated silently in the background so scan submissions
+  // can read coordinates synchronously (0 ms latency, no blocking await).
+  const cachedGpsRef = useRef<{ lat: number; lng: number } | null>(null);
 
   const connectScannerInput = useCallback((node: HTMLInputElement | null) => {
     inputRef.current = node;
@@ -92,18 +95,28 @@ export default function ScannerPage() {
       })
     : "Memuat waktu...";
 
-  // Fetch Location GPS safely
+  // Background GPS watcher — keeps cachedGpsRef and gpsLocation fresh
+  // without blocking scan submission even if the device has no GPS chip.
   useEffect(() => {
     if (!isHydrated) return;
-
-    let isMounted = true;
-    getCurrentCoordinates().then((coords) => {
-      if (coords && isMounted) {
-        setGpsLocation(coords);
+    // Seed with any already-cached value immediately (0 ms)
+    const seed = getCachedCoordinates();
+    if (seed) {
+      cachedGpsRef.current = seed;
+      setGpsLocation(seed);
+    }
+    const stopWatch = watchCoordinates();
+    // Periodically push watch updates into cachedGpsRef and state
+    const interval = setInterval(() => {
+      const fresh = getCachedCoordinates();
+      if (fresh) {
+        cachedGpsRef.current = fresh;
+        setGpsLocation(fresh);
       }
-    });
+    }, 5_000);
     return () => {
-      isMounted = false;
+      stopWatch();
+      clearInterval(interval);
     };
   }, [isHydrated]);
 
@@ -140,8 +153,8 @@ export default function ScannerPage() {
       setScanInput("");
 
       try {
-        const currentLocation = gpsLocation ?? (await getCurrentCoordinates());
-        if (currentLocation && !gpsLocation) setGpsLocation(currentLocation);
+        // Read GPS from memory cache (0 ms — no blocking await)
+        const currentLocation = cachedGpsRef.current ?? gpsLocation;
         const input: ScanTerminalInput = {
           qrContent: cleanPayload,
           lat: currentLocation?.lat,
@@ -244,7 +257,7 @@ export default function ScannerPage() {
         if (mode === "reader") inputRef.current?.focus();
       }
     },
-    [gpsLocation, user, audioEnabled, mode],
+    [user, audioEnabled, mode, gpsLocation],
   );
 
   const startCamera = async (deviceId?: string) => {
@@ -273,15 +286,24 @@ export default function ScannerPage() {
 
       const { BrowserQRCodeReader } = await import("@zxing/browser");
       const reader = new BrowserQRCodeReader(undefined, {
-        delayBetweenScanAttempts: 150,
+        // Ultra-fast decode: 40ms delay = up to ~25 FPS QR recognition
+        delayBetweenScanAttempts: 40,
       });
 
       const targetDeviceId = deviceId || selectedDeviceId;
       const constraints: MediaStreamConstraints = {
         audio: false,
         video: targetDeviceId
-          ? { deviceId: { exact: targetDeviceId } }
-          : { facingMode: { ideal: "environment" } },
+          ? {
+              deviceId: { exact: targetDeviceId },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            }
+          : {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
       };
 
       const controls = await reader.decodeFromConstraints(
@@ -292,27 +314,19 @@ export default function ScannerPage() {
           if (!qrContent) return;
 
           const now = Date.now();
-          // Cek apakah scan sedang diproses ATAU qr yang sama baru saja dipindai dalam 2.5 detik
-          if (
-            cameraScanLockedRef.current ||
-            isSubmittingRef.current ||
-            (qrContent === lastScannedQrRef.current &&
-              now - lastScannedTimeRef.current < 2500)
-          ) {
+          // Only lock the SAME card — different cards queue instantly
+          const isSameQrTooSoon =
+            qrContent === lastScannedQrRef.current &&
+            now - lastScannedTimeRef.current < 2500;
+          if (isSubmittingRef.current || isSameQrTooSoon) {
             return;
           }
 
-          cameraScanLockedRef.current = true;
           lastScannedQrRef.current = qrContent;
           lastScannedTimeRef.current = now;
 
           // Eksekusi proses scan secara asynchronous TANPA mematikan kamera!
-          void handleScanSubmit(qrContent).finally(() => {
-            // Beri jeda singkat agar kartu yang sama tidak langsung ter-scan ulang seketika
-            setTimeout(() => {
-              cameraScanLockedRef.current = false;
-            }, 1500);
-          });
+          void handleScanSubmit(qrContent);
         },
       );
 

@@ -524,6 +524,61 @@ pub fn desktop_cancel_backup(
 }
 
 #[tauri::command]
+pub fn desktop_delete_correction(
+    state: State<'_, DesktopState>,
+    id_referensi: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "operational.delete")?;
+    administration::delete_correction(&state, &id_referensi, &operator.kode_operator)
+}
+
+#[tauri::command]
+pub fn desktop_update_attendance(
+    state: State<'_, DesktopState>,
+    id_sesi: String,
+    patch: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "history.edit")?;
+    administration::update_attendance(&state, &id_sesi, &patch, &operator.kode_operator)
+}
+
+#[tauri::command]
+pub fn desktop_delete_attendance(
+    state: State<'_, DesktopState>,
+    id_sesi: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "history.delete")?;
+    administration::delete_attendance(&state, &id_sesi, &operator.kode_operator)
+}
+
+#[tauri::command]
+pub fn desktop_delete_log_scan(
+    state: State<'_, DesktopState>,
+    id_log: i64,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "history.delete")?;
+    administration::delete_log_scan(&state, id_log, &operator.kode_operator)
+}
+
+#[tauri::command]
+pub fn desktop_delete_import_offline(
+    state: State<'_, DesktopState>,
+    event_key: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "operational.delete")?;
+    administration::delete_import_offline(&state, &event_key, &operator.kode_operator)
+}
+
+#[tauri::command]
+pub fn desktop_get_imports(
+    state: State<'_, DesktopState>,
+    filter: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "corrections.view")?;
+    administration::list_imports(&state, &filter)
+}
+
+#[tauri::command]
 pub fn desktop_import_offline(
     state: State<'_, DesktopState>,
     rows: Vec<Value>,
@@ -718,10 +773,31 @@ pub async fn desktop_retry_failed_sync(
 }
 
 #[tauri::command]
+pub fn desktop_resolve_sync_conflicts(
+    state: State<'_, DesktopState>,
+    event_id: Option<String>,
+) -> Result<DesktopSyncStatus, CommandError> {
+    require_permission(&state, "sync.retry")?;
+    sync::resolve_conflicts(&state, event_id.as_deref())?;
+    desktop_get_sync_status(state)
+}
+
+#[tauri::command]
+pub fn desktop_clear_failed_sync(
+    state: State<'_, DesktopState>,
+    event_id: Option<String>,
+) -> Result<DesktopSyncStatus, CommandError> {
+    require_permission(&state, "sync.retry")?;
+    sync::clear_failed(&state, event_id.as_deref())?;
+    desktop_get_sync_status(state)
+}
+
+#[tauri::command]
 pub fn desktop_save_file(
     filename: String,
     base64_data: String,
 ) -> Result<Value, CommandError> {
     operational::save_desktop_file(&filename, &base64_data)
 }
+
 

@@ -1243,6 +1243,61 @@ pub fn retry_failed(state: &DesktopState, event_id: Option<&str>) -> Result<(), 
     Ok(())
 }
 
+pub fn resolve_conflicts(state: &DesktopState, event_id: Option<&str>) -> Result<(), CommandError> {
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection.transaction().map_err(|_| CommandError::internal())?;
+    let now = storage::now_epoch_seconds();
+    if let Some(event_id) = event_id {
+        transaction
+            .execute(
+                "UPDATE desktop_sync_conflict SET resolved_at = ? WHERE event_id = ? AND resolved_at IS NULL;",
+                params![now, event_id],
+            )
+            .map_err(|_| CommandError::internal())?;
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'synced', next_retry_at = NULL, updated_at = ? WHERE event_id = ? AND status = 'conflict';",
+                params![now, event_id],
+            )
+            .map_err(|_| CommandError::internal())?;
+    } else {
+        transaction
+            .execute(
+                "UPDATE desktop_sync_conflict SET resolved_at = ? WHERE resolved_at IS NULL;",
+                [now],
+            )
+            .map_err(|_| CommandError::internal())?;
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'synced', next_retry_at = NULL, updated_at = ? WHERE status = 'conflict';",
+                [now],
+            )
+            .map_err(|_| CommandError::internal())?;
+    }
+    transaction.commit().map_err(|_| CommandError::internal())
+}
+
+pub fn clear_failed(state: &DesktopState, event_id: Option<&str>) -> Result<(), CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let now = storage::now_epoch_seconds();
+    if let Some(event_id) = event_id {
+        connection
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'synced', next_retry_at = NULL, updated_at = ? WHERE event_id = ? AND status = 'failed';",
+                params![now, event_id],
+            )
+            .map_err(|_| CommandError::internal())?;
+    } else {
+        connection
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'synced', next_retry_at = NULL, updated_at = ? WHERE status = 'failed';",
+                [now],
+            )
+            .map_err(|_| CommandError::internal())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -1755,4 +1810,78 @@ mod tests {
             .expect("server shift revision");
         assert_eq!(revision, 27);
     }
+
+    #[test]
+    fn test_resolve_conflicts_and_clear_failed() {
+        let (_dir, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client id");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        let event_1 = enqueue(
+            &transaction,
+            &client_id,
+            "shift",
+            "update",
+            "1",
+            &json!({"nama_shift": "Pagi"}),
+            Some(10),
+        )
+        .expect("event 1");
+        let event_2 = enqueue(
+            &transaction,
+            &client_id,
+            "employee",
+            "update",
+            "K001",
+            &json!({"nama": "Budi"}),
+            Some(15),
+        )
+        .expect("event 2");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        // Mark event_1 as conflict, event_2 as failed
+        let results = json!([{
+            "eventId": event_1,
+            "status": "conflict",
+            "message": "Data server berubah.",
+            "serverRevision": 12
+        }]);
+        apply_push_results(
+            &state,
+            std::slice::from_ref(&event_1),
+            results.as_array().expect("results"),
+        )
+        .expect("applied conflict");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'failed' WHERE event_id = ?;",
+                [&event_2],
+            )
+            .expect("set failed");
+        drop(connection);
+
+        let conflict_list = super::conflicts(&state).expect("conflicts list");
+        assert_eq!(conflict_list.as_array().expect("array").len(), 1);
+
+        // Resolve conflicts
+        super::resolve_conflicts(&state, None).expect("resolve conflicts");
+        let conflict_list_after = super::conflicts(&state).expect("conflicts list after");
+        assert_eq!(conflict_list_after.as_array().expect("array").len(), 0);
+
+        // Clear failed
+        super::clear_failed(&state, None).expect("clear failed");
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let failed_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM desktop_sync_outbox WHERE status = 'failed';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed count");
+        assert_eq!(failed_count, 0);
+    }
 }
+

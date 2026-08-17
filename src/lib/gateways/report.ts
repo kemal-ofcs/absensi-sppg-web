@@ -49,3 +49,64 @@ export function jalankanAuditKualitasAbsensi() {
   }
   return requestWebApi("/api/attendance-audit", "POST");
 }
+
+function kickSync() {
+  void invokeDesktop("desktop_sync_now").catch(() => undefined);
+}
+
+export async function editAbsensiHarian(
+  idSesi: string,
+  patch: {
+    jam_masuk?: string;
+    jam_pulang?: string;
+    status_kehadiran?: string;
+    status_absen?: string;
+    keterangan?: string;
+  },
+) {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; pesan: string }>(
+      "desktop_update_attendance",
+      { idSesi, patch },
+    );
+    if (result.sukses) kickSync();
+    return result;
+  }
+  return requestWebApi<{ sukses: boolean; pesan: string }>(
+    "/api/history",
+    "PATCH",
+    { id_sesi: idSesi, ...patch },
+  );
+}
+
+export async function hapusAbsensiHarian(idSesi: string) {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; pesan: string }>(
+      "desktop_delete_attendance",
+      { idSesi },
+    );
+    if (result.sukses) kickSync();
+    return result;
+  }
+  return requestWebApi<{ sukses: boolean; pesan: string }>(
+    "/api/history",
+    "DELETE",
+    { id_sesi: idSesi },
+  );
+}
+
+export async function hapusLogScan(idLog: number | string) {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; pesan: string }>(
+      "desktop_delete_log_scan",
+      { idLog: Number(idLog) },
+    );
+    if (result.sukses) kickSync();
+    return result;
+  }
+  return requestWebApi<{ sukses: boolean; pesan: string }>(
+    "/api/history",
+    "DELETE",
+    { id_log: Number(idLog) },
+  );
+}

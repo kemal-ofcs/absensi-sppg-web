@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import type { Transaction } from "@libsql/client";
+import type { InValue, Transaction } from "@libsql/client";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface OfflineImportRow {
@@ -33,7 +33,12 @@ const MONTHS = [
 ];
 
 function timestamp(date: string, time: string, nextDay = false) {
-  const normalized = time.length === 5 ? `${time}:00` : time;
+  const clean = time.trim();
+  const parts = clean.split(":");
+  const h = (parts[0] || "00").padStart(2, "0");
+  const m = (parts[1] || "00").padStart(2, "0");
+  const s = parts[2] ? parts[2].slice(0, 2).padStart(2, "0") : "00";
+  const normalized = `${h}:${m}:${s}`;
   if (!nextDay) return `${date} ${normalized}`;
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() + 1);
@@ -252,9 +257,11 @@ async function processRow(
   const checkIn = row.jam_masuk
     ? timestamp(date, row.jam_masuk)
     : String(existing?.jam_masuk ?? "");
+  const inTimeStr = row.jam_masuk || String(shiftRowData?.jam_masuk || "07:00");
   const nextDay = Boolean(
-    (row.jam_masuk && row.jam_pulang && row.jam_pulang < row.jam_masuk) ||
-      (checkIn && row.jam_pulang && isOvernightShift),
+    row.jam_pulang &&
+      ((row.jam_masuk && row.jam_pulang < row.jam_masuk) ||
+        (isOvernightShift && row.jam_pulang < inTimeStr)),
   );
   const checkOut = row.jam_pulang
     ? timestamp(date, row.jam_pulang, nextDay)
@@ -477,4 +484,27 @@ export async function prosesImportOffline(
     gagal: results.filter((item) => !item.sukses).length,
     results,
   };
+}
+
+export async function getDaftarImport(
+  filter: { tanggal?: string; id_karyawan?: string; search?: string } = {},
+) {
+  await ensureDbInitialized();
+  let sql = "SELECT * FROM import_offline WHERE 1=1";
+  const args: InValue[] = [];
+  if (filter.tanggal) {
+    sql += " AND tanggal = ?";
+    args.push(filter.tanggal);
+  }
+  if (filter.id_karyawan) {
+    sql += " AND id_unik = ?";
+    args.push(filter.id_karyawan);
+  }
+  if (filter.search) {
+    sql += " AND (id_unik LIKE ? OR nama LIKE ?)";
+    args.push(`%${filter.search}%`, `%${filter.search}%`);
+  }
+  sql += " ORDER BY id_import DESC LIMIT 200;";
+  const result = await db.execute({ sql, args });
+  return result.rows as unknown as Record<string, unknown>[];
 }
