@@ -1042,3 +1042,531 @@ pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, Com
     }))
 }
 
+pub fn list_holidays(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id_libur, tanggal, nama_libur, COALESCE(jenis_libur, 'Libur Nasional'), keterangan, status_aktif
+             FROM tbl_hari_libur ORDER BY tanggal DESC;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id_libur": row.get::<_, i64>(0)?,
+                "tanggal": row.get::<_, String>(1)?,
+                "nama_libur": row.get::<_, String>(2)?,
+                "jenis_libur": row.get::<_, String>(3)?,
+                "keterangan": row.get::<_, Option<String>>(4)?,
+                "status_aktif": row.get::<_, Option<i64>>(5)?.unwrap_or(1),
+            }))
+        })
+        .map_err(|_| CommandError::internal())?;
+    Ok(Value::Array(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CommandError::internal())?,
+    ))
+}
+
+pub fn create_holiday(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let tanggal = text(draft, "tanggal");
+    let nama_libur = text(draft, "nama_libur");
+    if tanggal.is_empty() || nama_libur.is_empty() {
+        return Err(CommandError::new(
+            "VALIDATION_ERROR",
+            "Tanggal dan nama hari libur wajib diisi.",
+        ));
+    }
+    let jenis_libur = if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
+        text(draft, "jenis_libur")
+    } else {
+        "Libur Nasional"
+    };
+    let keterangan = draft.get("keterangan").and_then(Value::as_str);
+    let status_aktif = if draft
+        .get("status_aktif")
+        .map(|v| v.as_bool().unwrap_or(true) && v.as_i64().unwrap_or(1) == 1)
+        .unwrap_or(true)
+    {
+        1
+    } else {
+        0
+    };
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let existing: bool = transaction
+        .query_row(
+            "SELECT 1 FROM tbl_hari_libur WHERE tanggal = ? LIMIT 1;",
+            [&tanggal],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .unwrap_or(false);
+    if existing {
+        return Err(CommandError::new(
+            "OPERATIONAL_CONFLICT",
+            format!("Tanggal libur {tanggal} sudah terdaftar. Silakan edit jika ingin mengubahnya."),
+        ));
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO tbl_hari_libur (tanggal, nama_libur, jenis_libur, keterangan, status_aktif) VALUES (?, ?, ?, ?, ?);",
+            params![tanggal, nama_libur, jenis_libur, keterangan, status_aktif],
+        )
+        .map_err(|e| CommandError::new("OPERATIONAL_CONFLICT", format!("Gagal menyimpan hari libur: {e}")))?;
+
+    let id_libur = transaction.last_insert_rowid();
+
+    let sync_payload = json!({
+        "id_libur": id_libur,
+        "tanggal": tanggal,
+        "nama_libur": nama_libur,
+        "jenis_libur": jenis_libur,
+        "keterangan": keterangan,
+        "status_aktif": status_aktif,
+    });
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday",
+        "create",
+        &id_libur.to_string(),
+        &sync_payload,
+        None,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_libur": id_libur }))
+}
+
+pub fn update_holiday(state: &DesktopState, id: i64, draft: &Value) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let tanggal = text(draft, "tanggal");
+    let nama_libur = text(draft, "nama_libur");
+    let jenis_libur = if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
+        text(draft, "jenis_libur")
+    } else {
+        "Libur Nasional"
+    };
+    let keterangan = draft.get("keterangan").and_then(Value::as_str);
+    let status_aktif = if draft
+        .get("status_aktif")
+        .map(|v| v.as_bool().unwrap_or(true) && v.as_i64().unwrap_or(1) == 1)
+        .unwrap_or(true)
+    {
+        1
+    } else {
+        0
+    };
+
+    transaction
+        .execute(
+            "UPDATE tbl_hari_libur SET tanggal = ?, nama_libur = ?, jenis_libur = ?, keterangan = ?, status_aktif = ? WHERE id_libur = ?;",
+            params![tanggal, nama_libur, jenis_libur, keterangan, status_aktif, id],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let sync_payload = json!({
+        "id_libur": id,
+        "tanggal": tanggal,
+        "nama_libur": nama_libur,
+        "jenis_libur": jenis_libur,
+        "keterangan": keterangan,
+        "status_aktif": status_aktif,
+    });
+    let revision = base_revision(&transaction, "holiday", &id.to_string());
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday",
+        "update",
+        &id.to_string(),
+        &sync_payload,
+        revision,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
+pub fn delete_holiday(state: &DesktopState, id: i64) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let holiday_data: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT tanggal, nama_libur FROM tbl_hari_libur WHERE id_libur = ? LIMIT 1;",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    let (tanggal, nama_libur) = match holiday_data {
+        Some(d) => d,
+        None => return Ok(json!({ "sukses": true })),
+    };
+
+    transaction
+        .execute("DELETE FROM tbl_hari_libur WHERE id_libur = ?;", [id])
+        .map_err(|_| CommandError::internal())?;
+
+    let sync_payload = json!({
+        "id_libur": id,
+        "tanggal": tanggal,
+        "nama_libur": nama_libur,
+    });
+    let revision = base_revision(&transaction, "holiday", &id.to_string());
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday",
+        "delete",
+        &id.to_string(),
+        &sync_payload,
+        revision,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
+pub fn get_alfa_settings(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let val: Option<String> = connection
+        .query_row(
+            "SELECT value FROM setting_gex_system WHERE key = 'auto_alfa_aktif' LIMIT 1;",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    let is_active = val.map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(true);
+    Ok(json!({ "enabled": is_active }))
+}
+
+pub fn save_alfa_settings(state: &DesktopState, enabled: bool) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let str_val = if enabled { "true" } else { "false" };
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    transaction
+        .execute(
+            "INSERT INTO setting_gex_system (key, value) VALUES ('auto_alfa_aktif', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            [str_val],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let sync_payload = json!({
+        "key": "auto_alfa_aktif",
+        "value": str_val,
+    });
+    let revision = base_revision(&transaction, "setting", "auto_alfa_aktif");
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "setting",
+        "upsert",
+        "auto_alfa_aktif",
+        &sync_payload,
+        revision,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "enabled": enabled }))
+}
+
+fn parse_time_to_minutes(time_str: &str) -> i64 {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() >= 2 {
+        let h = parts[0].parse::<i64>().unwrap_or(0);
+        let m = parts[1].parse::<i64>().unwrap_or(0);
+        h * 60 + m
+    } else {
+        0
+    }
+}
+
+pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>) -> Result<Value, CommandError> {
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    // 1. Cek Setting
+    let is_active_val: Option<String> = transaction
+        .query_row(
+            "SELECT value FROM setting_gex_system WHERE key = 'auto_alfa_aktif' LIMIT 1;",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let is_active = is_active_val.map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(true);
+    if !is_active {
+        return Ok(json!({
+            "jumlahAlfaDibuat": 0,
+            "jumlahSudahAda": 0,
+            "jumlahBelumWaktunya": 0,
+            "jumlahFleksibel": 0,
+            "jumlahNonaktif": 0,
+            "status": "NONAKTIF",
+            "pesan": "Generate Alfa dimatikan melalui Pengaturan"
+        }));
+    }
+
+    let now_str = match simulated_time {
+        Some(t) => t,
+        None => {
+            let (dt, tm): (String, String) = transaction
+                .query_row(
+                    "SELECT strftime('%Y-%m-%d', 'now', '+7 hours'), strftime('%H:%M:%S', 'now', '+7 hours');",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| CommandError::internal())?;
+            format!("{dt} {tm}")
+        }
+    };
+    let now_moment = match super::time_policy::timestamp_to_moment(&now_str) {
+        Ok(m) => m,
+        Err(_) => {
+            return Ok(json!({
+                "jumlahAlfaDibuat": 0,
+                "jumlahSudahAda": 0,
+                "jumlahBelumWaktunya": 0,
+                "jumlahFleksibel": 0,
+                "jumlahNonaktif": 0,
+                "status": "ERROR",
+                "pesan": "Waktu sistem tidak dapat diproses"
+            }));
+        }
+    };
+
+    let nonaktif_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM master_data WHERE status_aktif != 'Aktif';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let mut statement = transaction
+        .prepare("SELECT id_unik, nama, divisi, COALESCE(id_shift, 1) FROM master_data WHERE status_aktif = 'Aktif';")
+        .map_err(|_| CommandError::internal())?;
+    let employees = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandError::internal())?;
+    drop(statement);
+
+    let mut alfa_dibuat = 0;
+    let mut sudah_ada = 0;
+    let mut belum_waktunya = 0;
+    let mut fleksibel = 0;
+
+    let now_minute = parse_time_to_minutes(&now_moment.time);
+
+    let month_names = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    ];
+
+    for (id_unik, nama, divisi, id_shift) in employees {
+        let shift_config: Option<(String, String, i64, i64, i64)> = transaction
+            .query_row(
+                "SELECT jam_masuk, jam_pulang, COALESCE(offset_generate_alfa, 180), COALESCE(jam_kerja_normal_menit, 0), kode_shift FROM tbl_shift WHERE id_shift = ?;",
+                [id_shift],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        let (jam_masuk, jam_pulang, offset_alfa, jam_kerja_normal, kode_shift) = match shift_config {
+            Some(cfg) => cfg,
+            None => continue,
+        };
+
+        if kode_shift == 4
+            || (jam_masuk == "00:00" && jam_pulang == "23:59")
+            || jam_kerja_normal == 0
+        {
+            fleksibel += 1;
+            continue;
+        }
+
+        let shift_in_min = parse_time_to_minutes(&jam_masuk);
+        let shift_out_min = parse_time_to_minutes(&jam_pulang);
+        let is_overnight = shift_out_min < shift_in_min;
+
+        let mut work_date = now_moment.date.clone();
+        if is_overnight && now_minute < shift_in_min {
+            if let Ok(prev) = super::time_policy::add_days(&now_moment.date, -1) {
+                work_date = prev;
+            }
+        }
+
+        let holiday_check: bool = transaction
+            .query_row(
+                "SELECT 1 FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+                [&work_date],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap_or(None)
+            .unwrap_or(false);
+        if holiday_check {
+            continue;
+        }
+
+        let cutoff_timeline_minute = if is_overnight {
+            shift_out_min + 1440 - offset_alfa
+        } else {
+            shift_out_min - offset_alfa
+        };
+
+        let current_timeline_minute = match super::time_policy::days_between(&work_date, &now_moment.date) {
+            Ok(diff) => diff * 1440 + now_minute,
+            Err(_) => now_minute,
+        };
+
+        if current_timeline_minute < cutoff_timeline_minute {
+            belum_waktunya += 1;
+            continue;
+        }
+
+        let session_id = format!(
+            "NORMAL-{}-{}-{}",
+            work_date.replace('-', ""),
+            id_unik,
+            id_shift
+        );
+
+        let exist: bool = transaction
+            .query_row(
+                "SELECT 1 FROM absensi_harian WHERE id_karyawan = ? AND tanggal = ? AND (mode_tugas = 'NORMAL' OR mode_tugas IS NULL OR mode_tugas = '') LIMIT 1;",
+                params![&id_unik, &work_date],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap_or(None)
+            .unwrap_or(false);
+
+        if exist {
+            sudah_ada += 1;
+            continue;
+        }
+
+        let month_idx = match work_date.get(5..7).and_then(|m| m.parse::<usize>().ok()) {
+            Some(m) if m >= 1 && m <= 12 => m - 1,
+            _ => 0,
+        };
+        let bulan = month_names[month_idx];
+        let tahun = work_date.get(0..4).and_then(|y| y.parse::<i64>().ok()).unwrap_or(2026);
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO absensi_harian (
+                    tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                    status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
+                    menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
+                    id_shift, bulan, tahun, id_sesi, mode_tugas
+                ) VALUES (?, ?, ?, ?, '', '', 'Alfa', 'Tidak Hadir', 'Generate Alfa otomatis - belum ada absensi atau koreksi Sakit/Izin/Dispen', 'Generate Sistem', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');
+                "#,
+                params![
+                    work_date,
+                    id_unik,
+                    nama,
+                    divisi,
+                    now_str,
+                    id_shift,
+                    bulan,
+                    tahun,
+                    session_id,
+                ],
+            )
+            .map_err(|_| CommandError::internal())?;
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
+                VALUES (?, 'Generate Alfa', ?, ?, ?, ?, 'Alfa sesi NORMAL dibuat karena belum ada absensi atau koreksi Sakit/Izin/Dispen.', 'Selesai');
+                "#,
+                params![now_str, work_date, id_unik, nama, session_id],
+            )
+            .map_err(|_| CommandError::internal())?;
+
+        alfa_dibuat += 1;
+    }
+
+    let today_holiday: Option<String> = transaction
+        .query_row(
+            "SELECT nama_libur FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+            [&now_moment.date],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+
+    let (status, pesan) = match today_holiday {
+        Some(nama) => (
+            "LIBUR",
+            format!("Hari ini Hari Libur ({nama}). Generate Alfa dilewati untuk hari ini."),
+        ),
+        None => {
+            if alfa_dibuat > 0 {
+                (
+                    "SELESAI",
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}"),
+                )
+            } else {
+                (
+                    "IDLE",
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}"),
+                )
+            }
+        }
+    };
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+
+    Ok(json!({
+        "jumlahAlfaDibuat": alfa_dibuat,
+        "jumlahSudahAda": sudah_ada,
+        "jumlahBelumWaktunya": belum_waktunya,
+        "jumlahFleksibel": fleksibel,
+        "jumlahNonaktif": nonaktif_count,
+        "status": status,
+        "pesan": pesan
+    }))
+}

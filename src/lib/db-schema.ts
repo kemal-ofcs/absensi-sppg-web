@@ -242,6 +242,21 @@ export async function initDatabaseSchema(client: Client) {
       "CREATE INDEX IF NOT EXISTS idx_absensi_id_sesi ON absensi_harian(id_sesi);",
     );
 
+    // 12. tbl_hari_libur
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS tbl_hari_libur (
+        id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
+        tanggal DATE UNIQUE NOT NULL,
+        nama_libur TEXT NOT NULL,
+        jenis_libur TEXT DEFAULT 'Libur Nasional',
+        keterangan TEXT,
+        status_aktif INTEGER DEFAULT 1
+      );
+    `);
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_hari_libur_tanggal ON tbl_hari_libur(tanggal, status_aktif);",
+    );
+
     // Seed default data
     await seedDefaultData(client);
 

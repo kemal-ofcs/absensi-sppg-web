@@ -488,7 +488,7 @@ fn timestamp_seconds(value: &str) -> Result<i64, String> {
     Ok(parse_date(date)? * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-fn timestamp_to_moment(value: &str) -> Result<LocalMoment, String> {
+pub fn timestamp_to_moment(value: &str) -> Result<LocalMoment, String> {
     let normalized = value.replace('T', " ");
     let mut parts = normalized.split_whitespace();
     let date = parts
@@ -504,11 +504,11 @@ fn timestamp_to_moment(value: &str) -> Result<LocalMoment, String> {
     })
 }
 
-fn days_between(from: &str, to: &str) -> Result<i64, String> {
+pub fn days_between(from: &str, to: &str) -> Result<i64, String> {
     Ok(parse_date(to)? - parse_date(from)?)
 }
 
-fn add_days(date: &str, amount: i64) -> Result<String, String> {
+pub fn add_days(date: &str, amount: i64) -> Result<String, String> {
     let days = parse_date(date)? + amount;
     let (year, month, day) = civil_from_days(days);
     Ok(format!("{year:04}-{month:02}-{day:02}"))

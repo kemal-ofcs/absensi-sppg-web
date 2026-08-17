@@ -209,6 +209,16 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         detail TEXT NOT NULL,
         status TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS tbl_hari_libur (
+        id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
+        tanggal TEXT UNIQUE NOT NULL,
+        nama_libur TEXT NOT NULL,
+        jenis_libur TEXT DEFAULT 'Libur Nasional',
+        keterangan TEXT,
+        status_aktif INTEGER DEFAULT 1
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_hari_libur_tanggal
+        ON tbl_hari_libur(tanggal, status_aktif);
       CREATE TABLE IF NOT EXISTS desktop_client_identity (
         server_origin TEXT PRIMARY KEY,
         client_id TEXT UNIQUE NOT NULL,
@@ -302,6 +312,32 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     if !has_multi_session {
         let _ = connection.execute(
             "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+            [],
+        );
+    }
+
+    let has_holiday_table: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'tbl_hari_libur';",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !has_holiday_table {
+        let _ = connection.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS tbl_hari_libur (
+                id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
+                tanggal TEXT UNIQUE NOT NULL,
+                nama_libur TEXT NOT NULL,
+                jenis_libur TEXT DEFAULT 'Libur Nasional',
+                keterangan TEXT,
+                status_aktif INTEGER DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_hari_libur_tanggal
+                ON tbl_hari_libur(tanggal, status_aktif);
+            "#,
             [],
         );
     }

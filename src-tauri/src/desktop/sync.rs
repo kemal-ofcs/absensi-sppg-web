@@ -93,7 +93,22 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_shift",
         delete_missing: true,
     },
-
+    SnapshotTable {
+        payload_key: "holidays",
+        domain: "holiday",
+        table: "tbl_hari_libur",
+        columns: &[
+            "id_libur",
+            "tanggal",
+            "nama_libur",
+            "jenis_libur",
+            "keterangan",
+            "status_aktif",
+        ],
+        conflict_column: "tanggal",
+        entity_column: "tanggal",
+        delete_missing: true,
+    },
     SnapshotTable {
         payload_key: "settings",
         domain: "setting",
@@ -355,10 +370,11 @@ fn reconcile_shift_ids(
     transaction: &Transaction<'_>,
     snapshot: &Value,
 ) -> Result<(), CommandError> {
-    let shifts = snapshot
-        .get("shifts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| sync_table_error("tbl_shift"))?;
+    let empty_vec = Vec::new();
+    let shifts = match snapshot.get("shifts").and_then(Value::as_array) {
+        Some(arr) => arr,
+        None => &empty_vec,
+    };
     for shift in shifts {
         let Some(server_id) = shift.get("id_shift").and_then(Value::as_i64) else {
             continue;
@@ -421,10 +437,11 @@ fn apply_table(
     definition: &SnapshotTable,
     revision: i64,
 ) -> Result<(), CommandError> {
-    let rows = snapshot
-        .get(definition.payload_key)
-        .and_then(Value::as_array)
-        .ok_or_else(CommandError::internal)?;
+    let empty_vec = Vec::new();
+    let (rows, present) = match snapshot.get(definition.payload_key).and_then(Value::as_array) {
+        Some(arr) => (arr, true),
+        None => (&empty_vec, false),
+    };
     let placeholders = vec!["?"; definition.columns.len()].join(", ");
     let updates = definition
         .columns
@@ -484,7 +501,7 @@ fn apply_table(
             )
             .map_err(|_| CommandError::internal())?;
     }
-    if definition.delete_missing {
+    if definition.delete_missing && present {
         let select = format!(
             "SELECT CAST({} AS TEXT) FROM {};",
             definition.entity_column, definition.table

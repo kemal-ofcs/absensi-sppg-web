@@ -938,25 +938,25 @@ export default function HistoryPage() {
           {tab === "scan" ? (
             /* TAB 1: LOG SCAN TERMINAL */
             <table className="w-full min-w-[1400px] text-left text-xs font-mono">
-              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-10 border-b border-slate-800 shadow-md">
+              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-20 border-b border-slate-800 shadow-md">
                 <tr>
-                  <th className="p-3.5">Timestamp Scan</th>
-                  <th className="p-3.5">Tanggal</th>
-                  <th className="p-3.5">Jam</th>
-                  <th className="p-3.5">ID Unik</th>
-                  <th className="p-3.5">Nama Karyawan</th>
-                  <th className="p-3.5">Divisi</th>
-                  <th className="p-3.5">Jenis Scan</th>
-                  <th className="p-3.5">Status Proses</th>
-                  <th className="p-3.5">Sumber Data</th>
-                  <th className="p-3.5">Catatan Sistem</th>
-                  <th className="p-3.5">Keterangan</th>
-                  <th className="p-3.5 text-right">Waktu Telat</th>
-                  <th className="p-3.5 text-right">Datang Awal</th>
-                  <th className="p-3.5">ID Referensi</th>
-                  <th className="p-3.5">Operator</th>
+                  <th className="p-3.5 bg-slate-950">Timestamp Scan</th>
+                  <th className="p-3.5 bg-slate-950">Tanggal</th>
+                  <th className="p-3.5 bg-slate-950">Jam</th>
+                  <th className="p-3.5 bg-slate-950">ID Unik</th>
+                  <th className="p-3.5 bg-slate-950">Nama Karyawan</th>
+                  <th className="p-3.5 bg-slate-950">Divisi</th>
+                  <th className="p-3.5 bg-slate-950">Jenis Scan</th>
+                  <th className="p-3.5 bg-slate-950">Status Proses</th>
+                  <th className="p-3.5 bg-slate-950">Sumber Data</th>
+                  <th className="p-3.5 bg-slate-950">Catatan Sistem</th>
+                  <th className="p-3.5 bg-slate-950">Keterangan</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Waktu Telat</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Datang Awal</th>
+                  <th className="p-3.5 bg-slate-950">ID Referensi</th>
+                  <th className="p-3.5 bg-slate-950">Operator</th>
                   {hasPermission(user, "history.delete") ? (
-                    <th className="p-3.5 text-center sticky right-0 bg-slate-950/95 z-20 shadow-md">
+                    <th className="p-3.5 text-center sticky top-0 right-0 bg-slate-950 z-30 border-l border-slate-800/80 shadow-md">
                       Aksi
                     </th>
                   ) : null}
@@ -1052,7 +1052,7 @@ export default function HistoryPage() {
                         {String(row.kode_operator || "-")}
                       </td>
                       {hasPermission(user, "history.delete") ? (
-                        <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10">
+                        <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10 border-l border-slate-800/80">
                           <button
                             type="button"
                             onClick={() =>
@@ -1079,34 +1079,34 @@ export default function HistoryPage() {
           ) : (
             /* TAB 2: ABSENSI HARIAN */
             <table className="w-full min-w-[2000px] text-left text-xs font-mono">
-              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-10 border-b border-slate-800 shadow-md">
+              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-20 border-b border-slate-800 shadow-md">
                 <tr>
-                  <th className="p-3.5">Tanggal</th>
-                  <th className="p-3.5">ID Unik</th>
-                  <th className="p-3.5">Nama Karyawan</th>
-                  <th className="p-3.5">Divisi</th>
-                  <th className="p-3.5">Jam Masuk</th>
-                  <th className="p-3.5">Jam Pulang</th>
-                  <th className="p-3.5">Status Kehadiran</th>
-                  <th className="p-3.5">Status Absen</th>
-                  <th className="p-3.5">Keterangan</th>
-                  <th className="p-3.5">Sumber Data</th>
-                  <th className="p-3.5">Update Terakhir</th>
-                  <th className="p-3.5 text-right">Terlambat</th>
-                  <th className="p-3.5 text-right">Datang Awal</th>
-                  <th className="p-3.5 text-right">Jam Kerja</th>
-                  <th className="p-3.5 text-right">Lembur</th>
-                  <th className="p-3.5 text-right">Jam Kurang</th>
-                  <th className="p-3.5">Shift</th>
-                  <th className="p-3.5">Periode</th>
-                  <th className="p-3.5">ID Sesi</th>
-                  <th className="p-3.5">Mode</th>
-                  <th className="p-3.5">ID Backup</th>
-                  <th className="p-3.5">Karyawan Asal</th>
-                  <th className="p-3.5">Tanggal Tugas</th>
+                  <th className="p-3.5 bg-slate-950">Tanggal</th>
+                  <th className="p-3.5 bg-slate-950">ID Unik</th>
+                  <th className="p-3.5 bg-slate-950">Nama Karyawan</th>
+                  <th className="p-3.5 bg-slate-950">Divisi</th>
+                  <th className="p-3.5 bg-slate-950">Jam Masuk</th>
+                  <th className="p-3.5 bg-slate-950">Jam Pulang</th>
+                  <th className="p-3.5 bg-slate-950">Status Kehadiran</th>
+                  <th className="p-3.5 bg-slate-950">Status Absen</th>
+                  <th className="p-3.5 bg-slate-950">Keterangan</th>
+                  <th className="p-3.5 bg-slate-950">Sumber Data</th>
+                  <th className="p-3.5 bg-slate-950">Update Terakhir</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Terlambat</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Datang Awal</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Jam Kerja</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Lembur</th>
+                  <th className="p-3.5 bg-slate-950 text-right">Jam Kurang</th>
+                  <th className="p-3.5 bg-slate-950">Shift</th>
+                  <th className="p-3.5 bg-slate-950">Periode</th>
+                  <th className="p-3.5 bg-slate-950">ID Sesi</th>
+                  <th className="p-3.5 bg-slate-950">Mode</th>
+                  <th className="p-3.5 bg-slate-950">ID Backup</th>
+                  <th className="p-3.5 bg-slate-950">Karyawan Asal</th>
+                  <th className="p-3.5 bg-slate-950">Tanggal Tugas</th>
                   {hasPermission(user, "history.edit") ||
                   hasPermission(user, "history.delete") ? (
-                    <th className="p-3.5 text-center sticky right-0 bg-slate-950/95 z-20 shadow-md">
+                    <th className="p-3.5 text-center sticky top-0 right-0 bg-slate-950 z-30 border-l border-slate-800/80 shadow-md">
                       Aksi
                     </th>
                   ) : null}
@@ -1246,7 +1246,7 @@ export default function HistoryPage() {
                         </td>
                         {hasPermission(user, "history.edit") ||
                         hasPermission(user, "history.delete") ? (
-                          <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10">
+                          <td className="p-3.5 text-center sticky right-0 bg-slate-900/95 z-10 border-l border-slate-800/80">
                             <div className="flex items-center justify-center gap-1.5">
                               {hasPermission(user, "history.edit") ? (
                                 <button

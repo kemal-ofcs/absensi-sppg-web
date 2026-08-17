@@ -290,6 +290,25 @@ async function processInTransaction(
     }
 
     if (!openSession) {
+      const holidayRes = await transaction.execute({
+        sql: "SELECT nama_libur, jenis_libur FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+        args: [tanggalLogAwal],
+      });
+      if (holidayRes.rows.length > 0) {
+        const holiday = holidayRes.rows[0];
+        const namaLibur = String(holiday.nama_libur || "Hari Libur");
+        const jenisLibur = String(holiday.jenis_libur || "Libur Nasional");
+        return logKnownRejection(transaction, {
+          waktuScan,
+          tanggalKerja: tanggalLogAwal,
+          employee,
+          sumberData,
+          kodeOperator,
+          catatanSistem: `Hari Libur: ${namaLibur} (${jenisLibur})`,
+          pesan: `Scan ditolak: Hari ini Hari Libur (${namaLibur} - ${jenisLibur}). Scanner dinonaktifkan. Silakan hubungi Admin jika terdapat penugasan khusus.`,
+        });
+      }
+
       const baseDate = safeWorkDate(waktuScan, baseShiftRow);
       const baseIdSesi = `NORMAL-${baseDate.replaceAll("-", "")}-${employee.id}-${employee.idShift}`;
       const baseSessionRes = await transaction.execute({

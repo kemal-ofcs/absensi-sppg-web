@@ -30,6 +30,12 @@ const NAVIGATION: NavigationItem[] = [
   { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
   { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
   {
+    area: "holidays",
+    href: "/holidays",
+    icon: "calendar",
+    label: "Hari Libur",
+  },
+  {
     area: "operational",
     href: "/operational",
     icon: "tools",

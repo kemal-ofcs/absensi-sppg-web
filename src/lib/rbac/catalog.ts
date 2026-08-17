@@ -7,6 +7,8 @@ export const PERMISSION_CATALOG = [
   { key: "employees.manage", name: "Kelola karyawan", group: "Manajemen" },
   { key: "shifts.view", name: "Lihat shift", group: "Manajemen" },
   { key: "shifts.manage", name: "Kelola shift", group: "Manajemen" },
+  { key: "holidays.view", name: "Lihat hari libur", group: "Manajemen" },
+  { key: "holidays.manage", name: "Kelola hari libur", group: "Manajemen" },
   {
     key: "corrections.view",
     name: "Lihat koreksi admin",
@@ -21,6 +23,11 @@ export const PERMISSION_CATALOG = [
   {
     key: "backups.manage",
     name: "Kelola penugasan backup",
+    group: "Operasional",
+  },
+  {
+    key: "alfa.trigger",
+    name: "Jalankan Generate Alfa Manual",
     group: "Operasional",
   },
   {
@@ -51,6 +58,11 @@ export const PERMISSION_CATALOG = [
   { key: "operators.view", name: "Lihat Master Operator", group: "Sistem" },
   { key: "operators.manage", name: "Kelola Master Operator", group: "Sistem" },
   { key: "roles.manage", name: "Kelola Role & Akses", group: "Sistem" },
+  {
+    key: "settings.manage",
+    name: "Kelola Pengaturan Sistem & Auto Alfa",
+    group: "Sistem",
+  },
   {
     key: "branding.manage",
     name: "Kelola identitas aplikasi",

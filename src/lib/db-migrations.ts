@@ -10,6 +10,7 @@ const LOGIN_RATE_LIMIT_MIGRATION_VERSION = 3;
 const OPERATIONAL_SYNC_MIGRATION_VERSION = 4;
 const OFFLINE_IMPORT_MIGRATION_VERSION = 5;
 const OPERATIONAL_COLUMNS_MIGRATION_VERSION = 6;
+const HOLIDAY_MIGRATION_VERSION = 7;
 
 const SYSTEM_ROLES = [
   {
@@ -346,6 +347,26 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'operational-columns-foundation', ?);`,
     args: [OPERATIONAL_COLUMNS_MIGRATION_VERSION, now],
+  });
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS tbl_hari_libur (
+      id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
+      tanggal DATE UNIQUE NOT NULL,
+      nama_libur TEXT NOT NULL,
+      jenis_libur TEXT DEFAULT 'Libur Nasional',
+      keterangan TEXT,
+      status_aktif INTEGER DEFAULT 1
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hari_libur_tanggal ON tbl_hari_libur(tanggal, status_aktif);",
+  );
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'holiday-management-foundation', ?);`,
+    args: [HOLIDAY_MIGRATION_VERSION, now],
   });
 
   await client.execute(

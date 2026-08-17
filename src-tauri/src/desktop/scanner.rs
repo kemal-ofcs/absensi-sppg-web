@@ -524,7 +524,7 @@ pub fn submit(
 }
 
 #[cfg(test)]
-fn submit_at(
+pub(crate) fn submit_at(
     state: &DesktopState,
     input: &Value,
     operator_code: &str,
@@ -832,6 +832,40 @@ fn submit_internal(
         if let Some((valid_session, valid_shift)) = open_valid {
             (valid_session, valid_shift)
         } else {
+            let holiday: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT nama_libur, COALESCE(jenis_libur, 'Libur Nasional') FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+                    [&moment.date],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .unwrap_or(None);
+
+            if let Some((nama_libur, jenis_libur)) = holiday {
+                let log = rejected_log(
+                    &moment.timestamp,
+                    &moment.date,
+                    &moment.time,
+                    &employee,
+                    operator_code,
+                    format!("Hari Libur: {nama_libur} ({jenis_libur})"),
+                    "",
+                );
+                persist_rejection(&transaction, &client_id, &log)?;
+                transaction.commit().map_err(|_| CommandError::internal())?;
+                return Ok(failure_with_context(
+                    format!(
+                        "Scan ditolak: Hari ini Hari Libur ({nama_libur} - {jenis_libur}). Scanner dinonaktifkan. Silakan hubungi Admin jika terdapat penugasan khusus."
+                    ),
+                    &employee,
+                    format!("Hari Libur: {nama_libur} ({jenis_libur})"),
+                    "",
+                    None,
+                    None,
+                    None,
+                ));
+            }
+
             let base_date = match base_shift.as_ref() {
                 Some(s) => match determine_work_date(&moment, &s.policy) {
                     Ok(d) => d,

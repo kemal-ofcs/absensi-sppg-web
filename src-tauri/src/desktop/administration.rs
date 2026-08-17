@@ -2639,5 +2639,111 @@ mod tests {
             .expect("shift 2 must exist");
         assert_eq!(shift2["izinkan_multi_sesi"], 1, "izinkan_multi_sesi must be 1");
     }
+
+    #[test]
+    fn test_holiday_crud_and_alfa_settings() {
+        let (_directory, state) = fixture();
+
+        // 1. Create holiday
+        let create_res = super::super::operational::create_holiday(
+            &state,
+            &json!({
+                "tanggal": "2026-08-17",
+                "nama_libur": "Hari Kemerdekaan RI",
+                "jenis_libur": "Libur Nasional",
+                "keterangan": "HUT RI ke-81",
+                "status_aktif": 1,
+            }),
+        )
+        .expect("create holiday");
+        let id_libur = create_res["id_libur"].as_i64().expect("id_libur");
+
+        // 2. List holidays
+        let list = super::super::operational::list_holidays(&state).expect("list holidays");
+        let list_arr = list.as_array().expect("array");
+        assert_eq!(list_arr.len(), 1);
+        assert_eq!(list_arr[0]["nama_libur"], "Hari Kemerdekaan RI");
+
+        // 3. Update holiday
+        super::super::operational::update_holiday(
+            &state,
+            id_libur,
+            &json!({
+                "tanggal": "2026-08-17",
+                "nama_libur": "Hari Kemerdekaan RI",
+                "jenis_libur": "Libur Nasional",
+                "keterangan": "Updated",
+                "status_aktif": 0,
+            }),
+        )
+        .expect("update holiday");
+
+        let list_after_update = super::super::operational::list_holidays(&state).expect("list holidays");
+        assert_eq!(list_after_update.as_array().unwrap()[0]["status_aktif"], 0);
+
+        // 4. Alfa settings
+        let s1 = super::super::operational::get_alfa_settings(&state).expect("get alfa");
+        assert_eq!(s1["enabled"], true);
+
+        super::super::operational::save_alfa_settings(&state, false).expect("save alfa false");
+        let s2 = super::super::operational::get_alfa_settings(&state).expect("get alfa");
+        assert_eq!(s2["enabled"], false);
+
+        // 5. Delete holiday
+        super::super::operational::delete_holiday(&state, id_libur).expect("delete holiday");
+        let list_empty = super::super::operational::list_holidays(&state).expect("list holidays");
+        assert_eq!(list_empty.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_scanner_holiday_rejection() {
+        let (_directory, state) = fixture();
+
+        // Add employee
+        let emp_res = super::super::operational::create_employee(
+            &state,
+            &json!({
+                "id_unik": "EMP_LIBUR_01",
+                "kode_karyawan": "KW_LIBUR",
+                "nama": "Karyawan Libur",
+                "divisi": "Produksi",
+                "id_shift": 1,
+            }),
+        )
+        .expect("create employee");
+        let token = emp_res["token_absensi"].as_str().unwrap();
+
+        // Create active holiday on 2026-08-17
+        let _ = super::super::operational::create_holiday(
+            &state,
+            &json!({
+                "tanggal": "2026-08-17",
+                "nama_libur": "HUT RI",
+                "jenis_libur": "Libur Nasional",
+                "status_aktif": 1,
+            }),
+        )
+        .expect("create holiday");
+
+        // Submit scan on holiday
+        let moment = super::super::time_policy::LocalMoment {
+            timestamp: "2026-08-17 07:00:00".to_owned(),
+            date: "2026-08-17".to_owned(),
+            time: "07:00:00".to_owned(),
+        };
+        let scan_res = super::super::scanner::submit_at(
+            &state,
+            &json!({
+                "qrContent": format!("EMP_LIBUR_01|{token}"),
+            }),
+            "OP001",
+            moment,
+        )
+        .expect("scanner submit");
+
+        assert_eq!(scan_res["status"], "Ditolak");
+        assert!(scan_res["pesan"].as_str().unwrap().contains("Hari Libur (HUT RI - Libur Nasional)"));
+    }
 }
+
 

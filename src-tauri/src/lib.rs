@@ -68,6 +68,13 @@ pub fn run() {
             desktop::commands::desktop_resolve_sync_conflicts,
             desktop::commands::desktop_clear_failed_sync,
             desktop::commands::desktop_save_file,
+            desktop::commands::desktop_get_holidays,
+            desktop::commands::desktop_create_holiday,
+            desktop::commands::desktop_update_holiday,
+            desktop::commands::desktop_delete_holiday,
+            desktop::commands::desktop_get_alfa_settings,
+            desktop::commands::desktop_save_alfa_settings,
+            desktop::commands::desktop_trigger_generate_alfa,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

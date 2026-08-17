@@ -56,6 +56,13 @@
     "allow-desktop-retry-failed-sync",
     "allow-desktop-resolve-sync-conflicts",
     "allow-desktop-clear-failed-sync",
-    "allow-desktop-save-file"
+    "allow-desktop-save-file",
+    "allow-desktop-get-holidays",
+    "allow-desktop-create-holiday",
+    "allow-desktop-update-holiday",
+    "allow-desktop-delete-holiday",
+    "allow-desktop-get-alfa-settings",
+    "allow-desktop-save-alfa-settings",
+    "allow-desktop-trigger-generate-alfa"
   ]
 }

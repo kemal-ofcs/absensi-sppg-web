@@ -1,6 +1,13 @@
 import "server-only";
 
+import type { Client } from "@libsql/client";
+import {
+  formatJamOperasional,
+  formatTanggalOperasional,
+  formatTimestampOperasional,
+} from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { cekHariLiburAktif } from "@/lib/services/holiday";
 
 export interface RingkasanAlfa {
   jumlahAlfaDibuat: number;
@@ -12,23 +19,41 @@ export interface RingkasanAlfa {
   pesan: string;
 }
 
+export async function getAutoAlfaSetting(client?: Client): Promise<boolean> {
+  const targetDb = client ?? db;
+  if (!client) await ensureDbInitialized();
+  const settingRes = await targetDb.execute(
+    "SELECT value FROM setting_gex_system WHERE key = 'auto_alfa_aktif' LIMIT 1;",
+  );
+  if (settingRes.rows.length === 0) return true;
+  return String(settingRes.rows[0].value).toLowerCase() === "true";
+}
+
+export async function saveAutoAlfaSetting(
+  enabled: boolean,
+  client?: Client,
+): Promise<{ sukses: boolean }> {
+  const targetDb = client ?? db;
+  if (!client) await ensureDbInitialized();
+  await targetDb.execute({
+    sql: `INSERT INTO setting_gex_system (key, value) VALUES ('auto_alfa_aktif', ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+    args: [enabled ? "true" : "false"],
+  });
+  return { sukses: true };
+}
+
 export async function generateAlfaHarian(
   waktuSimulasi?: Date,
+  client?: Client,
 ): Promise<RingkasanAlfa> {
-  await ensureDbInitialized();
+  const targetDb = client ?? db;
+  if (!client) await ensureDbInitialized();
 
   const sekarang = waktuSimulasi || new Date();
 
   // 1. Cek Setting system auto_alfa_aktif
-  const settingRes = await db.execute(
-    "SELECT value FROM setting_gex_system WHERE key = 'auto_alfa_aktif' LIMIT 1;",
-  );
-
-  const autoAlfaAktif =
-    settingRes.rows.length > 0
-      ? String(settingRes.rows[0].value).toLowerCase() === "true"
-      : true;
-
+  const autoAlfaAktif = await getAutoAlfaSetting(client);
   if (!autoAlfaAktif) {
     return {
       jumlahAlfaDibuat: 0,
@@ -37,19 +62,19 @@ export async function generateAlfaHarian(
       jumlahFleksibel: 0,
       jumlahNonaktif: 0,
       status: "NONAKTIF",
-      pesan: "Generate Alfa dimatikan melalui SETTING",
+      pesan: "Generate Alfa dimatikan melalui Pengaturan",
     };
   }
 
-  // 2. Ambil Karyawan Aktif
-  const empRes = await db.execute(
-    "SELECT * FROM master_data WHERE status_aktif = 'Aktif';",
-  );
-
-  const nonaktifRes = await db.execute(
+  // 2. Ambil Karyawan Aktif & Nonaktif
+  const nonaktifRes = await targetDb.execute(
     "SELECT COUNT(*) as count FROM master_data WHERE status_aktif != 'Aktif';",
   );
   const jumlahNonaktif = Number(nonaktifRes.rows[0]?.count || 0);
+
+  const empRes = await targetDb.execute(
+    "SELECT * FROM master_data WHERE status_aktif = 'Aktif';",
+  );
 
   const monthNames = [
     "Januari",
@@ -66,10 +91,11 @@ export async function generateAlfaHarian(
     "Desember",
   ];
 
-  const tanggalStr = sekarang.toISOString().split("T")[0];
-  const bulanStr = monthNames[sekarang.getMonth()] || "Januari";
-  const tahunNum = sekarang.getFullYear();
-  const nowStr = sekarang.toISOString();
+  const nowStr = formatTimestampOperasional(sekarang);
+  const tanggalOperasionalStr = formatTanggalOperasional(sekarang);
+  const jamOperasionalStr = formatJamOperasional(sekarang);
+  const [hSekarang, mSekarang] = jamOperasionalStr.split(":").map(Number);
+  const menitSekarang = hSekarang * 60 + mSekarang;
 
   let jumlahAlfaDibuat = 0;
   let jumlahSudahAda = 0;
@@ -83,48 +109,77 @@ export async function generateAlfaHarian(
     const divisi = String(emp.divisi);
     const idShift = Number(emp.id_shift || 1);
 
-    // Shift 4 = Fleksibel -> Skip Alfa
-    if (idShift === 4) {
-      jumlahFleksibel++;
-      continue;
-    }
-
     // Ambil Aturan Shift dari tbl_shift
-    const shiftRes = await db.execute({
+    const shiftRes = await targetDb.execute({
       sql: "SELECT * FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
       args: [idShift],
     });
 
     const shift = (shiftRes.rows[0] as Record<string, unknown>) || {
       jam_masuk: "07:00",
+      jam_pulang: "15:00",
       offset_generate_alfa: 180,
     };
 
-    // Hitung Waktu Cutoff Alfa
-    const [hMasuk, mMasuk] = String(shift.jam_masuk || "07:00")
-      .split(":")
-      .map(Number);
+    const jamMasukStr = String(shift.jam_masuk || "07:00");
+    const jamPulangStr = String(shift.jam_pulang || "15:00");
     const offsetAlfaMenit = Number(shift.offset_generate_alfa || 180);
 
-    const deadlineAlfaDate = new Date(
-      sekarang.getFullYear(),
-      sekarang.getMonth(),
-      sekarang.getDate(),
-      hMasuk,
-      mMasuk + offsetAlfaMenit,
-      0,
-    );
+    // Shift Fleksibel (contoh id_shift 4 atau jam_masuk == '00:00' && jam_pulang == '23:59')
+    if (
+      idShift === 4 ||
+      (jamMasukStr === "00:00" && jamPulangStr === "23:59") ||
+      Number(shift.jam_kerja_normal_menit) === 0
+    ) {
+      jumlahFleksibel++;
+      continue;
+    }
 
-    if (sekarang.getTime() < deadlineAlfaDate.getTime()) {
+    // Tentukan Tanggal Kerja berdasarkan Shift
+    const [hMasuk, mMasuk] = jamMasukStr.split(":").map(Number);
+    const [hPulang, mPulang] = jamPulangStr.split(":").map(Number);
+    const menitMasuk = hMasuk * 60 + mMasuk;
+    const menitPulang = hPulang * 60 + mPulang;
+
+    let tanggalStr = tanggalOperasionalStr;
+    const isOvernight = menitPulang < menitMasuk;
+
+    // Untuk shift malam (jam_pulang < jam_masuk), sebelum jam masuk berikutnya berkaitan dengan tanggal kerja H-1
+    if (isOvernight && menitSekarang < menitMasuk) {
+      const [y, m, d] = tanggalOperasionalStr.split("-").map(Number);
+      const prevDate = new Date(y, m - 1, d - 1);
+      tanggalStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-${String(prevDate.getDate()).padStart(2, "0")}`;
+    }
+
+    // Cek apakah tanggal kerja ini adalah Hari Libur Aktif
+    const holiday = await cekHariLiburAktif(tanggalStr, client);
+    if (holiday) {
+      // Jika hari libur, skip generate alfa untuk shift ini
+      continue;
+    }
+
+    // Hitung Cutoff Threshold Menit
+    const cutoffTimelineMinute = isOvernight
+      ? menitPulang + 1440 - offsetAlfaMenit
+      : menitPulang - offsetAlfaMenit;
+
+    const currentTimelineMinute =
+      isOvernight && tanggalOperasionalStr > tanggalStr
+        ? 1440 + menitSekarang
+        : menitSekarang;
+
+    if (currentTimelineMinute < cutoffTimelineMinute) {
       jumlahBelumWaktunya++;
       continue;
     }
 
-    // Cek apakah sudah ada rekaman absensi_harian (sesi NORMAL)
+    // Cek apakah sudah ada rekaman absensi sesi NORMAL atau koreksi prioritas
     const idSesiNormal = `NORMAL-${tanggalStr.replace(/-/g, "")}-${idUnik}-${idShift}`;
-    const existRes = await db.execute({
-      sql: "SELECT id_absensi FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
-      args: [idSesiNormal],
+    const existRes = await targetDb.execute({
+      sql: `SELECT id_absensi, status_kehadiran FROM absensi_harian 
+            WHERE id_karyawan = ? AND tanggal = ? AND (mode_tugas = 'NORMAL' OR mode_tugas IS NULL OR mode_tugas = '') 
+            LIMIT 1;`,
+      args: [idUnik, tanggalStr],
     });
 
     if (existRes.rows.length > 0) {
@@ -132,14 +187,18 @@ export async function generateAlfaHarian(
       continue;
     }
 
+    const [tY, tM] = tanggalStr.split("-").map(Number);
+    const bulanStr = monthNames[tM - 1] || "Januari";
+    const tahunNum = tY;
+
     // Buat Rekaman ALFA Otomatis
-    await db.execute({
+    await targetDb.execute({
       sql: `INSERT INTO absensi_harian (
               tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
               status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
               menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
               id_shift, bulan, tahun, id_sesi, mode_tugas
-            ) VALUES (?, ?, ?, ?, '', '', 'Alfa', 'Tidak Hadir', 'Generate alfa otomatis', 'Generate Sistem', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
+            ) VALUES (?, ?, ?, ?, '', '', 'Alfa', 'Tidak Hadir', 'Generate Alfa otomatis - belum ada absensi atau koreksi Sakit/Izin/Dispen', 'Generate Sistem', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
       args: [
         tanggalStr,
         idUnik,
@@ -154,14 +213,24 @@ export async function generateAlfaHarian(
     });
 
     // Catat Audit Absensi
-    await db.execute({
+    await targetDb.execute({
       sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
-            VALUES (?, 'Generate Alfa', ?, ?, ?, ?, 'Generasi Alfa otomatis oleh sistem', 'Selesai');`,
+            VALUES (?, 'Generate Alfa', ?, ?, ?, ?, 'Alfa sesi NORMAL dibuat karena belum ada absensi atau koreksi Sakit/Izin/Dispen.', 'Selesai');`,
       args: [nowStr, tanggalStr, idUnik, nama, idSesiNormal],
     });
 
     jumlahAlfaDibuat++;
   }
+
+  const todayHoliday = await cekHariLiburAktif(tanggalOperasionalStr, client);
+  const statusSummary = todayHoliday
+    ? "LIBUR"
+    : jumlahAlfaDibuat > 0
+      ? "SELESAI"
+      : "IDLE";
+  const pesan = todayHoliday
+    ? `Hari ini Hari Libur (${todayHoliday.nama_libur}). Generate Alfa dilewati untuk hari ini.`
+    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}`;
 
   return {
     jumlahAlfaDibuat,
@@ -169,17 +238,18 @@ export async function generateAlfaHarian(
     jumlahBelumWaktunya,
     jumlahFleksibel,
     jumlahNonaktif,
-    status: "SELESAI",
-    pesan: `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}`,
+    status: statusSummary,
+    pesan,
   };
 }
 
-export async function jalankanAuditKualitasAbsensi() {
-  await ensureDbInitialized();
+export async function jalankanAuditKualitasAbsensi(client?: Client) {
+  const targetDb = client ?? db;
+  if (!client) await ensureDbInitialized();
 
-  const ringkasan = await generateAlfaHarian();
+  const ringkasan = await generateAlfaHarian(undefined, client);
 
-  const auditRes = await db.execute(
+  const auditRes = await targetDb.execute(
     "SELECT * FROM audit_absensi ORDER BY id_audit DESC LIMIT 50;",
   );
 

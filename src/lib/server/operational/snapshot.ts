@@ -11,6 +11,7 @@ export async function readOperationalSnapshot(client: Client) {
     employees,
     idCards,
     shifts,
+    holidays,
     settings,
     backups,
     corrections,
@@ -29,6 +30,7 @@ export async function readOperationalSnapshot(client: Client) {
     `,
       "SELECT * FROM id_card ORDER BY nama;",
       "SELECT * FROM tbl_shift ORDER BY kode_shift;",
+      "SELECT * FROM tbl_hari_libur ORDER BY tanggal ASC;",
       "SELECT key, value FROM setting_gex_system;",
       `
       SELECT * FROM backup_karyawan
@@ -64,6 +66,7 @@ export async function readOperationalSnapshot(client: Client) {
     employees: plainRows(employees.rows),
     idCards: plainRows(idCards.rows),
     shifts: plainRows(shifts.rows),
+    holidays: plainRows(holidays.rows),
     settings: plainRows(settings.rows),
     backups: plainRows(backups.rows),
     corrections: plainRows(corrections.rows),

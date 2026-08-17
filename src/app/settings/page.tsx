@@ -6,11 +6,18 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon } from "@/components/ui/Icon";
+import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { getCurrentCoordinates } from "@/lib/client/geolocation";
 import { useAuth } from "@/lib/context/AuthContext";
+import {
+  getAutoAlfaSetting,
+  type RingkasanAlfa,
+  saveAutoAlfaSetting,
+  triggerGenerateAlfa,
+} from "@/lib/gateways/alfa";
 import {
   type GeofenceSettings,
   getGeofenceSettings,
@@ -87,10 +94,24 @@ export default function SettingsPage() {
     batasMultiScanMenit: 5,
   });
   const [scannerSafetyBusy, setScannerSafetyBusy] = useState(false);
+  const [autoAlfaEnabled, setAutoAlfaEnabled] = useState(true);
+  const [autoAlfaBusy, setAutoAlfaBusy] = useState(false);
+  const [alfaTriggerBusy, setAlfaTriggerBusy] = useState(false);
+  const [alfaModalResult, setAlfaModalResult] = useState<RingkasanAlfa | null>(
+    null,
+  );
 
   useEffect(() => {
-    if (!isHydrated || !isAuthenticated || !user?.isSuperadmin) return;
+    if (!isHydrated || !isAuthenticated) return;
     let cancelled = false;
+
+    getAutoAlfaSetting()
+      .then((enabled) => {
+        if (!cancelled) setAutoAlfaEnabled(enabled);
+      })
+      .catch(() => undefined);
+
+    if (!user?.isSuperadmin) return;
     setGeofenceBusy(true);
     setScannerSafetyBusy(true);
     getGeofenceSettings()
@@ -135,6 +156,46 @@ export default function SettingsPage() {
       cancelled = true;
     };
   }, [isAuthenticated, isHydrated, user?.isSuperadmin]);
+
+  const handleAutoAlfaToggle = async (enabled: boolean) => {
+    setAutoAlfaBusy(true);
+    try {
+      await saveAutoAlfaSetting(enabled);
+      setAutoAlfaEnabled(enabled);
+      setFeedback({
+        type: "success",
+        message: `Pengaturan Auto Alfa berhasil diubah menjadi ${enabled ? "Aktif" : "Nonaktif"}.`,
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan pengaturan Auto Alfa.",
+      });
+    } finally {
+      setAutoAlfaBusy(false);
+    }
+  };
+
+  const handleTriggerAlfaNow = async () => {
+    setAlfaTriggerBusy(true);
+    try {
+      const result = await triggerGenerateAlfa();
+      setAlfaModalResult(result);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menjalankan Generate Alfa manual.",
+      });
+    } finally {
+      setAlfaTriggerBusy(false);
+    }
+  };
 
   const refreshSync = async (synchronize = false) => {
     setSyncBusy(true);
@@ -848,6 +909,89 @@ export default function SettingsPage() {
         </section>
       ) : null}
 
+      {hasPermission(user, "settings.manage") ||
+      hasPermission(user, "alfa.trigger") ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-amber-300/20 bg-amber-300/10 text-amber-200">
+                <Icon name="clock" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Otomasi Generate Alfa Harian
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Secara otomatis membuat entri status Alfa untuk karyawan aktif
+                  sesi NORMAL yang belum hadir atau tidak memiliki koreksi
+                  Sakit/Izin/Dispen setelah batas cutoff shift (jam pulang
+                  dikurangi offset). Pada hari libur aktif, Generate Alfa
+                  otomatis dinonaktifkan.
+                </p>
+              </div>
+            </div>
+            <StatusBadge tone={autoAlfaEnabled ? "success" : "neutral"}>
+              {autoAlfaEnabled ? "Auto-Alfa Aktif" : "Auto-Alfa Nonaktif"}
+            </StatusBadge>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-slate-950/60 p-5">
+            <div className="space-y-1">
+              <span className="text-sm font-bold text-white">
+                Status Otomasi Generate Alfa
+              </span>
+              <p className="text-xs text-slate-400">
+                Matikan tombol ini jika Anda ingin menangguhkan penandaan Alfa
+                otomatis di seluruh sistem.
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              {hasPermission(user, "settings.manage") ? (
+                <label className="relative inline-flex cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={autoAlfaEnabled}
+                    disabled={autoAlfaBusy}
+                    onChange={(e) => handleAutoAlfaToggle(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="h-6 w-11 rounded-full bg-slate-800 peer peer-checked:bg-amber-400 peer-focus:outline-none after:absolute after:top-0.5 after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white disabled:opacity-50" />
+                </label>
+              ) : null}
+            </div>
+          </div>
+
+          {hasPermission(user, "alfa.trigger") ? (
+            <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+              <div>
+                <span className="text-sm font-bold text-white">
+                  Jalankan Generate Alfa Sekarang
+                </span>
+                <p className="text-xs text-slate-400">
+                  Evaluasi kehadiran seluruh karyawan aktif saat ini dan tandai
+                  Alfa bagi yang telah melewati batas waktu cutoff.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={alfaTriggerBusy}
+                onClick={handleTriggerAlfaNow}
+                className="flex items-center gap-2 rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-slate-950 shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 disabled:opacity-50 active:scale-95 shrink-0"
+              >
+                {alfaTriggerBusy ? (
+                  <Icon name="clock" className="size-4 animate-spin" />
+                ) : (
+                  <Icon name="check" className="size-4" />
+                )}
+                <span>
+                  {alfaTriggerBusy ? "Memproses..." : "Eksekusi Sekarang"}
+                </span>
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       {isDesktopSyncAvailable() && hasPermission(user, "sync.view") ? (
         <section className="app-panel rounded-3xl p-5 sm:p-7">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1002,6 +1146,82 @@ export default function SettingsPage() {
             </div>
           ) : null}
         </section>
+      ) : null}
+
+      {alfaModalResult ? (
+        <Modal
+          titleId="alfa-modal-summary"
+          onClose={() => setAlfaModalResult(null)}
+          title="Ringkasan Eksekusi Generate Alfa"
+        >
+          <div className="space-y-4">
+            <div
+              className={`rounded-2xl border p-4 ${
+                alfaModalResult.status === "SELESAI"
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                  : alfaModalResult.status === "LIBUR"
+                    ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                    : "border-sky-500/20 bg-sky-500/10 text-sky-300"
+              }`}
+            >
+              <div className="flex items-center gap-2 font-bold">
+                <Icon
+                  name={
+                    alfaModalResult.status === "SELESAI" ? "check" : "calendar"
+                  }
+                  className="size-5"
+                />
+                <span>Status: {alfaModalResult.status}</span>
+              </div>
+              <p className="mt-1 text-xs">{alfaModalResult.pesan}</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Alfa Baru Dibuat
+                </div>
+                <div className="text-xl font-black text-amber-400">
+                  {alfaModalResult.jumlahAlfaDibuat}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Sudah Ada / Hadir
+                </div>
+                <div className="text-xl font-black text-emerald-400">
+                  {alfaModalResult.jumlahSudahAda}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Belum Cutoff Shift
+                </div>
+                <div className="text-xl font-black text-sky-400">
+                  {alfaModalResult.jumlahBelumWaktunya}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Shift Fleksibel
+                </div>
+                <div className="text-xl font-black text-purple-400">
+                  {alfaModalResult.jumlahFleksibel}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setAlfaModalResult(null)}
+                className="rounded-xl bg-sky-500 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400"
+              >
+                Tutup Ringkasan
+              </button>
+            </div>
+          </div>
+        </Modal>
       ) : null}
     </AppShell>
   );

@@ -544,7 +544,7 @@ export default function KaryawanPage() {
                   <th className="p-3.5">Mulai Aktif</th>
                   <th className="p-3.5">Selesai Aktif</th>
                   <th className="p-3.5">Status QR</th>
-                  <th className="p-3.5 text-right sticky right-0 bg-slate-950/95 z-20">
+                  <th className="p-3.5 text-center sticky top-0 right-0 bg-slate-950 z-30 border-l border-slate-800/80 min-w-[220px]">
                     Aksi
                   </th>
                 </tr>
@@ -673,8 +673,8 @@ export default function KaryawanPage() {
                         </span>
                       </td>
                       {/* 16. Aksi */}
-                      <td className="p-3.5 text-right whitespace-nowrap sticky right-0 bg-slate-900/95 z-10 border-l border-slate-800/80">
-                        <div className="flex justify-end gap-1.5">
+                      <td className="p-3.5 text-center whitespace-nowrap sticky right-0 bg-slate-900/95 z-10 border-l border-slate-800/80 min-w-[220px]">
+                        <div className="flex items-center justify-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => setDetailKaryawan(row)}

@@ -8,7 +8,7 @@ interface ApiErrorBody {
 
 export async function requestWebApi<T>(
   url: string,
-  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE" = "POST",
   body?: unknown,
 ) {
   const response = await fetch(url, {

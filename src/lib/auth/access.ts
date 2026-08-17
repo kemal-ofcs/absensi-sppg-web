@@ -8,6 +8,7 @@ export type AppArea =
   | "karyawan"
   | "idcards"
   | "shift"
+  | "holidays"
   | "operational"
   | "settings"
   | "operators"
@@ -29,6 +30,7 @@ const AREA_PERMISSION: Record<
   karyawan: "employees.view",
   idcards: "employees.manage",
   shift: "shifts.view",
+  holidays: "holidays.view",
   settings: "branding.manage",
   operators: "operators.view",
   diagnostics: "diagnostics.view",

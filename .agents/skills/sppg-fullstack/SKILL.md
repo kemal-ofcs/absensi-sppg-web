@@ -6,9 +6,9 @@ description: >-
   local SQLite synchronization, and zero-error quality verification.
 ---
 
-# SPPG Attendance Fullstack Development Skill
+# SPPG Attendance Fullstack Development Skill & Knowledge Base
 
-This skill provides mandatory engineering rules and step-by-step procedures for building and maintaining the SPPG Attendance system across Web, Desktop (Tauri v2), and Mobile (Android APK target).
+This skill provides mandatory engineering rules, architectural patterns, defensive programming guidelines, and troubleshooting solutions for building and maintaining the SPPG Attendance system across Web, Desktop (Tauri v2), and Mobile (Android APK target).
 
 ---
 
@@ -18,16 +18,18 @@ Whenever a table, column, enum, or index is added, renamed, or modified:
 **You MUST update ALL schema definitions simultaneously across all runtimes:**
 
 1. **Cloud / Web Database (Turso / LibSQL)**:
-   - File: `src/lib/db-schema.ts`
-   - Ensure table creation statements, seed defaults, and constraints match exact specifications.
+   - Schema: `src/lib/db-schema.ts`
+   - Dynamic Migrations: `src/lib/db-migrations.ts` (increment migration step, e.g. migration 7).
+   - Migration Tests: `src/lib/rbac/rbac-migration.test.ts` (update expected migration versions array `[1, 2, ..., N]`).
 2. **Desktop & Mobile Local Database (SQLite via Rusqlite)**:
    - File: `src-tauri/src/desktop/storage.rs`
-   - Update `INITIAL_SCHEMA` and add migration scripts inside `run_migrations()`.
+   - Update `INITIAL_SCHEMA` table definitions and add migration step in `run_migrations()`.
 3. **Cloud Sync Contract & Zod Validation Schemas**:
-   - Files: `src/lib/server/operational/sync-schema.ts`, `src/lib/server/operational/sync-pull.ts`, `src/lib/server/operational/sync-push.ts`, `src/lib/services/offline-import.ts`.
-   - Desktop/Mobile: `src-tauri/src/desktop/sync.rs`.
-   - **CRITICAL**: Because sync Zod schemas use `.strict()`, EVERY payload key sent from Rust/SQLite (e.g. `izinkan_multi_sesi` on shifts, `waktu_dibatalkan` & `operator_pembatalan` on backups) MUST exist in the schema to avoid `POST /api/sync/push 400` validation errors.
-4. **TypeScript Domain Types & Interfaces**:
+   - Files: `src/lib/server/operational/sync-schema.ts`, `sync-pull.ts`, `sync-push.ts`, `snapshot.ts`.
+   - Snapshot Batch Tests: `src/lib/server/operational/snapshot.test.ts` (ensure mock batch statement count matches total tables).
+   - Desktop/Mobile Rust: `src-tauri/src/desktop/sync.rs` (add domain to `TABLES` array).
+   - **CRITICAL (Zod .strict())**: Every payload key sent from Rust/SQLite (e.g. `izinkan_multi_sesi`, `waktu_dibatalkan`, `status_aktif`) MUST be declared in the schema to avoid `POST /api/sync/push 400` validation failures.
+4. **TypeScript Domain Types & Gateways**:
    - Files: `src/lib/attendance/time-policy.ts`, `src/lib/gateways/*.ts`, `src/lib/types/`.
 
 > **CRITICAL**: Never rename or add a column on one runtime without immediately updating Desktop Rust SQLite, Web LibSQL, and Sync Outbox serialization. Column name drift causes silent data loss during sync.
@@ -38,92 +40,116 @@ Whenever a table, column, enum, or index is added, renamed, or modified:
 
 **DILARANG berasumsi. WAJIB memeriksa struktur kode, nama tabel, kolom skema, tipe data, serta helper/fungsi yang sudah ada terlebih dahulu.**
 
-Sebelum menulis atau mengubah kode apapun:
-1. **Search & Inspect First**: Selalu cari dan teliti struktur kode asli terlebih dahulu (`grep_search` & `view_file`):
-   - Waktu & Shift: `src/lib/attendance/time-policy.ts` (Web) & `src-tauri/src/desktop/time_policy.rs` (Rust).
-   - Operasional & Koreksi: `src/lib/services/correction.ts`, `src/lib/services/backup.ts`, `src/lib/services/offline-import.ts`.
-   - Sinkronisasi: `src/lib/server/operational/sync-schema.ts` & `src-tauri/src/desktop/sync.rs`.
-   - Permission & RBAC: `src/lib/auth/access.ts` (Web) & `src-tauri/src/desktop/auth.rs` (Rust).
+1. **Search & Inspect First (`grep_search` & `view_file`)**:
+   - Shift & Time: `src/lib/attendance/time-policy.ts` (Web) & `src-tauri/src/desktop/time_policy.rs` (Rust).
+   - Operational Workflows: `src/lib/services/correction.ts`, `backup.ts`, `offline-import.ts`, `holiday.ts`, `alfa-audit.ts`.
+   - Sync Protocol: `src/lib/server/operational/sync-schema.ts` & `src-tauri/src/desktop/sync.rs`.
+   - RBAC & Permissions: `src/lib/rbac/catalog.ts`, `src/lib/auth/access.ts` (Web) & `src-tauri/src/desktop/auth.rs` (Rust).
+   - Gateway Layer: `src/lib/gateways/*.ts`.
    - Export & Formatting: `src/lib/client/excel-export.ts`, `src/lib/client/employee-workbook.ts`.
-   - Skema & Validasi: `src/lib/db-schema.ts`, `src-tauri/src/desktop/storage.rs`, `src/lib/validations/stabilization.ts`.
-2. **Reuse Existing Functions (Single Source of Truth)**: Selalu gunakan helper dan fungsi yang sudah ada, jangan membuat fungsi duplikat atau menuliskan nama fungsi yang tidak diekspor.
+2. **Reuse Existing Functions (Single Source of Truth)**: Always use existing helpers. Never create duplicate helper functions.
 3. **Pelestarian Arsitektur Lama (Zero-Regress & Wajib Konfirmasi)**:
    - DIWAJIBKAN untuk mempertahankan struktur dan arsitektur lama yang sudah berjalan stabil.
-   - DILARANG menghapus atau merombak arsitektur tanpa konfirmasi dan persetujuan eksplisit dari User. Jika terdapat kebutuhan perubahan struktural, jelaskan alasannya dan minta konfirmasi User terlebih dahulu.
+   - DILARANG merombak arsitektur tanpa konfirmasi dan persetujuan User.
 
 ---
 
 ## 3. Ironclad Backend Logic, Data Security & Sync Integrity
 
-Backend logic and database synchronization must adhere to strict defensive programming standards:
-
 1. **Atomic Transaction Isolation**:
-   - All multi-table mutations (e.g. employee creation + ID card generation + sync outbox queue) must execute inside a single atomic database transaction (`connection.transaction()` in Rust / `db.batch()` in Web).
+   - Multi-table mutations must execute inside a single atomic transaction (`connection.transaction()` in Rust / `db.batch()` in Web).
    - If any step fails, roll back completely to prevent orphan records.
-
 2. **Sync Outbox & Conflict Resolution**:
-   - Every local write operation on Desktop/Mobile must enqueue a record into `desktop_sync_outbox` with unique event ID (`sync::new_event_id`), client ID, domain, operation, and timestamp.
-   - Sync conflict priority: `Koreksi Admin` > `Import Offline / Manual` > `Scanner Terminal` > `Generate Sistem`.
-
+   - Every local mutation on Desktop/Mobile must enqueue a record into `desktop_sync_outbox` with unique event ID (`sync::new_event_id`).
+   - Sync priority hierarchy: `Koreksi Admin` > `Import Offline / Manual` > `Scanner Terminal` > `Generate Sistem`.
 3. **Overnight Shift Math & Cross-Day Session Merging ($H+1 \rightarrow H-1$)**:
-   - **Overnight Shift (Shift 3)**: When cross-midnight occurs (`jam_pulang < jam_masuk`), scan out date belongs to the next day ($H+1$), and duration is calculated as $(out\_min + 1440) - in\_min$.
-   - **Cross-Day Checkout Fallback**: When an admin correction (`Lupa Absen Pulang` / `Kendala Sistem - Jam Pulang`) or offline checkout row is submitted on day $H$ and no check-in is found on day $H$, system MUST search for an unclosed session on yesterday ($H-1$). If found, the checkout is merged into day $H-1$ without creating a duplicate row on day $H$.
-   - **Late & Overtime Preservation**: Koreksi jam pulang tidak boleh menimpa atau mereset `menit_terlambat` dari jam masuk yang sudah ada menjadi 0. Jam kerja berlebih otomatis dicatat sebagai `lembur`.
-   - **Timeline Normalization**: Kedatangan shift malam setelah tengah malam (misal 00:00 untuk shift 23:00) dinormalisasi (`if arrival < shift_start - 720 { arrival += 1440 }`) agar dihitung sebagai keterlambatan yang akurat.
-
-4. **Per-Shift Auto Multi-Session & Consecutive Shifts**:
-   - Every shift configuration in `tbl_shift` has an `izinkan_multi_sesi` toggle (0 = Nonaktif, 1 = Aktif).
-   - Only shifts with `izinkan_multi_sesi = 1` (e.g. Satpam 24-jam) permit automatic transition to the next shift on scan after completion.
-   - Shifts with `izinkan_multi_sesi = 0` (Office, Production) safely reject subsequent scans after check-out (`ALREADY_CHECKED_OUT`) to protect against accidental double-taps.
-
-5. **Operational Workflows (Koreksi Admin, Backup, Import Manual)**:
-   - Always normalize dates (`DD/MM/YYYY` -> `YYYY-MM-DD`) across all input channels.
-   - An employee with an active backup assignment in `backup_karyawan` is blocked from regular check-in/import, while the replacement employee assumes the backup shift (`mode_tugas = 'PENGGANTI'`, `id_backup = 'BCK-...'`).
-   - If a replacement employee works both their own regular shift and a backup shift on the same day, they produce 2 distinct attendance records with isolated `log_scan` references (`id_referensi`).
-
-6. **Log Scan Deduplication Precision**:
-   - Before inserting an admin correction or manual entry into `log_scan`, always delete prior provisional logs matching:
-     `WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = '...' AND COALESCE(id_referensi, '') = ?;`
-   - **NEVER** use `OR sumber_data = '...'` as that accidentally deletes the opposite scan kind ("Masuk" or "Pulang").
-
-7. **Concurrency & Anti Double-Scan Protection**:
-   - All forms and scanner inputs must use synchronous `isSubmittingRef = useRef(false)` locks to immediately reject rapid duplicate dispatches.
-   - Clear input state before calling async scan submission and add debounce protection on camera and keyboard events.
+   - **Shift 3 (Overnight)**: When cross-midnight occurs (`jam_pulang < jam_masuk`), scan out belongs to $H+1$, and duration is $(out\_min + 1440) - in\_min$.
+   - **Cross-Day Checkout Fallback**: If an admin correction or offline checkout is submitted on day $H$ and no check-in is found on day $H$, system MUST search for an open session on yesterday ($H-1$).
+   - **Late & Overtime Preservation**: Checkout corrections must never wipe or reset `menit_terlambat` from the existing check-in to 0. Excess work is stored as `lembur`.
+   - **Timeline Normalization**: Night shift arrivals after midnight (e.g. 00:00 for shift 23:00) are normalized (`if arrival < shift_start - 720 { arrival += 1440 }`) for accurate late calculations.
+4. **Per-Shift Auto Multi-Session**:
+   - Every shift in `tbl_shift` has `izinkan_multi_sesi` (0 = Nonaktif, 1 = Aktif).
+   - Only shifts with `izinkan_multi_sesi = 1` permit consecutive shifts on scan after completion. Regular shifts safely reject subsequent scans after check-out (`ALREADY_CHECKED_OUT`).
+5. **Holiday Management & Scanner Guard**:
+   - Active holidays in `tbl_hari_libur` disable regular attendance scanning.
+   - Scans on active holidays are rejected with informative message (*"Scan ditolak: Hari ini Hari Libur..."*) and logged to `log_scan` with status `Ditolak` without creating daily attendance records.
+6. **Generate Alfa Harian & Background Automation**:
+   - Cutoff formula: `jam_pulang - offset_generate_alfa` (e.g. Shift 1 07:00–15:00 with offset 180 min $\rightarrow$ cutoff 12:00; Shift 3 23:00–07:00 H+1 $\rightarrow$ cutoff 04:00 subuh).
+   - Skip criteria: Active holiday on work date, flexible shifts (Shift 4), employees with existing NORMAL sessions, employees with admin priority corrections (Sakit/Izin/Dispen/Alfa), or non-active employees.
+   - Automation runner: Mounted in `AppShell` with periodic background checks (e.g. 10s initial delay + 5-minute interval) calling `triggerGenerateAlfa()` silently.
 
 ---
 
-## 4. End-to-End Feature Implementation Workflow
+## 4. UI/UX Engineering & CSS Sticky Table Precision
 
-1. **Schema Sync**: Update `src/lib/db-schema.ts`, `src-tauri/src/desktop/storage.rs`, and `src/lib/server/operational/sync-schema.ts`.
-2. **Desktop Tauri Backend (Rust)**:
-   - Business logic: `src-tauri/src/desktop/<domain>.rs`.
-   - Command wrapper: `src-tauri/src/desktop/commands.rs`.
-   - Handler registration: `src-tauri/src/lib.rs`.
-   - Build permissions: `src-tauri/build.rs` and `src-tauri/capabilities/default.json`.
-3. **Web Backend (Next.js)**:
-   - Service logic: `src/lib/services/<domain>.ts`.
-   - Route handler: `src/app/api/<domain>/route.ts`.
-4. **Gateway Integration**:
-   - In `src/lib/gateways/<domain>.ts`, branch between `isDesktopRuntime()` and `requestWebApi()`.
-   - Call `kickDesktopSync()` after every mutating action.
-5. **Frontend UI**:
-   - Build in `src/app/<page>/page.tsx` using `AppShell` and `FeedbackBanner`.
-   - Implement `isSubmittingRef` lock and clear loading states.
+1. **Sticky Table Header & Sticky Column Layering (Z-Index Hierarchy)**:
+   - When building tables with horizontal and vertical scroll (`max-h-[...] overflow-x-auto`):
+     - `<thead>`: `sticky top-0 z-20 bg-slate-950`
+     - Regular `<th>`: `sticky top-0 bg-slate-950`
+     - Top-Right Pinned `<th>` (Aksi): `sticky top-0 right-0 z-30 bg-slate-950 border-l border-slate-800/80 shadow-md`
+     - Body Pinned `<td>` (Aksi): `sticky right-0 z-10 bg-slate-900/95 border-l border-slate-800/80`
+   - **Why**: If the header corner `<th>` lacks `top-0` or has `z-10` equal to body `<td>`, vertical scrolling causes body action cells to float over the table header!
+2. **Action Column Alignment & Spacing**:
+   - Action columns with multiple buttons (e.g. Detail, QR, Edit, Delete) must use:
+     - Header: `text-center min-w-[200px]` (or `min-w-[220px]`).
+     - Cells: `text-center min-w-[220px]`.
+     - Container: `<div className="flex items-center justify-center gap-1.5">`.
+3. **Race Condition Protection**:
+   - All forms and buttons must use `isSubmittingRef = useRef(false)` to synchronously block rapid duplicate clicks.
+4. **Modal Rendering & Accessibility**:
+   - Prefer conditional mounting: `{modalData ? <Modal titleId="modal-title" ...> : null}`.
+   - Ensure `titleId` matches the modal header heading ID for screen readers.
 
 ---
 
-## 5. Quality Gate Zero-Error Checklist
+## 5. Troubleshooting & Problem-Solving Guide
 
-Before completing any task:
-1. **Biome Linter & Formatter**:
-   - Use `const` for non-reassigned variables (`useConst`).
-   - Do not attach `onClick` to non-interactive elements without keyboard accessibility (`useKeyWithClickEvents`).
-   - Avoid double blank lines (`\n\n\n`) and blank lines at opening braces.
-   - Run `bun run format` (`biome format --write`) to auto-format any styling issues.
-2. **Spreadsheet Client Safety**:
-   - Never import `exceljs` into `"use client"` files. Use the native Central Directory parser in `src/lib/client/employee-workbook.ts`.
-3. **Execute Quality Gate Command**:
-   ```bash
-   bun run check
-   ```
-   Ensure Biome linting, TypeScript typechecking, Bun unit tests (`*.test.ts` & `*.test.tsx`), and Rust Cargo tests all pass with 0 errors and 0 warnings.
+### A. Rust / Tauri Desktop Gotchas
+1. **Snapshot Apply Panic (`missing key in snapshot`)**:
+   - In `src-tauri/src/desktop/sync.rs`, always extract snapshot table rows with fallback:
+     ```rust
+     let empty_vec = Vec::new();
+     let (rows, present) = match snapshot.get(definition.payload_key).and_then(Value::as_array) {
+         Some(arr) => (arr, true),
+         None => (&empty_vec, false),
+     };
+     ```
+   - Only execute `delete_missing` if `definition.delete_missing && present`.
+2. **String Borrow Type Incompatibility in `if/else`**:
+   - `text(draft, "field")` returns `&str`. Do not return `String` in the `else` branch (use `"Default"` instead of `"Default".to_owned()`).
+3. **Local Timezone in Rust Queries**:
+   - When executing time math in SQLite, query Jakarta offset:
+     ```sql
+     SELECT strftime('%Y-%m-%d', 'now', '+7 hours'), strftime('%H:%M:%S', 'now', '+7 hours');
+     ```
+4. **Test Helpers in Rust Scanner**:
+   - Helper functions like `submit_at` or `submit_internal` must be declared `pub(crate)` so tests in `administration.rs` or `sync.rs` can pass custom simulated timestamps.
+5. **Employee Token in Tests**:
+   - `operational::create_employee` generates `TOK-{id}-{timestamp}`. Always extract `res["token_absensi"].as_str()` when building scan payloads in unit tests (`format!("{id}|{token}")`).
+
+### B. Next.js & Bun Test Gotchas
+1. **`server-only` in Unit Tests**:
+   - In Bun unit tests for server services (`src/lib/services/*.test.ts`), mock `server-only` before dynamic import:
+     ```ts
+     import { mock } from "bun:test";
+     mock.module("server-only", () => ({}));
+     const { serviceFn } = await import("./service");
+     ```
+2. **Snapshot Batch Query Mocking**:
+   - When adding a new synchronized table, increase the mock statements count in `snapshot.test.ts` to match the exact number of queries executed by the snapshot batch.
+3. **Spreadsheet Client Safety**:
+   - Never import `exceljs` into `"use client"` components. Use `src/lib/client/employee-workbook.ts` or client CSV/Excel helpers in `src/lib/client/excel-export.ts`.
+
+---
+
+## 6. Quality Gate Zero-Error Checklist
+
+Before completing any task, execute:
+```bash
+bun run format && bun run check
+```
+Verify with 0 errors and 0 warnings:
+1. **Biome Linter & Formatter**: Clean syntax, no double empty lines, accessible click handlers.
+2. **TypeScript Strict Typecheck**: Complete parameter type safety.
+3. **Bun Test Suite**: All unit and integration tests passing.
+4. **Rust Cargo Tests**: `cargo test --manifest-path src-tauri/Cargo.toml` passing (100% passed).

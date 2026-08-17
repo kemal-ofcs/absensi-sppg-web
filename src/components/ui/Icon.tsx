@@ -1,6 +1,7 @@
 import type { ReactNode, SVGProps } from "react";
 
 export type IconName =
+  | "calendar"
   | "check"
   | "chevron-right"
   | "clock"
@@ -21,6 +22,12 @@ export type IconName =
   | "wifi-off";
 
 const paths: Record<IconName, ReactNode> = {
+  calendar: (
+    <>
+      <rect width="18" height="18" x="3" y="4" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </>
+  ),
   check: <path d="m5 12 4 4L19 6" />,
   "chevron-right": <path d="m9 18 6-6-6-6" />,
   clock: (

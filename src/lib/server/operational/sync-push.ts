@@ -22,6 +22,7 @@ export interface OperationalSyncResult {
 const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   employee: "employees.manage",
   shift: "shifts.manage",
+  holiday: "holidays.manage",
   attendance: "scanner.use",
   correction: "corrections.manage",
   backup: "backups.manage",
@@ -449,6 +450,102 @@ async function applyShift(
     payload: {
       id_shift: serverId,
       local_id_shift: number(payload, "local_id_shift"),
+    },
+  };
+}
+
+async function applyHoliday(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  let serverId = 0;
+  let entityKey = event.entityKey;
+
+  if (event.operation === "create") {
+    const tanggal = text(payload, "tanggal");
+    const existing = await transaction.execute({
+      sql: "SELECT id_libur FROM tbl_hari_libur WHERE tanggal = ? LIMIT 1;",
+      args: [tanggal],
+    });
+    if (existing.rows.length > 0) {
+      serverId = Number(existing.rows[0].id_libur);
+      await transaction.execute({
+        sql: `UPDATE tbl_hari_libur SET
+                nama_libur = ?, jenis_libur = ?, keterangan = ?, status_aktif = ?
+              WHERE id_libur = ?;`,
+        args: [
+          text(payload, "nama_libur"),
+          text(payload, "jenis_libur") || "Libur Nasional",
+          text(payload, "keterangan") || null,
+          number(payload, "status_aktif", 1),
+          serverId,
+        ],
+      });
+    } else {
+      const result = await transaction.execute({
+        sql: `INSERT INTO tbl_hari_libur (
+                tanggal, nama_libur, jenis_libur, keterangan, status_aktif
+              ) VALUES (?, ?, ?, ?, ?);`,
+        args: [
+          tanggal,
+          text(payload, "nama_libur"),
+          text(payload, "jenis_libur") || "Libur Nasional",
+          text(payload, "keterangan") || null,
+          number(payload, "status_aktif", 1),
+        ],
+      });
+      serverId = Number(result.lastInsertRowid);
+    }
+    entityKey = String(serverId);
+  } else if (event.operation === "update") {
+    serverId = Number(event.entityKey) || Number(payload.id_libur);
+    await transaction.execute({
+      sql: `UPDATE tbl_hari_libur SET
+              tanggal = COALESCE(NULLIF(?, ''), tanggal),
+              nama_libur = COALESCE(NULLIF(?, ''), nama_libur),
+              jenis_libur = COALESCE(NULLIF(?, ''), jenis_libur),
+              keterangan = ?,
+              status_aktif = COALESCE(?, status_aktif)
+            WHERE id_libur = ?;`,
+      args: [
+        text(payload, "tanggal"),
+        text(payload, "nama_libur"),
+        text(payload, "jenis_libur"),
+        text(payload, "keterangan") || null,
+        payload.status_aktif !== undefined
+          ? Number(payload.status_aktif)
+          : null,
+        serverId,
+      ],
+    });
+  } else if (event.operation === "delete") {
+    serverId = Number(event.entityKey) || Number(payload.id_libur);
+    const tanggal = text(payload, "tanggal");
+    if (serverId > 0) {
+      await transaction.execute({
+        sql: "DELETE FROM tbl_hari_libur WHERE id_libur = ?;",
+        args: [serverId],
+      });
+    } else if (tanggal) {
+      await transaction.execute({
+        sql: "DELETE FROM tbl_hari_libur WHERE tanggal = ?;",
+        args: [tanggal],
+      });
+    }
+  } else {
+    throw new Error("Operasi Hari Libur tidak dikenali.");
+  }
+
+  const changeEvent = { ...event, entityKey };
+  const revision = await appendChange(transaction, actor, changeEvent, payload);
+  return {
+    revision,
+    payload: {
+      id_libur: serverId,
+      entityKey,
+      ...payload,
     },
   };
 }
@@ -1383,9 +1480,9 @@ async function applyEvent(
   if (event.domain === "employee") {
     return applyEmployee(transaction, actor, event);
   }
-  if (event.domain === "shift") {
-    return applyShift(transaction, actor, event);
-  }
+  if (event.domain === "shift") return applyShift(transaction, actor, event);
+  if (event.domain === "holiday")
+    return applyHoliday(transaction, actor, event);
   if (event.domain === "attendance") {
     return applyAttendance(transaction, actor, event);
   }

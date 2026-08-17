@@ -800,4 +800,62 @@ pub fn desktop_save_file(
     operational::save_desktop_file(&filename, &base64_data)
 }
 
+#[tauri::command]
+pub fn desktop_get_holidays(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.view")?;
+    operational::list_holidays(&state)
+}
+
+#[tauri::command]
+pub fn desktop_create_holiday(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::create_holiday(&state, &draft)
+}
+
+#[tauri::command]
+pub fn desktop_update_holiday(
+    state: State<'_, DesktopState>,
+    holiday_id: i64,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::update_holiday(&state, holiday_id, &draft)
+}
+
+#[tauri::command]
+pub fn desktop_delete_holiday(
+    state: State<'_, DesktopState>,
+    holiday_id: i64,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::delete_holiday(&state, holiday_id)
+}
+
+#[tauri::command]
+pub fn desktop_get_alfa_settings(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    operational::get_alfa_settings(&state)
+}
+
+#[tauri::command]
+pub fn desktop_save_alfa_settings(
+    state: State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "settings.manage")?;
+    operational::save_alfa_settings(&state, enabled)
+}
+
+#[tauri::command]
+pub fn desktop_trigger_generate_alfa(
+    state: State<'_, DesktopState>,
+    simulated_time: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "alfa.trigger")?;
+    operational::generate_alfa_harian(&state, simulated_time)
+}
+
+
 

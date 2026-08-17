@@ -51,6 +51,14 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_retry_failed_sync",
     "desktop_resolve_sync_conflicts",
     "desktop_clear_failed_sync",
+    "desktop_save_file",
+    "desktop_get_holidays",
+    "desktop_create_holiday",
+    "desktop_update_holiday",
+    "desktop_delete_holiday",
+    "desktop_get_alfa_settings",
+    "desktop_save_alfa_settings",
+    "desktop_trigger_generate_alfa",
 ];
 
 fn local_build_values() -> HashMap<String, String> {
