@@ -472,14 +472,13 @@ pub fn create_correction(
     let mut late = 0_i64;
     let mut early = 0_i64;
     let scan_kind;
-    let shift_config: (String, String, i64, i64, i64, i64) = transaction
+    let shift_config: (String, String, i64, i64, i64, i64, i64, i64) = transaction
         .query_row(
-            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ?;",
+            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
             [shift_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get::<_, Option<i64>>(6)?.unwrap_or(120), row.get::<_, Option<i64>>(7)?.unwrap_or(240))),
         )
-        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60));
-
+        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 120, 240));
 
     let to_minutes = |value: &str| {
         let clean = if value.contains(' ') {
@@ -515,6 +514,52 @@ pub fn create_correction(
             params![correction_type, note, now, session_id],
         ).map_err(|_| CommandError::internal())?;
     } else {
+        if matches!(
+            correction_type,
+            "Lupa Absen Masuk" | "Kendala Sistem - Jam Masuk" | "Terlambat"
+        ) {
+            let user_in = to_minutes(correction_time);
+            let shift_in = to_minutes(&shift_config.0);
+            let mut diff = user_in - shift_in;
+            if diff < -720 {
+                diff += 1440;
+            }
+            if diff > 720 {
+                diff -= 1440;
+            }
+            if diff < -shift_config.6 || diff > shift_config.5 + shift_config.4 {
+                return Err(CommandError::new(
+                    "OPERATIONAL_VALIDATION_FAILED",
+                    format!(
+                        "Jam masuk ({correction_time}) di luar rentang jadwal Shift {shift_id} (Jam Masuk: {}).",
+                        shift_config.0
+                    ),
+                ));
+            }
+        } else if matches!(
+            correction_type,
+            "Lupa Absen Pulang" | "Kendala Sistem - Jam Pulang"
+        ) {
+            let user_out = to_minutes(correction_time);
+            let shift_out = to_minutes(&shift_config.1);
+            let mut diff = user_out - shift_out;
+            if diff < -720 {
+                diff += 1440;
+            }
+            if diff > 720 {
+                diff -= 1440;
+            }
+            if diff < -120 || diff > shift_config.7 {
+                return Err(CommandError::new(
+                    "OPERATIONAL_VALIDATION_FAILED",
+                    format!(
+                        "Jam pulang ({correction_time}) di luar rentang jadwal Shift {shift_id} (Jam Pulang: {}).",
+                        shift_config.1
+                    ),
+                ));
+            }
+        }
+
         let (current_in, current_out): (String, String) = transaction
             .query_row(
                 "SELECT COALESCE(jam_masuk, ''), COALESCE(jam_pulang, '') FROM absensi_harian WHERE id_sesi = ?;",
@@ -2561,6 +2606,38 @@ mod tests {
         let import_res = import_offline(&state, &rows, "SPD001").expect("import offline");
         assert_eq!(import_res["berhasil"], 2);
         assert_eq!(import_res["gagal"], 0);
+    }
+
+    #[test]
+    fn test_shift_multi_session_crud() {
+        let (_directory, state) = fixture();
+
+        // 1. Update Shift 2 dengan izinkan_multi_sesi = 1
+        let shift2_draft = json!({
+            "kode_shift": 2,
+            "nama_shift": "Shift 2 Siang",
+            "jam_masuk": "15:00",
+            "jam_pulang": "23:00",
+            "awal_absen_menit": 120,
+            "batas_masuk_menit": 60,
+            "toleransi_masuk_menit": 15,
+            "jam_kerja_normal_menit": 480,
+            "istirahat_menit": 60,
+            "batas_pulang_menit": 240,
+            "offset_istirahat_mulai": 240,
+            "offset_generate_alfa": 180,
+            "buffer_shift_malam_menit": 120,
+            "izinkan_multi_sesi": 1,
+        });
+        super::super::operational::update_shift(&state, 2, &shift2_draft).expect("update shift 2");
+
+        // 2. List shifts dan verifikasi izinkan_multi_sesi bernilai 1
+        let shifts = super::super::operational::list_shifts(&state).expect("list shifts");
+        let shift2 = shifts
+            .as_array()
+            .and_then(|arr| arr.iter().find(|s| s["id_shift"] == 2))
+            .expect("shift 2 must exist");
+        assert_eq!(shift2["izinkan_multi_sesi"], 1, "izinkan_multi_sesi must be 1");
     }
 }
 

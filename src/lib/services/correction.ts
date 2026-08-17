@@ -245,6 +245,78 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     }
   }
 
+  const parseTimeToMinutes = (t: string | undefined | null): number | null => {
+    if (!t) return null;
+    const clean = t.includes(" ") ? t.split(" ")[1] : t;
+    const parts = clean.split(":");
+    if (parts.length < 2) return null;
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+
+  // Ambil data shift untuk validasi dan kalkulasi metrik
+  const shiftRes = await db.execute({
+    sql: "SELECT jam_masuk, jam_pulang, nama_shift, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    args: [effectiveShiftId],
+  });
+  const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
+  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
+  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+  const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+  const awalAbsenShiftMin = Number(shiftData?.awal_absen_menit ?? 120);
+  const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 60);
+  const batasPulangShiftMin = Number(shiftData?.batas_pulang_menit ?? 240);
+  const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+  const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+
+  // Validasi Rentang Shift untuk Koreksi Waktu
+  if (
+    ["Lupa Absen Masuk", "Kendala Sistem - Jam Masuk", "Terlambat"].includes(
+      input.jenis_koreksi,
+    )
+  ) {
+    if (input.jam_koreksi) {
+      const userInMin = parseTimeToMinutes(input.jam_koreksi);
+      const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
+      if (userInMin !== null) {
+        let diff = userInMin - shiftInMin;
+        if (diff < -720) diff += 1440;
+        if (diff > 720) diff -= 1440;
+        if (
+          diff < -awalAbsenShiftMin ||
+          diff > batasMasukShiftMin + toleransiShiftMin
+        ) {
+          return {
+            sukses: false,
+            pesan: `Jam masuk (${input.jam_koreksi}) di luar rentang jadwal ${shiftData?.nama_shift || `Shift ${effectiveShiftId}`} (Jam Masuk: ${shiftJamMasukStr}).`,
+          };
+        }
+      }
+    }
+  } else if (
+    ["Lupa Absen Pulang", "Kendala Sistem - Jam Pulang"].includes(
+      input.jenis_koreksi,
+    )
+  ) {
+    if (input.jam_koreksi) {
+      const userOutMin = parseTimeToMinutes(input.jam_koreksi);
+      const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
+      if (userOutMin !== null) {
+        let diff = userOutMin - shiftOutMin;
+        if (diff < -720) diff += 1440;
+        if (diff > 720) diff -= 1440;
+        if (diff < -120 || diff > batasPulangShiftMin) {
+          return {
+            sukses: false,
+            pesan: `Jam pulang (${input.jam_koreksi}) di luar rentang jadwal ${shiftData?.nama_shift || `Shift ${effectiveShiftId}`} (Jam Pulang: ${shiftJamPulangStr}).`,
+          };
+        }
+      }
+    }
+  }
+
   const idReferensi = generateIdReferensiKoreksi();
   const nowStr = new Date().toISOString();
 
@@ -287,28 +359,6 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   const dateObj = new Date(date);
   const bulanStr = monthNames[dateObj.getMonth()] || "Januari";
   const tahunNum = dateObj.getFullYear();
-
-  // Ambil data shift untuk kalkulasi metrik
-  const shiftRes = await db.execute({
-    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-    args: [effectiveShiftId],
-  });
-  const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
-  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-  const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
-  const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-
-  const parseTimeToMinutes = (t: string | undefined | null): number | null => {
-    if (!t) return null;
-    const clean = t.includes(" ") ? t.split(" ")[1] : t;
-    const parts = clean.split(":");
-    if (parts.length < 2) return null;
-    const h = Number(parts[0]);
-    const m = Number(parts[1]);
-    if (Number.isNaN(h) || Number.isNaN(m)) return null;
-    return h * 60 + m;
-  };
 
   let scanKind: string = input.jenis_koreksi;
   let calculatedLate = 0;

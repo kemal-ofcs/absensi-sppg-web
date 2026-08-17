@@ -410,6 +410,11 @@ describe("workflow operasional: import offline / spreadsheet manual", () => {
   });
 
   test("koreksi admin: jam pulang yang diinput pada tanggal keesokan harinya (H+1) otomatis menyatu dengan sesi H-1 yang belum pulang", async () => {
+    await db.execute({
+      sql: "UPDATE master_data SET id_shift = 3 WHERE id_unik = ?;",
+      args: [EMP_B.id],
+    });
+
     // 1. Karyawan B (Shift 3 Malam 23:00 - 07:00) masuk via Koreksi Admin pada 2026-08-22
     const inRes = await prosesKoreksiAdmin({
       tanggal: "2026-08-22",

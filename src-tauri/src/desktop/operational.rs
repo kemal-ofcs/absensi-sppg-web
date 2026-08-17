@@ -526,6 +526,7 @@ pub fn list_shifts(state: &DesktopState) -> Result<Value, CommandError> {
                 "offset_istirahat_mulai": row.get::<_, i64>(11)?,
                 "offset_generate_alfa": row.get::<_, i64>(12)?,
                 "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
+                "izinkan_multi_sesi": row.get::<_, Option<i64>>(14)?.unwrap_or(0),
             }))
         })
         .map_err(|_| CommandError::internal())?;
@@ -599,7 +600,11 @@ fn insert_shift(
     let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
     let multi_session = if draft
         .get("izinkan_multi_sesi")
-        .map(|v| v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1)
+        .map(|v| {
+            v.as_bool().unwrap_or(false)
+                || v.as_i64().unwrap_or(0) == 1
+                || v.as_str().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+        })
         .unwrap_or(false)
     {
         1
@@ -673,7 +678,11 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
     let night_buffer = integer(draft, "buffer_shift_malam_menit", 120);
     let multi_session = if draft
         .get("izinkan_multi_sesi")
-        .map(|v| v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1)
+        .map(|v| {
+            v.as_bool().unwrap_or(false)
+                || v.as_i64().unwrap_or(0) == 1
+                || v.as_str().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+        })
         .unwrap_or(false)
     {
         1

@@ -304,6 +304,45 @@ describe("integrasi Web mesin aturan scan", () => {
     });
   });
 
+  test("shift malam scan masuk setelah tengah malam (00:02) dalam toleransi keterlambatan diterima dan pulang normal menyatu ke sesi H-1", async () => {
+    await client.execute({
+      sql: "UPDATE master_data SET id_shift = 3 WHERE id_unik = ?;",
+      args: [EMPLOYEE.id],
+    });
+    // Update shift 3 toleransi to 120 minutes (2 hours)
+    await client.execute({
+      sql: "UPDATE tbl_shift SET toleransi_masuk_menit = 120 WHERE id_shift = 3;",
+      args: [],
+    });
+
+    const masuk = await scanAt(jakarta("2026-08-13", "00:02"));
+    expect(masuk).toMatchObject({
+      sukses: true,
+      jenisScan: "Masuk",
+      status: "Berhasil",
+      keterangan: "Terlambat",
+      menitTerlambat: 47,
+    });
+
+    const pulang = await scanAt(jakarta("2026-08-13", "07:00"));
+    expect(pulang).toMatchObject({
+      sukses: true,
+      jenisScan: "Pulang",
+      status: "Berhasil",
+    });
+    expect(masuk.idSesi).toBe(pulang.idSesi);
+
+    const attendance = await client.execute(
+      "SELECT * FROM absensi_harian LIMIT 1;",
+    );
+    expect(attendance.rows[0]).toMatchObject({
+      tanggal: "2026-08-12",
+      jam_masuk: "2026-08-13 00:02:00",
+      jam_pulang: "2026-08-13 07:00:00",
+      status_absen: "Lengkap",
+    });
+  });
+
   test("shift fleksibel menerima satu masuk dan satu pulang tanpa keterlambatan reguler", async () => {
     await client.execute({
       sql: "UPDATE master_data SET id_shift = 4 WHERE id_unik = ?;",

@@ -191,9 +191,9 @@ export function putuskanScanWaktu(
   assertNonNegativeInteger(input.batasMultiScanMenit, "batasMultiScanMenit");
 
   const tanggalKerja = waktuMasuk
-    ? getOperationalDateTime(waktuMasuk).date
+    ? tentukanTanggalKerja(waktuMasuk, input.shift)
     : waktuPulang
-      ? getOperationalDateTime(waktuPulang).date
+      ? tentukanTanggalKerja(waktuPulang, input.shift)
       : tentukanTanggalKerja(waktuScan, input.shift);
 
   if (waktuPulang) {

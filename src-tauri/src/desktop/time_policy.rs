@@ -157,9 +157,11 @@ pub fn decide_scan(
         return Err("Batas multi-scan tidak boleh negatif.".into());
     }
     let work_date = if let Some(check_in) = history.check_in.as_deref() {
-        timestamp_date(check_in)?.to_owned()
+        let m = timestamp_to_moment(check_in)?;
+        determine_work_date(&m, shift)?
     } else if let Some(check_out) = history.check_out.as_deref() {
-        timestamp_date(check_out)?.to_owned()
+        let m = timestamp_to_moment(check_out)?;
+        determine_work_date(&m, shift)?
     } else {
         determine_work_date(moment, shift)?
     };
@@ -486,13 +488,20 @@ fn timestamp_seconds(value: &str) -> Result<i64, String> {
     Ok(parse_date(date)? * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-fn timestamp_date(value: &str) -> Result<&str, String> {
-    let date = value
-        .split([' ', 'T'])
+fn timestamp_to_moment(value: &str) -> Result<LocalMoment, String> {
+    let normalized = value.replace('T', " ");
+    let mut parts = normalized.split_whitespace();
+    let date = parts
         .next()
         .ok_or_else(|| "Tanggal timestamp tidak tersedia.".to_owned())?;
-    parse_date(date)?;
-    Ok(date)
+    let time = parts
+        .next()
+        .ok_or_else(|| "Jam timestamp tidak tersedia.".to_owned())?;
+    Ok(LocalMoment {
+        timestamp: value.to_owned(),
+        date: date.to_owned(),
+        time: time.to_owned(),
+    })
 }
 
 fn days_between(from: &str, to: &str) -> Result<i64, String> {
