@@ -867,6 +867,63 @@ pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<
     Ok(())
 }
 
+pub fn get_scanner_settings(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT key, value FROM setting_gex_system WHERE key IN ('anti_double_scan_seconds','batas_multi_scan_menit');",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| CommandError::internal())?;
+    let mut values = std::collections::HashMap::<String, String>::new();
+    for row in rows {
+        let (key, value) = row.map_err(|_| CommandError::internal())?;
+        values.insert(key, value);
+    }
+    let anti_double_scan = values
+        .get("anti_double_scan_seconds")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(60);
+    let multi_scan = values
+        .get("batas_multi_scan_menit")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(5);
+    Ok(json!({
+        "antiDoubleScanSeconds": anti_double_scan.max(0),
+        "batasMultiScanMenit": multi_scan.max(0),
+    }))
+}
+
+pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(), CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let anti_double_scan = settings
+        .get("antiDoubleScanSeconds")
+        .and_then(Value::as_i64)
+        .unwrap_or(60)
+        .max(0);
+    let multi_scan = settings
+        .get("batasMultiScanMenit")
+        .and_then(Value::as_i64)
+        .unwrap_or(5)
+        .max(0);
+    for (key, value) in [
+        ("anti_double_scan_seconds", anti_double_scan.to_string()),
+        ("batas_multi_scan_menit", multi_scan.to_string()),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+                params![key, value],
+            )
+            .map_err(|_| CommandError::internal())?;
+    }
+    Ok(())
+}
+
 pub fn update_id_card(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
     let id = text(draft, "id_unik");
     let status = text(draft, "idcard_status");

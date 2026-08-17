@@ -53,6 +53,8 @@ pub fn run() {
             desktop::commands::desktop_update_id_card,
             desktop::commands::desktop_get_geofence_settings,
             desktop::commands::desktop_update_geofence_settings,
+            desktop::commands::desktop_get_scanner_settings,
+            desktop::commands::desktop_update_scanner_settings,
             desktop::commands::desktop_get_sync_status,
             desktop::commands::desktop_sync_now,
             desktop::commands::desktop_get_sync_conflicts,

@@ -42,6 +42,8 @@
     "allow-desktop-update-id-card",
     "allow-desktop-get-geofence-settings",
     "allow-desktop-update-geofence-settings",
+    "allow-desktop-get-scanner-settings",
+    "allow-desktop-update-scanner-settings",
     "allow-desktop-get-sync-status",
     "allow-desktop-sync-now",
     "allow-desktop-get-sync-conflicts",

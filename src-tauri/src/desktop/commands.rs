@@ -598,6 +598,43 @@ pub async fn desktop_update_geofence_settings(
 }
 
 #[tauri::command]
+pub fn desktop_get_scanner_settings(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "branding.manage")?;
+    if !operator.is_superadmin {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Pengaturan keamanan scanner hanya dapat diakses Superadmin.",
+        ));
+    }
+    operational::get_scanner_settings(&state)
+}
+
+#[tauri::command]
+pub async fn desktop_update_scanner_settings(
+    state: State<'_, DesktopState>,
+    settings: Value,
+) -> Result<Value, CommandError> {
+    let result = secured_api(
+        &state,
+        "branding.manage",
+        Method::PUT,
+        "/api/settings/scanner",
+        Some(settings),
+    )
+    .await?;
+    let data = result.get("data").cloned().ok_or_else(|| {
+        CommandError::new(
+            "DESKTOP_REMOTE_INVALID_RESPONSE",
+            "Respons pengaturan keamanan scanner tidak valid.",
+        )
+    })?;
+    operational::save_scanner_settings(&state, &data)?;
+    Ok(data)
+}
+
+#[tauri::command]
 pub fn desktop_get_sync_status(
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSyncStatus, CommandError> {

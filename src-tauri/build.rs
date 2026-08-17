@@ -37,6 +37,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_update_id_card",
     "desktop_get_geofence_settings",
     "desktop_update_geofence_settings",
+    "desktop_get_scanner_settings",
+    "desktop_update_scanner_settings",
     "desktop_get_sync_status",
     "desktop_sync_now",
     "desktop_get_sync_conflicts",
