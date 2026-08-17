@@ -14,6 +14,7 @@ import {
   hapusAbsensiHarian,
   hapusLogScan,
 } from "@/lib/gateways/report";
+import { useDebounce } from "@/lib/hooks/useDebounce";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
 const SCAN_PAGE_SIZE = 500;
@@ -96,6 +97,8 @@ export default function HistoryPage() {
   const [tanggalMulai, setTanggalMulai] = useState(today);
   const [tanggalSelesai, setTanggalSelesai] = useState(today);
   const [search, setSearch] = useState("");
+  // Debounce search 300 ms agar filteredRows tidak dikalkulasi ulang setiap keystroke
+  const debouncedSearch = useDebounce(search, 300);
   const [selectedDivisi, setSelectedDivisi] = useState<string>("all");
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [sortOption, setSortOption] = useState<
@@ -229,7 +232,7 @@ export default function HistoryPage() {
 
   // Client-side filtering & sorting
   const filteredRows = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = debouncedSearch.trim().toLowerCase();
     const matchesSearch = (r: Record<string, unknown>) => {
       if (!term) return true;
       const combined = [
@@ -343,7 +346,7 @@ export default function HistoryPage() {
     });
 
     return result;
-  }, [rows, tab, selectedDivisi, selectedStatus, search, sortOption]);
+  }, [rows, tab, selectedDivisi, selectedStatus, debouncedSearch, sortOption]);
 
   // Metric summaries
   const metrics = useMemo(() => {

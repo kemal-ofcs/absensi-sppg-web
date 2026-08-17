@@ -11,7 +11,7 @@ pub(crate) fn database(path: &Path) -> Result<Connection, CommandError> {
         Connection::open(path.join(DATABASE_NAME)).map_err(|_| CommandError::internal())?;
     connection
         .execute_batch(
-            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -64000;",
         )
         .map_err(|_| CommandError::internal())?;
     Ok(connection)
@@ -285,8 +285,16 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       );
       CREATE INDEX IF NOT EXISTS idx_local_log_scan_employee_date
         ON log_scan(id_karyawan, tanggal_kerja);
+      CREATE INDEX IF NOT EXISTS idx_local_log_scan_tanggal
+        ON log_scan(tanggal_kerja);
       CREATE INDEX IF NOT EXISTS idx_local_attendance_employee_date
         ON absensi_harian(id_karyawan, tanggal);
+      CREATE INDEX IF NOT EXISTS idx_local_absensi_tanggal
+        ON absensi_harian(tanggal);
+      CREATE INDEX IF NOT EXISTS idx_local_backup_tanggal_status
+        ON backup_karyawan(tanggal_tugas, status_tugas);
+      CREATE INDEX IF NOT EXISTS idx_local_master_data_shift_aktif
+        ON master_data(id_shift, status_aktif);
       CREATE INDEX IF NOT EXISTS idx_local_outbox_status_retry
         ON desktop_sync_outbox(status, next_retry_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_local_import_status

@@ -162,50 +162,61 @@ export async function editAbsensiHarian(
             ? "Belum Pulang"
             : "Perlu Verifikasi";
 
-  await db.execute({
-    sql: `UPDATE absensi_harian SET
-          jam_masuk = ?,
-          jam_pulang = ?,
-          status_kehadiran = ?,
-          status_absen = ?,
-          keterangan = ?,
-          update_terakhir = ?,
-          menit_terlambat = ?,
-          menit_datang_awal = ?,
-          jam_kerja = ?,
-          lembur = ?,
-          jam_kerja_kurang = ?
-        WHERE id_sesi = ?;`,
-    args: [
-      checkInVal,
-      checkOutVal,
-      statusKehadiran,
-      statusAbsen,
-      keterangan,
-      nowStr,
-      calculatedLate,
-      calculatedEarly,
-      calculatedWork,
-      calculatedOvertime,
-      calculatedShortage,
-      idSesi,
-    ],
-  });
+  // ── Atomic transaction: UPDATE absensi + INSERT audit trail ────────────
+  const tx = await db.transaction("write");
+  try {
+    await tx.execute({
+      sql: `UPDATE absensi_harian SET
+            jam_masuk = ?,
+            jam_pulang = ?,
+            status_kehadiran = ?,
+            status_absen = ?,
+            keterangan = ?,
+            update_terakhir = ?,
+            menit_terlambat = ?,
+            menit_datang_awal = ?,
+            jam_kerja = ?,
+            lembur = ?,
+            jam_kerja_kurang = ?
+          WHERE id_sesi = ?;`,
+      args: [
+        checkInVal,
+        checkOutVal,
+        statusKehadiran,
+        statusAbsen,
+        keterangan,
+        nowStr,
+        calculatedLate,
+        calculatedEarly,
+        calculatedWork,
+        calculatedOvertime,
+        calculatedShortage,
+        idSesi,
+      ],
+    });
 
-  // Audit trail
-  await db.execute({
-    sql: `INSERT INTO audit_absensi (
-          waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
-        ) VALUES (?, 'Edit Absensi', ?, ?, ?, ?, ?, 'Berhasil');`,
-    args: [
-      nowStr,
-      tanggal,
-      String(current.id_karyawan),
-      String(current.nama),
-      idSesi,
-      `Diedit oleh Operator ${kodeOperator}. Jam Masuk: '${checkInVal}', Jam Pulang: '${checkOutVal}', Status: '${statusKehadiran}/${statusAbsen}'.`,
-    ],
-  });
+    // Audit trail
+    await tx.execute({
+      sql: `INSERT INTO audit_absensi (
+            waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
+          ) VALUES (?, 'Edit Absensi', ?, ?, ?, ?, ?, 'Berhasil');`,
+      args: [
+        nowStr,
+        tanggal,
+        String(current.id_karyawan),
+        String(current.nama),
+        idSesi,
+        `Diedit oleh Operator ${kodeOperator}. Jam Masuk: '${checkInVal}', Jam Pulang: '${checkOutVal}', Status: '${statusKehadiran}/${statusAbsen}'.`,
+      ],
+    });
+
+    await tx.commit();
+  } catch (err) {
+    await tx.rollback();
+    throw err;
+  } finally {
+    tx.close();
+  }
 
   return {
     sukses: true,

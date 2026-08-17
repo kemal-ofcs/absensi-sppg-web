@@ -69,6 +69,20 @@ export async function buatPenugasanBackup(input: PenugasanBackupInput) {
     };
   }
 
+  // Guard duplikasi: cek backup aktif yang sudah ada untuk karyawan+tanggal yang sama
+  const duplikasiRes = await db.execute({
+    sql: `SELECT id_backup FROM backup_karyawan
+          WHERE tanggal_tugas = ? AND id_karyawan_asal = ? AND status_tugas = 'Aktif'
+          LIMIT 1;`,
+    args: [date, String(asal.id_unik)],
+  });
+  if (duplikasiRes.rows.length > 0) {
+    return {
+      sukses: false,
+      pesan: `Gagal: Sudah ada penugasan backup aktif untuk '${String(asal.nama)}' pada tanggal ${date}. (ID: ${String(duplikasiRes.rows[0]?.id_backup || "")})`,
+    };
+  }
+
   const idBackup = generateIdBackup();
   const nowStr = new Date().toISOString();
 

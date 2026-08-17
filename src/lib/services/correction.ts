@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { Transaction } from "@libsql/client";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface KoreksiInput {
@@ -245,25 +246,12 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     }
   }
 
-  const parseTimeToMinutes = (t: string | undefined | null): number | null => {
-    if (!t) return null;
-    const clean = t.includes(" ") ? t.split(" ")[1] : t;
-    const parts = clean.split(":");
-    if (parts.length < 2) return null;
-    const h = Number(parts[0]);
-    const m = Number(parts[1]);
-    if (Number.isNaN(h) || Number.isNaN(m)) return null;
-    return h * 60 + m;
-  };
-
   // Ambil data shift untuk validasi dan kalkulasi metrik
   const shiftRes = await db.execute({
     sql: "SELECT jam_masuk, jam_pulang, nama_shift, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
     args: [effectiveShiftId],
   });
   const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
-  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
   const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
   const awalAbsenShiftMin = Number(shiftData?.awal_absen_menit ?? 120);
   const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 60);
@@ -320,8 +308,117 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   const idReferensi = generateIdReferensiKoreksi();
   const nowStr = new Date().toISOString();
 
+  // ── Atomic transaction: semua mutasi multi-tabel dalam satu unit ────────
+  const transaction = await db.transaction("write");
+  try {
+    await _prosesKoreksiMutasi(transaction, {
+      input,
+      idReferensi,
+      nowStr,
+      idUnik,
+      nama,
+      divisi,
+      date,
+      targetDate,
+      idSesi,
+      effectiveShiftId,
+      modeTugas,
+      backupId,
+      originalId,
+      existRecord,
+      shiftData,
+    });
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  } finally {
+    transaction.close();
+  }
+
+  return {
+    sukses: true,
+    pesan: `Koreksi admin '${input.jenis_koreksi}' untuk ${nama} (${idUnik}) berhasil diproses.`,
+    id_referensi: idReferensi,
+  };
+}
+
+// Internal helper: jalankan seluruh mutasi koreksi dalam transaksi yang diberikan
+async function _prosesKoreksiMutasi(
+  transaction: Transaction,
+  ctx: {
+    input: KoreksiInput;
+    idReferensi: string;
+    nowStr: string;
+    idUnik: string;
+    nama: string;
+    divisi: string;
+    date: string;
+    targetDate: string;
+    idSesi: string;
+    effectiveShiftId: number;
+    modeTugas: string;
+    backupId: string;
+    originalId: string;
+    existRecord: Record<string, unknown> | null;
+    shiftData: Record<string, unknown> | undefined;
+  },
+) {
+  const {
+    input,
+    idReferensi,
+    nowStr,
+    idUnik,
+    nama,
+    divisi,
+    date,
+    targetDate,
+    idSesi,
+    effectiveShiftId,
+    modeTugas,
+    backupId,
+    originalId,
+    existRecord,
+    shiftData,
+  } = ctx;
+  let scanKind: string = input.jenis_koreksi;
+  let calculatedLate = 0;
+  let calculatedEarly = 0;
+
+  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
+  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
+  const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
+  const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
+  const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
+  const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
+  const isOvernightShift = shiftOutMin < shiftInMin;
+
+  const nextDate = (() => {
+    const d = new Date(targetDate);
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  const monthNames = [
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
+  ];
+  const dateObj = new Date(date);
+  const bulanStr = monthNames[dateObj.getMonth()] || "Januari";
+  const tahunNum = dateObj.getFullYear();
+
   // 3. Simpan ke tabel koreksi_admin
-  await db.execute({
+  await transaction.execute({
     sql: `
       INSERT INTO koreksi_admin (
         id_referensi, tanggal, id_karyawan, nama, divisi, jenis_koreksi,
@@ -342,32 +439,10 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     ],
   });
 
-  const monthNames = [
-    "Januari",
-    "Februari",
-    "Maret",
-    "April",
-    "Mei",
-    "Juni",
-    "Juli",
-    "Agustus",
-    "September",
-    "Oktober",
-    "November",
-    "Desember",
-  ];
-  const dateObj = new Date(date);
-  const bulanStr = monthNames[dateObj.getMonth()] || "Januari";
-  const tahunNum = dateObj.getFullYear();
-
-  let scanKind: string = input.jenis_koreksi;
-  let calculatedLate = 0;
-  let calculatedEarly = 0;
-
   if (["Sakit", "Izin", "Dispen", "Alfa"].includes(input.jenis_koreksi)) {
     // ---- KOREKSI SAKIT / IZIN / DISPEN / ALFA ----
     if (existRecord) {
-      await db.execute({
+      await transaction.execute({
         sql: `UPDATE absensi_harian SET 
               jam_masuk = '', jam_pulang = '', status_kehadiran = ?, status_absen = 'Tidak Hadir',
               keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
@@ -381,7 +456,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
         ],
       });
     } else {
-      await db.execute({
+      await transaction.execute({
         sql: `INSERT INTO absensi_harian (
                 tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
@@ -411,17 +486,6 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     // ---- KOREKSI WAKTU / JAM ----
     let checkInVal = existRecord ? String(existRecord.jam_masuk || "") : "";
     let checkOutVal = existRecord ? String(existRecord.jam_pulang || "") : "";
-
-    const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-    const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
-    const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
-    const isOvernightShift = shiftOutMin < shiftInMin;
-
-    const nextDate = (() => {
-      const d = new Date(targetDate);
-      d.setDate(d.getDate() + 1);
-      return d.toISOString().slice(0, 10);
-    })();
 
     if (
       input.jenis_koreksi === "Lupa Absen Masuk" ||
@@ -457,7 +521,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       if (isOvernightShift && userInTimeline < shiftInMin - 720) {
         userInTimeline += 1440;
       }
-      if (userInTimeline > shiftInMin + toleransiShiftMin) {
+      if (userInTimeline > shiftInMin) {
         calculatedLate = userInTimeline - shiftInMin;
       } else if (userInTimeline < shiftInMin) {
         calculatedEarly = shiftInMin - userInTimeline;
@@ -492,7 +556,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
           : "Perlu Verifikasi";
 
     if (existRecord) {
-      await db.execute({
+      await transaction.execute({
         sql: `UPDATE absensi_harian SET 
               jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir', 
               status_absen = ?, keterangan = ?, sumber = 'Koreksi Admin', update_terakhir = ?,
@@ -513,7 +577,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
         ],
       });
     } else {
-      await db.execute({
+      await transaction.execute({
         sql: `INSERT INTO absensi_harian (
                 tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
@@ -548,8 +612,8 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     }
   }
 
-  // 5. Audit Log ke log_scan (Deduplikasi log koreksi sebelumnya pada tanggal, karyawan, dan referensi)
-  await db.execute({
+  // 5. Audit Log ke log_scan (Deduplikasi log koreksi sebelumnya)
+  await transaction.execute({
     sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = 'Koreksi Admin' AND COALESCE(id_referensi, '') = ?;",
     args: [
       targetDate,
@@ -559,7 +623,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     ],
   });
 
-  await db.execute({
+  await transaction.execute({
     sql: `INSERT INTO log_scan (
             timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi,
             jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan,
@@ -581,12 +645,6 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       input.kode_operator,
     ],
   });
-
-  return {
-    sukses: true,
-    pesan: `Koreksi admin '${input.jenis_koreksi}' untuk ${nama} (${idUnik}) berhasil diproses.`,
-    id_referensi: idReferensi,
-  };
 }
 
 export async function getDaftarKoreksi(filter?: {

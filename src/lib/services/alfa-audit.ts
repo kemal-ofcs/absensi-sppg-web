@@ -7,7 +7,6 @@ import {
   formatTimestampOperasional,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
-import { cekHariLiburAktif } from "@/lib/services/holiday";
 
 export interface RingkasanAlfa {
   jumlahAlfaDibuat: number;
@@ -97,6 +96,23 @@ export async function generateAlfaHarian(
   const [hSekarang, mSekarang] = jamOperasionalStr.split(":").map(Number);
   const menitSekarang = hSekarang * 60 + mSekarang;
 
+  // ── Pre-load semua shift ke Map (eliminasi N+1 per karyawan) ────────────
+  const allShiftsRes = await targetDb.execute(
+    "SELECT id_shift, jam_masuk, jam_pulang, offset_generate_alfa, jam_kerja_normal_menit FROM tbl_shift;",
+  );
+  const shiftMap = new Map<number, Record<string, unknown>>();
+  for (const s of allShiftsRes.rows) {
+    shiftMap.set(Number(s.id_shift), s as Record<string, unknown>);
+  }
+
+  // ── Pre-load semua tanggal libur aktif ke Set (eliminasi N+1 per karyawan) ──
+  const allLiburRes = await targetDb.execute(
+    "SELECT tanggal FROM tbl_hari_libur WHERE status_aktif = 1;",
+  );
+  const liburSet = new Set<string>(
+    allLiburRes.rows.map((r) => String(r.tanggal).trim()),
+  );
+
   let jumlahAlfaDibuat = 0;
   let jumlahSudahAda = 0;
   let jumlahBelumWaktunya = 0;
@@ -109,16 +125,12 @@ export async function generateAlfaHarian(
     const divisi = String(emp.divisi);
     const idShift = Number(emp.id_shift || 1);
 
-    // Ambil Aturan Shift dari tbl_shift
-    const shiftRes = await targetDb.execute({
-      sql: "SELECT * FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-      args: [idShift],
-    });
-
-    const shift = (shiftRes.rows[0] as Record<string, unknown>) || {
+    // Ambil Aturan Shift dari Map (bukan query ke DB)
+    const shift: Record<string, unknown> = shiftMap.get(idShift) ?? {
       jam_masuk: "07:00",
       jam_pulang: "15:00",
       offset_generate_alfa: 180,
+      jam_kerja_normal_menit: 480,
     };
 
     const jamMasukStr = String(shift.jam_masuk || "07:00");
@@ -151,10 +163,8 @@ export async function generateAlfaHarian(
       tanggalStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-${String(prevDate.getDate()).padStart(2, "0")}`;
     }
 
-    // Cek apakah tanggal kerja ini adalah Hari Libur Aktif
-    const holiday = await cekHariLiburAktif(tanggalStr, client);
-    if (holiday) {
-      // Jika hari libur, skip generate alfa untuk shift ini
+    // Cek apakah tanggal kerja ini adalah Hari Libur Aktif (dari Set, bukan query)
+    if (liburSet.has(tanggalStr)) {
       continue;
     }
 
@@ -222,14 +232,18 @@ export async function generateAlfaHarian(
     jumlahAlfaDibuat++;
   }
 
-  const todayHoliday = await cekHariLiburAktif(tanggalOperasionalStr, client);
+  const todayHoliday = liburSet.has(tanggalOperasionalStr)
+    ? (allLiburRes.rows.find(
+        (r) => String(r.tanggal).trim() === tanggalOperasionalStr,
+      ) as Record<string, unknown> | undefined)
+    : null;
   const statusSummary = todayHoliday
     ? "LIBUR"
     : jumlahAlfaDibuat > 0
       ? "SELESAI"
       : "IDLE";
   const pesan = todayHoliday
-    ? `Hari ini Hari Libur (${todayHoliday.nama_libur}). Generate Alfa dilewati untuk hari ini.`
+    ? `Hari ini Hari Libur (${String(todayHoliday.nama_libur || "")}). Generate Alfa dilewati untuk hari ini.`
     : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}`;
 
   return {

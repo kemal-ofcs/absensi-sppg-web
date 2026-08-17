@@ -241,6 +241,19 @@ export async function initDatabaseSchema(client: Client) {
     await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_absensi_id_sesi ON absensi_harian(id_sesi);",
     );
+    // Additional performance indexes for range queries and lookups
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_log_scan_tanggal ON log_scan(tanggal_kerja);",
+    );
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_absensi_tanggal ON absensi_harian(tanggal);",
+    );
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_backup_tanggal_status ON backup_karyawan(tanggal_tugas, status_tugas);",
+    );
+    await client.execute(
+      "CREATE INDEX IF NOT EXISTS idx_master_data_shift_aktif ON master_data(id_shift, status_aktif);",
+    );
 
     // 12. tbl_hari_libur
     await client.execute(`

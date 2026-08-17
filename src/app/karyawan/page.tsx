@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Modal } from "@/components/ui/Modal";
@@ -126,14 +126,18 @@ export default function KaryawanPage() {
     }
   }, [isHydrated, isAuthenticated, loadData]);
 
-  // Extract unique divisions for filter
-  const divisions = Array.from(
-    new Set(
-      karyawanList
-        .map((k) => String(k.divisi || "").trim())
-        .filter((d) => d && d !== "-"),
-    ),
-  ).sort();
+  // Extract unique divisions for filter — memoized to avoid recalc on every render
+  const divisions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          karyawanList
+            .map((k) => String(k.divisi || "").trim())
+            .filter((d) => d && d !== "-"),
+        ),
+      ).sort(),
+    [karyawanList],
+  );
 
   const openAddModal = () => {
     setIsEditing(false);

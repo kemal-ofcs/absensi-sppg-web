@@ -1,7 +1,7 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -38,6 +38,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // ── Overview data: metrics, bulanan, leaderboard ─────────────────────────
+  // Only fetched once after authentication. Does NOT depend on selectedDate.
   useEffect(() => {
     if (!isHydrated || !isAuthenticated) return;
 
@@ -45,19 +47,15 @@ export default function DashboardPage() {
     setLoading(true);
     setLoadError(null);
 
-    async function loadDashboardData() {
+    async function loadOverviewData() {
       try {
-        const [metricsData, harianData, bulananData, topData] =
-          await Promise.all([
-            getDashboardMetrics(),
-            getRekapHarian({ tanggal: selectedDate }),
-            getRekapBulanan(),
-            getTopKaryawanTerajin(5),
-          ]);
-
+        const [metricsData, bulananData, topData] = await Promise.all([
+          getDashboardMetrics(),
+          getRekapBulanan(),
+          getTopKaryawanTerajin(5),
+        ]);
         if (isCancelled) return;
         setMetrics(metricsData);
-        setRekapHarianList(harianData);
         setRekapBulananList(bulananData);
         setTopKaryawanList(topData);
       } catch (error: unknown) {
@@ -68,18 +66,48 @@ export default function DashboardPage() {
             : "Data dashboard tidak dapat dimuat.",
         );
       } finally {
-        if (!isCancelled) {
-          setLoading(false);
-        }
+        if (!isCancelled) setLoading(false);
       }
     }
 
-    loadDashboardData();
+    loadOverviewData();
+    return () => {
+      isCancelled = true;
+    };
+  }, [isHydrated, isAuthenticated]);
 
+  // ── Harian data: rekap per-tanggal ────────────────────────────────────────
+  // Re-fetched whenever selectedDate changes (fast, isolated query).
+  const [harianLoading, setHarianLoading] = useState(false);
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+
+    let isCancelled = false;
+    setHarianLoading(true);
+
+    async function loadHarianData() {
+      try {
+        const harianData = await getRekapHarian({ tanggal: selectedDate });
+        if (isCancelled) return;
+        setRekapHarianList(harianData);
+      } catch {
+        // Silently ignore harian load errors – overview error is already shown.
+      } finally {
+        if (!isCancelled) setHarianLoading(false);
+      }
+    }
+
+    loadHarianData();
     return () => {
       isCancelled = true;
     };
   }, [isHydrated, isAuthenticated, selectedDate]);
+
+  // Combined loading state for skeleton rendering
+  const isLoading = useMemo(
+    () => loading || harianLoading,
+    [loading, harianLoading],
+  );
 
   // Export CSV Data
   const exportToCSV = () => {
@@ -268,7 +296,7 @@ export default function DashboardPage() {
 
         {/* Table Data Container */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-          {loading ? (
+          {isLoading ? (
             <div className="py-20 flex flex-col items-center justify-center space-y-3">
               <div className="w-8 h-8 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
               <p className="text-xs text-slate-400 font-mono">
