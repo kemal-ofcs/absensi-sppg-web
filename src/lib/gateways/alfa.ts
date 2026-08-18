@@ -16,7 +16,8 @@ export async function getAutoAlfaSetting(): Promise<boolean> {
   }
   const response = await requestWebApi<{ enabled: boolean }>(
     "/api/settings/alfa",
-    "GET",
+    "POST",
+    {},
   );
   return response.enabled;
 }
@@ -30,7 +31,7 @@ export async function saveAutoAlfaSetting(
       { enabled },
     );
   }
-  return requestWebApi<{ sukses: boolean }>("/api/settings/alfa", "POST", {
+  return requestWebApi<{ sukses: boolean }>("/api/settings/alfa", "PUT", {
     enabled,
   });
 }

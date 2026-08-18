@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
       snapshot,
     });
   } catch (error) {
+    console.error("SYNC SNAPSHOT API ERROR:", error);
     return toApiErrorResponse(error);
   }
 }

@@ -14,7 +14,6 @@ import {
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 import { recordOperationalChange } from "@/lib/server/operational/change-log";
 import {
-  getDaftarHariLibur,
   type HariLiburInput,
   hapusHariLibur,
   tambahHariLibur,
@@ -49,17 +48,6 @@ function parseDraft(value: unknown): HariLiburInput {
     status_aktif:
       draft.status_aktif === false || Number(draft.status_aktif) === 0 ? 0 : 1,
   };
-}
-
-export async function GET(request: NextRequest) {
-  try {
-    await requireWebPermission(request, "holidays.view");
-    await ensureServerDatabaseInitialized();
-    const holidays = await getDaftarHariLibur();
-    return noStoreJson({ holidays });
-  } catch (error) {
-    return toApiErrorResponse(error);
-  }
 }
 
 export async function POST(request: NextRequest) {

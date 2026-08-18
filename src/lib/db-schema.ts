@@ -1,8 +1,8 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-const CURRENT_SCHEMA_VERSION = 6;
-const REQUIRED_TABLE_COUNT = 18;
+export const CURRENT_SCHEMA_VERSION = 7;
+export const REQUIRED_TABLE_COUNT = 19;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -17,7 +17,7 @@ export async function isDatabaseSchemaReady(client: Client) {
             'backup_karyawan', 'koreksi_admin', 'audit_absensi', 'app_role',
             'app_permission', 'role_permission', 'app_session',
             'auth_login_rate_limit', 'sync_operation_receipt',
-            'sync_change_log', 'import_offline'
+            'sync_change_log', 'import_offline', 'tbl_hari_libur'
           )
         ) AS table_count;
     `);
@@ -226,6 +226,18 @@ export async function initDatabaseSchema(client: Client) {
         baris_referensi TEXT,
         detail TEXT NOT NULL,
         status TEXT NOT NULL
+      );
+    `);
+
+    // 11. tbl_hari_libur
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS tbl_hari_libur (
+        id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
+        tanggal DATE UNIQUE NOT NULL,
+        nama_libur TEXT NOT NULL,
+        jenis_libur TEXT DEFAULT 'Libur Nasional',
+        keterangan TEXT,
+        status_aktif INTEGER DEFAULT 1
       );
     `);
 

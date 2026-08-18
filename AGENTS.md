@@ -28,4 +28,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - **Frontend**: Next.js 16 + React 19 + Tailwind CSS v4. Use `ExcelJS` for spreadsheet import/export.
    - **Desktop & Mobile**: Tauri v2 + Rust + SQLite. All logic must use the Gateway abstraction (`isDesktopRuntime()`) and responsive layouts.
    - **Shift 3 (Overnight Shift)**: When cross-midnight occurs (`jam_pulang < jam_masuk`), scan out belongs to $H+1$ (`nextDate`), and duration is $(out\_min + 1440) - in\_min$.
+7. **Next.js Static Export Compatibility (`output: "export"`)**:
+   - Desktop and Mobile Tauri builds rely on `output: "export"`. Route handlers in `src/app/api/` must NEVER export a `GET` handler (which breaks static exports). Always use `POST /api/<domain>/query/route.ts` or `POST`/`PUT`/`PATCH`/`DELETE` for all API endpoints.
+
 

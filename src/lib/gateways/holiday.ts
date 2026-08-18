@@ -16,8 +16,9 @@ export async function getDaftarHariLibur(): Promise<HariLiburRecord[]> {
     return invokeDesktop<HariLiburRecord[]>("desktop_get_holidays");
   }
   const response = await requestWebApi<{ holidays: HariLiburRecord[] }>(
-    "/api/holidays",
-    "GET",
+    "/api/holidays/query",
+    "POST",
+    {},
   );
   return response.holidays;
 }

@@ -531,24 +531,24 @@ export default function KaryawanPage() {
         ) : (
           <div className="overflow-x-auto max-h-[65vh]">
             <table className="w-full min-w-[1950px] text-left text-xs font-mono border-collapse">
-              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-10 border-b border-slate-800 shadow-md">
+              <thead className="bg-slate-950 text-slate-400 sticky top-0 z-20 border-b border-slate-800 shadow-md">
                 <tr>
-                  <th className="p-3.5">ID Unik / NIK</th>
-                  <th className="p-3.5">Kode</th>
-                  <th className="p-3.5">Nama Karyawan</th>
-                  <th className="p-3.5">Divisi</th>
-                  <th className="p-3.5">Jabatan</th>
-                  <th className="p-3.5">No. HP</th>
-                  <th className="p-3.5 text-center">L/P</th>
-                  <th className="p-3.5">Shift Kerja</th>
-                  <th className="p-3.5">Status</th>
-                  <th className="p-3.5">Tgl Daftar</th>
-                  <th className="p-3.5">Catatan</th>
-                  <th className="p-3.5">Personil</th>
-                  <th className="p-3.5">Mulai Aktif</th>
-                  <th className="p-3.5">Selesai Aktif</th>
-                  <th className="p-3.5">Status QR</th>
-                  <th className="p-3.5 text-center sticky top-0 right-0 bg-slate-950 z-30 border-l border-slate-800/80 min-w-[220px]">
+                  <th className="p-3.5 bg-slate-950">ID Unik / NIK</th>
+                  <th className="p-3.5 bg-slate-950">Kode</th>
+                  <th className="p-3.5 bg-slate-950">Nama Karyawan</th>
+                  <th className="p-3.5 bg-slate-950">Divisi</th>
+                  <th className="p-3.5 bg-slate-950">Jabatan</th>
+                  <th className="p-3.5 bg-slate-950">No. HP</th>
+                  <th className="p-3.5 bg-slate-950 text-center">L/P</th>
+                  <th className="p-3.5 bg-slate-950">Shift Kerja</th>
+                  <th className="p-3.5 bg-slate-950">Status</th>
+                  <th className="p-3.5 bg-slate-950">Tgl Daftar</th>
+                  <th className="p-3.5 bg-slate-950">Catatan</th>
+                  <th className="p-3.5 bg-slate-950">Personil</th>
+                  <th className="p-3.5 bg-slate-950">Mulai Aktif</th>
+                  <th className="p-3.5 bg-slate-950">Selesai Aktif</th>
+                  <th className="p-3.5 bg-slate-950">Status QR</th>
+                  <th className="p-3.5 text-center sticky top-0 right-0 bg-slate-950 z-30 border-l border-slate-800/80 shadow-md min-w-[220px]">
                     Aksi
                   </th>
                 </tr>

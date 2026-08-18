@@ -127,17 +127,35 @@ Whenever a table, column, enum, or index is added, renamed, or modified:
 5. **Employee Token in Tests**:
    - `operational::create_employee` generates `TOK-{id}-{timestamp}`. Always extract `res["token_absensi"].as_str()` when building scan payloads in unit tests (`format!("{id}|{token}")`).
 
-### B. Next.js & Bun Test Gotchas
-1. **`server-only` in Unit Tests**:
+### B. Next.js, Tauri v2 Static Export & Bun Test Gotchas
+1. **Next.js Static Export (`output: "export"`) vs API Route Handlers**:
+   - For Desktop & Mobile (Tauri v2), Next.js builds with `output: "export"` into `out/`.
+   - **CRITICAL RULE**: Next.js App Router route handlers (`src/app/api/.../route.ts`) MUST NEVER export a `GET` method. Exporting `GET` will cause `next build` to fail with:
+     `Error: export const dynamic = "force-static"/export const revalidate not configured on route "/api/..." with "output: export"`.
+   - **MANDATORY PATTERN**:
+     - All API queries must use `POST /api/<domain>/query/route.ts` or `POST /api/<domain>/route.ts`.
+     - All API mutations must use `POST`, `PUT`, `PATCH`, or `DELETE`.
+     - Next.js automatically ignores non-GET route handlers during static export without build errors.
+2. **Batch Processing & N+1 Query Prevention**:
+   - Never execute SQL queries per employee inside loops (e.g. `generateAlfaHarian`).
+   - Pre-load reference data into memory structures (`Map<number, Row>` for shifts, `Set<string>` for active holidays) before iterating employees.
+3. **Multi-Table Mutation ACID Isolation**:
+   - All multi-table updates (e.g. `koreksi_admin` + `absensi_harian` + `log_scan` + `audit_absensi` in `correction.ts` or `editAbsensiHarian` in `history-mutation.ts`) MUST execute inside `db.transaction("write")` (LibSQL / Turso).
+   - If any step fails, roll back completely to prevent orphan or inconsistent records.
+4. **Frontend Search Debouncing**:
+   - Every search input field that filters client-side data via `useMemo` (e.g. `history/page.tsx`) MUST use `useDebounce(search, 300)` from `@/lib/hooks/useDebounce` to prevent expensive recalculations on every keystroke.
+5. **Background Tab Visibility Guard**:
+   - Background runners (e.g. `AutoAlfaRunner`) must check `document.visibilityState === "visible"` and listen to `visibilitychange` to conserve CPU/network when the tab is hidden.
+6. **`server-only` in Unit Tests**:
    - In Bun unit tests for server services (`src/lib/services/*.test.ts`), mock `server-only` before dynamic import:
      ```ts
      import { mock } from "bun:test";
      mock.module("server-only", () => ({}));
      const { serviceFn } = await import("./service");
      ```
-2. **Snapshot Batch Query Mocking**:
+7. **Snapshot Batch Query Mocking**:
    - When adding a new synchronized table, increase the mock statements count in `snapshot.test.ts` to match the exact number of queries executed by the snapshot batch.
-3. **Spreadsheet Client Safety**:
+8. **Spreadsheet Client Safety**:
    - Never import `exceljs` into `"use client"` components. Use `src/lib/client/employee-workbook.ts` or client CSV/Excel helpers in `src/lib/client/excel-export.ts`.
 
 ---
@@ -149,7 +167,8 @@ Before completing any task, execute:
 bun run format && bun run check
 ```
 Verify with 0 errors and 0 warnings:
-1. **Biome Linter & Formatter**: Clean syntax, no double empty lines, accessible click handlers.
-2. **TypeScript Strict Typecheck**: Complete parameter type safety.
-3. **Bun Test Suite**: All unit and integration tests passing.
+1. **Biome Linter & Formatter**: Clean syntax, no unused variables, organized imports, exhaustive dependencies.
+2. **TypeScript Strict Typecheck**: Complete parameter type safety and strict schema compliance.
+3. **Bun Test Suite**: All unit and integration tests passing (`bun run test`).
 4. **Rust Cargo Tests**: `cargo test --manifest-path src-tauri/Cargo.toml` passing (100% passed).
+5. **Desktop Static Build Compatibility**: `bun run build:desktop` passes without static export route conflicts.
