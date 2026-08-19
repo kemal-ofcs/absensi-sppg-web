@@ -2054,3 +2054,103 @@ pub fn save_id_card_template(state: &DesktopState, template: &Value) -> Result<V
     transaction.commit().map_err(|_| CommandError::internal())?;
     get_id_card_template(state, id)
 }
+
+/// Membuat ulang event outbox untuk company-profile dan id-card-template
+/// dari data lokal yang ada saat ini. Berguna ketika event sebelumnya
+/// gagal dan sudah dihapus sehingga perlu di-enqueue ulang tanpa
+/// mengubah data lokal.
+pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let mut enqueued = 0i64;
+
+    // Ambil data company_profile lokal
+    let profile = transaction
+        .query_row(
+            "SELECT id, company_name, branch_name, logo_url, signature_url, address, phone, email, website, leader_name, leader_title, leader_nip, card_terms, timezone, updated_at FROM company_profile WHERE id = 'default_company' LIMIT 1;",
+            [],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "company_name": row.get::<_, String>(1)?,
+                    "branch_name": row.get::<_, Option<String>>(2)?,
+                    "logo_url": row.get::<_, Option<String>>(3)?,
+                    "signature_url": row.get::<_, Option<String>>(4)?,
+                    "address": row.get::<_, Option<String>>(5)?,
+                    "phone": row.get::<_, Option<String>>(6)?,
+                    "email": row.get::<_, Option<String>>(7)?,
+                    "website": row.get::<_, Option<String>>(8)?,
+                    "leader_name": row.get::<_, Option<String>>(9)?,
+                    "leader_title": row.get::<_, Option<String>>(10)?,
+                    "leader_nip": row.get::<_, Option<String>>(11)?,
+                    "card_terms": row.get::<_, Option<String>>(12)?,
+                    "timezone": row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "Asia/Jakarta".to_string()),
+                    "updated_at": row.get::<_, String>(14)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    if let Some(profile) = profile {
+        let company_name = profile.get("company_name").and_then(Value::as_str).unwrap_or("SPPG");
+        if !company_name.is_empty() {
+            sync::enqueue(
+                &transaction,
+                &client_id,
+                "company-profile",
+                "update",
+                "default_company",
+                &profile,
+                None,
+            )?;
+            enqueued += 1;
+        }
+    }
+
+    // Ambil data id_card_template lokal
+    let template = transaction
+        .query_row(
+            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE id = 'default_template' LIMIT 1;",
+            [],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "orientation": row.get::<_, String>(2)?,
+                    "front_bg_url": row.get::<_, Option<String>>(3)?,
+                    "back_bg_url": row.get::<_, Option<String>>(4)?,
+                    "elements_json": row.get::<_, String>(5)?,
+                    "is_active": row.get::<_, i64>(6)?,
+                    "created_at": row.get::<_, Option<String>>(7)?,
+                    "updated_at": row.get::<_, Option<String>>(8)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    if let Some(template) = template {
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "id-card-template",
+            "save",
+            "default_template",
+            &template,
+            None,
+        )?;
+        enqueued += 1;
+    }
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+
+    Ok(json!({
+        "jumlahDienqueue": enqueued,
+        "pesan": format!("{enqueued} pengaturan berhasil dijadwalkan ulang untuk sinkronisasi."),
+    }))
+}

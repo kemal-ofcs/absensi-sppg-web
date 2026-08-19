@@ -81,6 +81,7 @@ pub fn run() {
             desktop::commands::desktop_update_company_profile,
             desktop::commands::desktop_get_id_card_template,
             desktop::commands::desktop_save_id_card_template,
+            desktop::commands::desktop_force_resync_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

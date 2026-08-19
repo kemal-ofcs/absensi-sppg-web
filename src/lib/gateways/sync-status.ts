@@ -70,3 +70,18 @@ export async function clearFailedSync(eventId?: string) {
   if (!isDesktopRuntime()) return null;
   return invokeDesktop<SyncStatus>("desktop_clear_failed_sync", { eventId });
 }
+
+export interface ForceResyncSettingsResult {
+  enqueue: {
+    jumlahDienqueue: number;
+    pesan: string;
+  };
+  status: SyncStatus;
+}
+
+export async function forceResyncSettings() {
+  if (!isDesktopRuntime()) return null;
+  return invokeDesktop<ForceResyncSettingsResult>(
+    "desktop_force_resync_settings",
+  );
+}

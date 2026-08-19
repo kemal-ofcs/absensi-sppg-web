@@ -908,3 +908,50 @@ pub fn desktop_save_id_card_template(
 
 
 
+#[tauri::command]
+pub async fn desktop_force_resync_settings(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    // Wajib punya permission sync dan online
+    let token = {
+        let session = state.session.lock().map_err(|_| CommandError::internal())?;
+        let session = session.as_ref().ok_or_else(|| {
+            CommandError::new(
+                "DESKTOP_SESSION_MISSING",
+                "Session Desktop tidak tersedia. Silakan login kembali.",
+            )
+        })?;
+        if !session
+            .operator
+            .permissions
+            .iter()
+            .any(|permission| permission == "sync.view")
+        {
+            return Err(CommandError::new(
+                "DESKTOP_ACCESS_DENIED",
+                "Akses sinkronisasi ditolak.",
+            ));
+        }
+        session.token.as_ref().map(|value| value.to_string()).ok_or_else(|| {
+            CommandError::new(
+                "DESKTOP_ONLINE_REQUIRED",
+                "Login online diperlukan untuk sinkronisasi ulang pengaturan.",
+            )
+        })?
+    };
+
+    // Enqueue ulang pengaturan dari data lokal
+    let enqueue_result = operational::force_enqueue_settings(&state)?;
+
+    // Langsung sinkronisasi ke server
+    let sync_result = sync::synchronize(&state, &token).await;
+    if let Err(error) = &sync_result {
+        clear_expired_session(&state, error);
+    }
+    let status = sync_result?;
+
+    Ok(json!({
+        "enqueue": enqueue_result,
+        "status": status,
+    }))
+}

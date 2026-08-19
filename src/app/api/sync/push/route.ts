@@ -28,6 +28,20 @@ export async function POST(request: NextRequest) {
     try {
       batch = parseOperationalSyncBatch(body);
     } catch (error) {
+      // Log detail event yang gagal agar mudah diagnosis di server
+      if (body && typeof body === "object" && "events" in body) {
+        const events = (body as Record<string, unknown>).events;
+        if (Array.isArray(events)) {
+          events.forEach((ev: unknown, idx: number) => {
+            if (ev && typeof ev === "object") {
+              const e = ev as Record<string, unknown>;
+              console.error(
+                `[SYNC] Event[${idx}] domain=${e.domain} op=${e.operation} key=${e.entityKey}`,
+              );
+            }
+          });
+        }
+      }
       console.error("SYNC PUSH VALIDATION ERROR:", error);
       throw new ApiRequestError(
         `Batch sinkronisasi tidak valid: ${error instanceof Error ? error.message : String(error)}`,

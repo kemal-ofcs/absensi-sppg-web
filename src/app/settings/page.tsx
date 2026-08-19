@@ -37,6 +37,7 @@ import {
 import { getServerUrl, setServerUrl } from "@/lib/gateways/server-config";
 import {
   clearFailedSync,
+  forceResyncSettings,
   getSyncConflicts,
   getSyncStatus,
   isDesktopSyncAvailable,
@@ -380,6 +381,31 @@ export default function SettingsPage() {
           error instanceof Error
             ? error.message
             : "Gagal membersihkan antrean gagal.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const resyncSettings = async () => {
+    setSyncBusy(true);
+    try {
+      const result = await forceResyncSettings();
+      if (result) {
+        setSyncStatus(result.status);
+        setConflicts(await getSyncConflicts());
+        setFeedback({
+          type: "success",
+          message: `${result.enqueue.pesan} Sinkronisasi ke server berhasil.`,
+        });
+      }
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyinkronkan ulang pengaturan ke server.",
       });
     } finally {
       setSyncBusy(false);
@@ -1547,6 +1573,15 @@ export default function SettingsPage() {
                 className="min-h-10 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
               >
                 Sinkronkan sekarang
+              </button>
+              <button
+                type="button"
+                disabled={syncBusy || !isOnline}
+                onClick={resyncSettings}
+                className="min-h-10 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 text-xs font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
+                title="Kirim ulang data Profil Perusahaan & Template ID Card lokal ke server"
+              >
+                Kirim ulang pengaturan lokal
               </button>
               {hasPermission(user, "sync.retry") &&
               (syncStatus?.failed ?? 0) > 0 ? (
