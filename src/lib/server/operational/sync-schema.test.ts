@@ -61,6 +61,46 @@ describe("operational sync schema", () => {
         createdAt: 1_786_300_000,
       }).success,
     ).toBe(true);
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "company-profile",
+        operation: "update",
+        entityKey: "default_company",
+        payload: {
+          id: "default_company",
+          company_name: "SPPG Pusat",
+          timezone: "Asia/Jakarta",
+          created_at: "2026-08-20T00:00:00.000Z",
+          updated_at: "2026-08-20T00:00:00.000Z",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "id-card-template",
+        operation: "save",
+        entityKey: "default_template",
+        payload: {
+          id: "default_template",
+          name: "Template Default SPPG",
+          orientation: "landscape",
+          front_bg_url: null,
+          back_bg_url: null,
+          elements_json: "[]",
+          is_active: 1,
+          created_at: "2026-08-20T00:00:00.000Z",
+          updated_at: "2026-08-20T00:00:00.000Z",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
   });
 
   test("menolak null, primitive, domain, dan operasi yang tidak didukung", () => {

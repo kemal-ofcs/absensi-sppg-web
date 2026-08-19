@@ -4,7 +4,7 @@ const eventIdSchema = z.string().regex(/^evt-[a-f0-9]{64}$/);
 const clientIdSchema = z.string().regex(/^desktop-[a-f0-9]{64}$/);
 const shortText = z.string().max(512);
 const longText = z.string().max(8_192);
-const assetText = z.string().max(262_144);
+const assetText = z.string().max(10_485_760);
 const finiteNumber = z.number().finite();
 const integer = z.number().int().safe();
 
@@ -272,6 +272,8 @@ const companyProfileUpdatePayload = z
     leader_nip: optionalShortText,
     card_terms: optionalLongText,
     timezone: optionalShortText,
+    created_at: optionalShortText,
+    updated_at: optionalShortText,
   })
   .strict();
 
@@ -282,8 +284,10 @@ const idCardTemplateSavePayload = z
     orientation: z.enum(["portrait", "landscape"]),
     front_bg_url: assetText.nullable().optional(),
     back_bg_url: assetText.nullable().optional(),
-    elements_json: longText.min(2),
+    elements_json: assetText.min(2),
     is_active: optionalNumber,
+    created_at: optionalShortText,
+    updated_at: optionalShortText,
   })
   .strict();
 
