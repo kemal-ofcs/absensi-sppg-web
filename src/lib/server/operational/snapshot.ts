@@ -13,6 +13,8 @@ export async function readOperationalSnapshot(client: Client) {
     shifts,
     holidays,
     settings,
+    companyProfiles,
+    idCardTemplates,
     backups,
     corrections,
     imports,
@@ -32,6 +34,8 @@ export async function readOperationalSnapshot(client: Client) {
       "SELECT * FROM tbl_shift ORDER BY kode_shift;",
       "SELECT * FROM tbl_hari_libur ORDER BY tanggal ASC;",
       "SELECT key, value FROM setting_gex_system;",
+      "SELECT * FROM company_profile;",
+      "SELECT * FROM id_card_template ORDER BY created_at ASC;",
       `
       SELECT * FROM backup_karyawan
       WHERE status_tugas = 'Aktif'
@@ -68,6 +72,8 @@ export async function readOperationalSnapshot(client: Client) {
     shifts: plainRows(shifts.rows),
     holidays: plainRows(holidays.rows),
     settings: plainRows(settings.rows),
+    companyProfiles: plainRows(companyProfiles.rows),
+    idCardTemplates: plainRows(idCardTemplates.rows),
     backups: plainRows(backups.rows),
     corrections: plainRows(corrections.rows),
     imports: plainRows(imports.rows),

@@ -283,6 +283,34 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         pesan_error TEXT,
         kode_operator TEXT
       );
+      CREATE TABLE IF NOT EXISTS company_profile (
+        id TEXT PRIMARY KEY DEFAULT 'default_company',
+        company_name TEXT NOT NULL DEFAULT 'SPPG',
+        branch_name TEXT,
+        logo_url TEXT,
+        signature_url TEXT,
+        address TEXT,
+        phone TEXT,
+        email TEXT,
+        website TEXT,
+        leader_name TEXT,
+        leader_title TEXT,
+        leader_nip TEXT,
+        card_terms TEXT,
+        timezone TEXT DEFAULT 'Asia/Jakarta',
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS id_card_template (
+        id TEXT PRIMARY KEY DEFAULT 'default_template',
+        name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+        orientation TEXT NOT NULL DEFAULT 'landscape',
+        front_bg_url TEXT,
+        back_bg_url TEXT,
+        elements_json TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_local_log_scan_employee_date
         ON log_scan(id_karyawan, tanggal_kerja);
       CREATE INDEX IF NOT EXISTS idx_local_log_scan_tanggal
@@ -345,6 +373,66 @@ pub fn initialize(path: &Path) -> Result<(), String> {
             );
             CREATE INDEX IF NOT EXISTS idx_local_hari_libur_tanggal
                 ON tbl_hari_libur(tanggal, status_aktif);
+            "#,
+            [],
+        );
+    }
+
+    let has_company_profile: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'company_profile';",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !has_company_profile {
+        let _ = connection.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS company_profile (
+                id TEXT PRIMARY KEY DEFAULT 'default_company',
+                company_name TEXT NOT NULL DEFAULT 'SPPG',
+                branch_name TEXT,
+                logo_url TEXT,
+                signature_url TEXT,
+                address TEXT,
+                phone TEXT,
+                email TEXT,
+                website TEXT,
+                leader_name TEXT,
+                leader_title TEXT,
+                leader_nip TEXT,
+                card_terms TEXT,
+                timezone TEXT DEFAULT 'Asia/Jakarta',
+                updated_at TEXT NOT NULL
+            );
+            "#,
+            [],
+        );
+    }
+
+    let has_id_card_template: bool = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'id_card_template';",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if !has_id_card_template {
+        let _ = connection.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS id_card_template (
+                id TEXT PRIMARY KEY DEFAULT 'default_template',
+                name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+                orientation TEXT NOT NULL DEFAULT 'landscape',
+                front_bg_url TEXT,
+                back_bg_url TEXT,
+                elements_json TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             "#,
             [],
         );

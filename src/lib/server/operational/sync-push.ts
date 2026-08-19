@@ -30,6 +30,8 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   "id-card": "employees.manage",
   "log-scan": "history.delete",
   setting: "settings.manage",
+  "company-profile": "settings.manage",
+  "id-card-template": "settings.manage",
 };
 
 function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
@@ -1493,6 +1495,105 @@ async function applySetting(
   return { revision, payload: { key, value } };
 }
 
+async function applyCompanyProfile(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  const id = text(payload, "id") || "default_company";
+  const now = new Date().toISOString();
+  await transaction.execute({
+    sql: `
+      INSERT INTO company_profile (
+        id, company_name, branch_name, logo_url, signature_url,
+        address, phone, email, website,
+        leader_name, leader_title, leader_nip,
+        card_terms, timezone, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        company_name = excluded.company_name,
+        branch_name = excluded.branch_name,
+        logo_url = excluded.logo_url,
+        signature_url = excluded.signature_url,
+        address = excluded.address,
+        phone = excluded.phone,
+        email = excluded.email,
+        website = excluded.website,
+        leader_name = excluded.leader_name,
+        leader_title = excluded.leader_title,
+        leader_nip = excluded.leader_nip,
+        card_terms = excluded.card_terms,
+        timezone = excluded.timezone,
+        updated_at = excluded.updated_at;
+    `,
+    args: [
+      id,
+      text(payload, "company_name") || "SPPG",
+      text(payload, "branch_name") || null,
+      text(payload, "logo_url") || null,
+      text(payload, "signature_url") || null,
+      text(payload, "address") || null,
+      text(payload, "phone") || null,
+      text(payload, "email") || null,
+      text(payload, "website") || null,
+      text(payload, "leader_name") || null,
+      text(payload, "leader_title") || null,
+      text(payload, "leader_nip") || null,
+      text(payload, "card_terms") || null,
+      text(payload, "timezone") || "Asia/Jakarta",
+      now,
+    ],
+  });
+  const revision = await appendChange(transaction, actor, event, payload);
+  return {
+    revision,
+    payload: { id, company_name: text(payload, "company_name") },
+  };
+}
+
+async function applyIdCardTemplate(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  const id = text(payload, "id") || "default_template";
+  const now = new Date().toISOString();
+  const elementsJson =
+    typeof payload.elements_json === "string"
+      ? payload.elements_json
+      : JSON.stringify(payload.elements_json ?? []);
+  await transaction.execute({
+    sql: `
+      INSERT INTO id_card_template (
+        id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        orientation = excluded.orientation,
+        front_bg_url = excluded.front_bg_url,
+        back_bg_url = excluded.back_bg_url,
+        elements_json = excluded.elements_json,
+        is_active = excluded.is_active,
+        updated_at = excluded.updated_at;
+    `,
+    args: [
+      id,
+      text(payload, "name") || "Template Default SPPG",
+      text(payload, "orientation") || "landscape",
+      text(payload, "front_bg_url") || null,
+      text(payload, "back_bg_url") || null,
+      elementsJson,
+      number(payload, "is_active", 1),
+      now,
+      now,
+    ],
+  });
+  const revision = await appendChange(transaction, actor, event, payload);
+  return { revision, payload: { id, name: text(payload, "name") } };
+}
+
 async function applyEvent(
   transaction: Transaction,
   actor: OperatorUser,
@@ -1506,6 +1607,12 @@ async function applyEvent(
     return applyHoliday(transaction, actor, event);
   if (event.domain === "setting")
     return applySetting(transaction, actor, event);
+  if (event.domain === "company-profile") {
+    return applyCompanyProfile(transaction, actor, event);
+  }
+  if (event.domain === "id-card-template") {
+    return applyIdCardTemplate(transaction, actor, event);
+  }
   if (event.domain === "attendance") {
     return applyAttendance(transaction, actor, event);
   }

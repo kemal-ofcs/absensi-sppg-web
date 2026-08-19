@@ -17,6 +17,8 @@ export interface SyncStatus {
     shifts: number;
     holidays: number;
     settings: number;
+    companyProfiles: number;
+    idCardTemplates: number;
     backups: number;
     corrections: number;
     imports: number;

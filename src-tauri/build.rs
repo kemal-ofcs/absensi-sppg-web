@@ -61,6 +61,10 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_trigger_generate_alfa",
     "desktop_get_server_url",
     "desktop_set_server_url",
+    "desktop_get_company_profile",
+    "desktop_update_company_profile",
+    "desktop_get_id_card_template",
+    "desktop_save_id_card_template",
 ];
 
 fn local_build_values() -> HashMap<String, String> {

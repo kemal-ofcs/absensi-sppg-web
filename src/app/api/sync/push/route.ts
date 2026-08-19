@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     const actor = await withTransientDatabaseRetry(() =>
       requireWebPermission(request, "sync.view"),
     );
-    const body = await readJsonBody<unknown>(request, 262_144);
+    const body = await readJsonBody<unknown>(request, 25_165_824);
     let batch: ReturnType<typeof parseOperationalSyncBatch>;
     try {
       batch = parseOperationalSyncBatch(body);

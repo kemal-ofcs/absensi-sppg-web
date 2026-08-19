@@ -1,11 +1,14 @@
 import type { ReactNode, SVGProps } from "react";
 
 export type IconName =
+  | "add"
   | "calendar"
   | "check"
   | "chevron-right"
   | "clock"
   | "dashboard"
+  | "eye"
+  | "eye-off"
   | "home"
   | "logout"
   | "lock"
@@ -22,6 +25,7 @@ export type IconName =
   | "wifi-off";
 
 const paths: Record<IconName, ReactNode> = {
+  add: <path d="M12 5v14M5 12h14" />,
   calendar: (
     <>
       <rect width="18" height="18" x="3" y="4" rx="2" />
@@ -42,6 +46,17 @@ const paths: Record<IconName, ReactNode> = {
       <rect width="7" height="5" x="14" y="3" rx="1" />
       <rect width="7" height="9" x="14" y="12" rx="1" />
       <rect width="7" height="5" x="3" y="16" rx="1" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  "eye-off": (
+    <>
+      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61M2 2l20 20" />
     </>
   ),
   home: (

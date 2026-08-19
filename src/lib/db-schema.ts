@@ -1,8 +1,8 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 7;
-export const REQUIRED_TABLE_COUNT = 19;
+export const CURRENT_SCHEMA_VERSION = 8;
+export const REQUIRED_TABLE_COUNT = 21;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -17,7 +17,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'backup_karyawan', 'koreksi_admin', 'audit_absensi', 'app_role',
             'app_permission', 'role_permission', 'app_session',
             'auth_login_rate_limit', 'sync_operation_receipt',
-            'sync_change_log', 'import_offline', 'tbl_hari_libur'
+            'sync_change_log', 'import_offline', 'tbl_hari_libur',
+            'company_profile', 'id_card_template'
           )
         ) AS table_count;
     `);
@@ -108,7 +109,6 @@ export async function initDatabaseSchema(client: Client) {
         buffer_shift_malam_menit INTEGER DEFAULT 120,
         izinkan_multi_sesi INTEGER DEFAULT 0
       );
-
     `);
 
     // 5. setting_gex_system
@@ -241,6 +241,42 @@ export async function initDatabaseSchema(client: Client) {
       );
     `);
 
+    // 12. company_profile
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS company_profile (
+        id TEXT PRIMARY KEY DEFAULT 'default_company',
+        company_name TEXT NOT NULL DEFAULT 'SPPG',
+        branch_name TEXT,
+        logo_url TEXT,
+        signature_url TEXT,
+        address TEXT,
+        phone TEXT,
+        email TEXT,
+        website TEXT,
+        leader_name TEXT,
+        leader_title TEXT,
+        leader_nip TEXT,
+        card_terms TEXT,
+        timezone TEXT DEFAULT 'Asia/Jakarta',
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    // 13. id_card_template
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS id_card_template (
+        id TEXT PRIMARY KEY DEFAULT 'default_template',
+        name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+        orientation TEXT NOT NULL DEFAULT 'landscape',
+        front_bg_url TEXT,
+        back_bg_url TEXT,
+        elements_json TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
     await runDatabaseMigrations(client);
 
     // Indices for ultra-fast queries
@@ -266,18 +302,6 @@ export async function initDatabaseSchema(client: Client) {
     await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_master_data_shift_aktif ON master_data(id_shift, status_aktif);",
     );
-
-    // 12. tbl_hari_libur
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS tbl_hari_libur (
-        id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
-        tanggal DATE UNIQUE NOT NULL,
-        nama_libur TEXT NOT NULL,
-        jenis_libur TEXT DEFAULT 'Libur Nasional',
-        keterangan TEXT,
-        status_aktif INTEGER DEFAULT 1
-      );
-    `);
     await client.execute(
       "CREATE INDEX IF NOT EXISTS idx_hari_libur_tanggal ON tbl_hari_libur(tanggal, status_aktif);",
     );
@@ -291,6 +315,179 @@ export async function initDatabaseSchema(client: Client) {
     throw error;
   }
 }
+
+const DEFAULT_CARD_TERMS = `1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.
+2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.
+3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.
+4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.`;
+
+const DEFAULT_ID_CARD_ELEMENTS_JSON = JSON.stringify([
+  {
+    id: "el-company-logo",
+    type: "company_logo",
+    side: "front",
+    sourceKey: "company.logo",
+    label: "Logo Instansi",
+    x: 6,
+    y: 8,
+    width: 14,
+    height: 20,
+    fontSize: 14,
+    color: "#ffffff",
+  },
+  {
+    id: "el-header-company",
+    type: "text",
+    side: "front",
+    sourceKey: "company.name",
+    label: "Nama Instansi",
+    x: 22,
+    y: 11,
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#ffffff",
+    textAlign: "left",
+    isUppercase: true,
+  },
+  {
+    id: "el-header-title",
+    type: "static_text",
+    side: "front",
+    sourceKey: "static_text",
+    staticValue: "KARTU IDENTITAS KARYAWAN",
+    label: "Judul Kartu",
+    x: 22,
+    y: 22,
+    fontSize: 9,
+    fontWeight: "600",
+    color: "#38bdf8",
+    textAlign: "left",
+    isUppercase: true,
+  },
+  {
+    id: "el-emp-name",
+    type: "text",
+    side: "front",
+    sourceKey: "employee.name",
+    label: "Nama Karyawan",
+    x: 6,
+    y: 44,
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#ffffff",
+    textAlign: "left",
+    isUppercase: true,
+  },
+  {
+    id: "el-emp-pos",
+    type: "text",
+    side: "front",
+    sourceKey: "employee.position",
+    label: "Jabatan / Posisi",
+    x: 6,
+    y: 56,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#7dd3fc",
+    textAlign: "left",
+  },
+  {
+    id: "el-emp-dept",
+    type: "text",
+    side: "front",
+    sourceKey: "employee.department",
+    label: "Divisi / Unit",
+    x: 6,
+    y: 67,
+    fontSize: 11,
+    fontWeight: "normal",
+    color: "#cbd5e1",
+    textAlign: "left",
+  },
+  {
+    id: "el-emp-nik",
+    type: "text",
+    side: "front",
+    sourceKey: "employee.nik",
+    label: "NIK / Kode",
+    x: 6,
+    y: 78,
+    fontSize: 10,
+    fontWeight: "normal",
+    color: "#94a3b8",
+    textAlign: "left",
+  },
+  {
+    id: "el-emp-qr",
+    type: "qr_code",
+    side: "front",
+    sourceKey: "employee.qr_token",
+    label: "QR Code Token",
+    x: 68,
+    y: 30,
+    width: 26,
+    height: 48,
+    fontSize: 10,
+    color: "#000000",
+  },
+  {
+    id: "el-back-title",
+    type: "static_text",
+    side: "back",
+    sourceKey: "static_text",
+    staticValue: "KETENTUAN PENGGUNAAN KARTU",
+    label: "Judul Belakang",
+    x: 8,
+    y: 12,
+    fontSize: 12,
+    fontWeight: "bold",
+    color: "#ffffff",
+    textAlign: "left",
+    isUppercase: true,
+  },
+  {
+    id: "el-back-terms",
+    type: "text",
+    side: "back",
+    sourceKey: "company.terms",
+    label: "Syarat & Ketentuan",
+    x: 8,
+    y: 24,
+    width: 84,
+    height: 42,
+    fontSize: 8.5,
+    fontWeight: "normal",
+    color: "#cbd5e1",
+    textAlign: "left",
+  },
+  {
+    id: "el-back-sig",
+    type: "company_logo",
+    side: "back",
+    sourceKey: "company.signature",
+    label: "Tanda Tangan Pimpinan",
+    x: 66,
+    y: 68,
+    width: 26,
+    height: 18,
+    fontSize: 10,
+    color: "#ffffff",
+  },
+  {
+    id: "el-back-leader",
+    type: "static_text",
+    side: "back",
+    sourceKey: "static_text",
+    staticValue: "Pimpinan Instansi",
+    label: "Label Pimpinan",
+    x: 66,
+    y: 88,
+    fontSize: 8,
+    fontWeight: "600",
+    color: "#94a3b8",
+    textAlign: "center",
+  },
+]);
 
 async function seedDefaultData(client: Client) {
   // Seed Default Shift
@@ -323,4 +520,35 @@ async function seedDefaultData(client: Client) {
       ('anti_double_scan_seconds', '60');
     `);
   }
+
+  // Seed Default Company Profile
+  const now = new Date().toISOString();
+  await client.execute({
+    sql: `
+      INSERT OR IGNORE INTO company_profile (
+        id, company_name, branch_name, logo_url, signature_url,
+        address, phone, email, website,
+        leader_name, leader_title, leader_nip,
+        card_terms, timezone, updated_at
+      ) VALUES (
+        'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
+        'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
+        'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+        ?, 'Asia/Jakarta', ?
+      );
+    `,
+    args: [DEFAULT_CARD_TERMS, now],
+  });
+
+  // Seed Default ID Card Template
+  await client.execute({
+    sql: `
+      INSERT OR IGNORE INTO id_card_template (
+        id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
+      ) VALUES (
+        'default_template', 'Template Default SPPG', 'landscape', NULL, NULL, ?, 1, ?, ?
+      );
+    `,
+    args: [DEFAULT_ID_CARD_ELEMENTS_JSON, now, now],
+  });
 }

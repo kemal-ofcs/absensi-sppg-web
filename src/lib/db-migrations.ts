@@ -11,6 +11,7 @@ const OPERATIONAL_SYNC_MIGRATION_VERSION = 4;
 const OFFLINE_IMPORT_MIGRATION_VERSION = 5;
 const OPERATIONAL_COLUMNS_MIGRATION_VERSION = 6;
 const HOLIDAY_MIGRATION_VERSION = 7;
+const COMPANY_PROFILE_AND_TEMPLATE_MIGRATION_VERSION = 8;
 
 const SYSTEM_ROLES = [
   {
@@ -367,6 +368,68 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'holiday-management-foundation', ?);`,
     args: [HOLIDAY_MIGRATION_VERSION, now],
+  });
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS company_profile (
+      id TEXT PRIMARY KEY DEFAULT 'default_company',
+      company_name TEXT NOT NULL DEFAULT 'SPPG',
+      branch_name TEXT,
+      logo_url TEXT,
+      signature_url TEXT,
+      address TEXT,
+      phone TEXT,
+      email TEXT,
+      website TEXT,
+      leader_name TEXT,
+      leader_title TEXT,
+      leader_nip TEXT,
+      card_terms TEXT,
+      timezone TEXT DEFAULT 'Asia/Jakarta',
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS id_card_template (
+      id TEXT PRIMARY KEY DEFAULT 'default_template',
+      name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+      orientation TEXT NOT NULL DEFAULT 'landscape',
+      front_bg_url TEXT,
+      back_bg_url TEXT,
+      elements_json TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  const defaultTerms = `1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.
+2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.
+3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.
+4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.`;
+
+  await client.execute({
+    sql: `
+      INSERT OR IGNORE INTO company_profile (
+        id, company_name, branch_name, logo_url, signature_url,
+        address, phone, email, website,
+        leader_name, leader_title, leader_nip,
+        card_terms, timezone, updated_at
+      ) VALUES (
+        'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
+        'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
+        'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+        ?, 'Asia/Jakarta', ?
+      );
+    `,
+    args: [defaultTerms, now],
+  });
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'company-profile-and-id-card-template-foundation', ?);`,
+    args: [COMPANY_PROFILE_AND_TEMPLATE_MIGRATION_VERSION, now],
   });
 
   await client.execute(

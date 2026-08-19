@@ -1570,3 +1570,487 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
         "pesan": pesan
     }))
 }
+
+fn current_iso(connection: &rusqlite::Connection) -> String {
+    connection
+        .query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
+}
+
+const DEFAULT_CARD_TERMS: &str = "1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.\n2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.\n3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.\n4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.";
+
+pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let result = connection
+        .query_row(
+            "SELECT id, company_name, branch_name, logo_url, signature_url, address, phone, email, website, leader_name, leader_title, leader_nip, card_terms, timezone, updated_at FROM company_profile WHERE id = 'default_company' LIMIT 1;",
+            [],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "company_name": row.get::<_, String>(1)?,
+                    "branch_name": row.get::<_, Option<String>>(2)?,
+                    "logo_url": row.get::<_, Option<String>>(3)?,
+                    "signature_url": row.get::<_, Option<String>>(4)?,
+                    "address": row.get::<_, Option<String>>(5)?,
+                    "phone": row.get::<_, Option<String>>(6)?,
+                    "email": row.get::<_, Option<String>>(7)?,
+                    "website": row.get::<_, Option<String>>(8)?,
+                    "leader_name": row.get::<_, Option<String>>(9)?,
+                    "leader_title": row.get::<_, Option<String>>(10)?,
+                    "leader_nip": row.get::<_, Option<String>>(11)?,
+                    "card_terms": row.get::<_, Option<String>>(12)?,
+                    "timezone": row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "Asia/Jakarta".to_string()),
+                    "updated_at": row.get::<_, String>(14)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    match result {
+        Some(val) => Ok(val),
+        None => {
+            let now = current_iso(&connection);
+            let _ = connection.execute(
+                r#"
+                INSERT OR IGNORE INTO company_profile (
+                    id, company_name, branch_name, logo_url, signature_url,
+                    address, phone, email, website,
+                    leader_name, leader_title, leader_nip,
+                    card_terms, timezone, updated_at
+                ) VALUES (
+                    'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
+                    'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
+                    'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+                    ?, 'Asia/Jakarta', ?
+                );
+                "#,
+                params![DEFAULT_CARD_TERMS, now],
+            );
+            Ok(json!({
+                "id": "default_company",
+                "company_name": "SPPG",
+                "branch_name": "Pusat Operasional",
+                "logo_url": Value::Null,
+                "signature_url": Value::Null,
+                "address": "Jl. Sudirman No. 123, Jakarta",
+                "phone": "021-5550123",
+                "email": "info@sppg.id",
+                "website": "https://sppg.id",
+                "leader_name": "Dr. H. Ahmad Fauzi, M.M.",
+                "leader_title": "Kepala SPPG",
+                "leader_nip": "19750815 200003 1 002",
+                "card_terms": DEFAULT_CARD_TERMS,
+                "timezone": "Asia/Jakarta",
+                "updated_at": now,
+            }))
+        }
+    }
+}
+
+pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let now = current_iso(&transaction);
+    let company_name = text(profile, "company_name");
+    let company_name = if company_name.is_empty() { "SPPG" } else { company_name };
+    let branch_name = text(profile, "branch_name");
+    let logo_url = text(profile, "logo_url");
+    let signature_url = text(profile, "signature_url");
+    let address = text(profile, "address");
+    let phone = text(profile, "phone");
+    let email = text(profile, "email");
+    let website = text(profile, "website");
+    let leader_name = text(profile, "leader_name");
+    let leader_title = text(profile, "leader_title");
+    let leader_nip = text(profile, "leader_nip");
+    let card_terms = text(profile, "card_terms");
+    let timezone = text(profile, "timezone");
+    let timezone = if timezone.is_empty() { "Asia/Jakarta" } else { timezone };
+
+    transaction
+        .execute(
+            r#"
+        INSERT INTO company_profile (
+            id, company_name, branch_name, logo_url, signature_url,
+            address, phone, email, website,
+            leader_name, leader_title, leader_nip,
+            card_terms, timezone, updated_at
+        ) VALUES (
+            'default_company', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            company_name = excluded.company_name,
+            branch_name = excluded.branch_name,
+            logo_url = excluded.logo_url,
+            signature_url = excluded.signature_url,
+            address = excluded.address,
+            phone = excluded.phone,
+            email = excluded.email,
+            website = excluded.website,
+            leader_name = excluded.leader_name,
+            leader_title = excluded.leader_title,
+            leader_nip = excluded.leader_nip,
+            card_terms = excluded.card_terms,
+            timezone = excluded.timezone,
+            updated_at = excluded.updated_at;
+        "#,
+            params![
+                company_name,
+                if branch_name.is_empty() { None } else { Some(branch_name) },
+                if logo_url.is_empty() { None } else { Some(logo_url) },
+                if signature_url.is_empty() { None } else { Some(signature_url) },
+                if address.is_empty() { None } else { Some(address) },
+                if phone.is_empty() { None } else { Some(phone) },
+                if email.is_empty() { None } else { Some(email) },
+                if website.is_empty() { None } else { Some(website) },
+                if leader_name.is_empty() { None } else { Some(leader_name) },
+                if leader_title.is_empty() { None } else { Some(leader_title) },
+                if leader_nip.is_empty() { None } else { Some(leader_nip) },
+                if card_terms.is_empty() { None } else { Some(card_terms) },
+                timezone,
+                now,
+            ],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let payload = json!({
+        "id": "default_company",
+        "company_name": company_name,
+        "branch_name": if branch_name.is_empty() { Value::Null } else { Value::String(branch_name.to_string()) },
+        "logo_url": if logo_url.is_empty() { Value::Null } else { Value::String(logo_url.to_string()) },
+        "signature_url": if signature_url.is_empty() { Value::Null } else { Value::String(signature_url.to_string()) },
+        "address": if address.is_empty() { Value::Null } else { Value::String(address.to_string()) },
+        "phone": if phone.is_empty() { Value::Null } else { Value::String(phone.to_string()) },
+        "email": if email.is_empty() { Value::Null } else { Value::String(email.to_string()) },
+        "website": if website.is_empty() { Value::Null } else { Value::String(website.to_string()) },
+        "leader_name": if leader_name.is_empty() { Value::Null } else { Value::String(leader_name.to_string()) },
+        "leader_title": if leader_title.is_empty() { Value::Null } else { Value::String(leader_title.to_string()) },
+        "leader_nip": if leader_nip.is_empty() { Value::Null } else { Value::String(leader_nip.to_string()) },
+        "card_terms": if card_terms.is_empty() { Value::Null } else { Value::String(card_terms.to_string()) },
+        "timezone": timezone,
+        "updated_at": now,
+    });
+
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "company-profile",
+        "update",
+        "default_company",
+        &payload,
+        None,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(payload)
+}
+
+pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let target_id = if id.is_empty() { "default_template" } else { id };
+    let result = connection
+        .query_row(
+            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE id = ? LIMIT 1;",
+            [target_id],
+            |row| {
+                let elements_raw: String = row.get(5)?;
+                let elements: Value = serde_json::from_str(&elements_raw).unwrap_or(json!([]));
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "orientation": row.get::<_, String>(2)?,
+                    "frontBgUrl": row.get::<_, Option<String>>(3)?,
+                    "backBgUrl": row.get::<_, Option<String>>(4)?,
+                    "elements": elements,
+                    "isActive": row.get::<_, i64>(6)? != 0,
+                    "createdAt": row.get::<_, Option<String>>(7)?,
+                    "updatedAt": row.get::<_, Option<String>>(8)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    match result {
+        Some(val) => Ok(val),
+        None => {
+            let now = current_iso(&connection);
+            let default_elements = json!([
+              {
+                "id": "el-company-logo",
+                "type": "company_logo",
+                "side": "front",
+                "sourceKey": "company.logo",
+                "label": "Logo Instansi",
+                "x": 6,
+                "y": 8,
+                "width": 14,
+                "height": 20,
+                "fontSize": 14,
+                "color": "#ffffff"
+              },
+              {
+                "id": "el-header-company",
+                "type": "text",
+                "side": "front",
+                "sourceKey": "company.name",
+                "label": "Nama Instansi",
+                "x": 22,
+                "y": 11,
+                "fontSize": 16,
+                "fontWeight": "bold",
+                "color": "#ffffff",
+                "textAlign": "left",
+                "isUppercase": true
+              },
+              {
+                "id": "el-header-title",
+                "type": "static_text",
+                "side": "front",
+                "sourceKey": "static_text",
+                "staticValue": "KARTU IDENTITAS KARYAWAN",
+                "label": "Judul Kartu",
+                "x": 22,
+                "y": 22,
+                "fontSize": 9,
+                "fontWeight": "600",
+                "color": "#38bdf8",
+                "textAlign": "left",
+                "isUppercase": true
+              },
+              {
+                "id": "el-emp-name",
+                "type": "text",
+                "side": "front",
+                "sourceKey": "employee.name",
+                "label": "Nama Karyawan",
+                "x": 6,
+                "y": 44,
+                "fontSize": 18,
+                "fontWeight": "bold",
+                "color": "#ffffff",
+                "textAlign": "left",
+                "isUppercase": true
+              },
+              {
+                "id": "el-emp-pos",
+                "type": "text",
+                "side": "front",
+                "sourceKey": "employee.position",
+                "label": "Jabatan / Posisi",
+                "x": 6,
+                "y": 56,
+                "fontSize": 12,
+                "fontWeight": "600",
+                "color": "#7dd3fc",
+                "textAlign": "left"
+              },
+              {
+                "id": "el-emp-dept",
+                "type": "text",
+                "side": "front",
+                "sourceKey": "employee.department",
+                "label": "Divisi / Unit",
+                "x": 6,
+                "y": 67,
+                "fontSize": 11,
+                "fontWeight": "normal",
+                "color": "#cbd5e1",
+                "textAlign": "left"
+              },
+              {
+                "id": "el-emp-nik",
+                "type": "text",
+                "side": "front",
+                "sourceKey": "employee.nik",
+                "label": "NIK / Kode",
+                "x": 6,
+                "y": 78,
+                "fontSize": 10,
+                "fontWeight": "normal",
+                "color": "#94a3b8",
+                "textAlign": "left"
+              },
+              {
+                "id": "el-emp-qr",
+                "type": "qr_code",
+                "side": "front",
+                "sourceKey": "employee.qr_token",
+                "label": "QR Code Token",
+                "x": 68,
+                "y": 30,
+                "width": 26,
+                "height": 48,
+                "fontSize": 10,
+                "color": "#000000"
+              },
+              {
+                "id": "el-back-title",
+                "type": "static_text",
+                "side": "back",
+                "sourceKey": "static_text",
+                "staticValue": "KETENTUAN PENGGUNAAN KARTU",
+                "label": "Judul Belakang",
+                "x": 8,
+                "y": 12,
+                "fontSize": 12,
+                "fontWeight": "bold",
+                "color": "#ffffff",
+                "textAlign": "left",
+                "isUppercase": true
+              },
+              {
+                "id": "el-back-terms",
+                "type": "text",
+                "side": "back",
+                "sourceKey": "company.terms",
+                "label": "Syarat & Ketentuan",
+                "x": 8,
+                "y": 24,
+                "width": 84,
+                "height": 42,
+                "fontSize": 8.5,
+                "fontWeight": "normal",
+                "color": "#cbd5e1",
+                "textAlign": "left"
+              },
+              {
+                "id": "el-back-sig",
+                "type": "company_logo",
+                "side": "back",
+                "sourceKey": "company.signature",
+                "label": "Tanda Tangan Pimpinan",
+                "x": 66,
+                "y": 68,
+                "width": 26,
+                "height": 18,
+                "fontSize": 10,
+                "color": "#ffffff"
+              },
+              {
+                "id": "el-back-leader",
+                "type": "static_text",
+                "side": "back",
+                "sourceKey": "static_text",
+                "staticValue": "Pimpinan Instansi",
+                "label": "Label Pimpinan",
+                "x": 66,
+                "y": 88,
+                "fontSize": 8,
+                "fontWeight": "600",
+                "color": "#94a3b8",
+                "textAlign": "center"
+              }
+            ]);
+            let default_elements_str = serde_json::to_string(&default_elements).unwrap_or_default();
+            let _ = connection.execute(
+                r#"
+                INSERT OR IGNORE INTO id_card_template (
+                    id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
+                ) VALUES (
+                    ?, 'Template Default SPPG', 'landscape', NULL, NULL, ?, 1, ?, ?
+                );
+                "#,
+                params![target_id, default_elements_str, now, now],
+            );
+            Ok(json!({
+                "id": target_id,
+                "name": "Template Default SPPG",
+                "orientation": "landscape",
+                "frontBgUrl": Value::Null,
+                "backBgUrl": Value::Null,
+                "elements": default_elements,
+                "isActive": true,
+                "createdAt": now,
+                "updatedAt": now,
+            }))
+        }
+    }
+}
+
+pub fn save_id_card_template(state: &DesktopState, template: &Value) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let now = current_iso(&transaction);
+    let id = text(template, "id");
+    let id = if id.is_empty() { "default_template" } else { id };
+    let name = text(template, "name");
+    let name = if name.is_empty() { "Template Default SPPG" } else { name };
+    let orientation = text(template, "orientation");
+    let orientation = if orientation == "portrait" { "portrait" } else { "landscape" };
+    let front_bg_url = text(template, "frontBgUrl");
+    let back_bg_url = text(template, "backBgUrl");
+    let elements = template.get("elements").cloned().unwrap_or(json!([]));
+    let elements_json = serde_json::to_string(&elements).unwrap_or_else(|_| "[]".to_string());
+    let is_active = if template.get("isActive").and_then(Value::as_bool).unwrap_or(true) { 1 } else { 0 };
+
+    transaction
+        .execute(
+            r#"
+        INSERT INTO id_card_template (
+            id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            orientation = excluded.orientation,
+            front_bg_url = excluded.front_bg_url,
+            back_bg_url = excluded.back_bg_url,
+            elements_json = excluded.elements_json,
+            is_active = excluded.is_active,
+            updated_at = excluded.updated_at;
+        "#,
+            params![
+                id,
+                name,
+                orientation,
+                if front_bg_url.is_empty() { None } else { Some(front_bg_url) },
+                if back_bg_url.is_empty() { None } else { Some(back_bg_url) },
+                elements_json,
+                is_active,
+                now,
+                now,
+            ],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let outbox_payload = json!({
+        "id": id,
+        "name": name,
+        "orientation": orientation,
+        "front_bg_url": if front_bg_url.is_empty() { Value::Null } else { Value::String(front_bg_url.to_string()) },
+        "back_bg_url": if back_bg_url.is_empty() { Value::Null } else { Value::String(back_bg_url.to_string()) },
+        "elements_json": elements_json,
+        "is_active": is_active,
+        "created_at": now,
+        "updated_at": now,
+    });
+
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "id-card-template",
+        "save",
+        id,
+        &outbox_payload,
+        None,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    get_id_card_template(state, id)
+}

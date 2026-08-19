@@ -63,6 +63,12 @@
     "allow-desktop-delete-holiday",
     "allow-desktop-get-alfa-settings",
     "allow-desktop-save-alfa-settings",
-    "allow-desktop-trigger-generate-alfa"
+    "allow-desktop-trigger-generate-alfa",
+    "allow-desktop-get-server-url",
+    "allow-desktop-set-server-url",
+    "allow-desktop-get-company-profile",
+    "allow-desktop-update-company-profile",
+    "allow-desktop-get-id-card-template",
+    "allow-desktop-save-id-card-template"
   ]
 }

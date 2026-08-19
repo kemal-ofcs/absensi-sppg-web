@@ -85,7 +85,7 @@ async function prepare(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const actor = await prepare(request);
-    const body = await readJsonBody<EmployeeMutationBody>(request);
+    const body = await readJsonBody<EmployeeMutationBody>(request, 10_485_760);
     const draft = parseDraft(body.draft);
     const result = await tambahKaryawan(draft);
     const revision = await recordOperationalChange(getServerDatabase(), {
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     const actor = await prepare(request);
-    const body = await readJsonBody<EmployeeMutationBody>(request);
+    const body = await readJsonBody<EmployeeMutationBody>(request, 10_485_760);
     const idUnik = typeof body.idUnik === "string" ? body.idUnik.trim() : "";
     if (!idUnik) throw new ApiRequestError("ID karyawan tidak valid.", 400);
     const draft = parseDraft(body.draft);
@@ -125,7 +125,7 @@ export async function PATCH(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const actor = await prepare(request);
-    const body = await readJsonBody<EmployeeMutationBody>(request, 2_000_000);
+    const body = await readJsonBody<EmployeeMutationBody>(request, 10_485_760);
     if (body.action === "generate-tokens") {
       const result = await generateTokenMassal();
       const revision = await recordOperationalChange(getServerDatabase(), {

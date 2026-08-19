@@ -24,7 +24,7 @@ export function noStoreJson(body: unknown, status = 200) {
   });
 }
 
-export async function readJsonBody<T>(request: Request, maxBytes = 16_384) {
+export async function readJsonBody<T>(request: Request, maxBytes = 2_097_152) {
   try {
     return await readBoundedJsonBody<T>(request, maxBytes);
   } catch (error) {

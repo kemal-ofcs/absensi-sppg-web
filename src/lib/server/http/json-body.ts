@@ -45,7 +45,7 @@ async function readBoundedBody(request: Request, maxBytes: number) {
 
 export async function readBoundedJsonBody<T>(
   request: Request,
-  maxBytes = 16_384,
+  maxBytes = 2_097_152,
 ): Promise<T> {
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.startsWith("application/json")) {

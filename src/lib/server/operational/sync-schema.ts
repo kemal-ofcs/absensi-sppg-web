@@ -256,6 +256,37 @@ const settingUpsertPayload = z
   })
   .strict();
 
+const companyProfileUpdatePayload = z
+  .object({
+    id: optionalShortText,
+    company_name: shortText.min(1),
+    branch_name: optionalShortText,
+    logo_url: assetText.nullable().optional(),
+    signature_url: assetText.nullable().optional(),
+    address: optionalLongText,
+    phone: optionalShortText,
+    email: optionalShortText,
+    website: optionalShortText,
+    leader_name: optionalShortText,
+    leader_title: optionalShortText,
+    leader_nip: optionalShortText,
+    card_terms: optionalLongText,
+    timezone: optionalShortText,
+  })
+  .strict();
+
+const idCardTemplateSavePayload = z
+  .object({
+    id: optionalShortText,
+    name: shortText.min(1),
+    orientation: z.enum(["portrait", "landscape"]),
+    front_bg_url: assetText.nullable().optional(),
+    back_bg_url: assetText.nullable().optional(),
+    elements_json: longText.min(2),
+    is_active: optionalNumber,
+  })
+  .strict();
+
 export const operationalSyncEventSchema = z.union([
   eventSchema("employee", "create", employeeCreatePayload),
   eventSchema("employee", "update", employeeUpdatePayload),
@@ -282,6 +313,9 @@ export const operationalSyncEventSchema = z.union([
   eventSchema("holiday", "delete", holidayDeletePayload),
   eventSchema("setting", "upsert", settingUpsertPayload),
   eventSchema("setting", "update", settingUpsertPayload),
+  eventSchema("company-profile", "update", companyProfileUpdatePayload),
+  eventSchema("id-card-template", "save", idCardTemplateSavePayload),
+  eventSchema("id-card-template", "update", idCardTemplateSavePayload),
   eventSchema("attendance", "scan", attendanceScanPayload),
   eventSchema(
     "attendance",

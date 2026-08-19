@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
   try {
     assertSameOriginMutation(request);
     const actor = await requireWebPermission(request, "corrections.manage");
-    const body = await readJsonBody<{ rows?: unknown }>(request, 512 * 1024);
+    const body = await readJsonBody<{ rows?: unknown }>(request, 10_485_760);
     if (
       !Array.isArray(body.rows) ||
       body.rows.length === 0 ||

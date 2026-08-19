@@ -870,5 +870,41 @@ pub fn desktop_set_server_url(
     state.set_server_url(&url)
 }
 
+#[tauri::command]
+pub fn desktop_get_company_profile(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "settings.manage")?;
+    operational::get_company_profile(&state)
+}
+
+#[tauri::command]
+pub fn desktop_update_company_profile(
+    state: State<'_, DesktopState>,
+    profile: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "settings.manage")?;
+    operational::update_company_profile(&state, &profile)
+}
+
+#[tauri::command]
+pub fn desktop_get_id_card_template(
+    state: State<'_, DesktopState>,
+    id: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.manage")?;
+    operational::get_id_card_template(&state, id.as_deref().unwrap_or("default_template"))
+}
+
+#[tauri::command]
+pub fn desktop_save_id_card_template(
+    state: State<'_, DesktopState>,
+    template: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.manage")?;
+    operational::save_id_card_template(&state, &template)
+}
+
+
 
 

@@ -77,6 +77,10 @@ pub fn run() {
             desktop::commands::desktop_trigger_generate_alfa,
             desktop::commands::desktop_get_server_url,
             desktop::commands::desktop_set_server_url,
+            desktop::commands::desktop_get_company_profile,
+            desktop::commands::desktop_update_company_profile,
+            desktop::commands::desktop_get_id_card_template,
+            desktop::commands::desktop_save_id_card_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
