@@ -3,6 +3,27 @@
 version = 3
 
 [[package]]
+name = "absensi_sppg_desktop"
+version = "0.1.0"
+dependencies = [
+ "dotenvy",
+ "hex",
+ "log",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-log",
+ "tauri-plugin-stronghold",
+ "tempfile",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -110,27 +131,6 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
-name = "app"
-version = "0.1.0"
-dependencies = [
- "dotenvy",
- "hex",
- "log",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-log",
- "tauri-plugin-stronghold",
- "tempfile",
- "url",
- "zeroize",
-]
 
 [[package]]
 name = "arrayref"

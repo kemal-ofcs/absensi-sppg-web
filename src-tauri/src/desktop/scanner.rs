@@ -1371,7 +1371,7 @@ fn submit_internal(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Mutex, RwLock};
 
     use reqwest::Client;
     use serde_json::json;
@@ -1408,8 +1408,8 @@ mod tests {
             )
             .expect("fixture seed");
         let state = DesktopState {
-            api_base_url: Url::parse("http://localhost:3000").expect("url"),
-            server_origin: "http://localhost:3000".into(),
+            api_base_url: RwLock::new(Url::parse("http://localhost:3000").expect("url")),
+            server_origin: RwLock::new("http://localhost:3000".to_string()),
             offline_max_age_hours: 24,
             data_dir: directory.path().to_path_buf(),
             http: Client::new(),

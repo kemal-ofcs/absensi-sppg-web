@@ -540,17 +540,18 @@ fn apply_table(
 }
 
 pub fn ensure_client_id(state: &DesktopState) -> Result<String, CommandError> {
+    let server_origin = state.server_origin();
     let connection = storage::database(&state.data_dir)?;
     if let Ok(client_id) = connection.query_row(
         "SELECT client_id FROM desktop_client_identity WHERE server_origin = ?;",
-        [&state.server_origin],
+        [&server_origin],
         |row| row.get(0),
     ) {
         return Ok(client_id);
     }
     let created_at = storage::now_epoch_seconds();
     let mut hasher = Sha256::new();
-    hasher.update(state.server_origin.as_bytes());
+    hasher.update(server_origin.as_bytes());
     hasher.update(state.data_dir.to_string_lossy().as_bytes());
     hasher.update(created_at.to_le_bytes());
     hasher.update(std::process::id().to_le_bytes());
@@ -561,13 +562,13 @@ pub fn ensure_client_id(state: &DesktopState) -> Result<String, CommandError> {
       INSERT OR IGNORE INTO desktop_client_identity (server_origin, client_id, created_at)
       VALUES (?, ?, ?);
       "#,
-            params![state.server_origin, client_id, created_at],
+            params![server_origin, client_id, created_at],
         )
         .map_err(|_| CommandError::internal())?;
     connection
         .query_row(
             "SELECT client_id FROM desktop_client_identity WHERE server_origin = ?;",
-            [&state.server_origin],
+            [&server_origin],
             |row| row.get(0),
         )
         .map_err(|_| CommandError::internal())
@@ -611,9 +612,10 @@ pub fn enqueue(
         .execute(
             r#"
       INSERT INTO desktop_sync_outbox (
-        event_id, client_id, domain, operation, entity_key, payload_json,
-        base_revision, status, attempt_count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?);
+        event_id, client_id, domain, operation, entity_key,
+        payload_json, base_revision, status, attempt_count,
+        next_retry_at, last_error, server_revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?, ?);
       "#,
             params![
                 event_id,
@@ -1197,6 +1199,7 @@ pub fn status(state: &DesktopState) -> Result<DesktopSyncStatus, CommandError> {
             "employees": table_count("master_data"),
             "idCards": table_count("id_card"),
             "shifts": table_count("tbl_shift"),
+            "holidays": table_count("tbl_hari_libur"),
             "settings": table_count("setting_gex_system"),
             "backups": table_count("backup_karyawan"),
             "corrections": table_count("koreksi_admin"),
@@ -1317,7 +1320,7 @@ pub fn clear_failed(state: &DesktopState, event_id: Option<&str>) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Mutex, RwLock};
 
     use reqwest::Client;
     use serde_json::{json, Value};
@@ -1333,8 +1336,8 @@ mod tests {
         let directory = tempdir().expect("temporary directory");
         storage::initialize(directory.path()).expect("local schema");
         let state = DesktopState {
-            api_base_url: Url::parse("http://localhost:3000").expect("url"),
-            server_origin: "http://localhost:3000".into(),
+            api_base_url: RwLock::new(Url::parse("http://localhost:3000").expect("url")),
+            server_origin: RwLock::new("http://localhost:3000".to_string()),
             offline_max_age_hours: 24,
             data_dir: directory.path().to_path_buf(),
             http: Client::new(),

@@ -87,7 +87,8 @@ pub fn provision(
     operator: OperatorUser,
     password: &str,
 ) -> Result<OfflineCredential, CommandError> {
-    let identity_key = identity_key(&state.server_origin, operator.id);
+    let server_origin = state.server_origin();
+    let identity_key = identity_key(&server_origin, operator.id);
     let now = storage::now_epoch_seconds();
     let max_age_seconds = state
         .offline_max_age_hours
@@ -97,7 +98,7 @@ pub fn provision(
     let credential = OfflineCredential {
         version: 1,
         identity_key: identity_key.clone(),
-        server_origin: state.server_origin.clone(),
+        server_origin,
         operator,
         provisioned_at: now,
         offline_valid_until: now.saturating_add(max_age_seconds),
@@ -117,8 +118,9 @@ pub fn load_offline(
     identifier: &str,
     password: &str,
 ) -> Result<OfflineCredential, CommandError> {
+    let server_origin = state.server_origin();
     let identity_key =
-        storage::find_identity_key(&state.data_dir, &state.server_origin, identifier)?.ok_or_else(
+        storage::find_identity_key(&state.data_dir, &server_origin, identifier)?.ok_or_else(
             || {
                 CommandError::new(
         "OFFLINE_NOT_PROVISIONED",
@@ -169,7 +171,7 @@ pub fn load_offline(
     .contains(&normalized_identifier);
     if credential.version != 1
         || credential.identity_key != identity_key
-        || credential.server_origin != state.server_origin
+        || credential.server_origin != server_origin
         || !identifier_matches
     {
         return Err(CommandError::new(
@@ -188,7 +190,7 @@ pub fn load_offline(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Mutex, RwLock};
 
     use reqwest::Client;
     use rusqlite::{params, Connection};
@@ -205,8 +207,8 @@ mod tests {
     fn test_state(directory: &TempDir, origin: &str, hours: u64) -> DesktopState {
         storage::initialize(directory.path()).expect("test schema");
         DesktopState {
-            api_base_url: Url::parse(origin).expect("test origin"),
-            server_origin: origin.to_owned(),
+            api_base_url: RwLock::new(Url::parse(origin).expect("test origin")),
+            server_origin: RwLock::new(origin.to_owned()),
             offline_max_age_hours: hours,
             data_dir: directory.path().to_owned(),
             http: Client::new(),
@@ -289,7 +291,7 @@ mod tests {
                 INSERT INTO desktop_credential_alias (alias, server_origin, identity_key)
                 VALUES (?, ?, ?);
                 "#,
-                params!["attacker", state.server_origin, credential.identity_key],
+                params!["attacker", state.server_origin(), credential.identity_key],
             )
             .expect("tamper local alias");
 
@@ -305,12 +307,12 @@ mod tests {
     fn expired_snapshot_requires_online_login() {
         let directory = TempDir::new().expect("temporary directory");
         let state = test_state(&directory, "https://buyer-a.example", 24);
-        let identity_key = identity_key(&state.server_origin, 7);
+        let identity_key = identity_key(&state.server_origin(), 7);
         let now = storage::now_epoch_seconds();
         let credential = OfflineCredential {
             version: 1,
             identity_key: identity_key.clone(),
-            server_origin: state.server_origin.clone(),
+            server_origin: state.server_origin(),
             operator: test_operator(),
             provisioned_at: now.saturating_sub(7_200),
             offline_valid_until: now.saturating_sub(3_600),

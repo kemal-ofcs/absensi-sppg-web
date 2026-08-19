@@ -28,6 +28,7 @@ import {
   type ScannerSafetySettings,
   saveScannerSafetySettings,
 } from "@/lib/gateways/scanner-settings";
+import { getServerUrl, setServerUrl } from "@/lib/gateways/server-config";
 import {
   clearFailedSync,
   getSyncConflicts,
@@ -52,6 +53,7 @@ const SYNC_TABLE_LABELS = [
   ["employees", "Karyawan"],
   ["idCards", "ID Card"],
   ["shifts", "Shift"],
+  ["holidays", "Hari Libur"],
   ["settings", "Pengaturan"],
   ["backups", "Penugasan backup"],
   ["corrections", "Koreksi"],
@@ -82,6 +84,13 @@ export default function SettingsPage() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [serverUrl, setServerUrlState] = useState<string>(
+    "https://absensi-sppg-seven.vercel.app",
+  );
+  const [serverUrlInput, setServerUrlInput] = useState<string>(
+    "https://absensi-sppg-seven.vercel.app",
+  );
+  const [serverUrlBusy, setServerUrlBusy] = useState(false);
   const [geofence, setGeofence] = useState<GeofenceSettings>({
     enabled: false,
     latitude: 0,
@@ -104,6 +113,23 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!isHydrated || !isAuthenticated) return;
     let cancelled = false;
+
+    if (isDesktopSyncAvailable()) {
+      getServerUrl()
+        .then((url) => {
+          if (!cancelled) {
+            setServerUrlState(url);
+            setServerUrlInput(url);
+          }
+        })
+        .catch(() => undefined);
+
+      getSyncStatus()
+        .then((status) => {
+          if (!cancelled) setSyncStatus(status);
+        })
+        .catch(() => undefined);
+    }
 
     getAutoAlfaSetting()
       .then((enabled) => {
@@ -156,6 +182,31 @@ export default function SettingsPage() {
       cancelled = true;
     };
   }, [isAuthenticated, isHydrated, user?.isSuperadmin]);
+
+  const handleServerUrlSave = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setServerUrlBusy(true);
+    try {
+      const updated = await setServerUrl(serverUrlInput);
+      setServerUrlState(updated);
+      setServerUrlInput(updated);
+      setFeedback({
+        type: "success",
+        message: `URL Server Desktop berhasil diperbarui ke: ${updated}.`,
+      });
+      await refreshSync(false);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal memperbarui URL Server Desktop.",
+      });
+    } finally {
+      setServerUrlBusy(false);
+    }
+  };
 
   const handleAutoAlfaToggle = async (enabled: boolean) => {
     setAutoAlfaBusy(true);
@@ -1044,6 +1095,52 @@ export default function SettingsPage() {
               ) : null}
             </div>
           </div>
+          <div className="mt-6 rounded-2xl border border-sky-500/20 bg-sky-950/20 p-4">
+            <form
+              onSubmit={handleServerUrlSave}
+              className="flex flex-col gap-3 sm:flex-row sm:items-end"
+            >
+              <div className="flex-1 space-y-1.5">
+                <label
+                  htmlFor="desktop-server-url-input"
+                  className="block text-xs font-bold text-sky-200"
+                >
+                  URL Endpoint Server Cloud
+                </label>
+                <input
+                  id="desktop-server-url-input"
+                  type="text"
+                  value={serverUrlInput}
+                  onChange={(e) => setServerUrlInput(e.target.value)}
+                  placeholder="https://absensi-sppg-seven.vercel.app"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-sky-400"
+                />
+                <p className="text-[11px] text-slate-400">
+                  Target server aktif:{" "}
+                  <span className="font-mono text-sky-300">{serverUrl}</span>
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setServerUrlInput("https://absensi-sppg-seven.vercel.app")
+                  }
+                  className="min-h-11 rounded-xl border border-white/10 bg-white/5 px-3 text-xs font-bold text-slate-300 hover:bg-white/10"
+                >
+                  Cloud SPPG
+                </button>
+                <button
+                  type="submit"
+                  disabled={serverUrlBusy}
+                  className="min-h-11 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 shadow-md shadow-sky-950/30 hover:bg-sky-300 disabled:opacity-50"
+                >
+                  {serverUrlBusy ? "Menyimpan..." : "Simpan URL"}
+                </button>
+              </div>
+            </form>
+          </div>
+
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ["Menunggu", syncStatus?.pending ?? 0],

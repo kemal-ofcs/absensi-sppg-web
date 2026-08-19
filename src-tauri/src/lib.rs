@@ -75,6 +75,8 @@ pub fn run() {
             desktop::commands::desktop_get_alfa_settings,
             desktop::commands::desktop_save_alfa_settings,
             desktop::commands::desktop_trigger_generate_alfa,
+            desktop::commands::desktop_get_server_url,
+            desktop::commands::desktop_set_server_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -59,6 +59,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_get_alfa_settings",
     "desktop_save_alfa_settings",
     "desktop_trigger_generate_alfa",
+    "desktop_get_server_url",
+    "desktop_set_server_url",
 ];
 
 fn local_build_values() -> HashMap<String, String> {

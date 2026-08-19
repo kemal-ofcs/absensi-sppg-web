@@ -450,6 +450,27 @@ pub fn audit(path: &Path, operator_id: Option<i64>, event_type: &str, detail: Op
     }
 }
 
+pub fn get_system_setting(path: &Path, key: &str) -> Result<Option<String>, CommandError> {
+    database(path)?
+        .query_row(
+            "SELECT value FROM setting_gex_system WHERE key = ? LIMIT 1;",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())
+}
+
+pub fn set_system_setting(path: &Path, key: &str, value: &str) -> Result<(), CommandError> {
+    database(path)?
+        .execute(
+            "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            params![key, value],
+        )
+        .map_err(|_| CommandError::internal())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

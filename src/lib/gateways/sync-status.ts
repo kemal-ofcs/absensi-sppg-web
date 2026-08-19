@@ -15,6 +15,7 @@ export interface SyncStatus {
     employees: number;
     idCards: number;
     shifts: number;
+    holidays: number;
     settings: number;
     backups: number;
     corrections: number;

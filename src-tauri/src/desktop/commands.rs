@@ -116,7 +116,7 @@ pub fn desktop_get_runtime_status(
     let session = state.session.lock().map_err(|_| CommandError::internal())?;
     Ok(DesktopRuntimeStatus {
         configured: true,
-        server_origin: state.server_origin.clone(),
+        server_origin: state.server_origin(),
         offline_max_age_hours: state.offline_max_age_hours,
         has_active_session: session.is_some(),
         mode: session.as_ref().map(|session| session.mode),
@@ -855,6 +855,19 @@ pub fn desktop_trigger_generate_alfa(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "alfa.trigger")?;
     operational::generate_alfa_harian(&state, simulated_time)
+}
+
+#[tauri::command]
+pub fn desktop_get_server_url(state: State<'_, DesktopState>) -> Result<String, CommandError> {
+    Ok(state.server_origin())
+}
+
+#[tauri::command]
+pub fn desktop_set_server_url(
+    state: State<'_, DesktopState>,
+    url: String,
+) -> Result<String, CommandError> {
+    state.set_server_url(&url)
 }
 
 

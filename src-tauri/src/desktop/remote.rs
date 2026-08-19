@@ -16,7 +16,7 @@ pub enum RemoteLoginError {
 }
 
 fn endpoint(state: &DesktopState, path: &str) -> Result<url::Url, CommandError> {
-    state.api_base_url.join(path).map_err(|_| {
+    state.api_base_url().join(path).map_err(|_| {
         CommandError::new(
             "DESKTOP_CONFIG_INVALID",
             "Endpoint server Desktop tidak valid.",
@@ -41,10 +41,11 @@ pub async fn login(
     password: &str,
 ) -> Result<RemoteLogin, RemoteLoginError> {
     let url = endpoint(state, "/api/auth/login").map_err(RemoteLoginError::Rejected)?;
+    let origin = state.server_origin();
     let response = state
         .http
         .post(url)
-        .header(ORIGIN, state.server_origin.as_str())
+        .header(ORIGIN, origin.as_str())
         .json(&json!({ "username": identifier, "password": password }))
         .send()
         .await
@@ -93,10 +94,11 @@ pub async fn authorized_json(
     let url = endpoint(state, path)?;
     let cookie = HeaderValue::from_str(&format!("sppg_session={token}"))
         .map_err(|_| CommandError::internal())?;
+    let origin = state.server_origin();
     let mut request = state
         .http
         .request(method, url)
-        .header(ORIGIN, state.server_origin.as_str())
+        .header(ORIGIN, origin.as_str())
         .header(COOKIE, cookie);
     if let Some(body) = body {
         request = request.json(&body);

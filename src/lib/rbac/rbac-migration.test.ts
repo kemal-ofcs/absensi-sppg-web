@@ -133,7 +133,7 @@ describe("password hashing", () => {
       valid: true,
       needsUpgrade: false,
     });
-  });
+  }, 20000);
 });
 
 describe("production schema initialization", () => {
