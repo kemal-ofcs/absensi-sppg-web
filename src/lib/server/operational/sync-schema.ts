@@ -221,6 +221,7 @@ function eventSchema<Domain extends string, Operation extends string>(
 
 const holidayCreatePayload = z
   .object({
+    id_libur: optionalNumber,
     tanggal: shortText.min(1),
     nama_libur: shortText.min(1),
     jenis_libur: optionalShortText,
@@ -237,6 +238,21 @@ const holidayUpdatePayload = z
     jenis_libur: optionalShortText,
     keterangan: optionalLongText,
     status_aktif: optionalNumber,
+  })
+  .strict();
+
+const holidayDeletePayload = z
+  .object({
+    id_libur: optionalNumber,
+    tanggal: optionalShortText,
+    nama_libur: optionalShortText,
+  })
+  .strict();
+
+const settingUpsertPayload = z
+  .object({
+    key: shortText.min(1),
+    value: longText,
   })
   .strict();
 
@@ -263,11 +279,9 @@ export const operationalSyncEventSchema = z.union([
   eventSchema("shift", "delete", z.object({ id_shift: finiteNumber }).strict()),
   eventSchema("holiday", "create", holidayCreatePayload),
   eventSchema("holiday", "update", holidayUpdatePayload),
-  eventSchema(
-    "holiday",
-    "delete",
-    z.object({ id_libur: optionalNumber, tanggal: optionalShortText }).strict(),
-  ),
+  eventSchema("holiday", "delete", holidayDeletePayload),
+  eventSchema("setting", "upsert", settingUpsertPayload),
+  eventSchema("setting", "update", settingUpsertPayload),
   eventSchema("attendance", "scan", attendanceScanPayload),
   eventSchema(
     "attendance",

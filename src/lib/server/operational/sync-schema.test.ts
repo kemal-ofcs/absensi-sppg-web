@@ -28,6 +28,39 @@ describe("operational sync schema", () => {
     expect(operationalSyncEventSchema.safeParse(shiftEvent()).success).toBe(
       true,
     );
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "holiday",
+        operation: "create",
+        entityKey: "2026-08-17",
+        payload: {
+          id_libur: -1,
+          tanggal: "2026-08-17",
+          nama_libur: "Hari Kemerdekaan RI",
+          jenis_libur: "Libur Nasional",
+          status_aktif: 1,
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "setting",
+        operation: "upsert",
+        entityKey: "auto_alfa_aktif",
+        payload: {
+          key: "auto_alfa_aktif",
+          value: "true",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
   });
 
   test("menolak null, primitive, domain, dan operasi yang tidak didukung", () => {

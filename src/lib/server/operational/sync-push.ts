@@ -29,6 +29,7 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   "offline-import": "corrections.manage",
   "id-card": "employees.manage",
   "log-scan": "history.delete",
+  setting: "settings.manage",
 };
 
 function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
@@ -1472,6 +1473,26 @@ async function applyIdCard(
   return { revision, payload: { id_unik: event.entityKey } };
 }
 
+async function applySetting(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  const key = text(payload, "key") || event.entityKey;
+  const value =
+    typeof payload.value === "string"
+      ? payload.value
+      : String(payload.value ?? "");
+  await transaction.execute({
+    sql: `INSERT INTO setting_gex_system (key, value) VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+    args: [key, value],
+  });
+  const revision = await appendChange(transaction, actor, event, payload);
+  return { revision, payload: { key, value } };
+}
+
 async function applyEvent(
   transaction: Transaction,
   actor: OperatorUser,
@@ -1483,6 +1504,8 @@ async function applyEvent(
   if (event.domain === "shift") return applyShift(transaction, actor, event);
   if (event.domain === "holiday")
     return applyHoliday(transaction, actor, event);
+  if (event.domain === "setting")
+    return applySetting(transaction, actor, event);
   if (event.domain === "attendance") {
     return applyAttendance(transaction, actor, event);
   }

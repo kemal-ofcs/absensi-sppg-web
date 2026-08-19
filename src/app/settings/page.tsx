@@ -1095,18 +1095,64 @@ export default function SettingsPage() {
               ) : null}
             </div>
           </div>
-          <div className="mt-6 rounded-2xl border border-sky-500/20 bg-sky-950/20 p-4">
-            <form
-              onSubmit={handleServerUrlSave}
-              className="flex flex-col gap-3 sm:flex-row sm:items-end"
-            >
-              <div className="flex-1 space-y-1.5">
+          <div className="mt-6 rounded-2xl border border-sky-500/20 bg-sky-950/20 p-5">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
                 <label
                   htmlFor="desktop-server-url-input"
                   className="block text-xs font-bold text-sky-200"
                 >
                   URL Endpoint Server Cloud
                 </label>
+                <p className="mt-0.5 text-[11px] text-slate-400">
+                  Target server aktif:{" "}
+                  <span className="font-mono font-bold text-sky-300">
+                    {serverUrl}
+                  </span>
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-400">
+                  Pilihan cepat:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerUrlInput("https://absensi-sppg-seven.vercel.app");
+                    setFeedback({
+                      type: "success",
+                      message:
+                        "Preset Cloud SPPG (Vercel) dipilih. Klik tombol 'Simpan URL' untuk menerapkan ke sistem.",
+                    });
+                  }}
+                  className="rounded-lg border border-sky-400/30 bg-sky-500/10 px-2.5 py-1 text-xs font-bold text-sky-200 transition hover:bg-sky-500/20 active:scale-95"
+                  title="Isi otomatis dengan URL server Cloud SPPG di Vercel"
+                >
+                  Cloud SPPG (Vercel)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerUrlInput("http://localhost:3000");
+                    setFeedback({
+                      type: "success",
+                      message:
+                        "Preset Localhost (:3000) dipilih. Klik tombol 'Simpan URL' untuk menerapkan ke sistem.",
+                    });
+                  }}
+                  className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-bold text-slate-300 transition hover:bg-white/10 active:scale-95"
+                  title="Isi otomatis dengan server lokal pengujian (port 3000)"
+                >
+                  Localhost
+                </button>
+              </div>
+            </div>
+
+            <form
+              onSubmit={handleServerUrlSave}
+              className="flex flex-col gap-3 sm:flex-row sm:items-center"
+            >
+              <div className="flex-1">
                 <input
                   id="desktop-server-url-input"
                   type="text"
@@ -1115,29 +1161,15 @@ export default function SettingsPage() {
                   placeholder="https://absensi-sppg-seven.vercel.app"
                   className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-sky-400"
                 />
-                <p className="text-[11px] text-slate-400">
-                  Target server aktif:{" "}
-                  <span className="font-mono text-sky-300">{serverUrl}</span>
-                </p>
               </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setServerUrlInput("https://absensi-sppg-seven.vercel.app")
-                  }
-                  className="min-h-11 rounded-xl border border-white/10 bg-white/5 px-3 text-xs font-bold text-slate-300 hover:bg-white/10"
-                >
-                  Cloud SPPG
-                </button>
-                <button
-                  type="submit"
-                  disabled={serverUrlBusy}
-                  className="min-h-11 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 shadow-md shadow-sky-950/30 hover:bg-sky-300 disabled:opacity-50"
-                >
-                  {serverUrlBusy ? "Menyimpan..." : "Simpan URL"}
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={serverUrlBusy}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 shadow-md shadow-sky-950/30 transition hover:bg-sky-300 disabled:opacity-50 shrink-0"
+              >
+                <Icon name="check" className="size-4" />
+                <span>{serverUrlBusy ? "Menyimpan..." : "Simpan URL"}</span>
+              </button>
             </form>
           </div>
 
