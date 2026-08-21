@@ -102,25 +102,40 @@ export default function MasterOperatorPage() {
     | null
   >(null);
 
-  const loadData = useCallback(async () => {
-    if (!user?.isSuperadmin) return;
-    setLoading(true);
-    try {
-      const [operatorData, roleData] = await Promise.all([
-        getMasterOperators(user.id),
-        getRoleRecords(user.id),
-      ]);
-      setOperators(operatorData);
-      setRoles(roleData);
-    } catch (error) {
-      setFeedback({ tone: "error", message: errorMessage(error) });
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+  const loadData = useCallback(
+    async (silent = false) => {
+      if (!user?.isSuperadmin) return;
+      if (!silent) setLoading(true);
+      try {
+        const [operatorData, roleData] = await Promise.all([
+          getMasterOperators(user.id),
+          getRoleRecords(user.id),
+        ]);
+        setOperators(operatorData);
+        setRoles(roleData);
+      } catch (error) {
+        if (!silent) {
+          setFeedback({ tone: "error", message: errorMessage(error) });
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [user],
+  );
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      void loadData(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
   }, [loadData]);
 
   const openNewOperator = () => {
@@ -433,14 +448,18 @@ function OperatorFormModal({
           />
         </FormField>
         <FormField
-          label={editingOperator ? "Password baru (opsional)" : "Password"}
+          label={
+            editingOperator
+              ? "Password baru (opsional, min. 8 karakter)"
+              : "Password (min. 8 karakter)"
+          }
           htmlFor="operator-password"
         >
           <input
             id="operator-password"
             type="password"
             required={!editingOperator}
-            minLength={12}
+            minLength={8}
             autoComplete="new-password"
             value={draft.password}
             onChange={(event) =>

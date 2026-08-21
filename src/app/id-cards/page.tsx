@@ -14,8 +14,7 @@ import { saveFileWithPicker } from "@/lib/client/download";
 import {
   drawIdCardToCanvas,
   preloadCardAssets,
-  printA4GridSheet,
-  printSingleCard,
+  printCardsDirectly,
   renderIdCardSideToCanvas,
 } from "@/lib/client/id-card-renderer";
 import { formatBytes, optimizeImageFile } from "@/lib/client/image-optimizer";
@@ -200,14 +199,21 @@ export default function IdCardsPage() {
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile | null>(
     null,
   );
-  const [template, setTemplate] = useState<IdCardTemplateConfig | null>(null);
+  const [template, setTemplate] = useState<IdCardTemplateConfig>({
+    id: "default_template",
+    name: "Template Standar SPPG",
+    orientation: "landscape",
+    frontBgUrl: "",
+    backBgUrl: "",
+    elements: DEFAULT_ID_CARD_ELEMENTS,
+    isActive: true,
+  });
 
   // Selection for Batch
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // UI / Feedback
   const [workingId, setWorkingId] = useState<string | null>(null);
-  const [batchBusy, setBatchBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -239,50 +245,91 @@ export default function IdCardsPage() {
     useState<string>("Teks Kustom SPPG");
   const builderCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Batch Print Modal
-  const [batchModalOpen, setBatchModalOpen] = useState(false);
-  const [batchPrintMode, setBatchPrintMode] = useState<
+  // Unified Print Modal State (Single or Batch)
+  const [printModalOpen, setPrintModalOpen] = useState(false);
+  const [printTargetRows, setPrintTargetRows] = useState<
+    Record<string, unknown>[]
+  >([]);
+  const [printLayout, setPrintLayout] = useState<"cr80" | "a4_sheet">("cr80");
+  const [printMode, setPrintMode] = useState<
     "front_only" | "back_only" | "duplex"
-  >("front_only");
-  const [batchPrintType, setBatchPrintType] = useState<"cr80" | "a4_sheet">(
-    "a4_sheet",
-  );
+  >("duplex");
+  const [printBusy, setPrintBusy] = useState(false);
+
+  // Filename customizer for Preview Modal
+  const [customFilename, setCustomFilename] = useState("");
+
+  // Canvas Element Drag & Drop State
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{
+    elementId: string;
+    startClientX: number;
+    startClientY: number;
+    initialX: number;
+    initialY: number;
+  } | null>(null);
 
   // Load Data
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [cardsRes, companyRes, templateRes] = await Promise.all([
-        getDaftarIdCard({
-          search: search.trim() || undefined,
-          status: statusFilter === "all" ? undefined : statusFilter,
-        }),
-        getCompanyProfile().catch(() => null),
-        getIdCardTemplate().catch(() => null),
-      ]);
-      setRows(cardsRes);
-      if (companyRes) setCompanyProfile(companyRes);
-      if (templateRes) {
-        setTemplate((prev) => prev || templateRes);
-        if (templateRes.elements.length > 0) {
-          setSelectedElementId((prev) => prev || templateRes.elements[0].id);
+  const loadData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const [cardsRes, companyRes, templateRes] = await Promise.all([
+          getDaftarIdCard({
+            search: search.trim() || undefined,
+            status: statusFilter === "all" ? undefined : statusFilter,
+          }),
+          getCompanyProfile().catch(() => null),
+          getIdCardTemplate().catch(() => null),
+        ]);
+        setRows(cardsRes);
+        if (companyRes) setCompanyProfile(companyRes);
+        if (templateRes) {
+          const safeElements =
+            Array.isArray(templateRes.elements) &&
+            templateRes.elements.length > 0
+              ? templateRes.elements
+              : DEFAULT_ID_CARD_ELEMENTS;
+          const safeTemplate: IdCardTemplateConfig = {
+            ...templateRes,
+            elements: safeElements,
+          };
+          setTemplate(safeTemplate);
+          if (safeElements.length > 0) {
+            setSelectedElementId((prev) => prev || safeElements[0].id);
+          }
         }
+      } catch (cause) {
+        if (!silent) {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Gagal memuat data ID card.",
+          );
+        }
+      } finally {
+        if (!silent) setLoading(false);
       }
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Gagal memuat data ID card.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [search, statusFilter]);
+    },
+    [search, statusFilter],
+  );
 
   useEffect(() => {
     if (hydrated && isAuthenticated && canAccessArea(user, "idcards")) {
       void loadData();
     }
   }, [hydrated, isAuthenticated, user, loadData]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      void loadData(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [loadData]);
 
   // Filtered rows
   const filteredRows = useMemo(() => {
@@ -364,6 +411,17 @@ export default function IdCardsPage() {
     };
   }, [previewEmployee, template, companyProfile]);
 
+  // Set default filename when preview employee opens
+  useEffect(() => {
+    if (previewEmployee) {
+      const nama = String(
+        previewEmployee.nama || previewEmployee.id_unik || "karyawan",
+      );
+      const safeNama = nama.replace(/[/\\?%*:|"<>]/g, "-").trim();
+      setCustomFilename(`id-card-${safeNama}`);
+    }
+  }, [previewEmployee]);
+
   // Preload template assets for instant 60fps canvas drawing
   useEffect(() => {
     if (!template) return;
@@ -425,6 +483,7 @@ export default function IdCardsPage() {
   const handleSaveSinglePng = async (
     row: Record<string, unknown>,
     side: CardSide = "front",
+    overrideFilename?: string,
   ) => {
     if (!template) return;
     const id = String(row.id_unik);
@@ -439,14 +498,15 @@ export default function IdCardsPage() {
       });
 
       const safeNama = nama.replace(/[/\\?%*:|"<>]/g, "-").trim();
-      const res = await saveFileWithPicker(
-        pngUrl,
-        `id-card-${safeNama}-${side}.png`,
-        {
-          description: `Gambar ID Card (${side.toUpperCase()})`,
-          accept: { "image/png": [".png"] },
-        },
-      );
+      const defaultName = overrideFilename || `id-card-${safeNama}-${side}.png`;
+      const finalFilename = defaultName.endsWith(".png")
+        ? defaultName
+        : `${defaultName}.png`;
+
+      const res = await saveFileWithPicker(pngUrl, finalFilename, {
+        description: `Gambar ID Card (${side.toUpperCase()})`,
+        accept: { "image/png": [".png"] },
+      });
 
       if (!res.cancelled) {
         await updateStatusIdCard({
@@ -454,68 +514,68 @@ export default function IdCardsPage() {
           idcard_status: "Berhasil",
           idcard_catatan: `PNG (${side}) disimpan`,
         });
-        setMessage(`ID card ${nama} (${side}) berhasil disimpan.`);
+        const destNote = res.path ? ` (${res.path})` : "";
+        setMessage(
+          `ID card ${nama} (${side}) berhasil diunduh & disimpan${destNote}.`,
+        );
         await loadData();
       }
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "ID card gagal dibuat.",
+        cause instanceof Error ? cause.message : "ID card gagal diunduh.",
       );
     } finally {
       setWorkingId(null);
     }
   };
 
-  // Single card action: Direct Print CR80
-  const handlePrintSingleDirect = async (row: Record<string, unknown>) => {
+  // Download both front and back
+  const handleSaveBothPng = async (
+    row: Record<string, unknown>,
+    baseName?: string,
+  ) => {
     if (!template) return;
-    const id = String(row.id_unik);
-    const nama = String(row.nama || id);
-    setWorkingId(id);
-    try {
-      const frontPng = await renderIdCardSideToCanvas({
-        template,
-        side: "front",
-        employee: row,
-        company: companyProfile,
-      });
-      printSingleCard(frontPng, `ID Card - ${nama}`);
-      await updateStatusIdCard({
-        id_unik: id,
-        idcard_status: "Berhasil",
-        idcard_catatan: "Dicetak langsung dari aplikasi",
-      });
-      setMessage(`ID card ${nama} dikirim ke pencetakan.`);
-      await loadData();
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "ID card gagal dicetak.",
-      );
-    } finally {
-      setWorkingId(null);
-    }
+    const nama = String(row.nama || row.id_unik || "karyawan");
+    const safeNama = nama.replace(/[/\\?%*:|"<>]/g, "-").trim();
+    const prefix = baseName || `id-card-${safeNama}`;
+
+    await handleSaveSinglePng(row, "front", `${prefix}-depan.png`);
+    await handleSaveSinglePng(row, "back", `${prefix}-belakang.png`);
   };
 
-  // Batch Print Execution
-  const handleExecuteBatchPrint = async () => {
-    if (!template) return;
-    const targetRows = rows.filter((r) => selectedIds.has(String(r.id_unik)));
-    if (targetRows.length === 0) return;
+  // Open Print Modal for a Single Employee
+  const handleOpenPrintSingle = (row: Record<string, unknown>) => {
+    setPrintTargetRows([row]);
+    setPrintLayout("cr80");
+    setPrintMode("duplex");
+    setPrintModalOpen(true);
+  };
 
-    setBatchBusy(true);
-    setBatchModalOpen(false);
-    setMessage(
-      `Sedang menyiapkan pencetakan untuk ${targetRows.length} kartu...`,
-    );
+  // Open Print Modal for Multiple Selected Employees
+  const handleOpenPrintBatch = () => {
+    const targets = rows.filter((r) => selectedIds.has(String(r.id_unik)));
+    if (targets.length === 0) return;
+    setPrintTargetRows(targets);
+    setPrintLayout("a4_sheet");
+    setPrintMode("front_only");
+    setPrintModalOpen(true);
+  };
 
+  // Execute Print using in-DOM high-res print engine
+  const handleExecutePrint = async () => {
+    if (!template || printTargetRows.length === 0) return;
+    setPrintBusy(true);
     try {
+      setMessage(
+        `Sedang menyiapkan pencetakan untuk ${printTargetRows.length} ID card...`,
+      );
       const renderedCards: {
         frontPng: string;
         backPng?: string;
         name: string;
       }[] = [];
 
-      for (const row of targetRows) {
+      for (const row of printTargetRows) {
         const frontPng = await renderIdCardSideToCanvas({
           template,
           side: "front",
@@ -524,7 +584,7 @@ export default function IdCardsPage() {
         });
 
         let backPng: string | undefined;
-        if (batchPrintMode === "back_only" || batchPrintMode === "duplex") {
+        if (printMode === "back_only" || printMode === "duplex") {
           backPng = await renderIdCardSideToCanvas({
             template,
             side: "back",
@@ -539,33 +599,36 @@ export default function IdCardsPage() {
           name: String(row.nama || row.id_unik),
         });
 
-        // Update status
         await updateStatusIdCard({
           id_unik: String(row.id_unik),
           idcard_status: "Berhasil",
-          idcard_catatan: `Batch Print (${batchPrintMode})`,
+          idcard_catatan: `Dicetak (${printLayout === "cr80" ? "CR80" : "A4"} - ${printMode})`,
         });
       }
 
-      if (batchPrintType === "a4_sheet") {
-        printA4GridSheet(renderedCards, batchPrintMode);
-      } else {
-        // Direct print first one or loop
-        if (renderedCards[0]) {
-          printSingleCard(renderedCards[0].frontPng, "Batch ID Cards");
-        }
-      }
+      printCardsDirectly(renderedCards, {
+        layout: printLayout,
+        mode: printMode,
+        orientation: template.orientation,
+        title:
+          printTargetRows.length === 1
+            ? `ID Card - ${String(printTargetRows[0]?.nama || "Karyawan")}`
+            : "Cetak Lembar ID Card SPPG",
+      });
 
-      setMessage(`Pencetakan ${targetRows.length} ID card berhasil disiapkan!`);
+      setPrintModalOpen(false);
+      setMessage(
+        `Pencetakan ${printTargetRows.length} ID card berhasil disiapkan & dibuka ke printer.`,
+      );
       await loadData();
     } catch (cause) {
       setError(
         cause instanceof Error
           ? cause.message
-          : "Gagal mencetak batch ID card.",
+          : "Gagal memproses pencetakan ID card.",
       );
     } finally {
-      setBatchBusy(false);
+      setPrintBusy(false);
     }
   };
 
@@ -631,68 +694,193 @@ export default function IdCardsPage() {
     }
   };
 
-  const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+  // Canvas Element Hit Testing & Drag-and-Drop
+  const getElementAtCoords = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = builderCanvasRef.current;
+      if (!canvas || !template) return null;
+
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return null;
+
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const clickX = (clientX - rect.left) * scaleX;
+      const clickY = (clientY - rect.top) * scaleY;
+
+      const currentElements = (template.elements || []).filter(
+        (el) => el.side === builderSide && el.visible !== false,
+      );
+      const fontMultiplier = canvas.width / 360;
+
+      for (let i = currentElements.length - 1; i >= 0; i--) {
+        const el = currentElements[i];
+        const elX = (el.x / 100) * canvas.width;
+        const elY = (el.y / 100) * canvas.height;
+        const fontSizePx = Math.max(
+          10,
+          Math.round(el.fontSize * fontMultiplier),
+        );
+
+        let boxW = el.width ? (el.width / 100) * canvas.width : 0;
+        let boxH = el.height ? (el.height / 100) * canvas.height : 0;
+
+        if (el.type === "qr_code") {
+          boxW = boxW > 0 ? boxW : 180;
+          boxH = boxH > 0 ? boxH : 180;
+        } else if (el.type === "company_logo" || el.type === "photo") {
+          boxW = boxW > 0 ? boxW : 100;
+          boxH = boxH > 0 ? boxH : 100;
+        } else {
+          if (boxW === 0) {
+            boxW = Math.min(canvas.width - elX - 10, fontSizePx * 10);
+          }
+          if (boxH === 0) {
+            boxH = fontSizePx * 1.5;
+          }
+        }
+
+        let drawX = elX;
+        if (el.textAlign === "center") {
+          drawX = elX - boxW / 2;
+        } else if (el.textAlign === "right") {
+          drawX = elX - boxW;
+        }
+
+        if (
+          clickX >= drawX - 10 &&
+          clickX <= drawX + boxW + 10 &&
+          clickY >= elY - 10 &&
+          clickY <= elY + boxH + 10
+        ) {
+          return el;
+        }
+      }
+      return null;
+    },
+    [template, builderSide],
+  );
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const el = getElementAtCoords(e.clientX, e.clientY);
+    if (el) {
+      setSelectedElementId(el.id);
+      dragStartRef.current = {
+        elementId: el.id,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        initialX: el.x,
+        initialY: el.y,
+      };
+      setIsDragging(true);
+    } else {
+      setSelectedElementId(null);
+    }
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = builderCanvasRef.current;
     if (!canvas || !template) return;
+
+    if (isDragging && dragStartRef.current) {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+
+      const deltaXPercent =
+        ((e.clientX - dragStartRef.current.startClientX) / rect.width) * 100;
+      const deltaYPercent =
+        ((e.clientY - dragStartRef.current.startClientY) / rect.height) * 100;
+
+      const newX = Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round((dragStartRef.current.initialX + deltaXPercent) * 10) / 10,
+        ),
+      );
+      const newY = Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round((dragStartRef.current.initialY + deltaYPercent) * 10) / 10,
+        ),
+      );
+
+      setTemplate((prev) => ({
+        ...prev,
+        elements: prev.elements.map((elem) =>
+          elem.id === dragStartRef.current?.elementId
+            ? { ...elem, x: newX, y: newY }
+            : elem,
+        ),
+      }));
+    } else {
+      const el = getElementAtCoords(e.clientX, e.clientY);
+      canvas.style.cursor = el ? "grab" : "default";
+    }
+  };
+
+  const handleCanvasMouseUp = () => {
+    setIsDragging(false);
+    dragStartRef.current = null;
+    const canvas = builderCanvasRef.current;
+    if (canvas) canvas.style.cursor = "default";
+  };
+
+  const handleCanvasTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const el = getElementAtCoords(touch.clientX, touch.clientY);
+    if (el) {
+      setSelectedElementId(el.id);
+      dragStartRef.current = {
+        elementId: el.id,
+        startClientX: touch.clientX,
+        startClientY: touch.clientY,
+        initialX: el.x,
+        initialY: el.y,
+      };
+      setIsDragging(true);
+    }
+  };
+
+  const handleCanvasTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const touch = e.touches[0];
+    const canvas = builderCanvasRef.current;
+    if (!touch || !canvas || !template || !isDragging || !dragStartRef.current)
+      return;
 
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
 
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const clickX = (event.clientX - rect.left) * scaleX;
-    const clickY = (event.clientY - rect.top) * scaleY;
+    const deltaXPercent =
+      ((touch.clientX - dragStartRef.current.startClientX) / rect.width) * 100;
+    const deltaYPercent =
+      ((touch.clientY - dragStartRef.current.startClientY) / rect.height) * 100;
 
-    // Filter elemen aktif pada sisi builder saat ini
-    const currentElements = (template.elements || []).filter(
-      (el) => el.side === builderSide && el.visible !== false,
+    const newX = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round((dragStartRef.current.initialX + deltaXPercent) * 10) / 10,
+      ),
+    );
+    const newY = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round((dragStartRef.current.initialY + deltaYPercent) * 10) / 10,
+      ),
     );
 
-    const fontMultiplier = canvas.width / 360;
-
-    // Loop terbalik (elemen yang berada di layer paling atas dicek terlebih dahulu)
-    for (let i = currentElements.length - 1; i >= 0; i--) {
-      const el = currentElements[i];
-      const elX = (el.x / 100) * canvas.width;
-      const elY = (el.y / 100) * canvas.height;
-      const fontSizePx = Math.max(10, Math.round(el.fontSize * fontMultiplier));
-
-      let boxW = el.width ? (el.width / 100) * canvas.width : 0;
-      let boxH = el.height ? (el.height / 100) * canvas.height : 0;
-
-      if (el.type === "qr_code") {
-        boxW = boxW > 0 ? boxW : 180;
-        boxH = boxH > 0 ? boxH : 180;
-      } else if (el.type === "company_logo" || el.type === "photo") {
-        boxW = boxW > 0 ? boxW : 100;
-        boxH = boxH > 0 ? boxH : 100;
-      } else {
-        if (boxW === 0) {
-          boxW = Math.min(canvas.width - elX - 10, fontSizePx * 10);
-        }
-        if (boxH === 0) {
-          boxH = fontSizePx * 1.5;
-        }
-      }
-
-      let drawX = elX;
-      if (el.textAlign === "center") {
-        drawX = elX - boxW / 2;
-      } else if (el.textAlign === "right") {
-        drawX = elX - boxW;
-      }
-
-      // Hit-test dengan toleransi klik 6px
-      if (
-        clickX >= drawX - 6 &&
-        clickX <= drawX + boxW + 6 &&
-        clickY >= elY - 6 &&
-        clickY <= elY + boxH + 6
-      ) {
-        setSelectedElementId(el.id);
-        return;
-      }
-    }
+    setTemplate((prev) => ({
+      ...prev,
+      elements: prev.elements.map((elem) =>
+        elem.id === dragStartRef.current?.elementId
+          ? { ...elem, x: newX, y: newY }
+          : elem,
+      ),
+    }));
   };
 
   const handleUpdateSelectedElement = (updates: Partial<IdCardElement>) => {
@@ -899,12 +1087,12 @@ export default function IdCardsPage() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setBatchModalOpen(true)}
-                  disabled={batchBusy}
+                  onClick={handleOpenPrintBatch}
+                  disabled={printBusy}
                   className="rounded-xl bg-sky-400 px-4 py-2 text-xs font-black text-slate-950 shadow-md hover:bg-sky-300 disabled:opacity-50 inline-flex items-center gap-2"
                 >
                   <Icon name="scanner" className="size-3.5" />
-                  <span>Cetak Pilihan (Batch)</span>
+                  <span>Cetak Pilihan ({selectedIds.size})</span>
                 </button>
                 <button
                   type="button"
@@ -1014,7 +1202,7 @@ export default function IdCardsPage() {
                       <button
                         type="button"
                         disabled={isWorking}
-                        onClick={() => handlePrintSingleDirect(row)}
+                        onClick={() => handleOpenPrintSingle(row)}
                         className="rounded-xl bg-sky-400 px-3.5 py-2 text-xs font-black text-slate-950 hover:bg-sky-300 disabled:opacity-50 transition"
                       >
                         {isWorking ? "..." : "Cetak"}
@@ -1094,15 +1282,24 @@ export default function IdCardsPage() {
               >
                 <canvas
                   ref={builderCanvasRef}
-                  onClick={handleCanvasClick}
-                  className="size-full object-contain bg-slate-900 cursor-pointer"
-                  title="Klik elemen mana saja pada kartu untuk langsung memilih & mengeditnya"
+                  onMouseDown={handleCanvasMouseDown}
+                  onMouseMove={handleCanvasMouseMove}
+                  onMouseUp={handleCanvasMouseUp}
+                  onMouseLeave={handleCanvasMouseUp}
+                  onTouchStart={handleCanvasTouchStart}
+                  onTouchMove={handleCanvasTouchMove}
+                  onTouchEnd={handleCanvasMouseUp}
+                  className="size-full object-contain bg-slate-900 select-none cursor-pointer"
+                  title="Klik & geser langsung elemen mana saja pada kartu untuk memindahkannya"
                 />
               </div>
               <div className="mt-2 text-center text-[11px] text-slate-400">
-                💡 <span className="font-semibold text-slate-300">Tips:</span>{" "}
-                Klik langsung teks, foto, atau QR code di kartu untuk
-                memilihnya.
+                💡{" "}
+                <span className="font-semibold text-slate-300">
+                  Fitur Interaktif:
+                </span>{" "}
+                Klik dan geser (*drag & drop*) langsung teks, foto, logo, atau
+                QR code di atas kartu untuk memindahkannya secara realtime.
               </div>
             </div>
 
@@ -1938,7 +2135,7 @@ export default function IdCardsPage() {
           onClose={() => setPreviewEmployee(null)}
           title={`Kartu Identitas - ${String(previewEmployee.nama)}`}
         >
-          <div className="space-y-6">
+          <div className="space-y-5">
             <div className="flex items-center justify-center gap-2">
               <button
                 type="button"
@@ -1970,50 +2167,121 @@ export default function IdCardsPage() {
                   Me-render kartu resolusi tinggi...
                 </div>
               ) : (
+                  previewSide === "front"
+                    ? previewFrontUrl
+                    : previewBackUrl
+                ) ? (
                 /* biome-ignore lint/performance/noImgElement: Data URL preview */
                 <img
                   src={
                     (previewSide === "front"
                       ? previewFrontUrl
-                      : previewBackUrl) || ""
+                      : previewBackUrl) as string
                   }
                   alt="Kartu Identitas"
                   className="max-h-[320px] max-w-full rounded-xl shadow-2xl border border-white/20"
                 />
+              ) : (
+                <div className="text-xs text-slate-500 font-medium">
+                  Pratinjau kartu sedang diproses...
+                </div>
               )}
             </div>
 
-            <div className="flex flex-wrap gap-2 pt-2">
+            {/* Custom Filename Input */}
+            <div className="space-y-1.5 rounded-2xl border border-white/10 bg-slate-950/80 p-3.5">
+              <label
+                htmlFor="id-card-filename"
+                className="text-xs font-bold text-slate-300"
+              >
+                Nama File Unduhan:
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="id-card-filename"
+                  type="text"
+                  value={customFilename}
+                  onChange={(e) => setCustomFilename(e.target.value)}
+                  placeholder="Contoh: id-card-ahmad-fitrianto"
+                  className="min-h-9 flex-1 rounded-xl border border-white/10 bg-slate-900 px-3 text-xs text-white outline-none focus:border-sky-400"
+                />
+                <span className="font-mono text-xs text-slate-400">
+                  -{previewSide}.png
+                </span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => handlePrintSingleDirect(previewEmployee)}
-                className="flex-1 rounded-xl bg-sky-400 py-2.5 text-xs font-black text-slate-950 hover:bg-sky-300 inline-flex items-center justify-center gap-2"
+                onClick={() =>
+                  handleSaveSinglePng(
+                    previewEmployee,
+                    "front",
+                    customFilename ? `${customFilename}-depan.png` : undefined,
+                  )
+                }
+                className="rounded-xl border border-sky-400/40 bg-sky-500/10 px-3 py-2.5 text-xs font-bold text-sky-300 hover:bg-sky-500/20 transition flex items-center justify-center gap-1.5"
               >
-                <Icon name="scanner" className="size-4" />
-                <span>Cetak Kartu CR80</span>
+                <Icon name="download" className="size-3.5" />
+                <span>Unduh PNG (Depan)</span>
               </button>
               <button
                 type="button"
                 onClick={() =>
-                  handleSaveSinglePng(previewEmployee, previewSide)
+                  handleSaveSinglePng(
+                    previewEmployee,
+                    "back",
+                    customFilename
+                      ? `${customFilename}-belakang.png`
+                      : undefined,
+                  )
                 }
-                className="rounded-xl border border-white/10 bg-slate-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-700"
+                className="rounded-xl border border-sky-400/40 bg-sky-500/10 px-3 py-2.5 text-xs font-bold text-sky-300 hover:bg-sky-500/20 transition flex items-center justify-center gap-1.5"
               >
-                Unduh PNG ({previewSide.toUpperCase()})
+                <Icon name="download" className="size-3.5" />
+                <span>Unduh PNG (Belakang)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleSaveBothPng(
+                    previewEmployee,
+                    customFilename || undefined,
+                  )
+                }
+                className="rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/20 transition flex items-center justify-center gap-1.5"
+              >
+                <Icon name="download" className="size-3.5" />
+                <span>Unduh Keduanya (PNG)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOpenPrintSingle(previewEmployee)}
+                className="rounded-xl bg-sky-400 px-3 py-2.5 text-xs font-black text-slate-950 hover:bg-sky-300 transition flex items-center justify-center gap-1.5 shadow"
+              >
+                <Icon name="scanner" className="size-4" />
+                <span>Cetak Kartu</span>
               </button>
             </div>
           </div>
         </Modal>
       ) : null}
 
-      {/* BATCH PRINT MODAL */}
-      {batchModalOpen ? (
+      {/* UNIFIED PRINT MODAL (SINGLE & BATCH) */}
+      {printModalOpen ? (
         <Modal
-          titleId="batch-print-dialog"
-          onClose={() => setBatchModalOpen(false)}
-          title={`Cetak Massal (${selectedIds.size} Kartu Karyawan)`}
+          titleId="print-card-dialog"
+          onClose={() => setPrintModalOpen(false)}
+          title={
+            printTargetRows.length === 1
+              ? `Cetak ID Card - ${String(printTargetRows[0].nama || "Karyawan")}`
+              : `Cetak Massal (${printTargetRows.length} Kartu Karyawan)`
+          }
         >
           <div className="space-y-5">
+            {/* Format Lembar Cetak */}
             <div className="space-y-2">
               <div className="text-xs font-bold text-slate-300">
                 1. Format Lembar Cetak
@@ -2021,36 +2289,44 @@ export default function IdCardsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => setBatchPrintType("a4_sheet")}
+                  onClick={() => setPrintLayout("cr80")}
                   className={`rounded-2xl border p-4 text-left transition ${
-                    batchPrintType === "a4_sheet"
-                      ? "border-sky-400 bg-sky-400/10 text-white"
+                    printLayout === "cr80"
+                      ? "border-sky-400 bg-sky-400/10 text-white shadow-md"
                       : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-900"
                   }`}
                 >
-                  <div className="text-xs font-black">Lembar Grid A4</div>
+                  <div className="text-xs font-black flex items-center gap-1.5">
+                    <Icon name="scanner" className="size-4 text-sky-400" />
+                    <span>Printer ID Card CR80</span>
+                  </div>
                   <div className="mt-1 text-[11px] text-slate-400">
-                    Grid kartu dengan tanda potong (crop marks) untuk laminating
-                    mudah.
+                    Format pas 1 kartu PVC (54 × 85.6 mm) untuk printer kartu
+                    khusus.
                   </div>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBatchPrintType("cr80")}
+                  onClick={() => setPrintLayout("a4_sheet")}
                   className={`rounded-2xl border p-4 text-left transition ${
-                    batchPrintType === "cr80"
-                      ? "border-sky-400 bg-sky-400/10 text-white"
+                    printLayout === "a4_sheet"
+                      ? "border-sky-400 bg-sky-400/10 text-white shadow-md"
                       : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-900"
                   }`}
                 >
-                  <div className="text-xs font-black">Printer ID Card CR80</div>
+                  <div className="text-xs font-black flex items-center gap-1.5">
+                    <Icon name="palette" className="size-4 text-sky-400" />
+                    <span>Lembar Kertas A4 (Grid)</span>
+                  </div>
                   <div className="mt-1 text-[11px] text-slate-400">
-                    Kirim langsung per kartu standar (Evolis/Fargo/Zebra/HiTi).
+                    Grid kartu dengan garis potong (*crop marks*) untuk
+                    laminating / kertas foto.
                   </div>
                 </button>
               </div>
             </div>
 
+            {/* Sisi Kartu yang Dicetak */}
             <div className="space-y-2">
               <div className="text-xs font-bold text-slate-300">
                 2. Sisi Kartu yang Dicetak
@@ -2058,9 +2334,9 @@ export default function IdCardsPage() {
               <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
-                  onClick={() => setBatchPrintMode("front_only")}
+                  onClick={() => setPrintMode("front_only")}
                   className={`rounded-xl border p-2.5 text-center text-xs font-bold transition ${
-                    batchPrintMode === "front_only"
+                    printMode === "front_only"
                       ? "border-sky-400 bg-sky-400/10 text-sky-200"
                       : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-900"
                   }`}
@@ -2069,9 +2345,9 @@ export default function IdCardsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBatchPrintMode("back_only")}
+                  onClick={() => setPrintMode("back_only")}
                   className={`rounded-xl border p-2.5 text-center text-xs font-bold transition ${
-                    batchPrintMode === "back_only"
+                    printMode === "back_only"
                       ? "border-sky-400 bg-sky-400/10 text-sky-200"
                       : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-900"
                   }`}
@@ -2080,43 +2356,59 @@ export default function IdCardsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBatchPrintMode("duplex")}
+                  onClick={() => setPrintMode("duplex")}
                   className={`rounded-xl border p-2.5 text-center text-xs font-bold transition ${
-                    batchPrintMode === "duplex"
+                    printMode === "duplex"
                       ? "border-sky-400 bg-sky-400/10 text-sky-200"
                       : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-900"
                   }`}
                 >
-                  Bolak-Balik
+                  Bolak-Balik (Duplex)
                 </button>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3 text-xs text-slate-400 space-y-1">
-              <p>
-                • Total karyawan terpilih:{" "}
-                <strong className="text-white">{selectedIds.size} orang</strong>
-              </p>
-              <p>
-                • Status ID card karyawan terpilih akan otomatis diperbarui
-                menjadi &quot;Sudah Dicetak&quot;.
-              </p>
+            {/* Info Summary */}
+            <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3.5 text-xs text-slate-400 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span>Jumlah ID card:</span>
+                <strong className="text-white font-mono">
+                  {printTargetRows.length} orang
+                </strong>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Orientasi Desain:</span>
+                <strong className="text-sky-300 font-medium capitalize">
+                  {template?.orientation || "Landscape"}
+                </strong>
+              </div>
+              <div className="text-[11px] text-slate-500 pt-1 border-t border-white/5">
+                • Status ID card akan otomatis diperbarui menjadi &quot;Sudah
+                Dicetak&quot; saat proses cetak dijalankan.
+              </div>
             </div>
 
+            {/* Action Buttons */}
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setBatchModalOpen(false)}
-                className="flex-1 rounded-xl border border-white/10 bg-slate-800 py-2.5 text-xs font-bold text-slate-300 hover:bg-slate-700"
+                onClick={() => setPrintModalOpen(false)}
+                className="flex-1 rounded-xl border border-white/10 bg-slate-800 py-2.5 text-xs font-bold text-slate-300 hover:bg-slate-700 transition"
               >
                 Batal
               </button>
               <button
                 type="button"
-                onClick={handleExecuteBatchPrint}
-                className="flex-1 rounded-xl bg-sky-400 py-2.5 text-xs font-black text-slate-950 hover:bg-sky-300"
+                disabled={printBusy}
+                onClick={handleExecutePrint}
+                className="flex-1 rounded-xl bg-sky-400 py-2.5 text-xs font-black text-slate-950 hover:bg-sky-300 disabled:opacity-50 transition flex items-center justify-center gap-1.5 shadow"
               >
-                Mulai Cetak ({selectedIds.size})
+                <Icon name="scanner" className="size-4" />
+                <span>
+                  {printBusy
+                    ? "Menyiapkan..."
+                    : `Cetak Sekarang (${printTargetRows.length})`}
+                </span>
               </button>
             </div>
           </div>

@@ -4,4 +4,3 @@
 fn main() {
     absensi_sppg_desktop_lib::run();
 }
-

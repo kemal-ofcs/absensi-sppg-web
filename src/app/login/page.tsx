@@ -2,13 +2,17 @@
 
 import { redirect, useRouter } from "next/navigation";
 import type React from "react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { BootstrapPanel } from "@/components/BootstrapPanel";
 import { useAuth } from "@/lib/context/AuthContext";
+import {
+  type BootstrapStatus,
+  getBootstrapStatus,
+} from "@/lib/gateways/bootstrap";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 
 export default function LoginPage() {
-  const showDemoHelper = process.env.NODE_ENV !== "production";
   const isHydrated = useHydrated();
   const isOnline = useOnlineStatus();
   const { user, login, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -19,6 +23,18 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] =
+    useState<BootstrapStatus | null>(null);
+
+  const refreshBootstrapStatus = useCallback(() => {
+    void getBootstrapStatus()
+      .then(setBootstrapStatus)
+      .catch(() => setBootstrapStatus(null));
+  }, []);
+
+  useEffect(() => {
+    refreshBootstrapStatus();
+  }, [refreshBootstrapStatus]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,12 +64,6 @@ export default function LoginPage() {
     }
   };
 
-  const fillDemoAdmin = () => {
-    setUsername("admin");
-    setPassword("admin123");
-    setErrorMsg(null);
-  };
-
   if (!isHydrated || authLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
@@ -68,6 +78,14 @@ export default function LoginPage() {
   }
 
   if (isAuthenticated && user) redirect("/");
+  if (bootstrapStatus?.required) {
+    return (
+      <BootstrapPanel
+        status={bootstrapStatus}
+        onCompleted={refreshBootstrapStatus}
+      />
+    );
+  }
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8 font-sans relative overflow-hidden select-none">
@@ -175,24 +193,6 @@ export default function LoginPage() {
             )}
           </button>
         </form>
-
-        {/* Quick Demo Login Helper */}
-        {showDemoHelper ? (
-          <div className="pt-4 border-t border-slate-800/80 text-center space-y-2">
-            <p className="text-[11px] text-slate-500">
-              Gunakan kredensial berikut untuk uji coba pertama:
-            </p>
-            <button
-              type="button"
-              onClick={fillDemoAdmin}
-              className="w-full py-2 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-mono transition flex items-center justify-center gap-1.5"
-            >
-              <span>⚡ Quick Demo:</span>
-              <span className="text-emerald-400 font-bold">admin</span> /{" "}
-              <span className="text-emerald-400 font-bold">admin123</span>
-            </button>
-          </div>
-        ) : null}
 
         {/* Footer info */}
         <div className="text-center text-[10px] text-slate-600 font-mono">

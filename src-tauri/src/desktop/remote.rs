@@ -16,7 +16,7 @@ pub enum RemoteLoginError {
 }
 
 fn endpoint(state: &DesktopState, path: &str) -> Result<url::Url, CommandError> {
-    state.api_base_url().join(path).map_err(|_| {
+    state.api_base_url()?.join(path).map_err(|_| {
         CommandError::new(
             "DESKTOP_CONFIG_INVALID",
             "Endpoint server Desktop tidak valid.",
@@ -52,6 +52,11 @@ pub async fn login(
         .map_err(|_| RemoteLoginError::Unavailable)?;
     let status = response.status();
     let token = session_cookie(response.headers());
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
     let body = response
         .json::<LoginApiResponse>()
         .await
@@ -77,11 +82,34 @@ pub async fn login(
     } else {
         "LOGIN_REJECTED"
     };
-    Err(RemoteLoginError::Rejected(CommandError::new(
-        code,
+    let message = if status == StatusCode::TOO_MANY_REQUESTS {
+        if let Some(msg) = body
+            .pesan
+            .as_ref()
+            .filter(|m| m.contains("menit") || m.contains("detik"))
+        {
+            msg.clone()
+        } else if let Some(secs) = retry_after {
+            let minutes = secs / 60;
+            let seconds = secs % 60;
+            let time_str = if minutes > 0 {
+                if seconds > 0 {
+                    format!("{minutes} menit {seconds} detik")
+                } else {
+                    format!("{minutes} menit")
+                }
+            } else {
+                format!("{seconds} detik")
+            };
+            format!("Terlalu banyak percobaan login. Akun dikunci sementara untuk keamanan. Silakan tunggu {time_str} lagi sebelum mencoba kembali.")
+        } else {
+            body.pesan.unwrap_or_else(|| "Terlalu banyak percobaan login. Akun dikunci sementara. Silakan tunggu 2 menit lagi.".into())
+        }
+    } else {
         body.pesan
-            .unwrap_or_else(|| "Username atau password tidak sesuai.".into()),
-    )))
+            .unwrap_or_else(|| "Username atau password tidak sesuai.".into())
+    };
+    Err(RemoteLoginError::Rejected(CommandError::new(code, message)))
 }
 
 pub async fn authorized_json(

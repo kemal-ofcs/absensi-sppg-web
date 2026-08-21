@@ -19,6 +19,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop::commands::desktop_get_session,
             desktop::commands::desktop_get_runtime_status,
+            desktop::commands::desktop_get_bootstrap_status,
+            desktop::commands::desktop_bootstrap_superadmin,
             desktop::commands::desktop_login,
             desktop::commands::desktop_logout,
             desktop::commands::desktop_get_master_operators,
@@ -35,7 +37,6 @@ pub fn run() {
             desktop::commands::desktop_import_employees,
             desktop::commands::desktop_update_employee,
             desktop::commands::desktop_set_employee_status,
-
             desktop::commands::desktop_generate_employee_tokens,
             desktop::commands::desktop_get_shifts,
             desktop::commands::desktop_create_shift,
@@ -82,7 +83,14 @@ pub fn run() {
             desktop::commands::desktop_get_id_card_template,
             desktop::commands::desktop_save_id_card_template,
             desktop::commands::desktop_force_resync_settings,
+            desktop::commands::desktop_get_turso_url,
+            desktop::commands::desktop_save_turso_config,
+            desktop::commands::desktop_test_turso_connection,
+            desktop::commands::desktop_clear_turso_config,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|error| {
+            eprintln!("Aplikasi Desktop berhenti karena runtime Tauri gagal: {error}");
+            std::process::exit(1);
+        });
 }

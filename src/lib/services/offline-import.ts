@@ -293,7 +293,7 @@ async function processRow(
   const breakMinutes = Number(shiftData?.istirahat_menit ?? 60);
   const toleransi = Number(shiftData?.toleransi_masuk_menit ?? 0);
   const awalAbsen = Number(shiftData?.awal_absen_menit ?? 60);
-  const batasMasuk = Number(shiftData?.batas_masuk_menit ?? 360);
+  const batasMasuk = Number(shiftData?.batas_masuk_menit ?? 0);
   const batasPulang = Number(shiftData?.batas_pulang_menit ?? 360);
   const shiftJamMasuk = String(shiftData?.jam_masuk || "07:00");
   const shiftJamPulang = String(shiftData?.jam_pulang || "15:00");
@@ -340,10 +340,14 @@ async function processRow(
     if (isOvernightShift && userMasukMin < shiftMasukMin - 720) {
       userMasukMin += 1440;
     }
-    if (userMasukMin > shiftMasukMin + toleransi) {
-      menitTerlambat = userMasukMin - shiftMasukMin;
-    } else if (userMasukMin < shiftMasukMin) {
+    const batasNormalMasuk = shiftMasukMin + batasMasuk;
+    if (userMasukMin < shiftMasukMin) {
       menitDatangAwal = shiftMasukMin - userMasukMin;
+    } else if (userMasukMin <= batasNormalMasuk) {
+      menitTerlambat = 0;
+      menitDatangAwal = 0;
+    } else {
+      menitTerlambat = userMasukMin - batasNormalMasuk;
     }
   }
 
@@ -357,11 +361,11 @@ async function processRow(
       update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup,
       id_karyawan_asal, tanggal_tugas)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
       jam_pulang = excluded.jam_pulang, status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
-      sumber = 'Import Offline', update_terakhir = excluded.update_terakhir,
+      sumber = 'Import Manual', update_terakhir = excluded.update_terakhir,
       menit_terlambat = excluded.menit_terlambat, menit_datang_awal = excluded.menit_datang_awal,
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
@@ -397,7 +401,7 @@ async function processRow(
   ] as const) {
     if (!time) continue;
     await transaction.execute({
-      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND COALESCE(id_referensi, '') = ? AND sumber_data = 'Import Offline';",
+      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND COALESCE(id_referensi, '') = ? AND (sumber_data = 'Import Offline' OR sumber_data = 'Import Manual');",
       args: [date, id, kind, backupId],
     });
     await transaction.execute({
@@ -405,7 +409,7 @@ async function processRow(
         id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data,
         catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
         id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil',
-        'Import Offline', ?, ?, ?, ?, ?, ?);`,
+        'Import Manual', ?, ?, ?, ?, ?, ?);`,
       args: [
         time,
         date,
@@ -415,8 +419,8 @@ async function processRow(
         division,
         kind,
         backupId
-          ? `Import Offline sebagai karyawan pengganti. ID Backup: ${backupId}`
-          : "Import Offline",
+          ? `Import Manual sebagai karyawan pengganti. ID Backup: ${backupId}`
+          : "Import Manual",
         row.keterangan ?? statusAttendance,
         kind === "Masuk" ? menitTerlambat : 0,
         kind === "Masuk" ? menitDatangAwal : 0,

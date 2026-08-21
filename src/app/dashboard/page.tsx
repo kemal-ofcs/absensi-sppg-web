@@ -103,6 +103,32 @@ export default function DashboardPage() {
     };
   }, [isHydrated, isAuthenticated, selectedDate]);
 
+  // Re-fetch dashboard data automatically when auto-sync pulls new scans from Cloud
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+
+    const onSyncCompleted = () => {
+      Promise.all([
+        getDashboardMetrics(),
+        getRekapBulanan(),
+        getTopKaryawanTerajin(5),
+        getRekapHarian({ tanggal: selectedDate }),
+      ])
+        .then(([metricsData, bulananData, topData, harianData]) => {
+          setMetrics(metricsData);
+          setRekapBulananList(bulananData);
+          setTopKaryawanList(topData);
+          setRekapHarianList(harianData);
+        })
+        .catch(() => undefined);
+    };
+
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [isHydrated, isAuthenticated, selectedDate]);
+
   // Combined loading state for skeleton rendering
   const isLoading = useMemo(
     () => loading || harianLoading,

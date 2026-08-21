@@ -47,7 +47,8 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
         m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
         m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
         m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
-        c.idcard_status, c.idcard_pdf_url, c.link_qr_png
+        c.idcard_status, c.idcard_pdf_url, c.link_qr_png,
+        m.token_absensi, m.qr_code
       FROM master_data m
       LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
       LEFT JOIN id_card c ON m.id_unik = c.id_unik
@@ -81,6 +82,8 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
                 "idcard_status": row.get::<_, Option<String>>(17)?,
                 "idcard_pdf_url": row.get::<_, Option<String>>(18)?,
                 "link_qr_png": row.get::<_, Option<String>>(19)?,
+                "token_absensi": row.get::<_, Option<String>>(20)?,
+                "qr_code": row.get::<_, Option<String>>(21)?,
             }))
         })
         .map_err(|_| CommandError::internal())?;
@@ -126,8 +129,10 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
         today.to_owned()
     };
     let mut payload = draft.as_object().cloned().unwrap_or_else(Map::new);
+    payload.insert("id_unik".into(), Value::String(id.to_string()));
     payload.insert("token_absensi".into(), Value::String(token.clone()));
     payload.insert("qr_code".into(), Value::String(qr_code.clone()));
+    payload.insert("status_qr".into(), Value::String("Generated".into()));
     let payload = Value::Object(payload);
 
     let transaction = connection
@@ -205,10 +210,7 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
     Ok(json!({ "sukses": true, "id_unik": id, "token_absensi": token }))
 }
 
-pub fn import_employees(
-    state: &DesktopState,
-    drafts: &[Value],
-) -> Result<Value, CommandError> {
+pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value, CommandError> {
     if drafts.is_empty() {
         return Ok(json!({ "sukses": true, "berhasil": 0, "dilewati": 0 }));
     }
@@ -240,7 +242,12 @@ pub fn import_employees(
         let division = text(draft, "divisi");
         let shift_id = integer(draft, "id_shift", 1);
 
-        if id.is_empty() || code.is_empty() || name.len() < 2 || division.is_empty() || shift_id == 0 {
+        if id.is_empty()
+            || code.is_empty()
+            || name.len() < 2
+            || division.is_empty()
+            || shift_id == 0
+        {
             dilewati += 1;
             continue;
         }
@@ -263,10 +270,18 @@ pub fn import_employees(
         let qr_code = format!("{id}|{token}");
 
         let reg_date = text(draft, "tanggal_daftar");
-        let reg_date = if reg_date.is_empty() { &today } else { reg_date };
+        let reg_date = if reg_date.is_empty() {
+            &today
+        } else {
+            reg_date
+        };
 
         let start_date = text(draft, "tanggal_mulai_aktif");
-        let start_date = if start_date.is_empty() { reg_date } else { start_date };
+        let start_date = if start_date.is_empty() {
+            reg_date
+        } else {
+            start_date
+        };
 
         let mut payload = draft.as_object().cloned().unwrap_or_else(Map::new);
         payload.insert("token_absensi".into(), Value::String(token.clone()));
@@ -287,16 +302,32 @@ pub fn import_employees(
                 code,
                 name,
                 division,
-                if text(draft, "jabatan_status").is_empty() { "Staff" } else { text(draft, "jabatan_status") },
+                if text(draft, "jabatan_status").is_empty() {
+                    "Staff"
+                } else {
+                    text(draft, "jabatan_status")
+                },
                 text(draft, "no_hp"),
-                if text(draft, "lp").to_uppercase() == "P" { "P" } else { "L" },
+                if text(draft, "lp").to_uppercase() == "P" {
+                    "P"
+                } else {
+                    "L"
+                },
                 shift_id,
-                if text(draft, "status_aktif") == "Nonaktif" { "Nonaktif" } else { "Aktif" },
+                if text(draft, "status_aktif") == "Nonaktif" {
+                    "Nonaktif"
+                } else {
+                    "Aktif"
+                },
                 reg_date,
                 text(draft, "catatan"),
                 token,
                 qr_code,
-                if text(draft, "jenis_personil").is_empty() { "Pegawai" } else { text(draft, "jenis_personil") },
+                if text(draft, "jenis_personil").is_empty() {
+                    "Pegawai"
+                } else {
+                    text(draft, "jenis_personil")
+                },
                 start_date,
                 text(draft, "tanggal_selesai_aktif"),
             ],
@@ -335,7 +366,6 @@ pub fn import_employees(
 }
 
 pub fn update_employee(
-
     state: &DesktopState,
     id: &str,
     draft: &Value,
@@ -468,7 +498,7 @@ pub fn generate_employee_tokens(state: &DesktopState) -> Result<Value, CommandEr
     let ids = {
         let mut statement = connection
             .prepare(
-                "SELECT id_unik FROM master_data WHERE token_absensi IS NULL OR token_absensi = '';",
+                "SELECT id_unik FROM master_data WHERE token_absensi IS NULL OR token_absensi = '' OR qr_code IS NULL OR qr_code = '' OR status_qr != 'Generated';",
             )
             .map_err(|_| CommandError::internal())?;
         let rows = statement
@@ -496,7 +526,7 @@ pub fn generate_employee_tokens(state: &DesktopState) -> Result<Value, CommandEr
             "employee",
             "token",
             id,
-            &json!({ "token_absensi": token, "qr_code": qr_code }),
+            &json!({ "id_unik": id, "token_absensi": token, "qr_code": qr_code, "status_qr": "Generated" }),
             base_revision(&transaction, "employee", id),
         )?;
     }
@@ -603,7 +633,9 @@ fn insert_shift(
         .map(|v| {
             v.as_bool().unwrap_or(false)
                 || v.as_i64().unwrap_or(0) == 1
-                || v.as_str().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+                || v.as_str()
+                    .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
         })
         .unwrap_or(false)
     {
@@ -681,7 +713,9 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
         .map(|v| {
             v.as_bool().unwrap_or(false)
                 || v.as_i64().unwrap_or(0) == 1
-                || v.as_str().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+                || v.as_str()
+                    .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
         })
         .unwrap_or(false)
     {
@@ -720,19 +754,51 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
         )
         .map_err(|_| CommandError::internal())?;
 
+    let full_shift: Value = transaction
+        .query_row(
+            r#"
+        SELECT id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+               awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+               jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+               offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
+               izinkan_multi_sesi
+        FROM tbl_shift WHERE id_shift = ?;
+        "#,
+            [id],
+            |row| {
+                Ok(json!({
+                    "id_shift": row.get::<_, i64>(0)?,
+                    "kode_shift": row.get::<_, i64>(1)?,
+                    "nama_shift": row.get::<_, String>(2)?,
+                    "jam_masuk": row.get::<_, String>(3)?,
+                    "jam_pulang": row.get::<_, String>(4)?,
+                    "awal_absen_menit": row.get::<_, i64>(5)?,
+                    "batas_masuk_menit": row.get::<_, i64>(6)?,
+                    "toleransi_masuk_menit": row.get::<_, i64>(7)?,
+                    "jam_kerja_normal_menit": row.get::<_, i64>(8)?,
+                    "istirahat_menit": row.get::<_, i64>(9)?,
+                    "batas_pulang_menit": row.get::<_, i64>(10)?,
+                    "offset_istirahat_mulai": row.get::<_, i64>(11)?,
+                    "offset_generate_alfa": row.get::<_, i64>(12)?,
+                    "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
+                    "izinkan_multi_sesi": row.get::<_, i64>(14)?,
+                }))
+            },
+        )
+        .unwrap_or_else(|_| draft.clone());
+
     sync::enqueue(
         &transaction,
         &client_id,
         "shift",
         "update",
         &id.to_string(),
-        draft,
+        &full_shift,
         revision,
     )?;
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true }))
 }
-
 
 pub fn delete_shift(state: &DesktopState, id: i64) -> Result<Value, CommandError> {
     let client_id = sync::ensure_client_id(state)?;
@@ -843,7 +909,11 @@ pub fn get_geofence_settings(state: &DesktopState) -> Result<Value, CommandError
 }
 
 pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<(), CommandError> {
-    let connection = storage::database(&state.data_dir)?;
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
     let enabled = settings
         .get("enabled")
         .and_then(Value::as_bool)
@@ -866,14 +936,23 @@ pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<
         ("lng_kantor", longitude.to_string()),
         ("radius_meter", radius.to_string()),
     ] {
-        connection
+        transaction
             .execute(
                 "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                 params![key, value],
             )
             .map_err(|_| CommandError::internal())?;
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "setting",
+            "update",
+            key,
+            &json!({ "key": key, "value": value }),
+            base_revision(&transaction, "setting", key),
+        )?;
     }
-    Ok(())
+    transaction.commit().map_err(|_| CommandError::internal())
 }
 
 pub fn get_scanner_settings(state: &DesktopState) -> Result<Value, CommandError> {
@@ -908,7 +987,11 @@ pub fn get_scanner_settings(state: &DesktopState) -> Result<Value, CommandError>
 }
 
 pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(), CommandError> {
-    let connection = storage::database(&state.data_dir)?;
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
     let anti_double_scan = settings
         .get("antiDoubleScanSeconds")
         .and_then(Value::as_i64)
@@ -923,14 +1006,23 @@ pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(
         ("anti_double_scan_seconds", anti_double_scan.to_string()),
         ("batas_multi_scan_menit", multi_scan.to_string()),
     ] {
-        connection
+        transaction
             .execute(
                 "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
                 params![key, value],
             )
             .map_err(|_| CommandError::internal())?;
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "setting",
+            "update",
+            key,
+            &json!({ "key": key, "value": value }),
+            base_revision(&transaction, "setting", key),
+        )?;
     }
-    Ok(())
+    transaction.commit().map_err(|_| CommandError::internal())
 }
 
 pub fn update_id_card(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
@@ -1078,11 +1170,12 @@ pub fn create_holiday(state: &DesktopState, draft: &Value) -> Result<Value, Comm
             "Tanggal dan nama hari libur wajib diisi.",
         ));
     }
-    let jenis_libur = if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
-        text(draft, "jenis_libur")
-    } else {
-        "Libur Nasional"
-    };
+    let jenis_libur =
+        if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
+            text(draft, "jenis_libur")
+        } else {
+            "Libur Nasional"
+        };
     let keterangan = draft.get("keterangan").and_then(Value::as_str);
     let status_aktif = if draft
         .get("status_aktif")
@@ -1111,7 +1204,9 @@ pub fn create_holiday(state: &DesktopState, draft: &Value) -> Result<Value, Comm
     if existing {
         return Err(CommandError::new(
             "OPERATIONAL_CONFLICT",
-            format!("Tanggal libur {tanggal} sudah terdaftar. Silakan edit jika ingin mengubahnya."),
+            format!(
+                "Tanggal libur {tanggal} sudah terdaftar. Silakan edit jika ingin mengubahnya."
+            ),
         ));
     }
 
@@ -1155,11 +1250,12 @@ pub fn update_holiday(state: &DesktopState, id: i64, draft: &Value) -> Result<Va
 
     let tanggal = text(draft, "tanggal");
     let nama_libur = text(draft, "nama_libur");
-    let jenis_libur = if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
-        text(draft, "jenis_libur")
-    } else {
-        "Libur Nasional"
-    };
+    let jenis_libur =
+        if draft.get("jenis_libur").is_some() && !text(draft, "jenis_libur").is_empty() {
+            text(draft, "jenis_libur")
+        } else {
+            "Libur Nasional"
+        };
     let keterangan = draft.get("keterangan").and_then(Value::as_str);
     let status_aktif = if draft
         .get("status_aktif")
@@ -1307,7 +1403,10 @@ fn parse_time_to_minutes(time_str: &str) -> i64 {
     }
 }
 
-pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>) -> Result<Value, CommandError> {
+pub fn generate_alfa_harian(
+    state: &DesktopState,
+    simulated_time: Option<String>,
+) -> Result<Value, CommandError> {
     let mut connection = storage::database(&state.data_dir)?;
     let transaction = connection
         .transaction()
@@ -1322,7 +1421,9 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
         )
         .optional()
         .unwrap_or(None);
-    let is_active = is_active_val.map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(true);
+    let is_active = is_active_val
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
     if !is_active {
         return Ok(json!({
             "jumlahAlfaDibuat": 0,
@@ -1396,8 +1497,18 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
     let now_minute = parse_time_to_minutes(&now_moment.time);
 
     let month_names = [
-        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+        "Januari",
+        "Februari",
+        "Maret",
+        "April",
+        "Mei",
+        "Juni",
+        "Juli",
+        "Agustus",
+        "September",
+        "Oktober",
+        "November",
+        "Desember",
     ];
 
     for (id_unik, nama, divisi, id_shift) in employees {
@@ -1410,7 +1521,8 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
             .optional()
             .unwrap_or(None);
 
-        let (jam_masuk, jam_pulang, offset_alfa, jam_kerja_normal, kode_shift) = match shift_config {
+        let (jam_masuk, jam_pulang, offset_alfa, jam_kerja_normal, kode_shift) = match shift_config
+        {
             Some(cfg) => cfg,
             None => continue,
         };
@@ -1453,10 +1565,11 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
             shift_out_min - offset_alfa
         };
 
-        let current_timeline_minute = match super::time_policy::days_between(&work_date, &now_moment.date) {
-            Ok(diff) => diff * 1440 + now_minute,
-            Err(_) => now_minute,
-        };
+        let current_timeline_minute =
+            match super::time_policy::days_between(&work_date, &now_moment.date) {
+                Ok(diff) => diff * 1440 + now_minute,
+                Err(_) => now_minute,
+            };
 
         if current_timeline_minute < cutoff_timeline_minute {
             belum_waktunya += 1;
@@ -1490,7 +1603,10 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
             _ => 0,
         };
         let bulan = month_names[month_idx];
-        let tahun = work_date.get(0..4).and_then(|y| y.parse::<i64>().ok()).unwrap_or(2026);
+        let tahun = work_date
+            .get(0..4)
+            .and_then(|y| y.parse::<i64>().ok())
+            .unwrap_or(2026);
 
         transaction
             .execute(
@@ -1525,6 +1641,40 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
                 params![now_str, work_date, id_unik, nama, session_id],
             )
             .map_err(|_| CommandError::internal())?;
+
+        let att_payload = json!({
+            "tanggal": work_date,
+            "id_karyawan": id_unik,
+            "nama": nama,
+            "kelas_divisi": divisi,
+            "jam_masuk": "",
+            "jam_pulang": "",
+            "status_kehadiran": "Alfa",
+            "status_absen": "Tidak Hadir",
+            "keterangan": "Generate Alfa otomatis - belum ada absensi atau koreksi Sakit/Izin/Dispen",
+            "sumber": "Generate Sistem",
+            "update_terakhir": now_str,
+            "menit_terlambat": 0,
+            "menit_datang_awal": 0,
+            "jam_kerja": 0,
+            "lembur": 0,
+            "jam_kerja_kurang": 0,
+            "id_shift": id_shift,
+            "bulan": bulan,
+            "tahun": tahun,
+            "id_sesi": session_id,
+            "mode_tugas": "NORMAL",
+        });
+        let client_id = sync::ensure_client_id(state)?;
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "create",
+            &format!("alfa:{session_id}"),
+            &json!({ "attendance": att_payload }),
+            None,
+        )?;
 
         alfa_dibuat += 1;
     }
@@ -1573,11 +1723,9 @@ pub fn generate_alfa_harian(state: &DesktopState, simulated_time: Option<String>
 
 fn current_iso(connection: &rusqlite::Connection) -> String {
     connection
-        .query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');", [], |row| {
+            row.get(0)
+        })
         .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
 }
 
@@ -1653,7 +1801,10 @@ pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> 
     }
 }
 
-pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<Value, CommandError> {
+pub fn update_company_profile(
+    state: &DesktopState,
+    profile: &Value,
+) -> Result<Value, CommandError> {
     let client_id = sync::ensure_client_id(state)?;
     let mut connection = storage::database(&state.data_dir)?;
     let transaction = connection
@@ -1662,7 +1813,11 @@ pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<V
 
     let now = current_iso(&transaction);
     let company_name = text(profile, "company_name");
-    let company_name = if company_name.is_empty() { "SPPG" } else { company_name };
+    let company_name = if company_name.is_empty() {
+        "SPPG"
+    } else {
+        company_name
+    };
     let branch_name = text(profile, "branch_name");
     let logo_url = text(profile, "logo_url");
     let signature_url = text(profile, "signature_url");
@@ -1675,7 +1830,11 @@ pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<V
     let leader_nip = text(profile, "leader_nip");
     let card_terms = text(profile, "card_terms");
     let timezone = text(profile, "timezone");
-    let timezone = if timezone.is_empty() { "Asia/Jakarta" } else { timezone };
+    let timezone = if timezone.is_empty() {
+        "Asia/Jakarta"
+    } else {
+        timezone
+    };
 
     transaction
         .execute(
@@ -1706,17 +1865,53 @@ pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<V
         "#,
             params![
                 company_name,
-                if branch_name.is_empty() { None } else { Some(branch_name) },
-                if logo_url.is_empty() { None } else { Some(logo_url) },
-                if signature_url.is_empty() { None } else { Some(signature_url) },
-                if address.is_empty() { None } else { Some(address) },
+                if branch_name.is_empty() {
+                    None
+                } else {
+                    Some(branch_name)
+                },
+                if logo_url.is_empty() {
+                    None
+                } else {
+                    Some(logo_url)
+                },
+                if signature_url.is_empty() {
+                    None
+                } else {
+                    Some(signature_url)
+                },
+                if address.is_empty() {
+                    None
+                } else {
+                    Some(address)
+                },
                 if phone.is_empty() { None } else { Some(phone) },
                 if email.is_empty() { None } else { Some(email) },
-                if website.is_empty() { None } else { Some(website) },
-                if leader_name.is_empty() { None } else { Some(leader_name) },
-                if leader_title.is_empty() { None } else { Some(leader_title) },
-                if leader_nip.is_empty() { None } else { Some(leader_nip) },
-                if card_terms.is_empty() { None } else { Some(card_terms) },
+                if website.is_empty() {
+                    None
+                } else {
+                    Some(website)
+                },
+                if leader_name.is_empty() {
+                    None
+                } else {
+                    Some(leader_name)
+                },
+                if leader_title.is_empty() {
+                    None
+                } else {
+                    Some(leader_title)
+                },
+                if leader_nip.is_empty() {
+                    None
+                } else {
+                    Some(leader_nip)
+                },
+                if card_terms.is_empty() {
+                    None
+                } else {
+                    Some(card_terms)
+                },
                 timezone,
                 now,
             ],
@@ -1755,16 +1950,206 @@ pub fn update_company_profile(state: &DesktopState, profile: &Value) -> Result<V
     Ok(payload)
 }
 
+pub fn default_id_card_elements() -> Value {
+    json!([
+        {
+            "id": "el-company-logo",
+            "type": "company_logo",
+            "side": "front",
+            "sourceKey": "company.logo",
+            "label": "Logo Instansi",
+            "x": 6,
+            "y": 8,
+            "width": 14,
+            "height": 20,
+            "fontSize": 14,
+            "color": "#ffffff",
+            "visible": true
+        },
+        {
+            "id": "el-header-company",
+            "type": "text",
+            "side": "front",
+            "sourceKey": "company.name",
+            "label": "Nama Instansi",
+            "x": 22,
+            "y": 11,
+            "fontSize": 16,
+            "fontWeight": "bold",
+            "color": "#ffffff",
+            "textAlign": "left",
+            "isUppercase": true,
+            "visible": true
+        },
+        {
+            "id": "el-header-title",
+            "type": "static_text",
+            "side": "front",
+            "sourceKey": "static_text",
+            "staticValue": "KARTU IDENTITAS KARYAWAN",
+            "label": "Judul Kartu",
+            "x": 22,
+            "y": 22,
+            "fontSize": 9,
+            "fontWeight": "600",
+            "color": "#38bdf8",
+            "textAlign": "left",
+            "isUppercase": true,
+            "visible": true
+        },
+        {
+            "id": "el-emp-name",
+            "type": "text",
+            "side": "front",
+            "sourceKey": "employee.name",
+            "label": "Nama Karyawan",
+            "x": 6,
+            "y": 44,
+            "fontSize": 18,
+            "fontWeight": "bold",
+            "color": "#ffffff",
+            "textAlign": "left",
+            "isUppercase": true,
+            "visible": true
+        },
+        {
+            "id": "el-emp-pos",
+            "type": "text",
+            "side": "front",
+            "sourceKey": "employee.position",
+            "label": "Jabatan / Posisi",
+            "x": 6,
+            "y": 56,
+            "fontSize": 12,
+            "fontWeight": "600",
+            "color": "#7dd3fc",
+            "textAlign": "left",
+            "visible": true
+        },
+        {
+            "id": "el-emp-dept",
+            "type": "text",
+            "side": "front",
+            "sourceKey": "employee.department",
+            "label": "Divisi / Unit",
+            "x": 6,
+            "y": 67,
+            "fontSize": 11,
+            "fontWeight": "normal",
+            "color": "#cbd5e1",
+            "textAlign": "left",
+            "visible": true
+        },
+        {
+            "id": "el-emp-nik",
+            "type": "text",
+            "side": "front",
+            "sourceKey": "employee.nik",
+            "label": "NIK / Kode",
+            "x": 6,
+            "y": 78,
+            "fontSize": 10,
+            "fontWeight": "normal",
+            "color": "#94a3b8",
+            "textAlign": "left",
+            "visible": true
+        },
+        {
+            "id": "el-emp-qr",
+            "type": "qr_code",
+            "side": "front",
+            "sourceKey": "employee.qr_token",
+            "label": "QR Code Token",
+            "x": 68,
+            "y": 30,
+            "width": 26,
+            "height": 48,
+            "fontSize": 10,
+            "color": "#000000",
+            "visible": true
+        },
+        {
+            "id": "el-back-title",
+            "type": "static_text",
+            "side": "back",
+            "sourceKey": "static_text",
+            "staticValue": "KETENTUAN PENGGUNAAN KARTU",
+            "label": "Judul Belakang",
+            "x": 8,
+            "y": 12,
+            "fontSize": 12,
+            "fontWeight": "bold",
+            "color": "#ffffff",
+            "textAlign": "left",
+            "isUppercase": true,
+            "visible": true
+        },
+        {
+            "id": "el-back-terms",
+            "type": "text",
+            "side": "back",
+            "sourceKey": "company.terms",
+            "label": "Syarat & Ketentuan",
+            "x": 8,
+            "y": 24,
+            "width": 84,
+            "height": 42,
+            "fontSize": 8.5,
+            "fontWeight": "normal",
+            "color": "#cbd5e1",
+            "textAlign": "left",
+            "visible": true
+        },
+        {
+            "id": "el-back-sig",
+            "type": "company_logo",
+            "side": "back",
+            "sourceKey": "company.signature",
+            "label": "Tanda Tangan Pimpinan",
+            "x": 66,
+            "y": 68,
+            "width": 26,
+            "height": 18,
+            "fontSize": 10,
+            "color": "#ffffff",
+            "visible": true
+        },
+        {
+            "id": "el-back-leader",
+            "type": "static_text",
+            "side": "back",
+            "sourceKey": "static_text",
+            "staticValue": "Pimpinan Instansi",
+            "label": "Label Pimpinan",
+            "x": 66,
+            "y": 88,
+            "fontSize": 8,
+            "fontWeight": "600",
+            "color": "#94a3b8",
+            "textAlign": "center",
+            "visible": true
+        }
+    ])
+}
+
 pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
-    let target_id = if id.is_empty() { "default_template" } else { id };
+    let target_id = if id.is_empty() {
+        "default_template"
+    } else {
+        id
+    };
+    let default_elements = default_id_card_elements();
     let result = connection
         .query_row(
             "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE id = ? LIMIT 1;",
             [target_id],
             |row| {
-                let elements_raw: String = row.get(5)?;
-                let elements: Value = serde_json::from_str(&elements_raw).unwrap_or(json!([]));
+                let elements_raw: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
+                let mut elements: Value = serde_json::from_str(&elements_raw).unwrap_or_else(|_| json!([]));
+                if elements.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+                    elements = default_id_card_elements();
+                }
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
                     "name": row.get::<_, String>(1)?,
@@ -1785,173 +2170,6 @@ pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, Com
         Some(val) => Ok(val),
         None => {
             let now = current_iso(&connection);
-            let default_elements = json!([
-              {
-                "id": "el-company-logo",
-                "type": "company_logo",
-                "side": "front",
-                "sourceKey": "company.logo",
-                "label": "Logo Instansi",
-                "x": 6,
-                "y": 8,
-                "width": 14,
-                "height": 20,
-                "fontSize": 14,
-                "color": "#ffffff"
-              },
-              {
-                "id": "el-header-company",
-                "type": "text",
-                "side": "front",
-                "sourceKey": "company.name",
-                "label": "Nama Instansi",
-                "x": 22,
-                "y": 11,
-                "fontSize": 16,
-                "fontWeight": "bold",
-                "color": "#ffffff",
-                "textAlign": "left",
-                "isUppercase": true
-              },
-              {
-                "id": "el-header-title",
-                "type": "static_text",
-                "side": "front",
-                "sourceKey": "static_text",
-                "staticValue": "KARTU IDENTITAS KARYAWAN",
-                "label": "Judul Kartu",
-                "x": 22,
-                "y": 22,
-                "fontSize": 9,
-                "fontWeight": "600",
-                "color": "#38bdf8",
-                "textAlign": "left",
-                "isUppercase": true
-              },
-              {
-                "id": "el-emp-name",
-                "type": "text",
-                "side": "front",
-                "sourceKey": "employee.name",
-                "label": "Nama Karyawan",
-                "x": 6,
-                "y": 44,
-                "fontSize": 18,
-                "fontWeight": "bold",
-                "color": "#ffffff",
-                "textAlign": "left",
-                "isUppercase": true
-              },
-              {
-                "id": "el-emp-pos",
-                "type": "text",
-                "side": "front",
-                "sourceKey": "employee.position",
-                "label": "Jabatan / Posisi",
-                "x": 6,
-                "y": 56,
-                "fontSize": 12,
-                "fontWeight": "600",
-                "color": "#7dd3fc",
-                "textAlign": "left"
-              },
-              {
-                "id": "el-emp-dept",
-                "type": "text",
-                "side": "front",
-                "sourceKey": "employee.department",
-                "label": "Divisi / Unit",
-                "x": 6,
-                "y": 67,
-                "fontSize": 11,
-                "fontWeight": "normal",
-                "color": "#cbd5e1",
-                "textAlign": "left"
-              },
-              {
-                "id": "el-emp-nik",
-                "type": "text",
-                "side": "front",
-                "sourceKey": "employee.nik",
-                "label": "NIK / Kode",
-                "x": 6,
-                "y": 78,
-                "fontSize": 10,
-                "fontWeight": "normal",
-                "color": "#94a3b8",
-                "textAlign": "left"
-              },
-              {
-                "id": "el-emp-qr",
-                "type": "qr_code",
-                "side": "front",
-                "sourceKey": "employee.qr_token",
-                "label": "QR Code Token",
-                "x": 68,
-                "y": 30,
-                "width": 26,
-                "height": 48,
-                "fontSize": 10,
-                "color": "#000000"
-              },
-              {
-                "id": "el-back-title",
-                "type": "static_text",
-                "side": "back",
-                "sourceKey": "static_text",
-                "staticValue": "KETENTUAN PENGGUNAAN KARTU",
-                "label": "Judul Belakang",
-                "x": 8,
-                "y": 12,
-                "fontSize": 12,
-                "fontWeight": "bold",
-                "color": "#ffffff",
-                "textAlign": "left",
-                "isUppercase": true
-              },
-              {
-                "id": "el-back-terms",
-                "type": "text",
-                "side": "back",
-                "sourceKey": "company.terms",
-                "label": "Syarat & Ketentuan",
-                "x": 8,
-                "y": 24,
-                "width": 84,
-                "height": 42,
-                "fontSize": 8.5,
-                "fontWeight": "normal",
-                "color": "#cbd5e1",
-                "textAlign": "left"
-              },
-              {
-                "id": "el-back-sig",
-                "type": "company_logo",
-                "side": "back",
-                "sourceKey": "company.signature",
-                "label": "Tanda Tangan Pimpinan",
-                "x": 66,
-                "y": 68,
-                "width": 26,
-                "height": 18,
-                "fontSize": 10,
-                "color": "#ffffff"
-              },
-              {
-                "id": "el-back-leader",
-                "type": "static_text",
-                "side": "back",
-                "sourceKey": "static_text",
-                "staticValue": "Pimpinan Instansi",
-                "label": "Label Pimpinan",
-                "x": 66,
-                "y": 88,
-                "fontSize": 8,
-                "fontWeight": "600",
-                "color": "#94a3b8",
-                "textAlign": "center"
-              }
-            ]);
             let default_elements_str = serde_json::to_string(&default_elements).unwrap_or_default();
             let _ = connection.execute(
                 r#"
@@ -1978,7 +2196,10 @@ pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, Com
     }
 }
 
-pub fn save_id_card_template(state: &DesktopState, template: &Value) -> Result<Value, CommandError> {
+pub fn save_id_card_template(
+    state: &DesktopState,
+    template: &Value,
+) -> Result<Value, CommandError> {
     let client_id = sync::ensure_client_id(state)?;
     let mut connection = storage::database(&state.data_dir)?;
     let transaction = connection
@@ -1987,16 +2208,36 @@ pub fn save_id_card_template(state: &DesktopState, template: &Value) -> Result<V
 
     let now = current_iso(&transaction);
     let id = text(template, "id");
-    let id = if id.is_empty() { "default_template" } else { id };
+    let id = if id.is_empty() {
+        "default_template"
+    } else {
+        id
+    };
     let name = text(template, "name");
-    let name = if name.is_empty() { "Template Default SPPG" } else { name };
+    let name = if name.is_empty() {
+        "Template Default SPPG"
+    } else {
+        name
+    };
     let orientation = text(template, "orientation");
-    let orientation = if orientation == "portrait" { "portrait" } else { "landscape" };
+    let orientation = if orientation == "portrait" {
+        "portrait"
+    } else {
+        "landscape"
+    };
     let front_bg_url = text(template, "frontBgUrl");
     let back_bg_url = text(template, "backBgUrl");
     let elements = template.get("elements").cloned().unwrap_or(json!([]));
     let elements_json = serde_json::to_string(&elements).unwrap_or_else(|_| "[]".to_string());
-    let is_active = if template.get("isActive").and_then(Value::as_bool).unwrap_or(true) { 1 } else { 0 };
+    let is_active = if template
+        .get("isActive")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        1
+    } else {
+        0
+    };
 
     transaction
         .execute(
@@ -2097,7 +2338,10 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
         .map_err(|_| CommandError::internal())?;
 
     if let Some(profile) = profile {
-        let company_name = profile.get("company_name").and_then(Value::as_str).unwrap_or("SPPG");
+        let company_name = profile
+            .get("company_name")
+            .and_then(Value::as_str)
+            .unwrap_or("SPPG");
         if !company_name.is_empty() {
             sync::enqueue(
                 &transaction,

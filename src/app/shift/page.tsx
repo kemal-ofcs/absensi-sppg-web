@@ -96,18 +96,20 @@ export default function ShiftPage() {
   } | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
-  const loadShifts = useCallback(async () => {
-    setLoading(true);
+  const loadShifts = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const data = await getDaftarShift();
       setShiftList(data);
       setErrorMsg(null);
     } catch (err: unknown) {
-      setErrorMsg(
-        err instanceof Error ? err.message : "Data shift belum dapat dimuat.",
-      );
+      if (!silent) {
+        setErrorMsg(
+          err instanceof Error ? err.message : "Data shift belum dapat dimuat.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -116,6 +118,16 @@ export default function ShiftPage() {
       loadShifts();
     }
   }, [isHydrated, isAuthenticated, loadShifts]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      loadShifts(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [loadShifts]);
 
   // Recalculate work hours automatically on form change
   const updateFormField = <K extends keyof ShiftInput>(

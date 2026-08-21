@@ -182,7 +182,7 @@ async function processInTransaction(
       kodeOperator,
       catatanSistem: "GPS Tidak Terdeteksi",
       pesan:
-        "Scan ditolak: Lokasi GPS HP Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi.",
+        "Scan ditolak: Lokasi GPS perangkat Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi/GPS pada perangkat.",
     });
   }
 

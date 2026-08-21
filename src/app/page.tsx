@@ -52,6 +52,16 @@ const MODULES: ModuleCard[] = [
     tone: "amber",
   },
   {
+    area: "history",
+    href: "/history",
+    icon: "clock",
+    label: "Lihat riwayat",
+    title: "Riwayat Absensi",
+    description:
+      "Pantau log scan real-time, absensi harian, audit absensi, koreksi dan ekspor Excel.",
+    tone: "sky",
+  },
+  {
     area: "karyawan",
     href: "/karyawan",
     icon: "user",
@@ -60,6 +70,16 @@ const MODULES: ModuleCard[] = [
     description:
       "Kelola profil, shift, status aktif, pencarian, dan token QR karyawan.",
     tone: "sky",
+  },
+  {
+    area: "idcards",
+    href: "/id-cards",
+    icon: "user",
+    label: "Cetak ID card",
+    title: "ID Card & Desain",
+    description:
+      "Cetak kartu CR80 / lembar A4, kelola template elemen dinamis dan profil instansi.",
+    tone: "amber",
   },
   {
     area: "shift",
@@ -72,13 +92,13 @@ const MODULES: ModuleCard[] = [
     tone: "amber",
   },
   {
-    area: "settings",
-    href: "/settings",
-    icon: "settings",
-    label: "Buka settings",
-    title: "Settings Aplikasi",
+    area: "holidays",
+    href: "/holidays",
+    icon: "calendar",
+    label: "Kelola hari libur",
+    title: "Kalender Hari Libur",
     description:
-      "Kelola identitas visual dan logo yang tersimpan pada perangkat ini.",
+      "Atur hari libur nasional dan cuti bersama untuk pengecualian auto-alfa.",
     tone: "sky",
   },
   {
@@ -100,6 +120,16 @@ const MODULES: ModuleCard[] = [
     description:
       "Kelola akun, role dinamis, dan permission aplikasi khusus Superadmin.",
     tone: "amber",
+  },
+  {
+    area: "settings",
+    href: "/settings",
+    icon: "settings",
+    label: "Buka settings",
+    title: "Settings Aplikasi",
+    description:
+      "Kelola identitas visual, sinkronisasi Turso Vault, Geofencing, dan keamanan scanner.",
+    tone: "sky",
   },
 ];
 

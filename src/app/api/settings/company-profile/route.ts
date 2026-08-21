@@ -43,7 +43,7 @@ export async function PUT(request: NextRequest) {
     const actor = await prepare(request);
     const body = (await readJsonBody(
       request,
-      10_485_760,
+      25_165_824,
     )) as CompanyProfileInput;
     const data = await updateCompanyProfile(body);
     const revision = await recordOperationalChange(getServerDatabase(), {

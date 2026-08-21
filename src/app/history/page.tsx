@@ -14,6 +14,7 @@ import {
   hapusAbsensiHarian,
   hapusLogScan,
 } from "@/lib/gateways/report";
+import { syncNow } from "@/lib/gateways/sync-status";
 import { useDebounce } from "@/lib/hooks/useDebounce";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
@@ -141,9 +142,18 @@ export default function HistoryPage() {
     setActionBusy(true);
     setError(null);
     try {
+      const formatTime = (time: string, date: string) => {
+        if (!time || !time.trim()) return "";
+        const clean = time.trim();
+        if (clean.includes(" ") || clean.includes("T")) return clean;
+        return `${date} ${clean.slice(0, 5)}:00`;
+      };
+      const formattedMasuk = formatTime(editData.jam_masuk, editData.tanggal);
+      const formattedPulang = formatTime(editData.jam_pulang, editData.tanggal);
+
       const result = await editAbsensiHarian(editData.id_sesi, {
-        jam_masuk: editData.jam_masuk,
-        jam_pulang: editData.jam_pulang,
+        jam_masuk: formattedMasuk,
+        jam_pulang: formattedPulang,
         status_kehadiran: editData.status_kehadiran || undefined,
         status_absen: editData.status_absen || undefined,
         keterangan: editData.keterangan || undefined,
@@ -189,36 +199,60 @@ export default function HistoryPage() {
     }
   };
 
-  const load = useCallback(async () => {
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const data =
+          tab === "scan"
+            ? await getRiwayatScan({
+                tanggal_mulai: tanggalMulai,
+                tanggal_selesai: tanggalSelesai,
+                limit: SCAN_PAGE_SIZE,
+                offset: page * SCAN_PAGE_SIZE,
+              })
+            : await getRekapHarian({
+                tanggal_mulai: tanggalMulai,
+                tanggal_selesai: tanggalSelesai,
+                divisi: selectedDivisi !== "all" ? selectedDivisi : undefined,
+              });
+        setRows(data);
+        setError(null);
+      } catch (cause) {
+        if (!silent) {
+          setError(
+            cause instanceof Error ? cause.message : "Riwayat gagal dimuat.",
+          );
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [page, tab, tanggalMulai, tanggalSelesai, selectedDivisi],
+  );
+
+  const handleManualRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      const data =
-        tab === "scan"
-          ? await getRiwayatScan({
-              tanggal_mulai: tanggalMulai,
-              tanggal_selesai: tanggalSelesai,
-              limit: SCAN_PAGE_SIZE,
-              offset: page * SCAN_PAGE_SIZE,
-            })
-          : await getRekapHarian({
-              tanggal_mulai: tanggalMulai,
-              tanggal_selesai: tanggalSelesai,
-              divisi: selectedDivisi !== "all" ? selectedDivisi : undefined,
-            });
-      setRows(data);
-      setError(null);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Riwayat gagal dimuat.",
-      );
+      await syncNow().catch(() => undefined);
     } finally {
-      setLoading(false);
+      await load();
     }
-  }, [page, tab, tanggalMulai, tanggalSelesai, selectedDivisi]);
+  }, [load]);
 
   useEffect(() => {
     if (hydrated && isAuthenticated) void load();
   }, [hydrated, isAuthenticated, load]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      void load(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [load]);
 
   // Extract unique divisions from loaded data for local filtering
   const availableDivisions = useMemo(() => {
@@ -406,11 +440,13 @@ export default function HistoryPage() {
         String(r.divisi || ""),
         String(r.jenis_scan || ""),
         String(r.status_proses || ""),
-        String(r.sumber_data || ""),
+        String(r.sumber_data || "") === "Import Offline"
+          ? "Import Manual"
+          : String(r.sumber_data || ""),
         String(r.catatan_sistem || ""),
         String(r.keterangan || ""),
-        Number(r.menit_terlambat || 0),
-        Number(r.menit_datang_awal || 0),
+        String(r.menit_terlambat || 0),
+        String(r.menit_datang_awal || 0),
         String(r.id_referensi || ""),
         String(r.kode_operator || ""),
       ]);
@@ -458,7 +494,9 @@ export default function HistoryPage() {
       String(r.status_kehadiran || ""),
       String(r.status_absen || ""),
       String(r.keterangan || ""),
-      String(r.sumber || ""),
+      String(r.sumber || "") === "Import Offline"
+        ? "Import Manual"
+        : String(r.sumber || ""),
       formatDisplayDateTime(r.update_terakhir),
       Number(r.menit_terlambat || 0),
       Number(r.menit_datang_awal || 0),
@@ -910,7 +948,7 @@ export default function HistoryPage() {
 
                 <button
                   type="button"
-                  onClick={() => load()}
+                  onClick={() => handleManualRefresh()}
                   disabled={loading}
                   className="min-h-9 px-3.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded-xl font-bold border border-slate-700 transition disabled:opacity-50 flex items-center gap-1.5"
                 >
@@ -1028,7 +1066,9 @@ export default function HistoryPage() {
                         </span>
                       </td>
                       <td className="p-3.5 text-slate-400 whitespace-nowrap">
-                        {String(row.sumber_data || "-")}
+                        {String(row.sumber_data) === "Import Offline"
+                          ? "Import Manual"
+                          : String(row.sumber_data || "-")}
                       </td>
                       <td
                         className="p-3.5 text-slate-400 max-w-[200px] truncate"
@@ -1198,7 +1238,9 @@ export default function HistoryPage() {
                           {String(row.keterangan || "-")}
                         </td>
                         <td className="p-3.5 text-slate-400 whitespace-nowrap">
-                          {String(row.sumber || "-")}
+                          {String(row.sumber) === "Import Offline"
+                            ? "Import Manual"
+                            : String(row.sumber || "-")}
                         </td>
                         <td className="p-3.5 text-slate-400 whitespace-nowrap text-[11px]">
                           {formatDisplayDateTime(row.update_terakhir)}

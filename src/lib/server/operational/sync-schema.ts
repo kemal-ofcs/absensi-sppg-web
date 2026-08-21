@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const eventIdSchema = z.string().regex(/^evt-[a-f0-9]{64}$/);
 const clientIdSchema = z.string().regex(/^desktop-[a-f0-9]{64}$/);
-const shortText = z.string().max(512);
+const shortText = z.string().max(255);
 const longText = z.string().max(8_192);
 const assetText = z.string().max(10_485_760);
 const finiteNumber = z.number().finite();
@@ -323,6 +323,11 @@ export const operationalSyncEventSchema = z.union([
   eventSchema("attendance", "scan", attendanceScanPayload),
   eventSchema(
     "attendance",
+    "create",
+    z.object({ attendance: attendanceSchema }).strict(),
+  ),
+  eventSchema(
+    "attendance",
     "update",
     z
       .object({
@@ -405,7 +410,7 @@ export const operationalSyncEventSchema = z.union([
   ),
 ]);
 
-export interface OperationalSyncEvent {
+export type OperationalSyncEvent = {
   eventId: string;
   clientId: string;
   domain: string;
@@ -414,7 +419,7 @@ export interface OperationalSyncEvent {
   payload: Record<string, unknown>;
   baseRevision?: number | null;
   createdAt: number;
-}
+};
 
 export const operationalSyncBatchSchema = z
   .object({

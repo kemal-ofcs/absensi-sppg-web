@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { hashSessionToken } from "@/lib/auth/session-token";
 
 const MAX_FAILURES = 5;
-const WINDOW_MS = 15 * 60 * 1_000;
-const BLOCK_MS = 15 * 60 * 1_000;
+const WINDOW_MS = 5 * 60 * 1_000;
+const BLOCK_MS = 2 * 60 * 1_000;
 
 async function createRateKeys(clientAddress: string, identifier: string) {
   return Promise.all([

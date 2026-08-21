@@ -34,7 +34,6 @@ import {
   type ScannerSafetySettings,
   saveScannerSafetySettings,
 } from "@/lib/gateways/scanner-settings";
-import { getServerUrl, setServerUrl } from "@/lib/gateways/server-config";
 import {
   clearFailedSync,
   forceResyncSettings,
@@ -47,6 +46,13 @@ import {
   type SyncStatus,
   syncNow,
 } from "@/lib/gateways/sync-status";
+import {
+  clearTursoConfig,
+  getTursoUrl,
+  saveTursoConfig,
+  type TursoConnectionStatus,
+  testTursoConnection,
+} from "@/lib/gateways/turso-config";
 import { resetAppLogo, saveAppLogo, useAppLogo } from "@/lib/hooks/useAppLogo";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
@@ -93,13 +99,13 @@ export default function SettingsPage() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [syncBusy, setSyncBusy] = useState(false);
-  const [serverUrl, setServerUrlState] = useState<string>(
-    "https://absensi-sppg-seven.vercel.app",
-  );
-  const [serverUrlInput, setServerUrlInput] = useState<string>(
-    "https://absensi-sppg-seven.vercel.app",
-  );
-  const [serverUrlBusy, setServerUrlBusy] = useState(false);
+  const [tursoUrl, setTursoUrl] = useState<string>("");
+  const [tursoToken, setTursoToken] = useState<string>("");
+  const [showTursoToken, setShowTursoToken] = useState<boolean>(false);
+  const [tursoTestStatus, setTursoTestStatus] =
+    useState<TursoConnectionStatus | null>(null);
+  const [tursoBusy, setTursoBusy] = useState<boolean>(false);
+  const [tursoTesting, setTursoTesting] = useState<boolean>(false);
   const [geofence, setGeofence] = useState<GeofenceSettings>({
     enabled: false,
     latitude: 0,
@@ -124,15 +130,14 @@ export default function SettingsPage() {
     branch_name: "Pusat Operasional",
     logo_url: null,
     signature_url: null,
-    address: "Jl. Sudirman No. 123, Jakarta",
-    phone: "021-5550123",
-    email: "info@sppg.id",
-    website: "https://sppg.id",
-    leader_name: "Dr. H. Ahmad Fauzi, M.M.",
-    leader_title: "Kepala SPPG",
-    leader_nip: "19750815 200003 1 002",
-    card_terms:
-      "1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.\n2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.\n3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.\n4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.",
+    address: null,
+    phone: null,
+    email: null,
+    website: null,
+    leader_name: null,
+    leader_title: null,
+    leader_nip: null,
+    card_terms: null,
     timezone: "Asia/Jakarta",
     updated_at: "",
   });
@@ -149,15 +154,6 @@ export default function SettingsPage() {
       .catch(() => undefined);
 
     if (isDesktopSyncAvailable()) {
-      getServerUrl()
-        .then((url) => {
-          if (!cancelled) {
-            setServerUrlState(url);
-            setServerUrlInput(url);
-          }
-        })
-        .catch(() => undefined);
-
       getSyncStatus()
         .then((status) => {
           if (!cancelled) setSyncStatus(status);
@@ -171,7 +167,16 @@ export default function SettingsPage() {
       })
       .catch(() => undefined);
 
-    if (!user?.isSuperadmin) return;
+    if (user?.isSuperadmin) {
+      getTursoUrl()
+        .then((url) => {
+          if (!cancelled && url) {
+            setTursoUrl(url);
+          }
+        })
+        .catch(() => undefined);
+    }
+
     setGeofenceBusy(true);
     setScannerSafetyBusy(true);
     getGeofenceSettings()
@@ -217,30 +222,24 @@ export default function SettingsPage() {
     };
   }, [isAuthenticated, isHydrated, user?.isSuperadmin]);
 
-  const handleServerUrlSave = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setServerUrlBusy(true);
-    try {
-      const updated = await setServerUrl(serverUrlInput);
-      setServerUrlState(updated);
-      setServerUrlInput(updated);
-      setFeedback({
-        type: "success",
-        message: `URL Server Desktop berhasil diperbarui ke: ${updated}.`,
-      });
-      await refreshSync(false);
-    } catch (error) {
-      setFeedback({
-        type: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Gagal memperbarui URL Server Desktop.",
-      });
-    } finally {
-      setServerUrlBusy(false);
-    }
-  };
+  // Dengarkan event auto-sync selesai untuk memperbarui status Cloud Sync secara real-time
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+    const onSyncCompleted = () => {
+      if (isDesktopSyncAvailable()) {
+        getSyncStatus()
+          .then((status) => setSyncStatus(status))
+          .catch(() => undefined);
+        getSyncConflicts()
+          .then((items) => setConflicts(items))
+          .catch(() => undefined);
+      }
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [isHydrated, isAuthenticated]);
 
   const handleAutoAlfaToggle = async (enabled: boolean) => {
     setAutoAlfaBusy(true);
@@ -409,6 +408,104 @@ export default function SettingsPage() {
       });
     } finally {
       setSyncBusy(false);
+    }
+  };
+
+  const handleTursoSave = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!tursoUrl.trim()) {
+      setFeedback({
+        type: "error",
+        message: "URL database cloud Turso tidak boleh kosong.",
+      });
+      return;
+    }
+    setTursoBusy(true);
+    try {
+      await saveTursoConfig(tursoUrl.trim(), tursoToken.trim());
+      setFeedback({
+        type: "success",
+        message:
+          "Konfigurasi database cloud Turso berhasil disimpan ke vault terenkripsi!",
+      });
+      const status = await testTursoConnection(
+        tursoUrl.trim(),
+        tursoToken.trim(),
+      );
+      setTursoTestStatus(status);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan konfigurasi database cloud Turso.",
+      });
+    } finally {
+      setTursoBusy(false);
+    }
+  };
+
+  const handleTursoTest = async () => {
+    setTursoTesting(true);
+    try {
+      const status = await testTursoConnection(
+        tursoUrl.trim() || undefined,
+        tursoToken.trim() || undefined,
+      );
+      setTursoTestStatus(status);
+      if (status.connected) {
+        setFeedback({
+          type: "success",
+          message: `Koneksi ke Database Turso Berhasil! Latensi: ${status.latency_ms ?? 0} ms`,
+        });
+      } else {
+        setFeedback({
+          type: "error",
+          message: `Koneksi database gagal: ${status.error_message ?? "Tidak dapat terhubung"}`,
+        });
+      }
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menguji koneksi ke database cloud.",
+      });
+    } finally {
+      setTursoTesting(false);
+    }
+  };
+
+  const handleTursoClear = async () => {
+    if (
+      !confirm(
+        "Apakah Anda yakin ingin menghapus konfigurasi database cloud Turso dari perangkat ini?",
+      )
+    ) {
+      return;
+    }
+    setTursoBusy(true);
+    try {
+      await clearTursoConfig();
+      setTursoUrl("");
+      setTursoToken("");
+      setTursoTestStatus(null);
+      setFeedback({
+        type: "success",
+        message: "Konfigurasi database cloud Turso berhasil direset.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal mereset konfigurasi database cloud.",
+      });
+    } finally {
+      setTursoBusy(false);
     }
   };
 
@@ -1184,6 +1281,179 @@ export default function SettingsPage() {
         <section className="app-panel rounded-3xl p-5 sm:p-7">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-cyan-400/20 bg-cyan-400/10 text-cyan-200">
+                <Icon name="database" className="size-5" />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-black text-white">
+                    Konfigurasi Database Cloud (Turso LibSQL)
+                  </h2>
+                  <span className="rounded-md bg-cyan-400/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-300 border border-cyan-400/20">
+                    Superadmin Only
+                  </span>
+                </div>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Aplikasi Desktop dan Mobile terhubung langsung ke database
+                  Cloud Turso (LibSQL HTTP Pipeline). Kredensial disimpan secara
+                  aman di dalam Vault terenkripsi AES-256-GCM pada perangkat
+                  ini.
+                </p>
+              </div>
+            </div>
+            <StatusBadge
+              tone={
+                tursoTestStatus?.connected
+                  ? "success"
+                  : tursoUrl
+                    ? "info"
+                    : "neutral"
+              }
+            >
+              {tursoTestStatus?.connected
+                ? `Terhubung (${tursoTestStatus.latency_ms ?? 0} ms)`
+                : tursoUrl
+                  ? "Terkonfigurasi"
+                  : "Database Lokal"}
+            </StatusBadge>
+          </div>
+
+          <form onSubmit={handleTursoSave} className="mt-6 space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                URL Database Cloud Turso
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={tursoUrl}
+                    onChange={(e) => setTursoUrl(e.target.value)}
+                    placeholder="libsql://absensi-sppg-org.turso.io atau https://absensi-sppg-org.turso.io"
+                    className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <span className="text-[11px] font-normal text-slate-500">
+                  Contoh format:{" "}
+                  <code className="text-slate-400">
+                    libsql://nama-db-org.turso.io
+                  </code>{" "}
+                  atau{" "}
+                  <code className="text-slate-400">
+                    https://nama-db-org.turso.io
+                  </code>
+                </span>
+              </label>
+
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                Auth Token Database (Bearer Token)
+                <div className="relative">
+                  <input
+                    type={showTursoToken ? "text" : "password"}
+                    value={tursoToken}
+                    onChange={(e) => setTursoToken(e.target.value)}
+                    placeholder={
+                      tursoUrl
+                        ? "•••••••••••••••• (Tersimpan aman di vault - kosongkan jika tidak ingin diubah)"
+                        : "eyJhbGciOiJFZERTQ..."
+                    }
+                    className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 pr-24 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowTursoToken((prev) => !prev)}
+                    className="absolute right-2 top-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:text-white"
+                  >
+                    {showTursoToken ? "Sembunyikan" : "Tampilkan"}
+                  </button>
+                </div>
+                <span className="text-[11px] font-normal text-slate-500">
+                  {tursoUrl ? (
+                    <span className="text-cyan-400">
+                      Token otentikasi tersimpan aman di vault lokal. Biarkan
+                      kosong jika tidak ingin mengganti token.
+                    </span>
+                  ) : (
+                    <>
+                      Token otentikasi Turso dari command CLI{" "}
+                      <code className="text-slate-400">
+                        turso db tokens create &lt;db-name&gt;
+                      </code>
+                    </>
+                  )}
+                </span>
+              </label>
+            </div>
+
+            {tursoTestStatus ? (
+              <div
+                className={`rounded-2xl border p-4 ${
+                  tursoTestStatus.connected
+                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                    : "border-rose-500/20 bg-rose-500/10 text-rose-300"
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-xs">
+                  <Icon
+                    name={tursoTestStatus.connected ? "check" : "alert"}
+                    className="size-4"
+                  />
+                  <span>
+                    {tursoTestStatus.connected
+                      ? `Koneksi Database Cloud Berhasil (Latensi: ${tursoTestStatus.latency_ms ?? 0} ms)`
+                      : `Gagal Terhubung ke Database Cloud: ${tursoTestStatus.error_message || "Periksa URL dan Token"}`}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button
+                type="submit"
+                disabled={tursoBusy || tursoTesting}
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-cyan-400 px-5 text-xs font-black text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-300 disabled:opacity-50"
+              >
+                <Icon name="check" className="size-4" />
+                <span>
+                  {tursoBusy
+                    ? "Menyimpan ke Vault..."
+                    : "Simpan Konfigurasi Turso"}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTursoTest}
+                disabled={tursoBusy || tursoTesting}
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 text-xs font-bold text-cyan-200 hover:bg-cyan-400/20 disabled:opacity-50"
+              >
+                <Icon
+                  name={tursoTesting ? "clock" : "sync"}
+                  className={`size-4 ${tursoTesting ? "animate-spin" : ""}`}
+                />
+                <span>
+                  {tursoTesting ? "Menguji Koneksi..." : "Uji Koneksi Database"}
+                </span>
+              </button>
+
+              {tursoUrl ? (
+                <button
+                  type="button"
+                  onClick={handleTursoClear}
+                  disabled={tursoBusy || tursoTesting}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 text-xs font-bold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                >
+                  <Icon name="trash" className="size-4" />
+                  <span>Reset Konfigurasi</span>
+                </button>
+              ) : null}
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
               <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
                 <Icon name="scanner" className="size-5" />
               </span>
@@ -1605,83 +1875,6 @@ export default function SettingsPage() {
                 </>
               ) : null}
             </div>
-          </div>
-          <div className="mt-6 rounded-2xl border border-sky-500/20 bg-sky-950/20 p-5">
-            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <label
-                  htmlFor="desktop-server-url-input"
-                  className="block text-xs font-bold text-sky-200"
-                >
-                  URL Endpoint Server Cloud
-                </label>
-                <p className="mt-0.5 text-[11px] text-slate-400">
-                  Target server aktif:{" "}
-                  <span className="font-mono font-bold text-sky-300">
-                    {serverUrl}
-                  </span>
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-400">
-                  Pilihan cepat:
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setServerUrlInput("https://absensi-sppg-seven.vercel.app");
-                    setFeedback({
-                      type: "success",
-                      message:
-                        "Preset Cloud SPPG (Vercel) dipilih. Klik tombol 'Simpan URL' untuk menerapkan ke sistem.",
-                    });
-                  }}
-                  className="rounded-lg border border-sky-400/30 bg-sky-500/10 px-2.5 py-1 text-xs font-bold text-sky-200 transition hover:bg-sky-500/20 active:scale-95"
-                  title="Isi otomatis dengan URL server Cloud SPPG di Vercel"
-                >
-                  Cloud SPPG (Vercel)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setServerUrlInput("http://localhost:3000");
-                    setFeedback({
-                      type: "success",
-                      message:
-                        "Preset Localhost (:3000) dipilih. Klik tombol 'Simpan URL' untuk menerapkan ke sistem.",
-                    });
-                  }}
-                  className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-bold text-slate-300 transition hover:bg-white/10 active:scale-95"
-                  title="Isi otomatis dengan server lokal pengujian (port 3000)"
-                >
-                  Localhost
-                </button>
-              </div>
-            </div>
-
-            <form
-              onSubmit={handleServerUrlSave}
-              className="flex flex-col gap-3 sm:flex-row sm:items-center"
-            >
-              <div className="flex-1">
-                <input
-                  id="desktop-server-url-input"
-                  type="text"
-                  value={serverUrlInput}
-                  onChange={(e) => setServerUrlInput(e.target.value)}
-                  placeholder="https://absensi-sppg-seven.vercel.app"
-                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-sky-400"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={serverUrlBusy}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 shadow-md shadow-sky-950/30 transition hover:bg-sky-300 disabled:opacity-50 shrink-0"
-              >
-                <Icon name="check" className="size-4" />
-                <span>{serverUrlBusy ? "Menyimpan..." : "Simpan URL"}</span>
-              </button>
-            </form>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">

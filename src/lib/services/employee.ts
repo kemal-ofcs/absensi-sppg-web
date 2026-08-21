@@ -416,7 +416,7 @@ export async function generateTokenMassal() {
   await ensureDbInitialized();
 
   const listRes = await db.execute(
-    "SELECT id_unik, token_absensi FROM master_data WHERE token_absensi IS NULL OR token_absensi = '';",
+    "SELECT id_unik, token_absensi FROM master_data WHERE token_absensi IS NULL OR token_absensi = '' OR qr_code IS NULL OR qr_code = '' OR status_qr != 'Generated' OR status_qr IS NULL;",
   );
 
   let updatedCount = 0;

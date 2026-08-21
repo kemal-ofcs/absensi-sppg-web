@@ -1,8 +1,8 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 8;
-export const REQUIRED_TABLE_COUNT = 21;
+export const CURRENT_SCHEMA_VERSION = 9;
+export const REQUIRED_TABLE_COUNT = 23;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -17,7 +17,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'backup_karyawan', 'koreksi_admin', 'audit_absensi', 'app_role',
             'app_permission', 'role_permission', 'app_session',
             'auth_login_rate_limit', 'sync_operation_receipt',
-            'sync_change_log', 'import_offline', 'tbl_hari_libur',
+            'sync_change_log', 'sync_changelog', 'app_bootstrap_state',
+            'import_offline', 'tbl_hari_libur',
             'company_profile', 'id_card_template'
           )
         ) AS table_count;
@@ -131,7 +132,7 @@ export async function initDatabaseSchema(client: Client) {
         divisi TEXT NOT NULL,
         jenis_scan TEXT NOT NULL,
         status_proses TEXT NOT NULL,
-        sumber_data TEXT NOT NULL CHECK(sumber_data IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Generate Sistem')),
+        sumber_data TEXT NOT NULL CHECK(sumber_data IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Import Manual', 'Generate Sistem')),
         catatan_sistem TEXT,
         keterangan TEXT,
         menit_terlambat INTEGER DEFAULT 0,
@@ -154,7 +155,7 @@ export async function initDatabaseSchema(client: Client) {
         status_kehadiran TEXT NOT NULL,
         status_absen TEXT NOT NULL,
         keterangan TEXT,
-        sumber TEXT NOT NULL CHECK(sumber IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Generate Sistem')),
+        sumber TEXT NOT NULL CHECK(sumber IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Import Manual', 'Generate Sistem')),
         update_terakhir TEXT NOT NULL,
         menit_terlambat INTEGER DEFAULT 0,
         menit_datang_awal INTEGER DEFAULT 0,
@@ -308,8 +309,6 @@ export async function initDatabaseSchema(client: Client) {
 
     // Seed default data
     await seedDefaultData(client);
-
-    console.log("Database schema berhasil dimigrasikan.");
   } catch (error) {
     console.error("Gagal menginisialisasi database schema:", error);
     throw error;

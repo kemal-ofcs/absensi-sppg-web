@@ -42,7 +42,7 @@ export async function getCurrentCoordinates(): Promise<{
       );
     });
 
-  // Tier 1: high accuracy (GPS chip) — short timeout for desktop
+  // Tier 1: high accuracy (GPS chip) — short timeout for desktop/mobile
   const highAccResult = await tryPosition(true, 1500);
   if (highAccResult) return highAccResult;
 
@@ -62,7 +62,8 @@ export function watchCoordinates(): () => void {
 
   const watchId = navigator.geolocation.watchPosition(
     (pos) => {
-      _cached = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      _cached = coords;
       _cachedAt = Date.now();
     },
     () => undefined, // silently ignore desktop GPS failures

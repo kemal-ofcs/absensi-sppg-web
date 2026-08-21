@@ -17,6 +17,7 @@ const nextConfig: NextConfig = {
   ...(isDesktopBuild ? { output: "export" as const } : {}),
   devIndicators: false,
   turbopack: {
+    root: process.cwd(),
     resolveAlias: {
       "@zxing/browser": zxingBrowserModule,
       "@zxing/library": zxingLibraryModule,

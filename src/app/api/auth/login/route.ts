@@ -72,8 +72,14 @@ export async function POST(request: NextRequest) {
     username,
   );
   if (!rateLimit.allowed) {
+    const minutes = Math.floor(rateLimit.retryAfterSeconds / 60);
+    const seconds = rateLimit.retryAfterSeconds % 60;
+    const timeStr =
+      minutes > 0
+        ? `${minutes} menit${seconds > 0 ? ` ${seconds} detik` : ""}`
+        : `${seconds} detik`;
     const response = errorResponse(
-      "Terlalu banyak percobaan login. Coba kembali beberapa saat lagi.",
+      `Terlalu banyak percobaan login. Akun dikunci sementara untuk keamanan. Silakan tunggu ${timeStr} lagi sebelum mencoba kembali.`,
       429,
     );
     response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));

@@ -63,6 +63,52 @@ function number(payload: Record<string, unknown>, key: string, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const MONTH_NAMES = [
+  "Januari",
+  "Februari",
+  "Maret",
+  "April",
+  "Mei",
+  "Juni",
+  "Juli",
+  "Agustus",
+  "September",
+  "Oktober",
+  "November",
+  "Desember",
+] as const;
+
+function resolveYear(
+  payload: Record<string, unknown>,
+  dateField = "tanggal",
+): number {
+  const explicit = number(payload, "tahun");
+  if (explicit > 0) return explicit;
+  const dateVal = text(payload, dateField);
+  if (dateVal.includes("-")) {
+    const parsed = Number(dateVal.split("-")[0]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return new Date().getFullYear();
+}
+
+function resolveMonth(
+  payload: Record<string, unknown>,
+  dateField = "tanggal",
+): string {
+  const explicit = text(payload, "bulan");
+  if (explicit.length > 0) return explicit;
+  const dateVal = text(payload, dateField);
+  if (dateVal.includes("-")) {
+    const monthNum = Number(dateVal.split("-")[1]);
+    if (Number.isFinite(monthNum) && monthNum >= 1 && monthNum <= 12) {
+      return MONTH_NAMES[monthNum - 1] ?? "Januari";
+    }
+  }
+  const currentMonth = new Date().getMonth();
+  return MONTH_NAMES[currentMonth] ?? "Januari";
+}
+
 function payloadHash(event: OperationalSyncEvent) {
   return createHash("sha256")
     .update(
@@ -558,6 +604,72 @@ async function applyAttendance(
   actor: OperatorUser,
   event: OperationalSyncEvent,
 ) {
+  if (event.operation === "create") {
+    const raw = event.payload.attendance;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("Payload ABSENSI_HARIAN tidak valid.");
+    }
+    const data = raw as Record<string, unknown>;
+    const sessionId = text(data, "id_sesi") || event.entityKey;
+    if (!sessionId || !text(data, "tanggal") || !text(data, "id_karyawan")) {
+      throw new Error("Data ABSENSI_HARIAN belum lengkap.");
+    }
+    await transaction.execute({
+      sql: `INSERT INTO absensi_harian (
+        tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+        status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
+        menit_terlambat, menit_datang_awal, jam_kerja, lembur,
+        jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
+        id_backup, id_karyawan_asal, tanggal_tugas
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id_sesi) DO UPDATE SET
+        jam_masuk = excluded.jam_masuk,
+        jam_pulang = excluded.jam_pulang,
+        status_kehadiran = excluded.status_kehadiran,
+        status_absen = excluded.status_absen,
+        keterangan = excluded.keterangan,
+        sumber = excluded.sumber,
+        update_terakhir = excluded.update_terakhir,
+        menit_terlambat = excluded.menit_terlambat,
+        menit_datang_awal = excluded.menit_datang_awal,
+        jam_kerja = excluded.jam_kerja,
+        lembur = excluded.lembur,
+        jam_kerja_kurang = excluded.jam_kerja_kurang;`,
+      args: [
+        text(data, "tanggal"),
+        text(data, "id_karyawan"),
+        text(data, "nama"),
+        text(data, "kelas_divisi"),
+        text(data, "jam_masuk"),
+        text(data, "jam_pulang"),
+        text(data, "status_kehadiran"),
+        text(data, "status_absen"),
+        text(data, "keterangan"),
+        text(data, "sumber") || "Otomatis",
+        text(data, "update_terakhir") || new Date().toISOString(),
+        number(data, "menit_terlambat"),
+        number(data, "menit_datang_awal"),
+        number(data, "jam_kerja"),
+        number(data, "lembur"),
+        number(data, "jam_kerja_kurang"),
+        number(data, "id_shift", 1),
+        resolveMonth(data),
+        resolveYear(data),
+        sessionId,
+        text(data, "mode_tugas") || "NORMAL",
+        text(data, "id_backup"),
+        text(data, "id_karyawan_asal"),
+        text(data, "tanggal_tugas"),
+      ],
+    });
+    const revision = await appendChange(
+      transaction,
+      actor,
+      event,
+      event.payload,
+    );
+    return { revision, payload: { id_sesi: sessionId } };
+  }
   if (event.operation === "delete") {
     const sessionId = text(event.payload, "id_sesi") || event.entityKey;
     await transaction.execute({
@@ -734,8 +846,8 @@ async function applyAttendance(
         number(data, "lembur"),
         number(data, "jam_kerja_kurang"),
         number(data, "id_shift", 1),
-        text(data, "bulan"),
-        number(data, "tahun"),
+        resolveMonth(data),
+        resolveYear(data),
         idSesi,
         text(data, "mode_tugas") || "NORMAL",
         text(data, "id_backup"),
@@ -1021,8 +1133,8 @@ async function applyCorrection(
       number(daily, "lembur"),
       number(daily, "jam_kerja_kurang"),
       number(daily, "id_shift", 1),
-      text(daily, "bulan"),
-      number(daily, "tahun"),
+      resolveMonth(daily),
+      resolveYear(daily),
       sessionId,
       text(daily, "mode_tugas") || "NORMAL",
       text(daily, "id_backup"),
@@ -1393,8 +1505,8 @@ async function applyOfflineImport(
       number(daily, "lembur"),
       number(daily, "jam_kerja_kurang"),
       number(daily, "id_shift", 1),
-      text(daily, "bulan"),
-      number(daily, "tahun"),
+      resolveMonth(daily),
+      resolveYear(daily),
       sessionId,
       text(daily, "mode_tugas") || "NORMAL",
       text(daily, "id_backup"),

@@ -24,6 +24,7 @@ const actor: OperatorUser = {
     "employees.manage",
     "shifts.manage",
     "scanner.use",
+    "corrections.manage",
   ],
   permissionRevision: 1,
 };
@@ -253,6 +254,28 @@ describe("operational sync idempotency", () => {
     expect(shifts.rows[0]?.nama_shift).toBe("Shift 1 - Pagi Normal");
   });
 
+  test("event attendance create Auto-Alfa diterapkan dan idempoten", async () => {
+    const client = await fixture();
+    const attendance = successfulScanEvent().payload.attendance;
+    const input = event({
+      eventId: `evt-${"8".repeat(64)}`,
+      domain: "attendance",
+      operation: "create",
+      entityKey: "alfa:NORMAL-20260810-K001-1",
+      payload: { attendance },
+    });
+
+    const first = await processOperationalSyncEvent(client, actor, input);
+    const retry = await processOperationalSyncEvent(client, actor, input);
+
+    expect(first.status).toBe("applied");
+    expect(retry).toEqual(first);
+    const rows = await client.execute(
+      "SELECT COUNT(*) AS total FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
+    );
+    expect(Number(rows.rows[0]?.total)).toBe(1);
+  });
+
   test("receipt konflik duplicate lama dibuka ulang dan karyawan server dipertahankan", async () => {
     const client = await fixture();
     await client.execute({
@@ -422,5 +445,78 @@ describe("operational sync idempotency", () => {
     expect(attendance.rows[0]?.status_kehadiran).toBe("Hadir");
     expect(attendance.rows[0]?.sumber).toBe("Koreksi Admin");
     expect(Number(logs.rows[0]?.total)).toBe(0);
+  });
+
+  test("event correction create dengan tahun integer diterapkan dan receipt dibuat", async () => {
+    const client = await fixture();
+    const event = {
+      clientId: `desktop-${"b".repeat(64)}`,
+      eventId: `evt-${"f".repeat(64)}`,
+      domain: "correction" as const,
+      operation: "create" as const,
+      entityKey: "KOR-20260810-ABC123XYZ",
+      createdAt: Date.now(),
+      payload: {
+        correction: {
+          id_referensi: "KOR-20260810-ABC123XYZ",
+          tanggal: "2026-08-10",
+          id_karyawan: "K001",
+          nama: "Karyawan Test",
+          divisi: "Dapur",
+          jenis_koreksi: "Lupa Absen Masuk",
+          jam_koreksi: "08:00",
+          keterangan_admin: "Koreksi masuk",
+          status_proses: "Sudah Diproses",
+          timestamp: "2026-08-10 08:00:00",
+          kode_operator: "SPD001",
+        },
+        attendance: {
+          tanggal: "2026-08-10",
+          id_karyawan: "K001",
+          nama: "Karyawan Test",
+          kelas_divisi: "Dapur",
+          jam_masuk: "2026-08-10 08:00:00",
+          jam_pulang: "2026-08-10 16:00:00",
+          status_kehadiran: "Hadir",
+          status_absen: "Lengkap",
+          keterangan: "Koreksi masuk",
+          update_terakhir: "2026-08-10 16:00:00",
+          id_shift: 1,
+          bulan: "Agustus",
+          tahun: 2026,
+          id_sesi: "NORMAL-20260810-K001-1",
+          mode_tugas: "NORMAL",
+        },
+        log: {
+          timestamp_scan: "2026-08-10 08:00:00",
+          tanggal_kerja: "2026-08-10",
+          jam_scan: "08:00:00",
+          id_karyawan: "K001",
+          nama: "Karyawan Test",
+          divisi: "Dapur",
+          jenis_scan: "Masuk",
+          catatan_sistem: "Koreksi Admin",
+          keterangan: "Koreksi masuk",
+          menit_terlambat: 0,
+          menit_datang_awal: 0,
+          id_referensi: "KOR-20260810-ABC123XYZ",
+          kode_operator: "SPD001",
+        },
+      },
+    };
+
+    const result = await processOperationalSyncEvent(client, actor, event);
+    expect(result.status).toBe("applied");
+    const correction = await client.execute(
+      "SELECT id_referensi, jenis_koreksi FROM koreksi_admin WHERE id_referensi = 'KOR-20260810-ABC123XYZ';",
+    );
+    const attendance = await client.execute(
+      "SELECT status_kehadiran, sumber, tahun, bulan FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
+    );
+    expect(correction.rows[0]?.id_referensi).toBe("KOR-20260810-ABC123XYZ");
+    expect(attendance.rows[0]?.status_kehadiran).toBe("Hadir");
+    expect(attendance.rows[0]?.sumber).toBe("Koreksi Admin");
+    expect(Number(attendance.rows[0]?.tahun)).toBe(2026);
+    expect(attendance.rows[0]?.bulan).toBe("Agustus");
   });
 });

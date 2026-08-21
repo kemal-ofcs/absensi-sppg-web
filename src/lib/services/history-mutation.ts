@@ -60,13 +60,13 @@ export async function editAbsensiHarian(
 
   // Fetch shift details
   const shiftRes = await db.execute({
-    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
     args: [idShift],
   });
   const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
   const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
   const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-  const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+  const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
   const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
   const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
   const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
@@ -127,10 +127,14 @@ export async function editAbsensiHarian(
       if (isOvernightShift && userInTimeline < shiftInMin - 720) {
         userInTimeline += 1440;
       }
-      if (userInTimeline > shiftInMin + toleransiShiftMin) {
-        calculatedLate = userInTimeline - shiftInMin;
-      } else if (userInTimeline < shiftInMin) {
+      const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
+      if (userInTimeline < shiftInMin) {
         calculatedEarly = shiftInMin - userInTimeline;
+      } else if (userInTimeline <= batasNormalMasuk) {
+        calculatedLate = 0;
+        calculatedEarly = 0;
+      } else {
+        calculatedLate = userInTimeline - batasNormalMasuk;
       }
     }
 
@@ -288,6 +292,7 @@ export async function hapusLogScan(
   const log = logRes.rows[0] as Record<string, unknown>;
   const idKaryawan = String(log.id_karyawan);
   const tanggalKerja = String(log.tanggal_kerja);
+  const jenisScanDeleted = String(log.jenis_scan || "");
   const nowStr = new Date().toISOString();
 
   await db.execute({
@@ -322,12 +327,29 @@ export async function hapusLogScan(
         (r) => String(r.jenis_scan) === "Pulang",
       );
 
-      const inVal = inLog
-        ? formatDateTime(tanggalKerja, String(inLog.jam_scan))
-        : "";
-      const outVal = outLog
-        ? formatDateTime(tanggalKerja, String(outLog.jam_scan))
-        : "";
+      const existingIn = String(abs.jam_masuk || "");
+      const existingOut = String(abs.jam_pulang || "");
+      const existingLate = Number(abs.menit_terlambat || 0);
+      const existingEarly = Number(abs.menit_datang_awal || 0);
+
+      const inVal =
+        jenisScanDeleted === "Masuk"
+          ? inLog
+            ? formatDateTime(tanggalKerja, String(inLog.jam_scan))
+            : ""
+          : inLog
+            ? formatDateTime(tanggalKerja, String(inLog.jam_scan))
+            : existingIn;
+
+      const outVal =
+        jenisScanDeleted === "Pulang"
+          ? outLog
+            ? formatDateTime(tanggalKerja, String(outLog.jam_scan))
+            : ""
+          : outLog
+            ? formatDateTime(tanggalKerja, String(outLog.jam_scan))
+            : existingOut;
+
       const statusAbsen =
         inVal && outVal
           ? "Lengkap"
@@ -337,13 +359,13 @@ export async function hapusLogScan(
 
       const idShift = Number(abs.id_shift || 1);
       const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
         args: [idShift],
       });
       const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
       const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
       const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-      const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+      const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
       const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
       const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
       const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
@@ -359,19 +381,28 @@ export async function hapusLogScan(
       const inMin = parseTimeToMinutes(inVal);
       const outMin = parseTimeToMinutes(outVal);
 
-      if (inMin !== null) {
-        let userInTimeline = inMin;
-        if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-          userInTimeline += 1440;
-        }
-        if (userInTimeline > shiftInMin + toleransiShiftMin) {
-          calculatedLate = userInTimeline - shiftInMin;
-        } else if (userInTimeline < shiftInMin) {
-          calculatedEarly = shiftInMin - userInTimeline;
+      if (inVal) {
+        if (jenisScanDeleted === "Pulang" && inVal) {
+          calculatedLate = existingLate;
+          calculatedEarly = existingEarly;
+        } else if (inMin !== null) {
+          let userInTimeline = inMin;
+          if (isOvernightShift && userInTimeline < shiftInMin - 720) {
+            userInTimeline += 1440;
+          }
+          const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
+          if (userInTimeline < shiftInMin) {
+            calculatedEarly = shiftInMin - userInTimeline;
+          } else if (userInTimeline <= batasNormalMasuk) {
+            calculatedLate = 0;
+            calculatedEarly = 0;
+          } else {
+            calculatedLate = userInTimeline - batasNormalMasuk;
+          }
         }
       }
 
-      if (inMin !== null && outMin !== null) {
+      if (inVal && outVal && inMin !== null && outMin !== null) {
         let duration = outMin - inMin;
         if (duration < 0) {
           duration += 1440;
@@ -450,7 +481,7 @@ export async function hapusImportOffline(
 
   // Delete related log_scan
   await db.execute({
-    sql: "DELETE FROM log_scan WHERE id_referensi = ? OR (id_karyawan = ? AND tanggal_kerja = ? AND sumber_data = 'Import Offline');",
+    sql: "DELETE FROM log_scan WHERE id_referensi = ? OR (id_karyawan = ? AND tanggal_kerja = ? AND (sumber_data = 'Import Offline' OR sumber_data = 'Import Manual'));",
     args: [eventKey, idUnik, tanggal],
   });
 
@@ -493,13 +524,13 @@ export async function hapusImportOffline(
 
       const idShift = Number(abs.id_shift || 1);
       const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
         args: [idShift],
       });
       const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
       const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
       const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-      const toleransiShiftMin = Number(shiftData?.toleransi_masuk_menit ?? 0);
+      const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
       const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
       const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
       const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
@@ -520,10 +551,14 @@ export async function hapusImportOffline(
         if (isOvernightShift && userInTimeline < shiftInMin - 720) {
           userInTimeline += 1440;
         }
-        if (userInTimeline > shiftInMin + toleransiShiftMin) {
-          calculatedLate = userInTimeline - shiftInMin;
-        } else if (userInTimeline < shiftInMin) {
+        const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
+        if (userInTimeline < shiftInMin) {
           calculatedEarly = shiftInMin - userInTimeline;
+        } else if (userInTimeline <= batasNormalMasuk) {
+          calculatedLate = 0;
+          calculatedEarly = 0;
+        } else {
+          calculatedLate = userInTimeline - batasNormalMasuk;
         }
       }
 

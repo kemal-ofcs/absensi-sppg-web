@@ -19,7 +19,36 @@ Setiap customer/organisasi wajib memiliki lingkungan yang terisolasi 100%:
 ```
 
 > [!CAUTION]
-> **JANGAN PERNAH** menggabungkan token database, secret credentials, atau installer client antar customer yang berbeda. Pemisahan ini mencegah kebocoran data karyawan, audit log, sesi login offline, serta risiko operasional.
+> **JANGAN PERNAH** menggabungkan token database, secret credentials, atau installer client antar customer yang berbeda. Pemisahan ini mencegah kebocoran data karyawan, audit log, sesi login offline, template ID Card kustom, profil instansi, serta risiko operasional.
+
+### Batas keamanan arsitektur 2-tier
+
+Desktop dan mobile 2-tier mengakses Turso secara langsung. Karena itu, token database
+tetap harus tersedia di perangkat pada saat aplikasi berjalan. Vault terenkripsi dan
+device binding melindungi token saat tersimpan, tetapi tidak dapat menggantikan kontrol
+otorisasi server: pihak yang sudah menguasai perangkat/runtime dan berhasil mengambil
+token dapat melewati guard UI/Rust lalu mengakses database secara langsung.
+
+Untuk distribusi customer, wajib gunakan satu database dan satu token berbeda per
+customer, rotasi token ketika perangkat hilang/terkompromi, dan jangan pernah memakai
+token organisasi/global. Jika dibutuhkan jaminan bahwa operator tidak mungkin melewati
+RBAC aplikasi, gunakan gateway penerbit token singkat atau backend policy terpisah;
+perubahan tersebut merupakan penguatan arsitektur opsional dan harus disetujui sebelum
+diterapkan.
+
+### Bootstrap akun pertama
+
+Build 2-tier tidak lagi membuat akun `admin`/`superadmin` dengan password bawaan.
+Pada database tanpa Superadmin aktif, halaman login otomatis berubah menjadi form
+provisioning satu kali. Isi URL dan Auth Token Turso hanya bila instalasi belum memiliki
+konfigurasi, lalu buat akun `SPD001` dengan password kuat. Klaim bootstrap, pembuatan
+akun, dan penutupan bootstrap dilakukan dalam satu transaksi; setelah berhasil, form
+tidak dapat dipakai kembali.
+
+Variabel Turso dari `.env` hanya menjadi fallback pada build debug. Build release
+memaksa konfigurasi tersebut menjadi kosong agar token mesin developer tidak tertanam
+di installer atau APK. Instalasi release baru harus memakai provisioning database
+customer masing-masing.
 
 ---
 
@@ -49,7 +78,7 @@ turso db tokens create sppg-pt-abc
 
 ## 3. Deployment Server Backend / Web Admin ke Vercel
 
-Backend Next.js 16 bertindak sebagai server API pusat, Dashboard Web Superadmin/Admin, serta Master Data Management.
+Backend Next.js 16 bertindak sebagai server API pusat, Dashboard Web Superadmin/Admin, Dynamic ID Card Studio, serta Master Data Management.
 
 ### 3.1 Konfigurasi Environment Variable di Vercel
 
@@ -72,7 +101,7 @@ Pada project dashboard Vercel customer baru, tambahkan Environment Variables (**
 
 ## 4. Inisialisasi Database & Bootstrap Akun Superadmin Pertama
 
-Setelah database dan server cloud siap, inisialisasi skema tabel dan buat akun **Superadmin Master** (`SPD001`) via CLI lokal developer.
+Setelah database dan server cloud siap, inisialisasi skema tabel (termasuk 12 tabel snapshot operasional: `master_data`, `id_card`, `tbl_shift`, `tbl_hari_libur`, `setting_gex_system`, `company_profile`, `id_card_template`, `backup_karyawan`, `koreksi_admin`, `import_offline`, `absensi_harian`, `log_scan`) dan buat akun **Superadmin Master** (`SPD001`) via CLI lokal developer.
 
 ### 4.1 Eksekusi Skrip Bootstrap
 
@@ -105,7 +134,7 @@ Output sukses:
 
 ## 5. Build Installer Desktop Client (Tauri v2 Windows)
 
-Desktop client dirancang khusus untuk laptop/PC operasional kantor/front desk yang mendukung **mode offline-first** dan scanning barcode USB/Webcam.
+Desktop client dirancang khusus untuk laptop/PC operasional kantor/front desk yang mendukung **mode offline-first**, scanning barcode USB/Webcam, serta Studio Desain ID Card mandiri.
 
 ### 5.1 Tentukan Kebijakan Offline Session
 
@@ -144,14 +173,16 @@ Lakukan pengujian berikut sebelum mengirimkan paket ke customer:
 | :---: | :--- | :--- | :--- |
 | 1 | **Web Admin** | Buka URL HTTPS di browser | Halaman login tampil bersih, aman (HTTPS hijau) |
 | 2 | **Web Login** | Login dengan akun `superadmin` | Masuk ke Dashboard, cookie session HttpOnly terpasang |
-| 3 | **Web Setup** | Buka menu *Pengaturan* | Upload Logo Instansi & Input Titik GPS Kantor berhasil tersimpan |
-| 4 | **Web Shift** | Buka menu *Data Shift* | Buat Shift Pagi, Siang, dan Malam (lintas hari) |
-| 5 | **Web Karyawan** | Buka menu *Data Karyawan* | Tambah karyawan baru & Generate Token QR |
-| 6 | **Desktop Install** | Install `.msi` / `.exe` di PC pengujian | Aplikasi terinstall rapi dan terbuka tanpa error |
-| 7 | **Desktop Online** | Login pertama kali saat terhubung internet | Berhasil login, snapshot offline ter-download ke SQLite lokal |
-| 8 | **Desktop Offline** | Putuskan koneksi internet (Airplane mode), buka aplikasi & login | Berhasil login via Vault offline (AES-256-GCM + Argon2id) |
-| 9 | **Desktop Scan** | Lakukan scan QR karyawan saat offline | Absensi tersimpan di SQLite lokal dan antrean Outbox bertambah |
-| 10 | **Desktop Sync** | Hubungkan kembali internet | Data absensi offline otomatis tersinkron ke cloud server |
+| 3 | **Profil Instansi** | Buka menu *Pengaturan* | Upload Logo Instansi, Tanda Tangan, dan Stempel berhasil tersimpan |
+| 4 | **ID Card Studio** | Buka menu *Cetak ID Card* → *Kustomisasi Desain* | Live preview CR80 berfungsi, background kustom dapat diunggah, template tersimpan |
+| 5 | **Web Shift** | Buka menu *Data Shift* | Buat Shift Pagi, Siang, dan Malam (lintas hari) |
+| 6 | **Web Karyawan** | Buka menu *Data Karyawan* | Tambah karyawan baru & Generate Token QR |
+| 7 | **Desktop Install** | Install `.msi` / `.exe` di PC pengujian | Aplikasi terinstall rapi dan terbuka tanpa error |
+| 8 | **Desktop Online** | Login pertama kali saat terhubung internet | Berhasil login, 12 snapshot tabel offline ter-download ke SQLite lokal |
+| 9 | **Desktop Offline** | Putuskan koneksi internet (Airplane mode), buka aplikasi & login | Berhasil login via Vault offline (AES-256-GCM + Argon2id) |
+| 10 | **Desktop Scan** | Lakukan scan QR karyawan saat offline | Absensi tersimpan di SQLite lokal dan antrean Outbox bertambah |
+| 11 | **Desktop Sync** | Hubungkan kembali internet | Data absensi offline otomatis tersinkron ke cloud server |
+| 12 | **Cetak Massal** | Cetak Lembar Grid A4 di menu ID Card | Kartu tertata rapi dalam format lembar A4 siap cetak |
 
 ---
 

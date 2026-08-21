@@ -272,7 +272,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
     },
     SnapshotTable {
         payload_key: "scanLogs",
-        domain: "scan-log",
+        domain: "log-scan",
         table: "log_scan",
         columns: &[
             "id_log",
@@ -297,6 +297,41 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         delete_missing: false,
     },
 ];
+
+const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
+    ("attendance", "create"),
+    ("attendance", "delete"),
+    ("attendance", "scan"),
+    ("attendance", "update"),
+    ("backup", "cancel"),
+    ("backup", "create"),
+    ("company-profile", "update"),
+    ("correction", "create"),
+    ("correction", "delete"),
+    ("employee", "create"),
+    ("employee", "status"),
+    ("employee", "token"),
+    ("employee", "update"),
+    ("holiday", "create"),
+    ("holiday", "delete"),
+    ("holiday", "update"),
+    ("id-card", "update"),
+    ("id-card-template", "save"),
+    ("log-scan", "delete"),
+    ("offline-import", "delete"),
+    ("offline-import", "row"),
+    ("setting", "update"),
+    ("setting", "upsert"),
+    ("shift", "create"),
+    ("shift", "delete"),
+    ("shift", "update"),
+];
+
+pub(super) fn is_canonical_sync_route(domain: &str, operation: &str) -> bool {
+    CANONICAL_SYNC_ROUTES
+        .iter()
+        .any(|route| *route == (domain, operation))
+}
 
 fn sql_value(value: Option<&Value>) -> SqlValue {
     match value {
@@ -352,8 +387,13 @@ fn row_has_unsynced_change(
     if definition.domain == "shift" {
         let code = entity_key(row, "kode_shift");
         if !code.is_empty()
-            && has_unsynced_change(transaction, definition.domain, &format!("kode:{code}"))?
+            && (has_unsynced_change(transaction, definition.domain, &format!("kode:{code}"))?
+                || has_unsynced_change(transaction, definition.domain, &code)?)
         {
+            return Ok(true);
+        }
+        let shift_id = entity_key(row, "id_shift");
+        if !shift_id.is_empty() && has_unsynced_change(transaction, definition.domain, &shift_id)? {
             return Ok(true);
         }
     }
@@ -375,7 +415,7 @@ fn row_has_unsynced_change(
             return Ok(true);
         }
     }
-    if definition.domain == "scan-log" {
+    if definition.domain == "log-scan" {
         let timestamp = entity_key(row, "timestamp_scan");
         let employee_id = entity_key(row, "id_karyawan");
         let scan_type = entity_key(row, "jenis_scan");
@@ -482,7 +522,10 @@ fn apply_table(
     revision: i64,
 ) -> Result<(), CommandError> {
     let empty_vec = Vec::new();
-    let (rows, present) = match snapshot.get(definition.payload_key).and_then(Value::as_array) {
+    let (rows, present) = match snapshot
+        .get(definition.payload_key)
+        .and_then(Value::as_array)
+    {
         Some(arr) => (arr, true),
         None => (&empty_vec, false),
     };
@@ -514,6 +557,20 @@ fn apply_table(
         if key.is_empty() || row_has_unsynced_change(transaction, definition, row, &key)? {
             continue;
         }
+
+        if definition.domain == "log-scan" {
+            let ts = entity_key(row, "timestamp_scan");
+            let emp = entity_key(row, "id_karyawan");
+            let kind = entity_key(row, "jenis_scan");
+            let tgl = entity_key(row, "tanggal_kerja");
+            let ref_id = entity_key(row, "id_referensi");
+            // Bersihkan baris log scan lokal sementara (id_log < 0) yang cocok sebelum memasukkan baris server
+            let _ = transaction.execute(
+                "DELETE FROM log_scan WHERE id_log < 0 AND tanggal_kerja = ? AND id_karyawan = ? AND (jenis_scan = ? OR (id_referensi = ? AND id_referensi != '') OR timestamp_scan = ?);",
+                params![tgl, emp, kind, ref_id, ts],
+            );
+        }
+
         let values = definition
             .columns
             .iter()
@@ -567,6 +624,16 @@ fn apply_table(
             if snapshot_keys.contains(&key)
                 || has_unsynced_change(transaction, definition.domain, &key)?
             {
+                continue;
+            }
+            let came_from_server = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM desktop_entity_revision WHERE domain = ? AND entity_key = ?);",
+                    params![definition.domain, key],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|_| CommandError::internal())?;
+            if !came_from_server {
                 continue;
             }
             transaction
@@ -650,6 +717,18 @@ pub fn enqueue(
     payload: &Value,
     base_revision: Option<i64>,
 ) -> Result<String, CommandError> {
+    let payload_json = payload.to_string();
+    if !is_canonical_sync_route(domain, operation)
+        || entity_key.trim().is_empty()
+        || entity_key.len() > 160
+        || !payload.is_object()
+        || payload_json.len() > 25_165_824
+    {
+        return Err(CommandError::new(
+            "DESKTOP_SYNC_EVENT_INVALID",
+            format!("Event sinkronisasi tidak valid: {domain}/{operation}."),
+        ));
+    }
     let event_id = new_event_id(client_id, domain, operation);
     let now = storage::now_epoch_seconds();
     transaction
@@ -667,7 +746,7 @@ pub fn enqueue(
                 domain,
                 operation,
                 entity_key,
-                payload.to_string(),
+                payload_json,
                 base_revision,
                 now,
                 now,
@@ -678,7 +757,7 @@ pub fn enqueue(
 }
 
 pub fn apply_snapshot(state: &DesktopState, payload: &Value) -> Result<(), CommandError> {
-    let snapshot = payload.get("snapshot").ok_or_else(CommandError::internal)?;
+    let snapshot = payload.get("snapshot").unwrap_or(payload);
     let revision = snapshot
         .get("revision")
         .and_then(Value::as_i64)
@@ -702,6 +781,23 @@ pub fn apply_snapshot(state: &DesktopState, payload: &Value) -> Result<(), Comma
     for definition in SNAPSHOT_TABLES {
         apply_table(&transaction, snapshot, definition, revision)?;
     }
+
+    // Bersihkan temporary local log_scan (id_log < 0) jika sudah ada baris server permanen yang cocok
+    let _ = transaction.execute(
+        r#"
+        DELETE FROM log_scan
+        WHERE id_log < 0
+          AND EXISTS (
+            SELECT 1 FROM log_scan s2
+            WHERE s2.id_log > 0
+              AND s2.tanggal_kerja = log_scan.tanggal_kerja
+              AND s2.id_karyawan = log_scan.id_karyawan
+              AND s2.jenis_scan = log_scan.jenis_scan
+          );
+        "#,
+        [],
+    );
+
     transaction
         .execute(
             r#"
@@ -721,15 +817,33 @@ pub async fn pull_snapshot(
     state: &DesktopState,
     token: &str,
 ) -> Result<DesktopSyncStatus, CommandError> {
-    let payload = remote::authorized_json(
-        state,
-        reqwest::Method::POST,
-        "/api/sync/snapshot",
-        None,
-        token,
-    )
-    .await?;
-    apply_snapshot(state, &payload)?;
+    if let Ok(turso) = state.get_turso_client() {
+        let (last_rev, _) = {
+            let connection = storage::database(&state.data_dir)?;
+            connection
+                .query_row(
+                    "SELECT last_revision, updated_at FROM desktop_sync_cursor WHERE domain = 'operational';",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap_or((0, None))
+        };
+        let payload = turso.pull_snapshot(last_rev).await?;
+        apply_snapshot(state, &payload)?;
+        return status(state);
+    }
+
+    if !token.is_empty() {
+        let payload = remote::authorized_json(
+            state,
+            reqwest::Method::POST,
+            "/api/sync/snapshot",
+            None,
+            token,
+        )
+        .await?;
+        apply_snapshot(state, &payload)?;
+    }
     status(state)
 }
 
@@ -1151,47 +1265,85 @@ fn apply_push_results(
 }
 
 pub async fn push_outbox(state: &DesktopState, token: &str) -> Result<(), CommandError> {
-    loop {
-        let (client_id, events) = pending_events(state)?;
-        if events.is_empty() {
-            return Ok(());
-        }
-        let event_ids = events
-            .iter()
-            .filter_map(|event| event.get("eventId").and_then(Value::as_str))
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let response = remote::authorized_json(
-            state,
-            reqwest::Method::POST,
-            "/api/sync/push",
-            Some(json!({ "clientId": client_id, "events": events })),
-            token,
-        )
-        .await;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                mark_batch_failed(state, &event_ids, &error.message);
+    if let Ok(turso) = state.get_turso_client() {
+        loop {
+            let (_client_id, events) = pending_events(state)?;
+            if events.is_empty() {
+                return Ok(());
+            }
+            let event_ids = events
+                .iter()
+                .filter_map(|event| event.get("eventId").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+
+            let results = match turso.push_events(&events).await {
+                Ok(res) => res,
+                Err(error) => {
+                    mark_batch_failed(state, &event_ids, &error.message);
+                    return Err(error);
+                }
+            };
+
+            if let Err(error) = apply_push_results(state, &event_ids, &results) {
+                mark_batch_failed(
+                    state,
+                    &event_ids,
+                    "Respons database Turso tidak lengkap atau tidak valid.",
+                );
                 return Err(error);
             }
-        };
-        let results = response
-            .get("results")
-            .and_then(Value::as_array)
-            .ok_or_else(CommandError::internal)?;
-        if let Err(error) = apply_push_results(state, &event_ids, results) {
-            mark_batch_failed(
-                state,
-                &event_ids,
-                "Respons server tidak lengkap atau tidak valid.",
-            );
-            return Err(error);
-        }
-        if event_ids.len() < 50 {
-            return Ok(());
+            if event_ids.len() < 50 {
+                return Ok(());
+            }
         }
     }
+
+    if !token.is_empty() {
+        loop {
+            let (client_id, events) = pending_events(state)?;
+            if events.is_empty() {
+                return Ok(());
+            }
+            let event_ids = events
+                .iter()
+                .filter_map(|event| event.get("eventId").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let response = remote::authorized_json(
+                state,
+                reqwest::Method::POST,
+                "/api/sync/push",
+                Some(json!({ "clientId": client_id, "events": events })),
+                token,
+            )
+            .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    mark_batch_failed(state, &event_ids, &error.message);
+                    return Err(error);
+                }
+            };
+            let results = response
+                .get("results")
+                .and_then(Value::as_array)
+                .ok_or_else(CommandError::internal)?;
+            if let Err(error) = apply_push_results(state, &event_ids, results) {
+                mark_batch_failed(
+                    state,
+                    &event_ids,
+                    "Respons server tidak lengkap atau tidak valid.",
+                );
+                return Err(error);
+            }
+            if event_ids.len() < 50 {
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn synchronize(
@@ -1291,19 +1443,19 @@ pub fn retry_failed(state: &DesktopState, event_id: Option<&str>) -> Result<(), 
     let connection = storage::database(&state.data_dir)?;
     let changed = if let Some(event_id) = event_id {
         connection.execute(
-            "UPDATE desktop_sync_outbox SET status = 'pending', next_retry_at = NULL, last_error = NULL, updated_at = ? WHERE event_id = ? AND status = 'failed';",
+            "UPDATE desktop_sync_outbox SET status = 'pending', next_retry_at = NULL, last_error = NULL, updated_at = ? WHERE event_id = ? AND status IN ('failed', 'conflict');",
             params![storage::now_epoch_seconds(), event_id],
         )
     } else {
         connection.execute(
-            "UPDATE desktop_sync_outbox SET status = 'pending', next_retry_at = NULL, last_error = NULL, updated_at = ? WHERE status = 'failed';",
+            "UPDATE desktop_sync_outbox SET status = 'pending', next_retry_at = NULL, last_error = NULL, updated_at = ? WHERE status IN ('failed', 'conflict');",
             [storage::now_epoch_seconds()],
         )
     }.map_err(|_| CommandError::internal())?;
     if event_id.is_some() && changed == 0 {
         return Err(CommandError::new(
             "OPERATIONAL_NOT_FOUND",
-            "Event gagal tidak ditemukan.",
+            "Event gagal atau konflik tidak ditemukan.",
         ));
     }
     Ok(())
@@ -1311,7 +1463,9 @@ pub fn retry_failed(state: &DesktopState, event_id: Option<&str>) -> Result<(), 
 
 pub fn resolve_conflicts(state: &DesktopState, event_id: Option<&str>) -> Result<(), CommandError> {
     let mut connection = storage::database(&state.data_dir)?;
-    let transaction = connection.transaction().map_err(|_| CommandError::internal())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
     let now = storage::now_epoch_seconds();
     if let Some(event_id) = event_id {
         transaction
@@ -1371,7 +1525,6 @@ mod tests {
     use reqwest::Client;
     use serde_json::{json, Value};
     use tempfile::tempdir;
-    use url::Url;
 
     use super::{
         apply_push_results, apply_snapshot, enqueue, ensure_client_id, pending_events, storage,
@@ -1382,11 +1535,11 @@ mod tests {
         let directory = tempdir().expect("temporary directory");
         storage::initialize(directory.path()).expect("local schema");
         let state = DesktopState {
-            api_base_url: RwLock::new(Url::parse("http://localhost:3000").expect("url")),
             server_origin: RwLock::new("http://localhost:3000".to_string()),
             offline_max_age_hours: 24,
             data_dir: directory.path().to_path_buf(),
             http: Client::new(),
+            turso_config: RwLock::new(None),
             session: Mutex::new(None),
             vault_lock: Mutex::new(()),
         };
@@ -1775,7 +1928,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_requires_monotonic_revision_and_removes_deleted_shift() {
+    fn snapshot_requires_monotonic_revision_and_only_removes_server_tracked_shift() {
         let (_directory, state) = fixture();
         let connection = storage::database(&state.data_dir).expect("local database");
         connection
@@ -1792,14 +1945,32 @@ mod tests {
         let current = snapshot_with_shifts(json!([]));
         apply_snapshot(&state, &current).expect("current snapshot");
         let connection = storage::database(&state.data_dir).expect("local database");
-        let remaining: i64 = connection
+        let untracked_remaining: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM tbl_shift WHERE id_shift = 2;",
                 [],
                 |row| row.get(0),
             )
             .expect("shift count");
-        assert_eq!(remaining, 0);
+        assert_eq!(untracked_remaining, 1);
+        connection
+            .execute(
+                "INSERT INTO desktop_entity_revision (domain, entity_key, server_revision, payload_hash, updated_at) VALUES ('shift', '2', 11, 'tracked', 1);",
+                [],
+            )
+            .expect("tracked server shift");
+        drop(connection);
+
+        apply_snapshot(&state, &current).expect("tracked deletion snapshot");
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let tracked_remaining: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tbl_shift WHERE id_shift = 2;",
+                [],
+                |row| row.get(0),
+            )
+            .expect("tracked shift count");
+        assert_eq!(tracked_remaining, 0);
         drop(connection);
 
         let mut stale = snapshot_with_shifts(json!([]));
@@ -1950,4 +2121,3 @@ mod tests {
         assert_eq!(failed_count, 0);
     }
 }
-

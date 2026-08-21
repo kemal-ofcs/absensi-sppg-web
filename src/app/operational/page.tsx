@@ -1,7 +1,7 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -24,6 +24,8 @@ import {
   type OfflineImportRow,
   prosesImportOffline,
 } from "@/lib/gateways/offline-import";
+import { getDaftarShift } from "@/lib/gateways/shift";
+import { syncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
 type Tab = "correction" | "backup" | "import";
@@ -43,9 +45,16 @@ export default function OperationalPage() {
   } | null>(null);
 
   const [employees, setEmployees] = useState<Record<string, unknown>[]>([]);
+  const [shifts, setShifts] = useState<Record<string, unknown>[]>([]);
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
   const [busy, setBusy] = useState(false);
   const isSubmittingRef = useRef(false);
+
+  const [confirmOverwrite, setConfirmOverwrite] = useState<{
+    id_karyawan: string;
+    nama: string;
+    tanggal: string;
+  } | null>(null);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{
     type?: "correction" | "import";
@@ -74,7 +83,11 @@ export default function OperationalPage() {
         });
       }
       setDeleteConfirm(null);
-      await load();
+      await load(
+        deleteConfirm.type === "import" ? "import" : "correction",
+        false,
+        false,
+      );
     } catch (err: unknown) {
       setFeedback({
         tone: "error",
@@ -93,6 +106,7 @@ export default function OperationalPage() {
     id_karyawan: "",
     nama: "",
     divisi: "",
+    id_shift: 1,
     jenis_koreksi: "Izin",
     jam_koreksi: "",
     keterangan_admin: "",
@@ -121,7 +135,7 @@ export default function OperationalPage() {
     jam_masuk: "07:00",
     jam_pulang: "15:00",
     status_kehadiran: "Hadir",
-    status_absen: "Lengkap",
+    status_absen: "",
     keterangan: "Import Manual",
   });
 
@@ -131,17 +145,8 @@ export default function OperationalPage() {
     "tanggal,id_unik,jam_masuk,jam_pulang,status_kehadiran,keterangan\n",
   );
 
-  // Load employee list for auto-fill dropdowns
-  useEffect(() => {
-    if (hydrated && isAuthenticated) {
-      void getDaftarKaryawan({ status_aktif: "Aktif" })
-        .then((data) => setEmployees(data))
-        .catch(() => undefined);
-    }
-  }, [hydrated, isAuthenticated]);
-
-  const run = async (task: () => Promise<void>) => {
-    if (isSubmittingRef.current || busy) return;
+  const run = useCallback(async (task: () => Promise<void>) => {
+    if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setBusy(true);
     setFeedback(null);
@@ -156,22 +161,67 @@ export default function OperationalPage() {
       setBusy(false);
       isSubmittingRef.current = false;
     }
-  };
+  }, []);
 
-  const load = (currentTab: Tab = tab) =>
-    run(async () => {
-      const data =
-        currentTab === "backup"
-          ? await getDaftarBackup()
-          : currentTab === "import"
-            ? await getDaftarImport()
-            : await getDaftarKoreksi();
-      setRecords(data);
-      setFeedback({
-        tone: "success",
-        text: `${data.length} data berhasil dimuat.`,
-      });
-    });
+  const load = useCallback(
+    async (
+      currentTab: Tab = tab,
+      synchronize = false,
+      showFeedback = false,
+    ) => {
+      try {
+        if (synchronize) {
+          await syncNow().catch(() => undefined);
+        }
+        const [data, shiftList] = await Promise.all([
+          currentTab === "backup"
+            ? getDaftarBackup()
+            : currentTab === "import"
+              ? getDaftarImport()
+              : getDaftarKoreksi(),
+          getDaftarShift().catch(() => []),
+        ]);
+        setRecords(data);
+        if (Array.isArray(shiftList) && shiftList.length > 0) {
+          setShifts(shiftList);
+        }
+        if (showFeedback) {
+          setFeedback({
+            tone: "success",
+            text: `${data.length} data berhasil dimuat.`,
+          });
+        }
+      } catch (error) {
+        if (showFeedback) {
+          setFeedback({
+            tone: "error",
+            text: error instanceof Error ? error.message : "Gagal memuat data.",
+          });
+        }
+      }
+    },
+    [tab],
+  );
+
+  // Load employee list for auto-fill dropdowns and active records
+  useEffect(() => {
+    if (hydrated && isAuthenticated) {
+      void getDaftarKaryawan({ status_aktif: "Aktif" })
+        .then((data) => setEmployees(data))
+        .catch(() => undefined);
+      void load(tab, false, false);
+    }
+  }, [hydrated, isAuthenticated, tab, load]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      void load(tab, false, false);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [tab, load]);
 
   // Employee selection helpers
   const handleSelectCorrectionEmployee = (empId: string) => {
@@ -184,6 +234,7 @@ export default function OperationalPage() {
         id_karyawan: String(found.id_unik),
         nama: String(found.nama || ""),
         divisi: String(found.divisi || ""),
+        id_shift: Number(found.id_shift || 1),
       }));
     } else {
       setCorrection((prev) => ({
@@ -245,7 +296,7 @@ export default function OperationalPage() {
     }
   };
 
-  const submitCorrection = () =>
+  const executeCorrection = () =>
     run(async () => {
       if (!correction.id_karyawan) {
         throw new Error("Pilih atau isi ID Karyawan terlebih dahulu.");
@@ -258,6 +309,7 @@ export default function OperationalPage() {
         >[0]["jenis_koreksi"],
         jam_koreksi: correction.jam_koreksi || undefined,
         keterangan_admin: correction.keterangan_admin || undefined,
+        id_shift: correction.id_shift,
       });
       setFeedback({
         tone: result.sukses ? "success" : "error",
@@ -272,8 +324,34 @@ export default function OperationalPage() {
           jam_koreksi: "",
           keterangan_admin: "",
         }));
+        await load("correction", false, false);
       }
     });
+
+  const submitCorrection = () => {
+    if (!correction.id_karyawan) {
+      setFeedback({
+        tone: "error",
+        text: "Pilih atau isi ID Karyawan terlebih dahulu.",
+      });
+      return;
+    }
+    const existing = records.find(
+      (r) =>
+        String(r.id_karyawan || r.id_unik) === correction.id_karyawan &&
+        String(r.tanggal || r.tanggal_kerja) === correction.tanggal,
+    );
+    if (existing) {
+      setConfirmOverwrite({
+        id_karyawan: correction.id_karyawan,
+        nama:
+          correction.nama || String(existing.nama || correction.id_karyawan),
+        tanggal: correction.tanggal,
+      });
+      return;
+    }
+    void executeCorrection();
+  };
 
   const submitBackup = () =>
     run(async () => {
@@ -287,8 +365,8 @@ export default function OperationalPage() {
         id_karyawan_asal: backup.id_karyawan_asal,
         id_karyawan_pengganti: backup.id_karyawan_pengganti,
         id_shift_backup: backup.id_shift_backup,
-        alasan_backup: backup.alasan_backup || undefined,
-        catatan: backup.catatan || undefined,
+        alasan_backup: backup.alasan_backup,
+        catatan: backup.catatan,
       });
       setFeedback({
         tone: result.sukses ? "success" : "error",
@@ -303,15 +381,16 @@ export default function OperationalPage() {
           id_karyawan_pengganti: "",
           nama_karyawan_pengganti: "",
           divisi_pengganti: "",
+          alasan_backup: "Penggantian Shift",
           catatan: "",
         }));
       }
     });
 
-  const submitManualSingleEntry = () =>
+  const submitManualEntry = () =>
     run(async () => {
       if (!manualEntry.id_unik) {
-        throw new Error("Pilih atau masukkan ID Karyawan terlebih dahulu.");
+        throw new Error("Pilih atau isi ID Karyawan terlebih dahulu.");
       }
       const row: OfflineImportRow = {
         tanggal: manualEntry.tanggal,
@@ -320,11 +399,10 @@ export default function OperationalPage() {
         divisi: manualEntry.divisi || undefined,
         jam_masuk: manualEntry.jam_masuk || undefined,
         jam_pulang: manualEntry.jam_pulang || undefined,
-        status_kehadiran: manualEntry.status_kehadiran || "Hadir",
-        status_absen: manualEntry.status_absen || "Lengkap",
-        keterangan: manualEntry.keterangan || "Import Manual",
+        status_kehadiran: manualEntry.status_kehadiran,
+        status_absen: manualEntry.status_absen || undefined,
+        keterangan: manualEntry.keterangan || undefined,
       };
-
       const result = await prosesImportOffline([row]);
       const isSuccess = result.berhasil > 0;
       setFeedback({
@@ -344,43 +422,59 @@ export default function OperationalPage() {
       }
     });
 
-  const submitBulkImport = () =>
+  const submitBulkCsv = () =>
     run(async () => {
-      const lines = csv.trim().split(/\r?\n/).filter(Boolean);
-      if (lines.length < 2) throw new Error("CSV belum memiliki baris data.");
-      const headers = lines[0]
-        .split(",")
-        .map((value) => value.trim().toLowerCase());
-      const rows: OfflineImportRow[] = lines.slice(1).map((line) => {
-        const values = line.split(",").map((value) => value.trim());
-        const data = Object.fromEntries(
-          headers.map((key, index) => [key, values[index] ?? ""]),
+      const lines = csv.trim().split("\n");
+      if (lines.length < 2) {
+        throw new Error(
+          "CSV kosong atau hanya berisi header. Masukkan data minimal 1 baris.",
         );
-        return {
-          tanggal: data.tanggal ?? "",
-          id_unik: data.id_unik ?? "",
-          nama: data.nama,
-          divisi: data.divisi,
-          jam_masuk: data.jam_masuk,
-          jam_pulang: data.jam_pulang,
-          status_kehadiran: data.status_kehadiran,
-          status_absen: data.status_absen,
-          keterangan: data.keterangan,
-        };
-      });
+      }
+      const headerParts = lines[0].split(",").map((h) => h.trim());
+      const rows: OfflineImportRow[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const parts = line.split(",").map((p) => p.trim());
+        const rowObj: Record<string, string> = {};
+        headerParts.forEach((header, idx) => {
+          rowObj[header] = parts[idx] ?? "";
+        });
+        rows.push({
+          tanggal: rowObj.tanggal || new Date().toISOString().slice(0, 10),
+          id_unik: rowObj.id_unik || "",
+          nama: rowObj.nama || undefined,
+          divisi: rowObj.divisi || undefined,
+          jam_masuk: rowObj.jam_masuk || undefined,
+          jam_pulang: rowObj.jam_pulang || undefined,
+          status_kehadiran: rowObj.status_kehadiran || "Hadir",
+          status_absen: rowObj.status_absen || undefined,
+          keterangan: rowObj.keterangan || undefined,
+        });
+      }
       const result = await prosesImportOffline(rows);
       setFeedback({
         tone: result.gagal > 0 ? "error" : "success",
         text: `Import massal selesai: ${result.berhasil} berhasil, ${result.gagal} gagal.`,
       });
+      if (result.berhasil > 0) {
+        setShowBulkUpload(false);
+        setCsv(
+          "tanggal,id_unik,jam_masuk,jam_pulang,status_kehadiran,keterangan\n",
+        );
+      }
     });
 
-  if (!hydrated || isLoading)
+  if (isLoading || !hydrated) {
     return (
-      <div className="grid min-h-dvh place-items-center bg-slate-950 text-slate-300">
-        Memuat operasional...
-      </div>
+      <AppShell contentClassName="mx-auto w-full max-w-7xl px-4 py-6">
+        <div className="flex items-center justify-center p-12 text-slate-400 font-mono text-sm">
+          Memuat modul operasional absensi...
+        </div>
+      </AppShell>
     );
+  }
+
   if (!isAuthenticated) redirect("/login");
   if (!canAccessArea(user, "operational")) redirect("/forbidden");
 
@@ -401,6 +495,51 @@ export default function OperationalPage() {
         </FeedbackBanner>
       ) : null}
 
+      {/* Confirmation Overwrite Modal */}
+      {confirmOverwrite ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <span className="text-2xl">⚠️</span>
+              <h3 className="text-base font-bold text-white">
+                Konfirmasi Timpa Koreksi
+              </h3>
+            </div>
+            <p className="text-sm text-slate-300">
+              Karyawan{" "}
+              <strong className="text-white">{confirmOverwrite.nama}</strong>{" "}
+              sudah memiliki riwayat koreksi/absensi pada tanggal{" "}
+              <strong className="text-white">{confirmOverwrite.tanggal}</strong>
+              .
+            </p>
+            <p className="text-xs text-amber-300/90 bg-amber-950/40 border border-amber-800/40 p-2.5 rounded-xl">
+              Menyimpan koreksi baru akan memperbarui dan menyelaraskan data
+              absensi pada tanggal tersebut.
+            </p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmOverwrite(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 rounded-xl transition"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setConfirmOverwrite(null);
+                  void executeCorrection();
+                }}
+                className="px-4 py-2 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-xl transition shadow-lg flex items-center gap-2"
+              >
+                Ya, Perbarui Koreksi
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Tab Switcher */}
       <div className="flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-slate-900/60 p-2 font-mono text-xs">
         {(["correction", "backup", "import"] as Tab[]).map((value) => (
@@ -410,7 +549,7 @@ export default function OperationalPage() {
             onClick={() => {
               setTab(value);
               setRecords([]);
-              void load(value);
+              void load(value, false, false);
             }}
             className={`rounded-xl px-4 py-2.5 font-bold transition ${
               tab === value
@@ -518,6 +657,39 @@ export default function OperationalPage() {
                 placeholder="Divisi otomatis terisi"
                 value={correction.divisi}
               />
+            </div>
+
+            {/* Shift Jadwal Kerja Target */}
+            <div>
+              <span className="text-slate-400 block mb-1">
+                Shift / Jadwal Kerja
+              </span>
+              <select
+                aria-label="Pilih shift"
+                className={inputClass}
+                value={correction.id_shift}
+                onChange={(event) =>
+                  setCorrection({
+                    ...correction,
+                    id_shift: Number(event.target.value),
+                  })
+                }
+              >
+                {shifts.length > 0 ? (
+                  shifts.map((s) => (
+                    <option key={String(s.id_shift)} value={Number(s.id_shift)}>
+                      {String(s.nama_shift)} ({String(s.jam_masuk)} -{" "}
+                      {String(s.jam_pulang)})
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value={1}>Shift 1 (07:00 - 15:00)</option>
+                    <option value={2}>Shift 2 (15:00 - 23:00)</option>
+                    <option value={3}>Shift 3 (23:00 - 07:00)</option>
+                  </>
+                )}
+              </select>
             </div>
 
             {/* Jenis Koreksi */}
@@ -916,6 +1088,39 @@ export default function OperationalPage() {
               />
             </div>
 
+            {/* Status Absen */}
+            <div>
+              <span className="text-amber-400 block mb-1 font-semibold">
+                Status Absen
+              </span>
+              <select
+                aria-label="Status Absen"
+                className={inputClass}
+                value={manualEntry.status_absen}
+                onChange={(e) =>
+                  setManualEntry({
+                    ...manualEntry,
+                    status_absen: e.target.value,
+                  })
+                }
+              >
+                <option value="">
+                  ✨ Otomatis (Generate Sistem Sesuai Jam)
+                </option>
+                <option value="Lengkap">Lengkap (Masuk & Pulang)</option>
+                <option value="Belum Pulang">Belum Pulang (Hanya Masuk)</option>
+                <option value="Perlu Verifikasi">
+                  Perlu Verifikasi (Hanya Pulang)
+                </option>
+                <option value="Tidak Hadir">
+                  Tidak Hadir (Sakit/Izin/Alfa)
+                </option>
+                <option value="Tepat Waktu">Tepat Waktu</option>
+                <option value="Terlambat">Terlambat</option>
+                <option value="Datang Lebih Awal">Datang Lebih Awal</option>
+              </select>
+            </div>
+
             {/* Keterangan */}
             <div>
               <span className="text-slate-400 block mb-1">Keterangan</span>
@@ -934,7 +1139,7 @@ export default function OperationalPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={submitManualSingleEntry}
+                onClick={submitManualEntry}
                 className="min-h-11 w-full rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black transition disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm shadow-md flex items-center justify-center gap-2"
               >
                 {busy ? (
@@ -978,7 +1183,7 @@ export default function OperationalPage() {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={submitBulkImport}
+                  onClick={submitBulkCsv}
                   className="min-h-10 w-full rounded-xl bg-amber-400 hover:bg-amber-300 font-bold text-slate-950 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-mono flex items-center justify-center gap-2"
                 >
                   {busy ? (

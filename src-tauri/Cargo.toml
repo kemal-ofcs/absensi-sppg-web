@@ -25,12 +25,18 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-stronghold = "2.3.1"
-reqwest = { version = "0.13.4", features = ["json"] }
+reqwest = { version = "0.13.4", features = ["json", "gzip", "brotli", "deflate"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
 url = "2.5.7"
 zeroize = "1.8.2"
+base64 = "0.22"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+hmac = "0.12"
+argon2 = "0.5.3"
+aes-gcm = "0.10.3"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"

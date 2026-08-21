@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-get-turso-url"
+description = "Enables the desktop_get_turso_url command without any pre-configured scope."
+commands.allow = ["desktop_get_turso_url"]
+
+[[permission]]
+identifier = "deny-desktop-get-turso-url"
+description = "Denies the desktop_get_turso_url command without any pre-configured scope."
+commands.deny = ["desktop_get_turso_url"]

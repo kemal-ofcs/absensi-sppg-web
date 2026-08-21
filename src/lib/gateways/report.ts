@@ -43,9 +43,15 @@ export const getRekapBulanan = (
 export const getTopKaryawanTerajin = (limit = 5) =>
   query<Record<string, unknown>[]>("top", { limit });
 
-export function jalankanAuditKualitasAbsensi() {
+export async function jalankanAuditKualitasAbsensi() {
   if (isDesktopRuntime()) {
-    throw new Error("Generate Alfa wajib dijalankan saat online melalui Web.");
+    const res = await invokeDesktop<{
+      sukses: boolean;
+      pesan: string;
+      ringkasan?: Record<string, unknown>;
+    }>("desktop_trigger_generate_alfa");
+    kickSync();
+    return res;
   }
   return requestWebApi("/api/attendance-audit", "POST");
 }

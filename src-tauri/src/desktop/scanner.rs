@@ -9,8 +9,8 @@ use super::{
     models::CommandError,
     storage, sync,
     time_policy::{
-        decide_scan, determine_work_date, is_checkout_window_expired, DecisionReason,
-        LocalMoment, ScanDecision, ScanHistory, ShiftKind, ShiftPolicy,
+        decide_scan, determine_work_date, is_checkout_window_expired, DecisionReason, LocalMoment,
+        ScanDecision, ScanHistory, ShiftKind, ShiftPolicy,
     },
 };
 
@@ -334,7 +334,6 @@ fn is_check_in_window_matched(time_str: &str, shift: &Shift) -> bool {
 }
 
 fn find_effective_backup(
-
     transaction: &Transaction<'_>,
     employee_id: &str,
     moment: &LocalMoment,
@@ -690,7 +689,7 @@ fn submit_internal(
             persist_rejection(&transaction, &client_id, &log)?;
             transaction.commit().map_err(|_| CommandError::internal())?;
             return Ok(failure_with_context(
-                "Scan ditolak: Lokasi GPS HP Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi.",
+                "Scan ditolak: Lokasi GPS perangkat Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi/GPS pada perangkat.",
                 &employee,
                 "GPS Tidak Terdeteksi",
                 "",
@@ -816,7 +815,11 @@ fn submit_internal(
             } else {
                 Some((
                     Session {
-                        mode: if open.4 == "PENGGANTI" { "PENGGANTI" } else { "NORMAL" },
+                        mode: if open.4 == "PENGGANTI" {
+                            "PENGGANTI"
+                        } else {
+                            "NORMAL"
+                        },
                         shift_id: open.1,
                         backup_id: open.5,
                         original_employee_id: open.6,
@@ -1376,7 +1379,6 @@ mod tests {
     use reqwest::Client;
     use serde_json::json;
     use tempfile::tempdir;
-    use url::Url;
 
     use super::{storage, submit_at, DesktopState, LocalMoment};
 
@@ -1408,11 +1410,11 @@ mod tests {
             )
             .expect("fixture seed");
         let state = DesktopState {
-            api_base_url: RwLock::new(Url::parse("http://localhost:3000").expect("url")),
             server_origin: RwLock::new("http://localhost:3000".to_string()),
             offline_max_age_hours: 24,
             data_dir: directory.path().to_path_buf(),
             http: Client::new(),
+            turso_config: RwLock::new(None),
             session: Mutex::new(None),
             vault_lock: Mutex::new(()),
         };

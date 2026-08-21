@@ -95,36 +95,51 @@ export default function KaryawanPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [data, shifts] = await Promise.all([
-        getDaftarKaryawan({
-          search: appliedSearch,
-          divisi: filterDivisi || undefined,
-          status_aktif: filterStatus || undefined,
-        }),
-        getDaftarShift(),
-      ]);
-      setKaryawanList(data);
-      setShiftList(shifts);
-      setErrorMsg(null);
-    } catch (err: unknown) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : "Data karyawan belum dapat dimuat.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [appliedSearch, filterDivisi, filterStatus]);
+  const loadData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const [data, shifts] = await Promise.all([
+          getDaftarKaryawan({
+            search: appliedSearch,
+            divisi: filterDivisi || undefined,
+            status_aktif: filterStatus || undefined,
+          }),
+          getDaftarShift(),
+        ]);
+        setKaryawanList(data);
+        setShiftList(shifts);
+        setErrorMsg(null);
+      } catch (err: unknown) {
+        if (!silent) {
+          setErrorMsg(
+            err instanceof Error
+              ? err.message
+              : "Data karyawan belum dapat dimuat.",
+          );
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [appliedSearch, filterDivisi, filterStatus],
+  );
 
   useEffect(() => {
     if (isHydrated && isAuthenticated) {
       void loadData();
     }
   }, [isHydrated, isAuthenticated, loadData]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      void loadData(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [loadData]);
 
   // Extract unique divisions for filter — memoized to avoid recalc on every render
   const divisions = useMemo(
@@ -337,11 +352,14 @@ export default function KaryawanPage() {
 
   const handleShowQr = async (row: Record<string, unknown>) => {
     try {
-      const cards = await getDaftarIdCard({ search: String(row.id_unik) });
-      const card = cards.find(
-        (item) => String(item.id_unik) === String(row.id_unik),
-      );
-      const payload = employeeQrPayload(card ?? {});
+      let payload = employeeQrPayload(row);
+      if (!payload) {
+        const cards = await getDaftarIdCard({ search: String(row.id_unik) });
+        const card = cards.find(
+          (item) => String(item.id_unik) === String(row.id_unik),
+        );
+        payload = employeeQrPayload(card ?? {});
+      }
       if (!payload) {
         throw new Error(
           "Token QR karyawan belum tersedia. Jalankan Generate QR Token Massal lalu coba lagi.",
@@ -672,8 +690,18 @@ export default function KaryawanPage() {
                       </td>
                       {/* 15. Status QR */}
                       <td className="p-3.5 whitespace-nowrap">
-                        <span className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded-md text-[10px]">
-                          {String(row.status_qr || "Generated")}
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border ${
+                            String(row.status_qr || "Belum") === "Generated" ||
+                            Boolean(row.token_absensi)
+                              ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                              : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                          }`}
+                        >
+                          {String(row.status_qr || "Belum") === "Generated" ||
+                          Boolean(row.token_absensi)
+                            ? "Generated"
+                            : "Belum"}
                         </span>
                       </td>
                       {/* 16. Aksi */}
@@ -836,8 +864,18 @@ export default function KaryawanPage() {
                 <span className="text-[10px] text-slate-500 block uppercase">
                   Status QR Token
                 </span>
-                <span className="text-sky-300 font-bold">
-                  {String(detailKaryawan.status_qr || "Generated")}
+                <span
+                  className={`font-bold text-xs ${
+                    String(detailKaryawan.status_qr || "Belum") ===
+                      "Generated" || Boolean(detailKaryawan.token_absensi)
+                      ? "text-emerald-400"
+                      : "text-amber-400"
+                  }`}
+                >
+                  {String(detailKaryawan.status_qr || "Belum") ===
+                    "Generated" || Boolean(detailKaryawan.token_absensi)
+                    ? "Generated"
+                    : "Belum"}
                 </span>
               </div>
             </div>

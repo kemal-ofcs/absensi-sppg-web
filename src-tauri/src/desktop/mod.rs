@@ -1,13 +1,14 @@
 mod administration;
 pub mod commands;
-mod config;
-mod models;
+pub mod config;
+pub mod models;
 mod operational;
-mod remote;
+pub mod remote;
 mod scanner;
-mod secrets;
-mod storage;
-mod sync;
+pub mod secrets;
+pub mod storage;
+pub mod sync;
 mod time_policy;
+pub mod turso;
 
 pub use config::DesktopState;

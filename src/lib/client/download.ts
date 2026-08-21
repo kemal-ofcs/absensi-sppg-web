@@ -15,6 +15,17 @@ export interface SavePickerOptions {
   accept?: Record<string, string[]>;
 }
 
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(",");
+  const mime = parts[0]?.match(/:(.*?);/)?.[1] || "image/png";
+  const binary = atob(parts[1] || "");
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+  return new Blob([array], { type: mime });
+}
+
 export async function saveFileWithPicker(
   dataUrlOrBlob: string | Blob,
   defaultFilename: string,
@@ -25,8 +36,12 @@ export async function saveFileWithPicker(
 
   if (typeof dataUrlOrBlob === "string") {
     dataUrl = dataUrlOrBlob;
-    const res = await fetch(dataUrlOrBlob);
-    blob = await res.blob();
+    if (dataUrlOrBlob.startsWith("data:")) {
+      blob = dataUrlToBlob(dataUrlOrBlob);
+    } else {
+      const res = await fetch(dataUrlOrBlob);
+      blob = await res.blob();
+    }
   } else {
     blob = dataUrlOrBlob;
     dataUrl = await new Promise<string>((resolve, reject) => {

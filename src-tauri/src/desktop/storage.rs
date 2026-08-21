@@ -1,6 +1,8 @@
 use std::{path::Path, time::SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use super::models::{CommandError, OfflineCredential};
 
@@ -26,6 +28,58 @@ pub fn now_epoch_seconds() -> i64 {
 
 pub fn normalize_identifier(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+pub fn get_or_create_device_id(path: &Path) -> Result<String, CommandError> {
+    let connection = database(path)?;
+    if let Some(existing) = connection
+        .query_row(
+            "SELECT device_id FROM desktop_device_identity WHERE singleton_id = 1;",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+    {
+        let valid = existing.len() == 71
+            && existing.starts_with("device-")
+            && existing[7..].bytes().all(|byte| byte.is_ascii_hexdigit());
+        if valid {
+            return Ok(existing);
+        }
+    }
+    let mut random = [0_u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut random);
+    let generated = format!("device-{}", hex::encode(random));
+    random.zeroize();
+    connection
+        .execute(
+            "INSERT INTO desktop_device_identity (singleton_id, device_id, created_at) VALUES (1, ?, ?) ON CONFLICT(singleton_id) DO UPDATE SET device_id = excluded.device_id, created_at = excluded.created_at;",
+            params![generated, now_epoch_seconds()],
+        )
+        .map_err(|_| CommandError::internal())?;
+    Ok(generated)
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<(), String> {
+    let exists = connection
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?);"),
+            [column],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| format!("Skema tabel {table} tidak dapat diperiksa."))?;
+    if !exists {
+        connection
+            .execute(alter_sql, [])
+            .map_err(|_| format!("Kolom {table}.{column} tidak dapat dimigrasikan."))?;
+    }
+    Ok(())
 }
 
 pub fn initialize(path: &Path) -> Result<(), String> {
@@ -63,6 +117,17 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         event_type TEXT NOT NULL,
         event_at INTEGER NOT NULL,
         detail TEXT
+      );
+      CREATE TABLE IF NOT EXISTS desktop_login_rate_limit (
+        identifier_hash TEXT PRIMARY KEY,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until INTEGER,
+        last_attempt_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS desktop_device_identity (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        device_id TEXT UNIQUE NOT NULL,
+        created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS master_data (
         id_unik TEXT PRIMARY KEY,
@@ -337,20 +402,12 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         )
         .map_err(|_| "Schema keamanan Desktop tidak dapat diinisialisasi.".to_owned())?;
 
-    let has_multi_session: bool = connection
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('tbl_shift') WHERE name = 'izinkan_multi_sesi';",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|count| count > 0)
-        .unwrap_or(false);
-    if !has_multi_session {
-        let _ = connection.execute(
-            "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
-            [],
-        );
-    }
+    ensure_column(
+        &connection,
+        "tbl_shift",
+        "izinkan_multi_sesi",
+        "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+    )?;
 
     let has_holiday_table: bool = connection
         .query_row(
@@ -361,8 +418,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map(|count| count > 0)
         .unwrap_or(false);
     if !has_holiday_table {
-        let _ = connection.execute(
-            r#"
+        connection
+            .execute_batch(
+                r#"
             CREATE TABLE IF NOT EXISTS tbl_hari_libur (
                 id_libur INTEGER PRIMARY KEY AUTOINCREMENT,
                 tanggal TEXT UNIQUE NOT NULL,
@@ -374,8 +432,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_local_hari_libur_tanggal
                 ON tbl_hari_libur(tanggal, status_aktif);
             "#,
-            [],
-        );
+            )
+            .map_err(|_| "Tabel hari libur lokal tidak dapat dimigrasikan.".to_owned())?;
     }
 
     let has_company_profile: bool = connection
@@ -387,8 +445,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map(|count| count > 0)
         .unwrap_or(false);
     if !has_company_profile {
-        let _ = connection.execute(
-            r#"
+        connection
+            .execute_batch(
+                r#"
             CREATE TABLE IF NOT EXISTS company_profile (
                 id TEXT PRIMARY KEY DEFAULT 'default_company',
                 company_name TEXT NOT NULL DEFAULT 'SPPG',
@@ -407,8 +466,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                 updated_at TEXT NOT NULL
             );
             "#,
-            [],
-        );
+            )
+            .map_err(|_| "Tabel profil perusahaan lokal tidak dapat dimigrasikan.".to_owned())?;
     }
 
     let has_id_card_template: bool = connection
@@ -420,8 +479,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map(|count| count > 0)
         .unwrap_or(false);
     if !has_id_card_template {
-        let _ = connection.execute(
-            r#"
+        connection
+            .execute_batch(
+                r#"
             CREATE TABLE IF NOT EXISTS id_card_template (
                 id TEXT PRIMARY KEY DEFAULT 'default_template',
                 name TEXT NOT NULL DEFAULT 'Template Default SPPG',
@@ -434,9 +494,59 @@ pub fn initialize(path: &Path) -> Result<(), String> {
                 updated_at TEXT NOT NULL
             );
             "#,
-            [],
-        );
+            )
+            .map_err(|_| "Tabel template ID card lokal tidak dapat dimigrasikan.".to_owned())?;
     }
+
+    // Idempotent column migrations for legacy operational databases.
+    for (column, sql) in [
+        (
+            "timestamp_input",
+            "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;",
+        ),
+        (
+            "id_unik",
+            "ALTER TABLE import_offline ADD COLUMN id_unik TEXT;",
+        ),
+        (
+            "status_absen",
+            "ALTER TABLE import_offline ADD COLUMN status_absen TEXT;",
+        ),
+        (
+            "status_proses",
+            "ALTER TABLE import_offline ADD COLUMN status_proses TEXT DEFAULT 'Belum Diproses';",
+        ),
+        (
+            "diproses_pada",
+            "ALTER TABLE import_offline ADD COLUMN diproses_pada TEXT;",
+        ),
+        (
+            "pesan_error",
+            "ALTER TABLE import_offline ADD COLUMN pesan_error TEXT;",
+        ),
+    ] {
+        ensure_column(&connection, "import_offline", column, sql)?;
+    }
+
+    connection
+        .execute_batch(
+            r#"
+            UPDATE desktop_sync_outbox
+            SET domain = 'log-scan'
+            WHERE domain IN ('scan-log', 'scan_log', 'log_scan');
+            DELETE FROM desktop_entity_revision AS legacy
+            WHERE legacy.domain IN ('scan-log', 'scan_log', 'log_scan')
+              AND EXISTS (
+                SELECT 1 FROM desktop_entity_revision AS canonical
+                WHERE canonical.domain = 'log-scan'
+                  AND canonical.entity_key = legacy.entity_key
+              );
+            UPDATE desktop_entity_revision
+            SET domain = 'log-scan'
+            WHERE domain IN ('scan-log', 'scan_log', 'log_scan');
+            "#,
+        )
+        .map_err(|_| "Domain sinkronisasi log scan lokal tidak dapat dinormalisasi.".to_owned())?;
 
     Ok(())
 }
@@ -559,11 +669,79 @@ pub fn set_system_setting(path: &Path, key: &str, value: &str) -> Result<(), Com
     Ok(())
 }
 
+fn login_identifier_hash(identifier: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_identifier(identifier).as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+pub fn login_lock_remaining(path: &Path, identifier: &str) -> Result<Option<i64>, CommandError> {
+    let connection = database(path)?;
+    let identifier_hash = login_identifier_hash(identifier);
+    let now = now_epoch_seconds();
+    let locked_until: Option<i64> = connection
+        .query_row(
+            "SELECT locked_until FROM desktop_login_rate_limit WHERE identifier_hash = ?;",
+            [&identifier_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .flatten();
+    if let Some(until) = locked_until.filter(|until| *until > now) {
+        return Ok(Some(until.saturating_sub(now)));
+    }
+    if locked_until.is_some() {
+        connection
+            .execute(
+                "DELETE FROM desktop_login_rate_limit WHERE identifier_hash = ?;",
+                [&identifier_hash],
+            )
+            .map_err(|_| CommandError::internal())?;
+    }
+    Ok(None)
+}
+
+pub fn record_failed_login(path: &Path, identifier: &str) -> Result<Option<i64>, CommandError> {
+    let connection = database(path)?;
+    let identifier_hash = login_identifier_hash(identifier);
+    let now = now_epoch_seconds();
+    connection
+        .execute(
+            r#"INSERT INTO desktop_login_rate_limit (
+                identifier_hash, failed_attempts, locked_until, last_attempt_at
+            ) VALUES (?, 1, NULL, ?)
+            ON CONFLICT(identifier_hash) DO UPDATE SET
+                failed_attempts = desktop_login_rate_limit.failed_attempts + 1,
+                locked_until = CASE
+                    WHEN desktop_login_rate_limit.failed_attempts + 1 >= 5 THEN ? + 120
+                    ELSE desktop_login_rate_limit.locked_until
+                END,
+                last_attempt_at = excluded.last_attempt_at;"#,
+            params![identifier_hash, now, now],
+        )
+        .map_err(|_| CommandError::internal())?;
+    login_lock_remaining(path, identifier)
+}
+
+pub fn clear_login_failures(path: &Path, identifier: &str) -> Result<(), CommandError> {
+    database(path)?
+        .execute(
+            "DELETE FROM desktop_login_rate_limit WHERE identifier_hash = ?;",
+            [login_identifier_hash(identifier)],
+        )
+        .map_err(|_| CommandError::internal())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
 
-    use super::{database, initialize};
+    use super::{
+        clear_login_failures, database, get_or_create_device_id, initialize, login_lock_remaining,
+        record_failed_login,
+    };
 
     #[test]
     fn initializes_operational_schema_idempotently() {
@@ -580,6 +758,8 @@ mod tests {
             "desktop_sync_outbox",
             "desktop_sync_cursor",
             "desktop_sync_conflict",
+            "desktop_login_rate_limit",
+            "desktop_device_identity",
         ] {
             let total: i64 = connection
                 .query_row(
@@ -599,5 +779,39 @@ mod tests {
             )
             .expect("migration count");
         assert_eq!(migrations, 3);
+    }
+
+    #[test]
+    fn login_is_temporarily_locked_after_five_failures() {
+        let directory = tempdir().expect("temporary directory");
+        initialize(directory.path()).expect("initialize schema");
+        for _ in 0..4 {
+            assert_eq!(
+                record_failed_login(directory.path(), " Operator.Test ").expect("record failure"),
+                None
+            );
+        }
+        assert!(record_failed_login(directory.path(), "operator.test")
+            .expect("record fifth failure")
+            .is_some());
+        assert!(login_lock_remaining(directory.path(), "OPERATOR.TEST")
+            .expect("read lock")
+            .is_some());
+        clear_login_failures(directory.path(), "operator.test").expect("clear failures");
+        assert_eq!(
+            login_lock_remaining(directory.path(), "operator.test").expect("read cleared lock"),
+            None
+        );
+    }
+
+    #[test]
+    fn device_identity_is_local_and_stable() {
+        let directory = tempdir().expect("temporary directory");
+        initialize(directory.path()).expect("initialize schema");
+        let first = get_or_create_device_id(directory.path()).expect("first device id");
+        let second = get_or_create_device_id(directory.path()).expect("second device id");
+        assert_eq!(first, second);
+        assert!(first.starts_with("device-"));
+        assert_eq!(first.len(), 71);
     }
 }

@@ -306,29 +306,43 @@ export default function ScannerPage() {
             },
       };
 
-      const controls = await reader.decodeFromConstraints(
-        constraints,
-        video,
-        (result) => {
-          const qrContent = result?.getText().trim();
-          if (!qrContent) return;
+      const handleDecodeResult = (
+        result: { getText: () => string } | undefined,
+      ) => {
+        const qrContent = result?.getText().trim();
+        if (!qrContent) return;
 
-          const now = Date.now();
-          // Only lock the SAME card — different cards queue instantly
-          const isSameQrTooSoon =
-            qrContent === lastScannedQrRef.current &&
-            now - lastScannedTimeRef.current < 2500;
-          if (isSubmittingRef.current || isSameQrTooSoon) {
-            return;
-          }
+        const now = Date.now();
+        // Only lock the SAME card — different cards queue instantly
+        const isSameQrTooSoon =
+          qrContent === lastScannedQrRef.current &&
+          now - lastScannedTimeRef.current < 2500;
+        if (isSubmittingRef.current || isSameQrTooSoon) {
+          return;
+        }
 
-          lastScannedQrRef.current = qrContent;
-          lastScannedTimeRef.current = now;
+        lastScannedQrRef.current = qrContent;
+        lastScannedTimeRef.current = now;
 
-          // Eksekusi proses scan secara asynchronous TANPA mematikan kamera!
-          void handleScanSubmit(qrContent);
-        },
-      );
+        // Eksekusi proses scan secara asynchronous TANPA mematikan kamera!
+        void handleScanSubmit(qrContent);
+      };
+
+      let controls: IScannerControls;
+      try {
+        controls = await reader.decodeFromConstraints(
+          constraints,
+          video,
+          handleDecodeResult,
+        );
+      } catch {
+        // Fallback ke constraint video dasar jika facingMode/resolution ditolak oleh webcam
+        controls = await reader.decodeFromConstraints(
+          { audio: false, video: true },
+          video,
+          handleDecodeResult,
+        );
+      }
 
       scannerControlsRef.current = controls;
       setCameraActive(true);

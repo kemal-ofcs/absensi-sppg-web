@@ -26,6 +26,8 @@ pub struct OfflineCredential {
     pub version: u8,
     pub identity_key: String,
     pub server_origin: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub operator: OperatorUser,
     pub provisioned_at: i64,
     pub offline_valid_until: i64,

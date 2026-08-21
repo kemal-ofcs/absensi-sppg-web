@@ -1,6 +1,9 @@
 "use client";
 
 function loadImage(src: string) {
+  if (!src || typeof src !== "string" || src.trim() === "") {
+    return Promise.reject(new Error("URL gambar kosong."));
+  }
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);

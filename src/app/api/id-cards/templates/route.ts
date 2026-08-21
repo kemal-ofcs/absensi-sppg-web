@@ -46,7 +46,7 @@ export async function PUT(request: NextRequest) {
     const actor = await prepare(request);
     const body = (await readJsonBody(
       request,
-      20_971_520,
+      25_165_824,
     )) as IdCardTemplateConfig;
     const data = await saveIdCardTemplate(body);
     const revision = await recordOperationalChange(getServerDatabase(), {

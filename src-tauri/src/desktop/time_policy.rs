@@ -581,8 +581,16 @@ pub fn is_checkout_window_expired(
         Err(_) => return true,
     };
     let is_night = shift_out_base < shift_in;
-    let shift_out = if is_night { shift_out_base + 1440 } else { shift_out_base };
-    let buffer = if is_night { shift.night_buffer_minutes } else { 0 };
+    let shift_out = if is_night {
+        shift_out_base + 1440
+    } else {
+        shift_out_base
+    };
+    let buffer = if is_night {
+        shift.night_buffer_minutes
+    } else {
+        0
+    };
     let latest_checkout = shift_out + shift.checkout_limit_minutes + buffer;
 
     let diff_days = days_between(session_date, &moment.date).unwrap_or(0);

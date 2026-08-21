@@ -8,6 +8,8 @@
     "core:default",
     "allow-desktop-get-session",
     "allow-desktop-get-runtime-status",
+    "allow-desktop-get-bootstrap-status",
+    "allow-desktop-bootstrap-superadmin",
     "allow-desktop-login",
     "allow-desktop-logout",
     "allow-desktop-get-master-operators",
@@ -69,6 +71,11 @@
     "allow-desktop-get-company-profile",
     "allow-desktop-update-company-profile",
     "allow-desktop-get-id-card-template",
-    "allow-desktop-save-id-card-template"
+    "allow-desktop-save-id-card-template",
+    "allow-desktop-force-resync-settings",
+    "allow-desktop-get-turso-url",
+    "allow-desktop-save-turso-config",
+    "allow-desktop-test-turso-connection",
+    "allow-desktop-clear-turso-config"
   ]
 }

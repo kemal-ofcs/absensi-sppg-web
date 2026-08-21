@@ -67,21 +67,23 @@ export default function HolidaysPage() {
 
   const canManage = hasPermission(user, "holidays.manage");
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const data = await getDaftarHariLibur();
       setHolidays(data);
     } catch (err) {
-      setFeedback({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : "Gagal memuat daftar hari libur.",
-      });
+      if (!silent) {
+        setFeedback({
+          tone: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : "Gagal memuat daftar hari libur.",
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -89,6 +91,16 @@ export default function HolidaysPage() {
     if (!isHydrated || !isAuthenticated) return;
     loadData();
   }, [isHydrated, isAuthenticated, loadData]);
+
+  useEffect(() => {
+    const onSyncCompleted = () => {
+      loadData(true);
+    };
+    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    return () => {
+      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+    };
+  }, [loadData]);
 
   if (!isHydrated || authLoading) {
     return (
