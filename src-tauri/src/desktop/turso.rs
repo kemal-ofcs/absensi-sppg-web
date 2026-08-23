@@ -2670,7 +2670,10 @@ async fn apply_event_to_turso(
                             lp = excluded.lp,
                             id_shift = excluded.id_shift,
                             status_aktif = excluded.status_aktif,
-                            catatan = excluded.catatan;"#,
+                            catatan = excluded.catatan,
+                            jenis_personil = ?,
+                            tanggal_mulai_aktif = ?,
+                            tanggal_selesai_aktif = ?;"#,
                         vec![
                             json!(id_unik),
                             json!(kode_karyawan),
@@ -2685,6 +2688,9 @@ async fn apply_event_to_turso(
                                 .and_then(Value::as_str)
                                 .unwrap_or("Aktif")),
                             json!(row.get("catatan").and_then(Value::as_str)),
+                            json!(row.get("jenis_personil").and_then(Value::as_str).unwrap_or("Pegawai")),
+                            json!(row.get("tanggal_mulai_aktif").and_then(Value::as_str)),
+                            json!(row.get("tanggal_selesai_aktif").and_then(Value::as_str)),
                         ],
                     )
                     .await?;
@@ -2918,82 +2924,94 @@ async fn apply_event_to_turso(
                     v.as_i64()
                         .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
                 })
+                .or_else(|| {
+                    entity_key
+                        .strip_prefix("kode:")
+                        .unwrap_or(entity_key)
+                        .parse::<i64>()
+                        .ok()
+                })
+                .or_else(|| row.get("id_shift").and_then(Value::as_i64))
                 .unwrap_or(0);
-            if kode_shift > 0 {
-                let sql = r#"
-                    INSERT INTO tbl_shift (
-                        kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
-                        batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
-                        istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-                        offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(kode_shift) DO UPDATE SET
-                        nama_shift = excluded.nama_shift,
-                        jam_masuk = excluded.jam_masuk,
-                        jam_pulang = excluded.jam_pulang,
-                        awal_absen_menit = excluded.awal_absen_menit,
-                        batas_masuk_menit = excluded.batas_masuk_menit,
-                        toleransi_masuk_menit = excluded.toleransi_masuk_menit,
-                        jam_kerja_normal_menit = excluded.jam_kerja_normal_menit,
-                        istirahat_menit = excluded.istirahat_menit,
-                        batas_pulang_menit = excluded.batas_pulang_menit,
-                        offset_istirahat_mulai = excluded.offset_istirahat_mulai,
-                        offset_generate_alfa = excluded.offset_generate_alfa,
-                        buffer_shift_malam_menit = excluded.buffer_shift_malam_menit,
-                        izinkan_multi_sesi = excluded.izinkan_multi_sesi;
-                "#;
-                turso
-                    .query_one(
-                        sql,
-                        vec![
-                            json!(kode_shift),
-                            json!(row.get("nama_shift").and_then(Value::as_str).unwrap_or("")),
-                            json!(row.get("jam_masuk").and_then(Value::as_str).unwrap_or("")),
-                            json!(row.get("jam_pulang").and_then(Value::as_str).unwrap_or("")),
-                            json!(row
-                                .get("awal_absen_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("batas_masuk_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("toleransi_masuk_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("jam_kerja_normal_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("istirahat_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("batas_pulang_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("offset_istirahat_mulai")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("offset_generate_alfa")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("buffer_shift_malam_menit")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                            json!(row
-                                .get("izinkan_multi_sesi")
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0)),
-                        ],
-                    )
-                    .await?;
+            if kode_shift <= 0 {
+                return Err(CommandError::new(
+                    "TURSO_SYNC_PAYLOAD_INVALID",
+                    "Kode shift tidak valid pada event sinkronisasi.",
+                ));
             }
+            let sql = r#"
+                INSERT INTO tbl_shift (
+                    kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
+                    batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
+                    istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
+                    offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(kode_shift) DO UPDATE SET
+                    nama_shift = excluded.nama_shift,
+                    jam_masuk = excluded.jam_masuk,
+                    jam_pulang = excluded.jam_pulang,
+                    awal_absen_menit = excluded.awal_absen_menit,
+                    batas_masuk_menit = excluded.batas_masuk_menit,
+                    toleransi_masuk_menit = excluded.toleransi_masuk_menit,
+                    jam_kerja_normal_menit = excluded.jam_kerja_normal_menit,
+                    istirahat_menit = excluded.istirahat_menit,
+                    batas_pulang_menit = excluded.batas_pulang_menit,
+                    offset_istirahat_mulai = excluded.offset_istirahat_mulai,
+                    offset_generate_alfa = excluded.offset_generate_alfa,
+                    buffer_shift_malam_menit = excluded.buffer_shift_malam_menit,
+                    izinkan_multi_sesi = excluded.izinkan_multi_sesi;
+            "#;
+            turso
+                .query_one(
+                    sql,
+                    vec![
+                        json!(kode_shift),
+                        json!(row.get("nama_shift").and_then(Value::as_str).unwrap_or("")),
+                        json!(row.get("jam_masuk").and_then(Value::as_str).unwrap_or("")),
+                        json!(row.get("jam_pulang").and_then(Value::as_str).unwrap_or("")),
+                        json!(row
+                            .get("awal_absen_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(120)),
+                        json!(row
+                            .get("batas_masuk_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(60)),
+                        json!(row
+                            .get("toleransi_masuk_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)),
+                        json!(row
+                            .get("jam_kerja_normal_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(480)),
+                        json!(row
+                            .get("istirahat_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(60)),
+                        json!(row
+                            .get("batas_pulang_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(240)),
+                        json!(row
+                            .get("offset_istirahat_mulai")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(240)),
+                        json!(row
+                            .get("offset_generate_alfa")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(180)),
+                        json!(row
+                            .get("buffer_shift_malam_menit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(120)),
+                        json!(row
+                            .get("izinkan_multi_sesi")
+                            .map(|v| if v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1 { 1 } else { 0 })
+                            .unwrap_or(0)),
+                    ],
+                )
+                .await?;
         }
         ("shift", "delete") => {
             let shift_id = payload
@@ -3614,14 +3632,41 @@ async fn apply_event_to_turso(
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or("default_template");
+                .filter(|id| !id.is_empty())
+                .unwrap_or(entity_key);
+            let id = if id.is_empty() { "default_template" } else { id };
             let elements_json = row
                 .get("elements_json")
+                .or_else(|| row.get("elements"))
                 .map(|value| match value {
                     Value::String(text) => text.clone(),
                     other => other.to_string(),
                 })
                 .unwrap_or_else(|| "[]".to_owned());
+            let front_bg = row
+                .get("front_bg_url")
+                .or_else(|| row.get("frontBgUrl"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty());
+            let back_bg = row
+                .get("back_bg_url")
+                .or_else(|| row.get("backBgUrl"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty());
+            let is_active = row
+                .get("is_active")
+                .or_else(|| row.get("isActive"))
+                .map(|v| {
+                    if v.as_bool().unwrap_or(false)
+                        || v.as_i64().unwrap_or(0) == 1
+                        || v.as_str().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+                    {
+                        1
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(1);
             let sql = r#"
                 INSERT INTO id_card_template (
                     id, name, orientation, front_bg_url, back_bg_url, elements_json,
@@ -3649,10 +3694,10 @@ async fn apply_event_to_turso(
                             .get("orientation")
                             .and_then(Value::as_str)
                             .unwrap_or("landscape")),
-                        json!(row.get("front_bg_url").and_then(Value::as_str)),
-                        json!(row.get("back_bg_url").and_then(Value::as_str)),
+                        json!(front_bg),
+                        json!(back_bg),
                         json!(elements_json),
-                        json!(row.get("is_active").and_then(Value::as_i64).unwrap_or(1)),
+                        json!(is_active),
                     ],
                 )
                 .await?;

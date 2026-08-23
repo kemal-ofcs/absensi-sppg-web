@@ -741,11 +741,16 @@ pub fn create_correction(
             if is_overnight_shift && arrival < shift_start_min - 720 {
                 arrival += 1440;
             }
-            let tolerance = shift_config.4;
-            if arrival > shift_start_min + tolerance {
-                late = (arrival - shift_start_min).max(0);
+            let on_time_limit = shift_start_min + shift_config.5;
+            if arrival > on_time_limit {
+                late = (arrival - on_time_limit).max(0);
+                early = 0;
             } else if arrival < shift_start_min {
                 early = (shift_start_min - arrival).max(0);
+                late = 0;
+            } else {
+                late = 0;
+                early = 0;
             }
         }
 

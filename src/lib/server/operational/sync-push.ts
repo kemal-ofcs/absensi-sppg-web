@@ -330,7 +330,8 @@ async function applyEmployee(
       sql: `
         UPDATE master_data SET kode_karyawan = ?, nama = ?, divisi = ?,
           jabatan_status = ?, no_hp = ?, lp = ?, id_shift = ?,
-          status_aktif = ?, catatan = ? WHERE id_unik = ?;
+          status_aktif = ?, catatan = ?, jenis_personil = ?,
+          tanggal_mulai_aktif = ?, tanggal_selesai_aktif = ? WHERE id_unik = ?;
       `,
       args: [
         text(payload, "kode_karyawan"),
@@ -342,6 +343,9 @@ async function applyEmployee(
         number(payload, "id_shift"),
         text(payload, "status_aktif"),
         text(payload, "catatan"),
+        text(payload, "jenis_personil") || "Pegawai",
+        text(payload, "tanggal_mulai_aktif") || null,
+        text(payload, "tanggal_selesai_aktif") || null,
         event.entityKey,
       ],
     });

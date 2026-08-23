@@ -382,12 +382,31 @@ pub fn update_employee(
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let revision = base_revision(&transaction, "employee", id);
+
+    let jenis_personil = if text(draft, "jenis_personil").is_empty() {
+        "Pegawai"
+    } else {
+        text(draft, "jenis_personil")
+    };
+    let tanggal_mulai_aktif = text(draft, "tanggal_mulai_aktif");
+    let tanggal_selesai_aktif = text(draft, "tanggal_selesai_aktif");
+
     transaction
         .execute(
             r#"
       UPDATE master_data SET
-        kode_karyawan = ?, nama = ?, divisi = ?, jabatan_status = ?, no_hp = ?,
-        lp = ?, id_shift = ?, status_aktif = ?, catatan = ?
+        kode_karyawan = COALESCE(NULLIF(?, ''), kode_karyawan),
+        nama = COALESCE(NULLIF(?, ''), nama),
+        divisi = COALESCE(NULLIF(?, ''), divisi),
+        jabatan_status = COALESCE(NULLIF(?, ''), jabatan_status),
+        no_hp = ?,
+        lp = COALESCE(NULLIF(?, ''), lp),
+        id_shift = CASE WHEN ? > 0 THEN ? ELSE id_shift END,
+        status_aktif = COALESCE(NULLIF(?, ''), status_aktif),
+        catatan = ?,
+        jenis_personil = ?,
+        tanggal_mulai_aktif = ?,
+        tanggal_selesai_aktif = ?
       WHERE id_unik = ?;
       "#,
             params![
@@ -398,8 +417,12 @@ pub fn update_employee(
                 text(draft, "no_hp"),
                 text(draft, "lp"),
                 integer(draft, "id_shift", 0),
+                integer(draft, "id_shift", 0),
                 text(draft, "status_aktif"),
                 text(draft, "catatan"),
+                jenis_personil,
+                tanggal_mulai_aktif,
+                tanggal_selesai_aktif,
                 id,
             ],
         )
@@ -443,13 +466,54 @@ pub fn update_employee(
         )
         .map_err(|_| CommandError::internal())?;
 
+    let mut outbox_payload = draft.clone();
+    if !outbox_payload.is_object() {
+        outbox_payload = json!({});
+    }
+    outbox_payload["id_unik"] = json!(id);
+
+    if let Ok(full_row) = transaction.query_row(
+        r#"
+        SELECT kode_karyawan, nama, divisi, jabatan_status, no_hp, lp,
+               id_shift, status_aktif, tanggal_daftar, catatan, token_absensi,
+               qr_code, status_qr, jenis_personil, tanggal_mulai_aktif,
+               tanggal_selesai_aktif, status_backup
+        FROM master_data WHERE id_unik = ? LIMIT 1;
+        "#,
+        params![id],
+        |row| {
+            Ok(json!({
+                "id_unik": id,
+                "kode_karyawan": row.get::<_, Option<String>>(0)?,
+                "nama": row.get::<_, Option<String>>(1)?,
+                "divisi": row.get::<_, Option<String>>(2)?,
+                "jabatan_status": row.get::<_, Option<String>>(3)?,
+                "no_hp": row.get::<_, Option<String>>(4)?,
+                "lp": row.get::<_, Option<String>>(5)?,
+                "id_shift": row.get::<_, Option<i64>>(6)?,
+                "status_aktif": row.get::<_, Option<String>>(7)?,
+                "tanggal_daftar": row.get::<_, Option<String>>(8)?,
+                "catatan": row.get::<_, Option<String>>(9)?,
+                "token_absensi": row.get::<_, Option<String>>(10)?,
+                "qr_code": row.get::<_, Option<String>>(11)?,
+                "status_qr": row.get::<_, Option<String>>(12)?,
+                "jenis_personil": row.get::<_, Option<String>>(13)?,
+                "tanggal_mulai_aktif": row.get::<_, Option<String>>(14)?,
+                "tanggal_selesai_aktif": row.get::<_, Option<String>>(15)?,
+                "status_backup": row.get::<_, Option<String>>(16)?,
+            }))
+        },
+    ) {
+        outbox_payload = full_row;
+    }
+
     sync::enqueue(
         &transaction,
         &client_id,
         "employee",
         "update",
         id,
-        draft,
+        &outbox_payload,
         revision,
     )?;
     transaction.commit().map_err(|_| CommandError::internal())?;
@@ -1111,27 +1175,51 @@ pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, Com
         CommandError::new("DESKTOP_SAVE_FAILED", "Format base64 file tidak valid.")
     })?;
 
-    let download_dir = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+    let sanitized_filename = filename.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
 
-    if !download_dir.exists() {
-        let _ = std::fs::create_dir_all(&download_dir);
+    let mut potential_dirs = Vec::new();
+
+    // 1. Android public directories
+    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
+    potential_dirs.push(std::path::PathBuf::from("/sdcard/Download"));
+    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
+    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
+
+    // 2. Desktop Windows / Linux / macOS standard Downloads directory
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        potential_dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        potential_dirs.push(std::path::PathBuf::from(home).join("Downloads"));
     }
 
-    let sanitized_filename = filename.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let target_path = download_dir.join(&sanitized_filename);
+    // 3. Fallback to temp dir
+    potential_dirs.push(std::env::temp_dir());
 
-    std::fs::write(&target_path, &bytes).map_err(|e| {
-        CommandError::new("DESKTOP_SAVE_FAILED", &format!("Gagal menulis file: {}", e))
-    })?;
+    let mut last_error = String::new();
+    for dir in potential_dirs {
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        let target_path = dir.join(&sanitized_filename);
+        match std::fs::write(&target_path, &bytes) {
+            Ok(_) => {
+                return Ok(json!({
+                    "sukses": true,
+                    "path": target_path.to_string_lossy().to_string(),
+                    "filename": sanitized_filename
+                }));
+            }
+            Err(e) => {
+                last_error = e.to_string();
+            }
+        }
+    }
 
-    Ok(json!({
-        "sukses": true,
-        "path": target_path.to_string_lossy().to_string(),
-        "filename": sanitized_filename
-    }))
+    Err(CommandError::new(
+        "DESKTOP_SAVE_FAILED",
+        &format!("Gagal menulis file ke media penyimpanan: {}", last_error),
+    ))
 }
 
 pub fn list_holidays(state: &DesktopState) -> Result<Value, CommandError> {
@@ -2142,7 +2230,7 @@ pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, Com
     let default_elements = default_id_card_elements();
     let result = connection
         .query_row(
-            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE id = ? LIMIT 1;",
+            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE (id = ? OR is_active = 1) ORDER BY is_active DESC, updated_at DESC LIMIT 1;",
             [target_id],
             |row| {
                 let elements_raw: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
@@ -2276,7 +2364,7 @@ pub fn save_id_card_template(
         "orientation": orientation,
         "front_bg_url": if front_bg_url.is_empty() { Value::Null } else { Value::String(front_bg_url.to_string()) },
         "back_bg_url": if back_bg_url.is_empty() { Value::Null } else { Value::String(back_bg_url.to_string()) },
-        "elements_json": elements_json,
+        "elements_json": elements,
         "is_active": is_active,
         "created_at": now,
         "updated_at": now,
@@ -2296,10 +2384,9 @@ pub fn save_id_card_template(
     get_id_card_template(state, id)
 }
 
-/// Membuat ulang event outbox untuk company-profile dan id-card-template
-/// dari data lokal yang ada saat ini. Berguna ketika event sebelumnya
-/// gagal dan sudah dihapus sehingga perlu di-enqueue ulang tanpa
-/// mengubah data lokal.
+/// Mendaftarkan ulang seluruh data master lokal (Shift, Template ID Card,
+/// Profil Instansi, Hari Libur, dan Pengaturan Sistem) ke antrean outbox.
+/// Memastikan seluruh konfigurasi lokal langsung terkirim ke Turso Cloud saat sinkronisasi.
 pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandError> {
     let client_id = sync::ensure_client_id(state)?;
     let mut connection = storage::database(&state.data_dir)?;
@@ -2309,92 +2396,219 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
 
     let mut enqueued = 0i64;
 
-    // Ambil data company_profile lokal
-    let profile = transaction
-        .query_row(
-            "SELECT id, company_name, branch_name, logo_url, signature_url, address, phone, email, website, leader_name, leader_title, leader_nip, card_terms, timezone, updated_at FROM company_profile WHERE id = 'default_company' LIMIT 1;",
-            [],
-            |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "company_name": row.get::<_, String>(1)?,
-                    "branch_name": row.get::<_, Option<String>>(2)?,
-                    "logo_url": row.get::<_, Option<String>>(3)?,
-                    "signature_url": row.get::<_, Option<String>>(4)?,
-                    "address": row.get::<_, Option<String>>(5)?,
-                    "phone": row.get::<_, Option<String>>(6)?,
-                    "email": row.get::<_, Option<String>>(7)?,
-                    "website": row.get::<_, Option<String>>(8)?,
-                    "leader_name": row.get::<_, Option<String>>(9)?,
-                    "leader_title": row.get::<_, Option<String>>(10)?,
-                    "leader_nip": row.get::<_, Option<String>>(11)?,
-                    "card_terms": row.get::<_, Option<String>>(12)?,
-                    "timezone": row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "Asia/Jakarta".to_string()),
-                    "updated_at": row.get::<_, String>(14)?,
-                }))
-            },
+    // 1. Shift (tbl_shift)
+    let mut shift_stmt = transaction
+        .prepare(
+            r#"
+            SELECT id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+                   awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+                   jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+                   offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
+                   izinkan_multi_sesi
+            FROM tbl_shift ORDER BY id_shift ASC;
+            "#,
         )
-        .optional()
         .map_err(|_| CommandError::internal())?;
+    let shifts = shift_stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "id_shift": row.get::<_, i64>(0)?,
+                "kode_shift": row.get::<_, i64>(1)?,
+                "nama_shift": row.get::<_, String>(2)?,
+                "jam_masuk": row.get::<_, String>(3)?,
+                "jam_pulang": row.get::<_, String>(4)?,
+                "awal_absen_menit": row.get::<_, i64>(5)?,
+                "batas_masuk_menit": row.get::<_, i64>(6)?,
+                "toleransi_masuk_menit": row.get::<_, i64>(7)?,
+                "jam_kerja_normal_menit": row.get::<_, i64>(8)?,
+                "istirahat_menit": row.get::<_, i64>(9)?,
+                "batas_pulang_menit": row.get::<_, i64>(10)?,
+                "offset_istirahat_mulai": row.get::<_, i64>(11)?,
+                "offset_generate_alfa": row.get::<_, i64>(12)?,
+                "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
+                "izinkan_multi_sesi": row.get::<_, i64>(14)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    drop(shift_stmt);
 
-    if let Some(profile) = profile {
-        let company_name = profile
-            .get("company_name")
-            .and_then(Value::as_str)
-            .unwrap_or("SPPG");
-        if !company_name.is_empty() {
-            sync::enqueue(
+    for shift in shifts {
+        let kode_shift = shift.get("kode_shift").and_then(Value::as_i64).unwrap_or(0);
+        if kode_shift > 0 {
+            let entity_key = format!("kode:{}", kode_shift);
+            let _ = sync::enqueue(
                 &transaction,
                 &client_id,
-                "company-profile",
-                "update",
-                "default_company",
-                &profile,
+                "shift",
+                "create",
+                &entity_key,
+                &shift,
                 None,
-            )?;
+            );
             enqueued += 1;
         }
     }
 
-    // Ambil data id_card_template lokal
-    let template = transaction
-        .query_row(
-            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template WHERE id = 'default_template' LIMIT 1;",
-            [],
-            |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "name": row.get::<_, String>(1)?,
-                    "orientation": row.get::<_, String>(2)?,
-                    "front_bg_url": row.get::<_, Option<String>>(3)?,
-                    "back_bg_url": row.get::<_, Option<String>>(4)?,
-                    "elements_json": row.get::<_, String>(5)?,
-                    "is_active": row.get::<_, i64>(6)?,
-                    "created_at": row.get::<_, Option<String>>(7)?,
-                    "updated_at": row.get::<_, Option<String>>(8)?,
-                }))
-            },
+    // 2. Company Profile (company_profile)
+    let mut cp_stmt = transaction
+        .prepare(
+            "SELECT id, company_name, branch_name, logo_url, signature_url, address, phone, email, website, leader_name, leader_title, leader_nip, card_terms, timezone, updated_at FROM company_profile;",
         )
-        .optional()
         .map_err(|_| CommandError::internal())?;
+    let profiles = cp_stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "company_name": row.get::<_, String>(1)?,
+                "branch_name": row.get::<_, Option<String>>(2)?,
+                "logo_url": row.get::<_, Option<String>>(3)?,
+                "signature_url": row.get::<_, Option<String>>(4)?,
+                "address": row.get::<_, Option<String>>(5)?,
+                "phone": row.get::<_, Option<String>>(6)?,
+                "email": row.get::<_, Option<String>>(7)?,
+                "website": row.get::<_, Option<String>>(8)?,
+                "leader_name": row.get::<_, Option<String>>(9)?,
+                "leader_title": row.get::<_, Option<String>>(10)?,
+                "leader_nip": row.get::<_, Option<String>>(11)?,
+                "card_terms": row.get::<_, Option<String>>(12)?,
+                "timezone": row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "Asia/Jakarta".to_string()),
+                "updated_at": row.get::<_, String>(14)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    drop(cp_stmt);
 
-    if let Some(template) = template {
-        sync::enqueue(
+    for profile in profiles {
+        let cp_id = profile.get("id").and_then(Value::as_str).unwrap_or("default_company");
+        let _ = sync::enqueue(
+            &transaction,
+            &client_id,
+            "company-profile",
+            "update",
+            cp_id,
+            &profile,
+            None,
+        );
+        enqueued += 1;
+    }
+
+    // 3. ID Card Template (id_card_template - seluruh template)
+    let mut tpl_stmt = transaction
+        .prepare(
+            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at FROM id_card_template;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let templates = tpl_stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "orientation": row.get::<_, String>(2)?,
+                "front_bg_url": row.get::<_, Option<String>>(3)?,
+                "back_bg_url": row.get::<_, Option<String>>(4)?,
+                "elements_json": row.get::<_, String>(5)?,
+                "is_active": row.get::<_, i64>(6)?,
+                "created_at": row.get::<_, Option<String>>(7)?,
+                "updated_at": row.get::<_, Option<String>>(8)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    drop(tpl_stmt);
+
+    for template in templates {
+        let tpl_id = template.get("id").and_then(Value::as_str).unwrap_or("default_template");
+        let _ = sync::enqueue(
             &transaction,
             &client_id,
             "id-card-template",
             "save",
-            "default_template",
+            tpl_id,
             &template,
             None,
-        )?;
+        );
         enqueued += 1;
+    }
+
+    // 4. Hari Libur (tbl_hari_libur)
+    let mut hol_stmt = transaction
+        .prepare(
+            "SELECT id_libur, tanggal, nama_libur, jenis_libur, keterangan, status_aktif FROM tbl_hari_libur;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let holidays = hol_stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "id_libur": row.get::<_, i64>(0)?,
+                "tanggal": row.get::<_, String>(1)?,
+                "nama_libur": row.get::<_, String>(2)?,
+                "jenis_libur": row.get::<_, Option<String>>(3)?,
+                "keterangan": row.get::<_, Option<String>>(4)?,
+                "status_aktif": row.get::<_, Option<i64>>(5)?.unwrap_or(1),
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    drop(hol_stmt);
+
+    for holiday in holidays {
+        let tanggal = holiday.get("tanggal").and_then(Value::as_str).unwrap_or("");
+        if !tanggal.is_empty() {
+            let _ = sync::enqueue(
+                &transaction,
+                &client_id,
+                "holiday",
+                "create",
+                tanggal,
+                &holiday,
+                None,
+            );
+            enqueued += 1;
+        }
+    }
+
+    // 5. Pengaturan Sistem (setting_gex_system)
+    let mut set_stmt = transaction
+        .prepare("SELECT key, value FROM setting_gex_system;")
+        .map_err(|_| CommandError::internal())?;
+    let settings = set_stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "key": row.get::<_, String>(0)?,
+                "value": row.get::<_, String>(1)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    drop(set_stmt);
+
+    for setting in settings {
+        let key = setting.get("key").and_then(Value::as_str).unwrap_or("");
+        if !key.is_empty() {
+            let _ = sync::enqueue(
+                &transaction,
+                &client_id,
+                "setting",
+                "update",
+                key,
+                &setting,
+                None,
+            );
+            enqueued += 1;
+        }
     }
 
     transaction.commit().map_err(|_| CommandError::internal())?;
 
     Ok(json!({
         "jumlahDienqueue": enqueued,
-        "pesan": format!("{enqueued} pengaturan berhasil dijadwalkan ulang untuk sinkronisasi."),
+        "pesan": format!("{enqueued} data master (Shift, Template ID Card, Instansi, Libur, Pengaturan) berhasil dijadwalkan untuk sinkronisasi ke cloud."),
     }))
 }

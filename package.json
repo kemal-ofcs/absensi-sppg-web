@@ -26,6 +26,7 @@
     "check:quick": "bun run lint && bun run typecheck && bun run test",
     "check": "bun run lint && bun run typecheck && bun run test && bun run test:rust",
     "bootstrap:superadmin": "bun scripts/bootstrap-superadmin.ts",
+    "reset:superadmin": "bun scripts/reset-superadmin.ts",
     "migrate-old-db": "bun scripts/migrate-old-db.ts"
   },
   "dependencies": {

@@ -283,6 +283,18 @@ export async function updateKaryawan(
     updates.push("catatan = ?");
     args.push(data.catatan);
   }
+  if (data.jenis_personil !== undefined) {
+    updates.push("jenis_personil = ?");
+    args.push(data.jenis_personil);
+  }
+  if (data.tanggal_mulai_aktif !== undefined) {
+    updates.push("tanggal_mulai_aktif = ?");
+    args.push(data.tanggal_mulai_aktif);
+  }
+  if (data.tanggal_selesai_aktif !== undefined) {
+    updates.push("tanggal_selesai_aktif = ?");
+    args.push(data.tanggal_selesai_aktif);
+  }
 
   if (updates.length > 0) {
     args.push(id_unik);
