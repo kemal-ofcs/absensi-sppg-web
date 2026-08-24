@@ -83,6 +83,7 @@ pub fn run() {
             desktop::commands::desktop_get_id_card_template,
             desktop::commands::desktop_save_id_card_template,
             desktop::commands::desktop_force_resync_settings,
+            desktop::commands::desktop_debug_template_sync,
             desktop::commands::desktop_get_turso_url,
             desktop::commands::desktop_save_turso_config,
             desktop::commands::desktop_test_turso_connection,

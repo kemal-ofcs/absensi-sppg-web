@@ -26,13 +26,19 @@ export function preloadImage(src: string): Promise<HTMLImageElement> {
   }
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    if (!src.startsWith("data:") && !src.startsWith("blob:")) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => {
       imageCache.set(src, img);
       resolve(img);
     };
     img.onerror = () => reject(new Error("Gagal memuat gambar"));
     img.src = src;
+    if (img.complete && img.naturalWidth > 0) {
+      imageCache.set(src, img);
+      resolve(img);
+    }
   });
 }
 

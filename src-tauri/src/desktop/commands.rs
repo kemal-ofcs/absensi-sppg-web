@@ -1091,7 +1091,6 @@ pub fn desktop_get_id_card_template(
     state: State<'_, DesktopState>,
     id: Option<String>,
 ) -> Result<Value, CommandError> {
-    require_permission(&state, "employees.manage")?;
     operational::get_id_card_template(&state, id.as_deref().unwrap_or("default_template"))
 }
 
@@ -1153,6 +1152,25 @@ pub async fn desktop_force_resync_settings(
     Ok(json!({
         "enqueue": enqueue_result,
         "status": status,
+    }))
+}
+
+#[tauri::command]
+pub async fn desktop_debug_template_sync(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let local_tpl = operational::get_id_card_template(&state, "default_template")?;
+    let cloud_tpl: Option<Value> = if let Ok(turso) = state.get_turso_client() {
+        turso.query_one(
+            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, updated_at FROM id_card_template WHERE id = 'default_template';",
+            vec![],
+        ).await.ok().and_then(|res| res.to_objects().into_iter().next().map(|map| json!(map)))
+    } else {
+        None
+    };
+    Ok(json!({
+        "local": local_tpl,
+        "cloud": cloud_tpl,
     }))
 }
 

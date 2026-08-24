@@ -198,7 +198,7 @@ fn atomic_batch_steps(statements: &[Statement]) -> (Vec<Value>, usize) {
     (steps, commit_step)
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
@@ -1175,7 +1175,7 @@ impl TursoClient {
             serde_json::to_string(&crate::desktop::operational::default_id_card_elements())
                 .unwrap_or_else(|_| "[]".to_string());
         self.query_one(
-            "UPDATE id_card_template SET elements_json = ? WHERE id = 'default_template' AND (elements_json = '[]' OR elements_json IS NULL OR elements_json = '');",
+            "UPDATE id_card_template SET elements_json = ? WHERE id = 'default_template' AND (elements_json IS NULL OR TRIM(elements_json) = '' OR TRIM(elements_json) = '[]') AND NOT EXISTS (SELECT 1 FROM sync_changelog WHERE domain IN ('id-card-template', 'id_card_template') AND entity_key = 'default_template');",
             vec![json!(default_elements_str)],
         ).await?;
 
@@ -3635,14 +3635,36 @@ async fn apply_event_to_turso(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(entity_key);
             let id = if id.is_empty() { "default_template" } else { id };
-            let elements_json = row
-                .get("elements_json")
-                .or_else(|| row.get("elements"))
-                .map(|value| match value {
-                    Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                })
-                .unwrap_or_else(|| "[]".to_owned());
+            let elements_raw = row.get("elements_json").or_else(|| row.get("elements"));
+            let mut current = match elements_raw {
+                Some(Value::String(text)) => {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                        parsed
+                    } else {
+                        Value::String(text.clone())
+                    }
+                }
+                Some(val) => val.clone(),
+                None => json!([]),
+            };
+            while let Value::String(ref s) = current {
+                if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                    current = parsed;
+                } else {
+                    break;
+                }
+            }
+            let elements_json = if current.is_array() || current.is_object() {
+                serde_json::to_string(&current).unwrap_or_else(|_| "[]".to_owned())
+            } else if let Value::String(s) = current {
+                if s.trim().is_empty() {
+                    "[]".to_owned()
+                } else {
+                    s
+                }
+            } else {
+                "[]".to_owned()
+            };
             let front_bg = row
                 .get("front_bg_url")
                 .or_else(|| row.get("frontBgUrl"))

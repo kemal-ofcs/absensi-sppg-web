@@ -109,26 +109,51 @@ export async function downloadDataUrl(
   dataUrl: string,
   filename: string,
 ): Promise<DownloadResult> {
+  const cleanBase64 = dataUrl.includes(";base64,")
+    ? dataUrl.split(";base64,")[1] || ""
+    : dataUrl.includes(",")
+      ? dataUrl.split(",")[1] || ""
+      : dataUrl;
+
   if (isDesktopRuntime()) {
     try {
       const res = await invokeDesktop<{
         sukses: boolean;
-        path: string;
-        filename: string;
+        path?: string;
+        filename?: string;
       }>("desktop_save_file", {
         filename,
-        base64Data: dataUrl,
+        base64Data: cleanBase64,
       });
-      return res;
+      if (res?.sukses) {
+        return {
+          sukses: true,
+          path: res.path || filename,
+          filename: res.filename || filename,
+        };
+      }
     } catch (err) {
-      console.warn("Desktop native save failed, using web fallback:", err);
+      console.warn("Desktop native save failed:", err);
+      throw new Error(
+        err instanceof Error
+          ? err.message
+          : "Gagal menyimpan berkas ke media penyimpanan komputer.",
+      );
     }
   }
 
-  const anchor = document.createElement("a");
-  anchor.href = dataUrl;
-  anchor.download = filename;
-  anchor.click();
+  if (typeof document !== "undefined") {
+    const anchor = document.createElement("a");
+    anchor.href = dataUrl.startsWith("data:")
+      ? dataUrl
+      : `data:image/png;base64,${cleanBase64}`;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    return { sukses: true, filename };
+  }
+
   return { sukses: true, filename };
 }
 
@@ -146,7 +171,8 @@ export async function downloadBlob(
       });
       return await downloadDataUrl(base64Data, filename);
     } catch (err) {
-      console.warn("Desktop native save blob failed, using web fallback:", err);
+      console.warn("Desktop native save blob failed:", err);
+      throw err;
     }
   }
 
@@ -154,7 +180,9 @@ export async function downloadBlob(
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  document.body.appendChild(anchor);
   anchor.click();
+  document.body.removeChild(anchor);
   setTimeout(() => URL.revokeObjectURL(url), 1_000);
   return { sukses: true, filename };
 }
