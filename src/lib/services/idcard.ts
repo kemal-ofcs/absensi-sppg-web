@@ -52,10 +52,11 @@ export async function updateStatusIdCard(data: IdCardUpdateInput) {
   const today = now.split("T")[0];
 
   await db.execute({
-    sql: `INSERT OR IGNORE INTO id_card
+    sql: `INSERT INTO id_card
       (id_unik, nama, divisi, idcard_status, tanggal_generate)
       SELECT id_unik, nama, divisi, 'Belum', ? FROM master_data
-      WHERE id_unik = ?;`,
+      WHERE id_unik = ?
+        AND NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = master_data.id_unik);`,
     args: [today, data.id_unik],
   });
 

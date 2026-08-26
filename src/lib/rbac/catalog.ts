@@ -71,6 +71,41 @@ export const PERMISSION_CATALOG = [
   { key: "sync.view", name: "Lihat status sinkronisasi", group: "Sistem" },
   { key: "sync.retry", name: "Ulangi sinkronisasi", group: "Sistem" },
   { key: "diagnostics.view", name: "Lihat diagnostik", group: "Sistem" },
+  {
+    key: "payroll.view",
+    name: "Lihat Rekap & Estimasi Gaji",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.run.create",
+    name: "Buat & Jalankan Batch Payroll",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.run.review",
+    name: "Review Batch Payroll",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.run.approve",
+    name: "Setujui Batch Payroll",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.run.disburse",
+    name: "Tandai Dibayar & Kunci Slip",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.config.manage",
+    name: "Kelola Tarif, Lembur & Pajak",
+    group: "Penggajian",
+  },
+  {
+    key: "payroll.export",
+    name: "Export Laporan & Slip Gaji",
+    group: "Penggajian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -79,6 +114,7 @@ export const SUPERADMIN_ONLY_PERMISSIONS = new Set<PermissionKey>([
   "operators.view",
   "operators.manage",
   "roles.manage",
+  "payroll.config.manage",
 ]);
 
 export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([

@@ -1,0 +1,202 @@
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
+use serde_json::json;
+
+use super::models::{BpjsRule, OvertimeTierRule, PayrollComponent, TaxRule};
+
+pub struct PayrollCalculator;
+
+impl PayrollCalculator {
+    /// Menghitung akumulasi indeks lembur berjenjang (PP 35/2021)
+    /// Contoh Hari Kerja: 3 Jam Lembur -> Jam 1: 1.0 * 1.5 = 1.5; Jam 2-3: 2.0 * 2.0 = 4.0; Total Indeks = 5.5
+    pub fn calculate_overtime_index(
+        overtime_hours: Decimal,
+        tiers: &[OvertimeTierRule],
+    ) -> Decimal {
+        if overtime_hours <= Decimal::ZERO || tiers.is_empty() {
+            return Decimal::ZERO;
+        }
+
+        let mut remaining = overtime_hours;
+        let mut total_index = Decimal::ZERO;
+
+        for tier in tiers {
+            if tier.is_active == 0 {
+                continue;
+            }
+            if remaining <= Decimal::ZERO {
+                break;
+            }
+
+            let start = Decimal::from_f64_retain(tier.hour_start).unwrap_or(Decimal::ZERO);
+            let multiplier = Decimal::from_f64_retain(tier.multiplier).unwrap_or(Decimal::ONE);
+
+            let span = match tier.hour_end {
+                Some(end) => {
+                    let end_dec = Decimal::from_f64_retain(end).unwrap_or(Decimal::ZERO);
+                    if end_dec > start {
+                        end_dec - start
+                    } else {
+                        Decimal::ZERO
+                    }
+                }
+                None => remaining, // Tier tak berhingga
+            };
+
+            if span <= Decimal::ZERO {
+                continue;
+            }
+
+            let hours_in_tier = remaining.min(span);
+            total_index += hours_in_tier * multiplier;
+            remaining -= hours_in_tier;
+        }
+
+        total_index.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero)
+    }
+
+    /// Menghitung tunjangan dan potongan dinamis
+    pub fn calculate_components(
+        basic_salary: Decimal,
+        components: &[PayrollComponent],
+        id_karyawan: &str,
+    ) -> (Decimal, Decimal, Vec<serde_json::Value>) {
+        let mut total_allowance = Decimal::ZERO;
+        let mut total_deduction = Decimal::ZERO;
+        let mut breakdown = Vec::new();
+
+        for comp in components {
+            if comp.is_active == 0 {
+                continue;
+            }
+            if comp.applies_to != "ALL" && comp.applies_to != id_karyawan {
+                continue;
+            }
+
+            let default_val = Decimal::from_f64_retain(comp.default_value).unwrap_or(Decimal::ZERO);
+            let nominal = if comp.calc_type == "PERCENTAGE" {
+                (basic_salary * (default_val / Decimal::from(100)))
+                    .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+            } else {
+                default_val.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+            };
+
+            if comp.category == "ALLOWANCE" {
+                total_allowance += nominal;
+            } else {
+                total_deduction += nominal;
+            }
+
+            breakdown.push(json!({
+                "id": comp.id,
+                "name": comp.name,
+                "category": comp.category,
+                "calc_type": comp.calc_type,
+                "rate": comp.default_value,
+                "nominal": nominal.to_i64().unwrap_or(0)
+            }));
+        }
+
+        (total_allowance, total_deduction, breakdown)
+    }
+
+    /// Menghitung BPJS Ketenagakerjaan & Kesehatan
+    pub fn calculate_bpjs(
+        gross_salary: Decimal,
+        bpjs_rules: &[BpjsRule],
+    ) -> (Decimal, Decimal, Vec<serde_json::Value>) {
+        let mut total_emp = Decimal::ZERO;
+        let mut total_co = Decimal::ZERO;
+        let mut breakdown = Vec::new();
+
+        for rule in bpjs_rules {
+            let basis = match rule.wage_cap {
+                Some(cap) if cap > 0 => {
+                    let cap_dec = Decimal::from(cap);
+                    gross_salary.min(cap_dec)
+                }
+                _ => gross_salary,
+            };
+
+            let rate = Decimal::from_f64_retain(rule.rate_percentage).unwrap_or(Decimal::ZERO);
+            let nominal = (basis * (rate / Decimal::from(100)))
+                .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+
+            let is_employee = rule.component_code.ends_with("_EMP");
+            if is_employee {
+                total_emp += nominal;
+            } else {
+                total_co += nominal;
+            }
+
+            breakdown.push(json!({
+                "code": rule.component_code,
+                "name": rule.component_name,
+                "rate": rule.rate_percentage,
+                "wage_cap": rule.wage_cap,
+                "nominal": nominal.to_i64().unwrap_or(0),
+                "is_employee": is_employee
+            }));
+        }
+
+        (total_emp, total_co, breakdown)
+    }
+
+    /// Menghitung PPh 21 Metode TER (PMK 168/2023)
+    pub fn calculate_pph21_ter(
+        gross_salary: Decimal,
+        ptkp_status: &str,
+        tax_rules: &[TaxRule],
+    ) -> (Decimal, serde_json::Value) {
+        // Tentukan Kategori TER berdasarkan PTKP
+        let ter_category = match ptkp_status.trim().to_uppercase().as_str() {
+            "TK/0" | "TK/1" | "K/0" => "TER_A",
+            "TK/2" | "TK/3" | "K/1" | "K/2" => "TER_B",
+            "K/3" => "TER_C",
+            _ => "TER_A",
+        };
+
+        let gross_i64 = gross_salary.to_i64().unwrap_or(0);
+
+        // Cari bracket TER yang cocok
+        let matching_rule = tax_rules.iter().find(|rule| {
+            if rule.category != ter_category {
+                return false;
+            }
+            let min_ok = gross_i64 >= rule.bracket_min;
+            let max_ok = match rule.bracket_max {
+                Some(max) => gross_i64 <= max,
+                None => true,
+            };
+            min_ok && max_ok
+        });
+
+        if let Some(rule) = matching_rule {
+            let rate = Decimal::from_f64_retain(rule.rate_percentage).unwrap_or(Decimal::ZERO);
+            let pph21 = (gross_salary * (rate / Decimal::from(100)))
+                .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+
+            (
+                pph21,
+                json!({
+                    "method": "TER",
+                    "category": ter_category,
+                    "ptkp_status": ptkp_status,
+                    "rate_percentage": rule.rate_percentage,
+                    "pph21_amount": pph21.to_i64().unwrap_or(0)
+                }),
+            )
+        } else {
+            (
+                Decimal::ZERO,
+                json!({
+                    "method": "TER",
+                    "category": ter_category,
+                    "ptkp_status": ptkp_status,
+                    "rate_percentage": 0.0,
+                    "pph21_amount": 0
+                }),
+            )
+        }
+    }
+}

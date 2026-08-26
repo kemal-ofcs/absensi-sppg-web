@@ -229,10 +229,11 @@ export async function tambahKaryawan(data: KaryawanInput) {
   // 2. Insert record ke id_card
   await db.execute({
     sql: `
-      INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate)
-      VALUES (?, ?, ?, 'Belum', ?);
+      INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate)
+      SELECT ?, ?, ?, 'Belum', ?
+      WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);
     `,
-    args: [data.id_unik, data.nama, data.divisi, today],
+    args: [data.id_unik, data.nama, data.divisi, today, data.id_unik],
   });
 
   return { sukses: true, id_unik: data.id_unik, token_absensi: tokenAbsensi };

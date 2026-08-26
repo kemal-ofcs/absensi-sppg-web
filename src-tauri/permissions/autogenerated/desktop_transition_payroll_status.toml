@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-transition-payroll-status"
+description = "Enables the desktop_transition_payroll_status command without any pre-configured scope."
+commands.allow = ["desktop_transition_payroll_status"]
+
+[[permission]]
+identifier = "deny-desktop-transition-payroll-status"
+description = "Denies the desktop_transition_payroll_status command without any pre-configured scope."
+commands.deny = ["desktop_transition_payroll_status"]

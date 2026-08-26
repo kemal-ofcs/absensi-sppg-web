@@ -40,12 +40,20 @@ beforeEach(async () => {
       "DELETE FROM absensi_harian;",
       "DELETE FROM backup_karyawan;",
       "DELETE FROM master_data;",
+      // Pastikan shift tersedia secara eksplisit — tidak bergantung pada seed default
+      // yang telah dihapus. INSERT OR REPLACE memastikan konfigurasi selalu segar.
       {
-        sql: `UPDATE tbl_shift SET awal_absen_menit = 60,
-              batas_masuk_menit = 15, toleransi_masuk_menit = 30,
-              jam_kerja_normal_menit = 420, istirahat_menit = 60,
-              batas_pulang_menit = 120, offset_istirahat_mulai = 240,
-              buffer_shift_malam_menit = 120 WHERE kode_shift IN (1, 2, 3);`,
+        sql: `INSERT OR REPLACE INTO tbl_shift (
+                id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+                awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+                jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+                offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
+                izinkan_multi_sesi
+              ) VALUES
+              (1, 1, 'Shift Pagi',      '07:00', '15:00', 60, 15, 30, 420, 60, 120, 240, 180, 120, 0),
+              (2, 2, 'Shift Siang',     '15:00', '23:00', 60, 15, 30, 420, 60, 120, 240, 180, 120, 0),
+              (3, 3, 'Shift Malam',     '23:00', '07:00', 60, 15, 30, 420, 60, 120, 240, 180, 120, 0),
+              (4, 4, 'Shift Fleksibel', '08:00', '17:00', 60, 540,  0,   0, 60, 120, 240, 180, 120, 0);`,
         args: [],
       },
       {

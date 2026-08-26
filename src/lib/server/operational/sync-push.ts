@@ -32,6 +32,7 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   setting: "settings.manage",
   "company-profile": "settings.manage",
   "id-card-template": "settings.manage",
+  payroll: "payroll.config.manage",
 };
 
 function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
@@ -50,6 +51,15 @@ function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
   }
   if (event.domain === "log-scan") {
     return "history.delete";
+  }
+  if (event.domain === "payroll") {
+    if (
+      event.operation === "create-run" ||
+      event.operation === "transition-status"
+    ) {
+      return "payroll.run.create";
+    }
+    return "payroll.config.manage";
   }
   return DOMAIN_PERMISSION[event.domain] ?? null;
 }
@@ -318,11 +328,12 @@ async function applyEmployee(
       });
       await transaction.execute({
         sql: `
-        INSERT OR IGNORE INTO id_card (
+        INSERT INTO id_card (
           id_unik, nama, divisi, idcard_status, tanggal_generate
-        ) VALUES (?, ?, ?, 'Belum', ?);
+        ) SELECT ?, ?, ?, 'Belum', ?
+        WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);
       `,
-        args: [id, name, division, new Date().toISOString().slice(0, 10)],
+        args: [id, name, division, new Date().toISOString().slice(0, 10), id],
       });
     }
   } else if (event.operation === "update") {
@@ -620,13 +631,13 @@ async function applyAttendance(
     }
     await transaction.execute({
       sql: `INSERT INTO absensi_harian (
-        tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+        id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
         status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
         menit_terlambat, menit_datang_awal, jam_kerja, lembur,
         jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
         id_backup, id_karyawan_asal, tanggal_tugas
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id_sesi) DO UPDATE SET
+      ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id_absensi) DO UPDATE SET
         jam_masuk = excluded.jam_masuk,
         jam_pulang = excluded.jam_pulang,
         status_kehadiran = excluded.status_kehadiran,
@@ -640,6 +651,7 @@ async function applyAttendance(
         lembur = excluded.lembur,
         jam_kerja_kurang = excluded.jam_kerja_kurang;`,
       args: [
+        sessionId,
         text(data, "tanggal"),
         text(data, "id_karyawan"),
         text(data, "nama"),
@@ -813,13 +825,13 @@ async function applyAttendance(
     await transaction.execute({
       sql: `
         INSERT INTO absensi_harian (
-          tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+          id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
           status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
           menit_terlambat, menit_datang_awal, jam_kerja, lembur,
           jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
           id_backup, id_karyawan_asal, tanggal_tugas
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Scanner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id_sesi) DO UPDATE SET
+        ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Scanner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id_absensi) DO UPDATE SET
           jam_masuk = excluded.jam_masuk,
           jam_pulang = excluded.jam_pulang,
           status_kehadiran = excluded.status_kehadiran,
@@ -834,6 +846,7 @@ async function applyAttendance(
           jam_kerja_kurang = excluded.jam_kerja_kurang;
       `,
       args: [
+        idSesi,
         text(data, "tanggal"),
         text(data, "id_karyawan"),
         text(data, "nama"),
@@ -1105,13 +1118,13 @@ async function applyCorrection(
   });
   await transaction.execute({
     sql: `INSERT INTO absensi_harian (
-      tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+      id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
       status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
       menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
       id_backup, id_karyawan_asal, tanggal_tugas
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Koreksi Admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id_sesi) DO UPDATE SET
+    ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Koreksi Admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id_absensi) DO UPDATE SET
       jam_masuk = excluded.jam_masuk, jam_pulang = excluded.jam_pulang,
       status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
@@ -1121,6 +1134,7 @@ async function applyCorrection(
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
     args: [
+      sessionId,
       text(daily, "tanggal"),
       text(daily, "id_karyawan"),
       text(daily, "nama"),
@@ -1479,13 +1493,13 @@ async function applyOfflineImport(
     logIds.push(Number(logRes.lastInsertRowid));
   }
   await transaction.execute({
-    sql: `INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi,
+    sql: `INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi,
       jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber,
       update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup,
       id_karyawan_asal, tanggal_tugas)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
+      VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id_absensi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
       jam_pulang = excluded.jam_pulang, status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
       sumber = 'Import Offline', update_terakhir = excluded.update_terakhir,
@@ -1493,6 +1507,7 @@ async function applyOfflineImport(
       menit_datang_awal = excluded.menit_datang_awal, jam_kerja = excluded.jam_kerja,
       lembur = excluded.lembur, jam_kerja_kurang = excluded.jam_kerja_kurang;`,
     args: [
+      sessionId,
       text(daily, "tanggal"),
       text(daily, "id_karyawan"),
       text(daily, "nama"),
@@ -1710,6 +1725,303 @@ async function applyIdCardTemplate(
   return { revision, payload: { id, name: text(payload, "name") } };
 }
 
+async function applyPayroll(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  const operation = event.operation;
+
+  if (operation === "salary-config") {
+    const row = (payload.salaryConfig ?? payload) as Record<string, unknown>;
+    const id = text(row, "id") || event.entityKey;
+    if (id) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO salary_configs (
+            id, id_karyawan, rate_per_hour, ptkp_status, effective_date, created_by, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id_karyawan, effective_date) DO UPDATE SET
+            rate_per_hour = excluded.rate_per_hour,
+            ptkp_status = excluded.ptkp_status,
+            created_by = excluded.created_by;
+        `,
+        args: [
+          id,
+          text(row, "id_karyawan"),
+          number(row, "rate_per_hour"),
+          text(row, "ptkp_status") || "TK/0",
+          text(row, "effective_date"),
+          text(row, "created_by") || actor.username,
+          text(row, "created_at") || new Date().toISOString(),
+        ],
+      });
+    }
+  } else if (operation === "overtime-rule") {
+    const row = (payload.overtimeRule ?? payload) as Record<string, unknown>;
+    const id = text(row, "id") || event.entityKey;
+    if (id) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO overtime_tier_rules (
+            id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(rule_type, tier_order) DO UPDATE SET
+            hour_start = excluded.hour_start,
+            hour_end = excluded.hour_end,
+            multiplier = excluded.multiplier,
+            is_active = excluded.is_active;
+        `,
+        args: [
+          id,
+          text(row, "rule_type"),
+          number(row, "tier_order"),
+          number(row, "hour_start"),
+          row.hour_end !== null && row.hour_end !== undefined
+            ? Number(row.hour_end)
+            : null,
+          number(row, "multiplier", 1.0),
+          number(row, "is_active", 1),
+        ],
+      });
+    }
+  } else if (operation === "payroll-component") {
+    const row = (payload.component ?? payload) as Record<string, unknown>;
+    const id = text(row, "id") || event.entityKey;
+    if (id) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO payroll_components (
+            id, name, category, calc_type, default_value, applies_to, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            category = excluded.category,
+            calc_type = excluded.calc_type,
+            default_value = excluded.default_value,
+            applies_to = excluded.applies_to,
+            is_active = excluded.is_active;
+        `,
+        args: [
+          id,
+          text(row, "name"),
+          text(row, "category"),
+          text(row, "calc_type"),
+          number(row, "default_value"),
+          text(row, "applies_to") || "ALL",
+          number(row, "is_active", 1),
+        ],
+      });
+    }
+  } else if (operation === "tax-rule") {
+    const row = (payload.taxRule ?? payload) as Record<string, unknown>;
+    const id = text(row, "id") || event.entityKey;
+    if (id) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO tax_rules (
+            id, category, bracket_min, bracket_max, rate_percentage, effective_date
+          ) VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            category = excluded.category,
+            bracket_min = excluded.bracket_min,
+            bracket_max = excluded.bracket_max,
+            rate_percentage = excluded.rate_percentage,
+            effective_date = excluded.effective_date;
+        `,
+        args: [
+          id,
+          text(row, "category"),
+          number(row, "bracket_min"),
+          row.bracket_max !== null && row.bracket_max !== undefined
+            ? Number(row.bracket_max)
+            : null,
+          number(row, "rate_percentage"),
+          text(row, "effective_date"),
+        ],
+      });
+    }
+  } else if (operation === "bpjs-rule") {
+    const row = (payload.bpjsRule ?? payload) as Record<string, unknown>;
+    const id = text(row, "id") || event.entityKey;
+    if (id) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO bpjs_rules (
+            id, component_code, component_name, rate_percentage, wage_cap, effective_date
+          ) VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(component_code) DO UPDATE SET
+            component_name = excluded.component_name,
+            rate_percentage = excluded.rate_percentage,
+            wage_cap = excluded.wage_cap,
+            effective_date = excluded.effective_date;
+        `,
+        args: [
+          id,
+          text(row, "component_code"),
+          text(row, "component_name"),
+          number(row, "rate_percentage"),
+          row.wage_cap !== null && row.wage_cap !== undefined
+            ? Number(row.wage_cap)
+            : null,
+          text(row, "effective_date"),
+        ],
+      });
+    }
+  } else if (operation === "delete") {
+    const table = text(payload, "table");
+    const id = text(payload, "id") || event.entityKey;
+    const deletable = [
+      "salary_configs",
+      "overtime_tier_rules",
+      "payroll_components",
+      "tax_rules",
+      "bpjs_rules",
+    ];
+    if (id && deletable.includes(table)) {
+      await transaction.execute({
+        sql: `DELETE FROM ${table} WHERE id = ?;`,
+        args: [id],
+      });
+    }
+  } else if (operation === "create-run") {
+    const run = (payload.run ?? payload) as Record<string, unknown>;
+    const runId = text(run, "id") || event.entityKey;
+    if (runId) {
+      await transaction.execute({
+        sql: `
+          INSERT INTO payroll_runs (
+            id, idempotency_key, period_start, period_end, status,
+            total_gross_payout, total_net_payout, total_employees,
+            created_by, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO NOTHING;
+        `,
+        args: [
+          runId,
+          text(run, "idempotency_key"),
+          text(run, "period_start"),
+          text(run, "period_end"),
+          text(run, "status") || "DRAFT",
+          number(run, "total_gross_payout"),
+          number(run, "total_net_payout"),
+          number(run, "total_employees"),
+          text(run, "created_by") || actor.username,
+          text(run, "created_at") || new Date().toISOString(),
+          text(run, "updated_at") || new Date().toISOString(),
+        ],
+      });
+
+      if (Array.isArray(payload.items)) {
+        for (const item of payload.items as Record<string, unknown>[]) {
+          const itemId = text(item, "id");
+          if (!itemId) continue;
+          await transaction.execute({
+            sql: `
+              INSERT INTO payroll_items (
+                id, payroll_run_id, id_karyawan, nama_karyawan, divisi, ptkp_status,
+                total_regular_hours, total_overtime_hours, total_overtime_index,
+                rate_per_hour, basic_salary, overtime_salary, gross_salary,
+                total_allowances, total_deductions, bpjs_employee_total, bpjs_company_total,
+                pph21_amount, net_salary, breakdown_snapshot, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO NOTHING;
+            `,
+            args: [
+              itemId,
+              runId,
+              text(item, "id_karyawan"),
+              text(item, "nama_karyawan"),
+              text(item, "divisi"),
+              text(item, "ptkp_status") || "TK/0",
+              number(item, "total_regular_hours"),
+              number(item, "total_overtime_hours"),
+              number(item, "total_overtime_index"),
+              number(item, "rate_per_hour"),
+              number(item, "basic_salary"),
+              number(item, "overtime_salary"),
+              number(item, "gross_salary"),
+              number(item, "total_allowances"),
+              number(item, "total_deductions"),
+              number(item, "bpjs_employee_total"),
+              number(item, "bpjs_company_total"),
+              number(item, "pph21_amount"),
+              number(item, "net_salary"),
+              typeof item.breakdown_snapshot === "string"
+                ? item.breakdown_snapshot
+                : JSON.stringify(item.breakdown_snapshot ?? {}),
+              text(item, "created_at") || new Date().toISOString(),
+            ],
+          });
+        }
+      }
+
+      if (payload.audit && typeof payload.audit === "object") {
+        const audit = payload.audit as Record<string, unknown>;
+        const auditId = text(audit, "id");
+        if (auditId) {
+          await transaction.execute({
+            sql: `
+              INSERT INTO payroll_audit_logs (
+                id, payroll_run_id, action, old_status, new_status, performed_by, notes, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO NOTHING;
+            `,
+            args: [
+              auditId,
+              runId,
+              text(audit, "action"),
+              text(audit, "old_status") || null,
+              text(audit, "new_status"),
+              text(audit, "performed_by") || actor.username,
+              text(audit, "notes") || null,
+              text(audit, "created_at") || new Date().toISOString(),
+            ],
+          });
+        }
+      }
+    }
+  } else if (operation === "transition-status") {
+    const runId = text(payload, "id") || event.entityKey;
+    const status = text(payload, "status");
+    const updatedAt = text(payload, "updated_at") || new Date().toISOString();
+    if (runId && status) {
+      await transaction.execute({
+        sql: "UPDATE payroll_runs SET status = ?, updated_at = ? WHERE id = ?;",
+        args: [status, updatedAt, runId],
+      });
+    }
+    if (payload.audit && typeof payload.audit === "object") {
+      const audit = payload.audit as Record<string, unknown>;
+      const auditId = text(audit, "id");
+      if (auditId && runId) {
+        await transaction.execute({
+          sql: `
+            INSERT INTO payroll_audit_logs (
+              id, payroll_run_id, action, old_status, new_status, performed_by, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING;
+          `,
+          args: [
+            auditId,
+            runId,
+            text(audit, "action"),
+            text(audit, "old_status") || null,
+            text(audit, "new_status"),
+            text(audit, "performed_by") || actor.username,
+            text(audit, "notes") || null,
+            text(audit, "created_at") || new Date().toISOString(),
+          ],
+        });
+      }
+    }
+  }
+
+  const revision = await appendChange(transaction, actor, event, payload);
+  return { revision, payload: { id: event.entityKey } };
+}
+
 async function applyEvent(
   transaction: Transaction,
   actor: OperatorUser,
@@ -1745,6 +2057,9 @@ async function applyEvent(
     return applyLogScan(transaction, actor, event);
   }
   if (event.domain === "id-card") return applyIdCard(transaction, actor, event);
+  if (event.domain === "payroll") {
+    return applyPayroll(transaction, actor, event);
+  }
   throw new Error(
     `Domain '${event.domain}' belum didukung oleh endpoint sync.`,
   );

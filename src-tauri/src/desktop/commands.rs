@@ -79,6 +79,23 @@ fn require_online_access(
     })
 }
 
+/// Token sesi bila ada, atau string kosong.
+///
+/// Kosong BUKAN alasan untuk membatalkan sinkronisasi: jalur Turso 2-tier tidak
+/// memakai token sama sekali. Hanya jalur HTTP legacy yang membutuhkannya.
+fn session_token(state: &DesktopState) -> String {
+    state
+        .session
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|session| session.token.as_ref().map(|token| token.to_string()))
+        })
+        .unwrap_or_default()
+}
+
 fn clear_expired_session(state: &DesktopState, error: &CommandError) {
     if error.code == "DESKTOP_SESSION_EXPIRED" {
         if let Ok(mut session) = state.session.lock() {
@@ -207,11 +224,110 @@ pub async fn desktop_bootstrap_superadmin(
                 client.bootstrap_superadmin(draft).await?;
             }
             state.set_turso_config(&config.database_url, &config.auth_token)?;
+            let _ = sync::pull_snapshot(&state, "").await;
         }
         Err(error) => return Err(error),
     }
     storage::audit(&state.data_dir, None, "bootstrap-superadmin-success", None);
     Ok(())
+}
+
+fn ensure_bootstrap_window_open(state: &DesktopState) -> Result<(), CommandError> {
+    if state
+        .session
+        .lock()
+        .map_err(|_| CommandError::internal())?
+        .is_some()
+    {
+        return Err(CommandError::new(
+            "TURSO_BOOTSTRAP_CLOSED",
+            "Pemeriksaan database provisioning hanya tersedia sebelum sesi pengguna aktif.",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolusi kredensial untuk pemeriksaan provisioning: pakai input form bila diisi,
+/// selain itu jatuh ke konfigurasi vault yang sudah tersimpan. Token yang sudah ada
+/// di vault tidak pernah dikirim balik ke frontend, jadi field kosong = pakai token lama.
+fn resolve_bootstrap_turso_config(
+    state: &DesktopState,
+    database_url: Option<String>,
+    auth_token: Option<String>,
+) -> Result<turso::TursoConfig, CommandError> {
+    let url = database_url.unwrap_or_default().trim().to_owned();
+    let token = auth_token.unwrap_or_default().trim().to_owned();
+    if url.is_empty() {
+        return state.turso_config().ok_or_else(|| {
+            CommandError::new(
+                "TURSO_NOT_CONFIGURED",
+                "URL dan Auth Token Turso wajib diisi untuk memeriksa database.",
+            )
+        });
+    }
+    let token = if token.is_empty() {
+        state
+            .turso_config()
+            .filter(|config| config.database_url.trim() == url)
+            .map(|config| config.auth_token)
+            .unwrap_or_default()
+    } else {
+        token
+    };
+    if token.is_empty() {
+        return Err(CommandError::new(
+            "TURSO_TOKEN_REQUIRED",
+            "Auth Token Turso wajib diisi untuk memeriksa database.",
+        ));
+    }
+    Ok(turso::TursoConfig {
+        database_url: url,
+        auth_token: token,
+    })
+}
+
+#[tauri::command]
+pub async fn desktop_check_bootstrap_database(
+    state: State<'_, DesktopState>,
+    database_url: Option<String>,
+    auth_token: Option<String>,
+) -> Result<turso::DatabaseCheckResult, CommandError> {
+    ensure_bootstrap_window_open(&state)?;
+    let config = resolve_bootstrap_turso_config(&state, database_url, auth_token)?;
+    let origin = turso::normalize_turso_url(&config.database_url)
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_default();
+    let client = match turso::TursoClient::from_config(&config, state.http.clone()) {
+        Ok(client) => client,
+        Err(error) => return Ok(turso::DatabaseCheckResult::unreachable(origin, &error)),
+    };
+    match client.inspect_database().await {
+        Ok(check) => Ok(check),
+        Err(error) => Ok(turso::DatabaseCheckResult::unreachable(origin, &error)),
+    }
+}
+
+/// Menyimpan kredensial database yang sudah punya Superadmin aktif tanpa membuat akun baru.
+#[tauri::command]
+pub async fn desktop_link_bootstrap_database(
+    state: State<'_, DesktopState>,
+    database_url: Option<String>,
+    auth_token: Option<String>,
+) -> Result<turso::DatabaseCheckResult, CommandError> {
+    ensure_bootstrap_window_open(&state)?;
+    let config = resolve_bootstrap_turso_config(&state, database_url, auth_token)?;
+    let client = turso::TursoClient::from_config(&config, state.http.clone())?;
+    let check = client.inspect_database().await?;
+    if !check.superadmin_exists {
+        return Err(CommandError::new(
+            "TURSO_SUPERADMIN_MISSING",
+            "Database ini belum memiliki Superadmin aktif. Lanjutkan provisioning untuk membuat akun pertama.",
+        ));
+    }
+    state.set_turso_config(&config.database_url, &config.auth_token)?;
+    let _ = sync::pull_snapshot(&state, "").await;
+    storage::audit(&state.data_dir, None, "bootstrap-database-linked", None);
+    Ok(check)
 }
 
 #[tauri::command]
@@ -258,8 +374,13 @@ pub async fn desktop_login(
                     .iter()
                     .any(|permission| permission == "sync.view")
                 {
-                    if sync::synchronize(&state, "").await.is_ok() {
-                        message.push_str(" Data operasional lokal berhasil disinkronkan.");
+                    match sync::synchronize(&state, "").await {
+                        Ok(_) => {
+                            message.push_str(" Data operasional lokal berhasil disinkronkan.");
+                        }
+                        Err(err) => {
+                            eprintln!("[desktop_login] Sinkronisasi data cloud gagal: {:?}", err);
+                        }
                     }
                 }
 
@@ -861,6 +982,7 @@ pub async fn desktop_update_geofence_settings(
     }
     let data = settings.get("data").cloned().unwrap_or(settings);
     operational::save_geofence_settings(&state, &data)?;
+    let _ = sync::push_outbox(&state, &session_token(&state)).await;
     Ok(data)
 }
 
@@ -890,6 +1012,7 @@ pub async fn desktop_update_scanner_settings(
     }
     let data = settings.get("data").cloned().unwrap_or(settings);
     operational::save_scanner_settings(&state, &data)?;
+    let _ = sync::push_outbox(&state, &session_token(&state)).await;
     Ok(data)
 }
 
@@ -897,25 +1020,7 @@ pub async fn desktop_update_scanner_settings(
 pub fn desktop_get_sync_status(
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSyncStatus, CommandError> {
-    let session = state.session.lock().map_err(|_| CommandError::internal())?;
-    let operator = session.as_ref().ok_or_else(|| {
-        CommandError::new(
-            "DESKTOP_SESSION_MISSING",
-            "Session Desktop tidak tersedia. Silakan login kembali.",
-        )
-    })?;
-    if !operator
-        .operator
-        .permissions
-        .iter()
-        .any(|permission| permission == "sync.view")
-    {
-        return Err(CommandError::new(
-            "DESKTOP_ACCESS_DENIED",
-            "Akses status sinkronisasi ditolak.",
-        ));
-    }
-    drop(session);
+    require_permission(&state, "sync.view")?;
     sync::status(&state)
 }
 
@@ -923,36 +1028,30 @@ pub fn desktop_get_sync_status(
 pub async fn desktop_sync_now(
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSyncStatus, CommandError> {
-    let token = {
-        let session = state.session.lock().map_err(|_| CommandError::internal())?;
-        let session = session.as_ref().ok_or_else(|| {
+    // Pesan dibuat spesifik: role tanpa `sync.view` membuat auto-sync berhenti
+    // total, dan gejalanya di lapangan hanya "data tidak masuk" tanpa petunjuk.
+    require_permission(&state, "sync.view").map_err(|error| {
+        if error.code == "DESKTOP_ACCESS_DENIED" {
             CommandError::new(
-                "DESKTOP_SESSION_MISSING",
-                "Session Desktop tidak tersedia. Silakan login kembali.",
-            )
-        })?;
-        if !session
-            .operator
-            .permissions
-            .iter()
-            .any(|permission| permission == "sync.view")
-        {
-            return Err(CommandError::new(
                 "DESKTOP_ACCESS_DENIED",
-                "Akses sinkronisasi ditolak.",
-            ));
+                "Role akun ini tidak memiliki permission 'sync.view', sehingga sinkronisasi otomatis tidak dapat berjalan. Tambahkan permission tersebut pada role di menu Master Operator.",
+            )
+        } else {
+            error
         }
-        session
-            .token
-            .as_ref()
-            .map(|value| value.to_string())
-            .ok_or_else(|| {
-                CommandError::new(
-                    "DESKTOP_ONLINE_REQUIRED",
-                    "Login online diperlukan sebelum data operasional dapat disinkronkan.",
-                )
-            })?
-    };
+    })?;
+    // Token hanya relevan untuk jalur HTTP legacy. Pada arsitektur 2-tier,
+    // `sync::synchronize` bicara langsung ke Turso dan tidak memerlukan token
+    // sama sekali. Dulu perintah ini menolak sesi tanpa token, sehingga siapa
+    // pun yang pernah login lewat snapshot offline (token = None) tidak pernah
+    // lagi auto-sync sampai logout — persis gejala "push & pull mati".
+    let token = session_token(&state);
+    if token.is_empty() && state.turso_config().is_none() {
+        return Err(CommandError::new(
+            "DESKTOP_ONLINE_REQUIRED",
+            "Database cloud belum dikonfigurasi dan sesi ini tidak punya token online. Sinkronisasi tidak dapat dijalankan.",
+        ));
+    }
     let result = sync::synchronize(&state, &token).await;
     if let Err(error) = &result {
         clear_expired_session(&state, error);
@@ -977,13 +1076,23 @@ pub async fn desktop_retry_failed_sync(
 }
 
 #[tauri::command]
-pub fn desktop_resolve_sync_conflicts(
+pub async fn desktop_resolve_sync_conflicts(
     state: State<'_, DesktopState>,
     event_id: Option<String>,
 ) -> Result<DesktopSyncStatus, CommandError> {
     require_permission(&state, "sync.retry")?;
     sync::resolve_conflicts(&state, event_id.as_deref())?;
-    desktop_get_sync_status(state)
+    desktop_sync_now(state).await
+}
+
+#[tauri::command]
+pub async fn desktop_resolve_sync_conflicts_local(
+    state: State<'_, DesktopState>,
+    event_id: Option<String>,
+) -> Result<DesktopSyncStatus, CommandError> {
+    require_permission(&state, "sync.retry")?;
+    sync::resolve_conflicts_local(&state, event_id.as_deref())?;
+    desktop_sync_now(state).await
 }
 
 #[tauri::command]
@@ -1041,12 +1150,14 @@ pub fn desktop_get_alfa_settings(state: State<'_, DesktopState>) -> Result<Value
 }
 
 #[tauri::command]
-pub fn desktop_save_alfa_settings(
+pub async fn desktop_save_alfa_settings(
     state: State<'_, DesktopState>,
     enabled: bool,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "settings.manage")?;
-    operational::save_alfa_settings(&state, enabled)
+    let res = operational::save_alfa_settings(&state, enabled)?;
+    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    Ok(res)
 }
 
 #[tauri::command]
@@ -1107,37 +1218,14 @@ pub fn desktop_save_id_card_template(
 pub async fn desktop_force_resync_settings(
     state: State<'_, DesktopState>,
 ) -> Result<Value, CommandError> {
-    // Wajib punya permission sync dan online
-    let token = {
-        let session = state.session.lock().map_err(|_| CommandError::internal())?;
-        let session = session.as_ref().ok_or_else(|| {
-            CommandError::new(
-                "DESKTOP_SESSION_MISSING",
-                "Session Desktop tidak tersedia. Silakan login kembali.",
-            )
-        })?;
-        if !session
-            .operator
-            .permissions
-            .iter()
-            .any(|permission| permission == "sync.view")
-        {
-            return Err(CommandError::new(
-                "DESKTOP_ACCESS_DENIED",
-                "Akses sinkronisasi ditolak.",
-            ));
-        }
-        session
-            .token
-            .as_ref()
-            .map(|value| value.to_string())
-            .ok_or_else(|| {
-                CommandError::new(
-                    "DESKTOP_ONLINE_REQUIRED",
-                    "Login online diperlukan untuk sinkronisasi ulang pengaturan.",
-                )
-            })?
-    };
+    require_permission(&state, "sync.view")?;
+    let token = session_token(&state);
+    if token.is_empty() && state.turso_config().is_none() {
+        return Err(CommandError::new(
+            "DESKTOP_ONLINE_REQUIRED",
+            "Database cloud belum dikonfigurasi dan sesi ini tidak punya token online. Sinkronisasi tidak dapat dijalankan.",
+        ));
+    }
 
     // Enqueue ulang pengaturan dari data lokal
     let enqueue_result = operational::force_enqueue_settings(&state)?;
@@ -1189,7 +1277,7 @@ pub fn desktop_get_turso_url(
 }
 
 #[tauri::command]
-pub fn desktop_save_turso_config(
+pub async fn desktop_save_turso_config(
     state: State<'_, DesktopState>,
     database_url: String,
     auth_token: String,
@@ -1201,7 +1289,9 @@ pub fn desktop_save_turso_config(
             "Hanya Superadmin yang berhak mengubah konfigurasi database cloud.",
         ));
     }
-    state.set_turso_config(&database_url, &auth_token)
+    let origin = state.set_turso_config(&database_url, &auth_token)?;
+    let _ = sync::pull_snapshot(&state, "").await;
+    Ok(origin)
 }
 
 #[tauri::command]

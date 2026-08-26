@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { CURRENT_SCHEMA_VERSION } from "@/lib/db-schema";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import { withTransientDatabaseRetry } from "@/lib/server/database-retry";
 import {
@@ -48,6 +49,20 @@ export async function POST(request: NextRequest) {
         400,
       );
     }
+    // Client dengan skema lebih tua tidak boleh menulis: kolom yang belum
+    // dikenalnya tidak ikut payload dan akan terhapus saat baris ditulis ulang.
+    // Sebaliknya client lebih baru dibiarkan lewat — itu jalur migrasi normal.
+    if (
+      batch.schemaVersion !== undefined &&
+      batch.schemaVersion < CURRENT_SCHEMA_VERSION
+    ) {
+      throw new ApiRequestError(
+        `Aplikasi perlu diperbarui. Server memakai skema versi ${CURRENT_SCHEMA_VERSION}, ` +
+          `sedangkan aplikasi pengirim masih versi ${batch.schemaVersion}.`,
+        409,
+      );
+    }
+
     const results = await withTransientDatabaseRetry(async () => {
       await ensureServerDatabaseInitialized();
       const eventResults = [];

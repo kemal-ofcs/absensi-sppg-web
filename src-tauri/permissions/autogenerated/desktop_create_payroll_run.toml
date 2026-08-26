@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-create-payroll-run"
+description = "Enables the desktop_create_payroll_run command without any pre-configured scope."
+commands.allow = ["desktop_create_payroll_run"]
+
+[[permission]]
+identifier = "deny-desktop-create-payroll-run"
+description = "Denies the desktop_create_payroll_run command without any pre-configured scope."
+commands.deny = ["desktop_create_payroll_run"]

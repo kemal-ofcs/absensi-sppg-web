@@ -20,6 +20,14 @@ export async function readOperationalSnapshot(client: Client) {
     imports,
     attendance,
     scanLogs,
+    salaryConfigs,
+    overtimeTierRules,
+    payrollComponents,
+    taxRules,
+    bpjsRules,
+    payrollRuns,
+    payrollItems,
+    payrollAuditLogs,
     revision,
   ] = await client.batch(
     [
@@ -59,6 +67,14 @@ export async function readOperationalSnapshot(client: Client) {
       ORDER BY id_log DESC
       LIMIT 5000;
     `,
+      "SELECT * FROM salary_configs ORDER BY id_karyawan, effective_date DESC;",
+      "SELECT * FROM overtime_tier_rules ORDER BY rule_type, tier_order;",
+      "SELECT * FROM payroll_components ORDER BY category, name;",
+      "SELECT * FROM tax_rules ORDER BY category, bracket_min;",
+      "SELECT * FROM bpjs_rules ORDER BY component_code;",
+      "SELECT * FROM payroll_runs ORDER BY period_start DESC, created_at DESC;",
+      "SELECT * FROM payroll_items ORDER BY created_at;",
+      "SELECT * FROM payroll_audit_logs ORDER BY created_at;",
       "SELECT COALESCE(MAX(revision), 0) AS revision FROM sync_change_log;",
     ],
     "read",
@@ -79,5 +95,13 @@ export async function readOperationalSnapshot(client: Client) {
     imports: plainRows(imports.rows),
     attendance: plainRows(attendance.rows),
     scanLogs: plainRows(scanLogs.rows),
+    salaryConfigs: plainRows(salaryConfigs.rows),
+    overtimeTierRules: plainRows(overtimeTierRules.rows),
+    payrollComponents: plainRows(payrollComponents.rows),
+    taxRules: plainRows(taxRules.rows),
+    bpjsRules: plainRows(bpjsRules.rows),
+    payrollRuns: plainRows(payrollRuns.rows),
+    payrollItems: plainRows(payrollItems.rows),
+    payrollAuditLogs: plainRows(payrollAuditLogs.rows),
   };
 }

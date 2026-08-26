@@ -311,6 +311,13 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         last_revision INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       );
+      -- Nilai `sync_pulse` cloud per tabel yang terakhir berhasil diterapkan.
+      -- Dipakai pull inkremental untuk hanya menarik tabel yang benar-benar basi.
+      CREATE TABLE IF NOT EXISTS desktop_sync_table_cursor (
+        table_name TEXT PRIMARY KEY,
+        remote_revision INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS desktop_sync_conflict (
         event_id TEXT PRIMARY KEY,
         domain TEXT NOT NULL,
@@ -390,14 +397,140 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         ON master_data(id_shift, status_aktif);
       CREATE INDEX IF NOT EXISTS idx_local_outbox_status_retry
         ON desktop_sync_outbox(status, next_retry_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_local_outbox_domain_entity
+        ON desktop_sync_outbox(domain, entity_key, status);
       CREATE INDEX IF NOT EXISTS idx_local_import_status
         ON import_offline(status_proses, timestamp_input);
+      CREATE TABLE IF NOT EXISTS salary_configs (
+        id TEXT PRIMARY KEY,
+        id_karyawan TEXT NOT NULL,
+        rate_per_hour INTEGER NOT NULL CHECK (rate_per_hour >= 0),
+        ptkp_status TEXT NOT NULL DEFAULT 'TK/0'
+          CHECK (ptkp_status IN ('TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3')),
+        effective_date TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(id_karyawan, effective_date)
+      );
+      CREATE TABLE IF NOT EXISTS overtime_tier_rules (
+        id TEXT PRIMARY KEY,
+        rule_type TEXT NOT NULL CHECK (rule_type IN ('HARI_KERJA', 'HARI_LIBUR')),
+        tier_order INTEGER NOT NULL,
+        hour_start REAL NOT NULL CHECK (hour_start >= 0),
+        hour_end REAL,
+        multiplier REAL NOT NULL CHECK (multiplier >= 1.0),
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        UNIQUE(rule_type, tier_order)
+      );
+      CREATE TABLE IF NOT EXISTS payroll_components (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL CHECK (category IN ('ALLOWANCE', 'DEDUCTION')),
+        calc_type TEXT NOT NULL CHECK (calc_type IN ('FIXED', 'PERCENTAGE')),
+        default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
+        applies_to TEXT NOT NULL DEFAULT 'ALL',
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+      );
+      CREATE TABLE IF NOT EXISTS tax_rules (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL CHECK (category IN ('TER_A','TER_B','TER_C','PASAL_17')),
+        bracket_min INTEGER NOT NULL,
+        bracket_max INTEGER,
+        rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
+        effective_date TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS bpjs_rules (
+        id TEXT PRIMARY KEY,
+        component_code TEXT NOT NULL UNIQUE,
+        component_name TEXT NOT NULL,
+        rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
+        wage_cap INTEGER,
+        effective_date TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS payroll_runs (
+        id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'DRAFT'
+          CHECK (status IN ('DRAFT','SUBMITTED','REVIEWED','APPROVED','PAID','REJECTED')),
+        total_gross_payout INTEGER NOT NULL DEFAULT 0,
+        total_net_payout INTEGER NOT NULL DEFAULT 0,
+        total_employees INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS payroll_items (
+        id TEXT PRIMARY KEY,
+        payroll_run_id TEXT NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+        id_karyawan TEXT NOT NULL,
+        nama_karyawan TEXT NOT NULL,
+        divisi TEXT NOT NULL,
+        ptkp_status TEXT NOT NULL DEFAULT 'TK/0',
+        total_regular_hours REAL NOT NULL,
+        total_overtime_hours REAL NOT NULL,
+        total_overtime_index REAL NOT NULL,
+        rate_per_hour INTEGER NOT NULL,
+        basic_salary INTEGER NOT NULL CHECK (basic_salary >= 0),
+        overtime_salary INTEGER NOT NULL CHECK (overtime_salary >= 0),
+        gross_salary INTEGER NOT NULL CHECK (gross_salary >= 0),
+        total_allowances INTEGER NOT NULL DEFAULT 0,
+        total_deductions INTEGER NOT NULL DEFAULT 0,
+        bpjs_employee_total INTEGER NOT NULL DEFAULT 0,
+        bpjs_company_total INTEGER NOT NULL DEFAULT 0,
+        pph21_amount INTEGER NOT NULL DEFAULT 0,
+        net_salary INTEGER NOT NULL CHECK (net_salary >= 0),
+        breakdown_snapshot TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (payroll_run_id, id_karyawan)
+      );
+      CREATE TABLE IF NOT EXISTS payroll_audit_logs (
+        id TEXT PRIMARY KEY,
+        payroll_run_id TEXT NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        old_status TEXT,
+        new_status TEXT NOT NULL,
+        performed_by TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_payroll_items_run ON payroll_items(payroll_run_id);
+      CREATE INDEX IF NOT EXISTS idx_local_payroll_items_karyawan ON payroll_items(id_karyawan);
+      CREATE INDEX IF NOT EXISTS idx_local_payroll_runs_status ON payroll_runs(status, period_start);
+      CREATE INDEX IF NOT EXISTS idx_local_salary_configs_karyawan ON salary_configs(id_karyawan, effective_date DESC);
+      INSERT OR IGNORE INTO overtime_tier_rules (id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active)
+      VALUES
+        ('ot-work-1', 'HARI_KERJA', 1, 0.0, 1.0, 1.5, 1),
+        ('ot-work-2', 'HARI_KERJA', 2, 1.0, NULL, 2.0, 1),
+        ('ot-holiday-1', 'HARI_LIBUR', 1, 0.0, 8.0, 2.0, 1),
+        ('ot-holiday-2', 'HARI_LIBUR', 2, 8.0, 9.0, 3.0, 1),
+        ('ot-holiday-3', 'HARI_LIBUR', 3, 9.0, NULL, 4.0, 1);
+      INSERT OR IGNORE INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date)
+      VALUES
+        ('bpjs-jht-emp', 'JHT_EMP', 'JHT Karyawan', 2.0, NULL, '2024-01-01'),
+        ('bpjs-jht-co', 'JHT_CO', 'JHT Perusahaan', 3.7, NULL, '2024-01-01'),
+        ('bpjs-jp-emp', 'JP_EMP', 'Jaminan Pensiun Karyawan', 1.0, 10042300, '2024-01-01'),
+        ('bpjs-jp-co', 'JP_CO', 'Jaminan Pensiun Perusahaan', 2.0, 10042300, '2024-01-01'),
+        ('bpjs-jkk', 'JKK', 'Jaminan Kecelakaan Kerja', 0.24, NULL, '2024-01-01'),
+        ('bpjs-jkm', 'JKM', 'Jaminan Kematian', 0.30, NULL, '2024-01-01'),
+        ('bpjs-kes-emp', 'KES_EMP', 'BPJS Kesehatan Karyawan', 1.0, 12000000, '2024-01-01'),
+        ('bpjs-kes-co', 'KES_CO', 'BPJS Kesehatan Perusahaan', 4.0, 12000000, '2024-01-01');
+      INSERT OR IGNORE INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date)
+      VALUES
+        ('tax-p17-1', 'PASAL_17', 0, 60000000, 5.0, '2024-01-01'),
+        ('tax-p17-2', 'PASAL_17', 60000000, 250000000, 15.0, '2024-01-01'),
+        ('tax-p17-3', 'PASAL_17', 250000000, 500000000, 25.0, '2024-01-01'),
+        ('tax-p17-4', 'PASAL_17', 500000000, 5000000000, 30.0, '2024-01-01'),
+        ('tax-p17-5', 'PASAL_17', 5000000000, NULL, 35.0, '2024-01-01');
       INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
       VALUES (1, 'desktop-security-foundation', unixepoch());
       INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
       VALUES (2, 'desktop-operational-sync-foundation', unixepoch());
       INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
       VALUES (3, 'desktop-offline-import-foundation', unixepoch());
+      INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
+      VALUES (4, 'desktop-payroll-foundation', unixepoch());
       "#,
         )
         .map_err(|_| "Schema keamanan Desktop tidak dapat diinisialisasi.".to_owned())?;
@@ -778,7 +911,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration count");
-        assert_eq!(migrations, 3);
+        assert_eq!(migrations, 4);
     }
 
     #[test]

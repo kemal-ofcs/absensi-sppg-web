@@ -15,6 +15,7 @@
       "!build",
       "!backup-app",
       "!code-sheet",
+      "!.claude",
       "!src-tauri/target"
     ]
   },

@@ -79,6 +79,16 @@ pub struct DesktopSyncStatus {
     pub last_revision: i64,
     pub last_sync_at: Option<i64>,
     pub table_counts: Value,
+    /// Pesan kegagalan push pada siklus terakhir, bila ada. Push yang gagal
+    /// TIDAK lagi membatalkan pull — antrean outbox tetap aman dengan backoff,
+    /// sementara data cloud terbaru tetap masuk. Field ini yang memberi tahu UI
+    /// bahwa siklus "berhasil sebagian".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_error: Option<String>,
+    /// Jumlah baris lokal yang benar-benar berubah pada siklus pull terakhir.
+    /// Nol berarti data lokal sudah identik dengan cloud, sehingga UI tidak
+    /// perlu memuat ulang apa pun.
+    pub changed_rows: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]

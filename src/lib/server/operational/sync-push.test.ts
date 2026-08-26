@@ -227,7 +227,10 @@ describe("operational sync idempotency", () => {
     expect(Number(receipts.rows[0]?.total)).toBe(1);
   });
 
-  test("create shift dengan kode bawaan dipetakan ke shift server", async () => {
+  test("create shift dengan kode baru disimpan ke server dengan data dari payload", async () => {
+    // Sebelumnya test ini mengasumsikan kode_shift:1 sudah ada dari seed sehingga
+    // server memakai nama shift lama. Sekarang tbl_shift kosong setelah init, maka
+    // shift baru dibuat dengan nama dari payload yang dikirim klien.
     const client = await fixture();
     const input = event({
       eventId: `evt-${"2".repeat(64)}`,
@@ -251,7 +254,8 @@ describe("operational sync idempotency", () => {
       id_shift: Number(shifts.rows[0]?.id_shift),
       local_id_shift: -1,
     });
-    expect(shifts.rows[0]?.nama_shift).toBe("Shift 1 - Pagi Normal");
+    // Shift dibuat baru dengan nama dari payload klien, bukan dari seed default.
+    expect(shifts.rows[0]?.nama_shift).toBe("Salinan Shift Lokal");
   });
 
   test("event attendance create Auto-Alfa diterapkan dan idempoten", async () => {

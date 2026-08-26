@@ -107,9 +107,20 @@ impl DesktopState {
             vault_lock: std::sync::Mutex::new(()),
         };
 
-        // 1. Cek vault terenkripsi
-        let vault_config =
-            secrets::load_turso_config(&temp_state).map_err(|error| error.message)?;
+        // 1. Cek vault terenkripsi (jika database baru dibuat ulang dan vault lama mismatch, reset vault usang secara aman)
+        let vault_config = match secrets::load_turso_config(&temp_state) {
+            Ok(config) => config,
+            Err(err)
+                if err.code == "TURSO_VAULT_DEVICE_MISMATCH"
+                    || err.code == "TURSO_VAULT_INVALID" =>
+            {
+                let credentials_dir = data_dir.join("credentials");
+                let _ = std::fs::remove_file(credentials_dir.join("turso_config.vault"));
+                let _ = std::fs::remove_file(credentials_dir.join("turso_config.salt"));
+                None
+            }
+            Err(err) => return Err(err.message),
+        };
 
         // 2. Cek database setting lokal
         let db_turso_url = storage::get_system_setting(&data_dir, "turso_database_url")
@@ -242,12 +253,26 @@ impl DesktopState {
             auth_token: resolved_token,
         };
 
+        let old_url = self.turso_config().map(|c| c.database_url);
+        let url_changed = old_url.as_deref() != Some(config.database_url.as_str());
+
         // Simpan ke vault terenkripsi
         secrets::save_turso_config(self, &config)?;
 
         // URL non-rahasia boleh disimpan lokal; token hanya boleh berada di vault.
         storage::set_system_setting(&self.data_dir, "turso_database_url", &config.database_url)?;
         storage::set_system_setting(&self.data_dir, "turso_auth_token", "")?;
+
+        if url_changed {
+            if let Ok(connection) = storage::database(&self.data_dir) {
+                let _ = connection.execute("DELETE FROM desktop_sync_cursor WHERE domain = 'operational';", []);
+                let _ = connection.execute("DELETE FROM desktop_entity_revision;", []);
+                // Cursor pulse per tabel juga harus direset: database Turso baru
+                // punya penghitung sendiri, dan sisa cursor lama bisa membuat
+                // pull inkremental mengira semua tabel sudah mutakhir.
+                let _ = connection.execute("DELETE FROM desktop_sync_table_cursor;", []);
+            }
+        }
 
         *self
             .turso_config

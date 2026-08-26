@@ -95,6 +95,62 @@ pub struct BootstrapStatus {
     pub server_origin: String,
 }
 
+/// Tabel inti yang wajib ada agar database dianggap benar-benar database Absensi SPPG.
+const DATABASE_CHECK_CORE_TABLES: [&str; 6] = [
+    "app_role",
+    "master_operator",
+    "master_data",
+    "tbl_shift",
+    "absensi_harian",
+    "log_scan",
+];
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseCheckResult {
+    pub reachable: bool,
+    pub server_origin: String,
+    pub latency_ms: Option<u64>,
+    pub empty_database: bool,
+    pub schema_ready: bool,
+    pub missing_tables: Vec<String>,
+    pub table_count: i64,
+    pub bootstrap_claimed: bool,
+    pub superadmin_exists: bool,
+    pub superadmin_count: i64,
+    pub superadmin_username: Option<String>,
+    pub operator_count: i64,
+    pub karyawan_count: i64,
+    pub attendance_count: i64,
+    pub company_name: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl DatabaseCheckResult {
+    pub fn unreachable(server_origin: String, error: &CommandError) -> Self {
+        Self {
+            reachable: false,
+            server_origin,
+            latency_ms: None,
+            empty_database: false,
+            schema_ready: false,
+            missing_tables: Vec::new(),
+            table_count: 0,
+            bootstrap_claimed: false,
+            superadmin_exists: false,
+            superadmin_count: 0,
+            superadmin_username: None,
+            operator_count: 0,
+            karyawan_count: 0,
+            attendance_count: 0,
+            company_name: None,
+            error_code: Some(error.code.to_owned()),
+            error_message: Some(error.message.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct BootstrapSuperadminDraft {
     pub kode_operator: String,
@@ -222,6 +278,131 @@ impl QueryResult {
             .collect()
     }
 }
+
+/// Cache proses-wide berisi URL database yang skemanya sudah diverifikasi mutakhir.
+///
+/// `DesktopState::get_turso_client` membuat `TursoClient` baru setiap kali dipanggil,
+/// jadi cache tidak boleh menempel di instance — kalau tidak, `ensure_schema_current`
+/// menambah satu round-trip ke Turso di setiap push dan setiap pull.
+static SCHEMA_VERIFIED: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+
+fn schema_verified_cache() -> &'static Mutex<HashSet<String>> {
+    SCHEMA_VERIFIED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Satu tabel operasional cloud yang ikut ditarik ke SQLite lokal.
+///
+/// Daftar ini adalah sumber tunggal untuk dua hal sekaligus: query pembacaan
+/// snapshot dan daftar tabel yang dipasangi trigger `sync_pulse`. Menambah
+/// tabel snapshot baru cukup di sini — jangan bikin daftar kedua.
+struct SnapshotSource {
+    payload_key: &'static str,
+    table: &'static str,
+    sql: &'static str,
+}
+
+const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
+    SnapshotSource {
+        payload_key: "employees",
+        table: "master_data",
+        sql: "SELECT * FROM master_data;",
+    },
+    SnapshotSource {
+        payload_key: "idCards",
+        table: "id_card",
+        sql: "SELECT * FROM id_card;",
+    },
+    SnapshotSource {
+        payload_key: "shifts",
+        table: "tbl_shift",
+        sql: "SELECT * FROM tbl_shift ORDER BY id_shift;",
+    },
+    SnapshotSource {
+        payload_key: "holidays",
+        table: "tbl_hari_libur",
+        sql: "SELECT * FROM tbl_hari_libur ORDER BY tanggal;",
+    },
+    SnapshotSource {
+        payload_key: "settings",
+        table: "setting_gex_system",
+        sql: "SELECT key, value FROM setting_gex_system;",
+    },
+    SnapshotSource {
+        payload_key: "companyProfiles",
+        table: "company_profile",
+        sql: "SELECT * FROM company_profile;",
+    },
+    SnapshotSource {
+        payload_key: "idCardTemplates",
+        table: "id_card_template",
+        sql: "SELECT * FROM id_card_template;",
+    },
+    SnapshotSource {
+        payload_key: "backups",
+        table: "backup_karyawan",
+        sql: "SELECT * FROM backup_karyawan;",
+    },
+    SnapshotSource {
+        payload_key: "corrections",
+        table: "koreksi_admin",
+        sql: "SELECT * FROM koreksi_admin;",
+    },
+    SnapshotSource {
+        payload_key: "imports",
+        table: "import_offline",
+        sql: "SELECT * FROM import_offline;",
+    },
+    SnapshotSource {
+        payload_key: "attendance",
+        table: "absensi_harian",
+        sql: "SELECT * FROM absensi_harian;",
+    },
+    SnapshotSource {
+        payload_key: "scanLogs",
+        table: "log_scan",
+        sql: "SELECT * FROM log_scan ORDER BY timestamp_scan;",
+    },
+    SnapshotSource {
+        payload_key: "salaryConfigs",
+        table: "salary_configs",
+        sql: "SELECT * FROM salary_configs ORDER BY id_karyawan, effective_date DESC;",
+    },
+    SnapshotSource {
+        payload_key: "overtimeTierRules",
+        table: "overtime_tier_rules",
+        sql: "SELECT * FROM overtime_tier_rules ORDER BY rule_type, tier_order;",
+    },
+    SnapshotSource {
+        payload_key: "payrollComponents",
+        table: "payroll_components",
+        sql: "SELECT * FROM payroll_components ORDER BY category, name;",
+    },
+    SnapshotSource {
+        payload_key: "taxRules",
+        table: "tax_rules",
+        sql: "SELECT * FROM tax_rules ORDER BY category, bracket_min;",
+    },
+    SnapshotSource {
+        payload_key: "bpjsRules",
+        table: "bpjs_rules",
+        sql: "SELECT * FROM bpjs_rules ORDER BY component_code;",
+    },
+    SnapshotSource {
+        payload_key: "payrollRuns",
+        table: "payroll_runs",
+        sql: "SELECT * FROM payroll_runs ORDER BY period_start DESC, created_at DESC;",
+    },
+    SnapshotSource {
+        payload_key: "payrollItems",
+        table: "payroll_items",
+        sql: "SELECT * FROM payroll_items ORDER BY created_at;",
+    },
+    SnapshotSource {
+        payload_key: "payrollAuditLogs",
+        table: "payroll_audit_logs",
+        sql: "SELECT * FROM payroll_audit_logs ORDER BY created_at;",
+    },
+];
 
 pub struct TursoClient {
     base_url: Url,
@@ -588,46 +769,6 @@ impl TursoClient {
     }
 
     pub async fn ensure_schema(&self) -> Result<(), CommandError> {
-        let has_migration_table = self
-            .query_one(
-                "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name = 'schema_migration';",
-                vec![],
-            )
-            .await?
-            .to_objects()
-            .into_iter()
-            .next()
-            .and_then(|row| row.get("total").cloned())
-            .and_then(|value| {
-                value
-                    .as_i64()
-                    .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-            })
-            .unwrap_or(0)
-            > 0;
-        if has_migration_table {
-            let stabilization_applied = self
-                .query_one(
-                    "SELECT COUNT(*) AS total FROM schema_migration WHERE name = 'two-tier-schema-stabilization-v1';",
-                    vec![],
-                )
-                .await?
-                .to_objects()
-                .into_iter()
-                .next()
-                .and_then(|row| row.get("total").cloned())
-                .and_then(|value| {
-                    value
-                        .as_i64()
-                        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-                })
-                .unwrap_or(0)
-                > 0;
-            if stabilization_applied {
-                return Ok(());
-            }
-        }
-
         let schema_stmts = vec![
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS schema_migration (
@@ -1035,7 +1176,14 @@ impl TursoClient {
                 ('branding.manage', 'Kelola Profil & Template ID Card', 'Branding', 'Mengubah logo instansi dan desain kartu.', 1, 250),
                 ('sync.view', 'Lihat Status Sinkronisasi', 'Sinkronisasi', 'Melihat indikator dan status antrean sync cloud.', 1, 260),
                 ('sync.retry', 'Kirim Ulang & Atasi Konflik', 'Sinkronisasi', 'Memicu sinkronisasi manual dan resolusi konflik.', 1, 270),
-                ('diagnostics.view', 'Lihat Diagnostik Sistem', 'Diagnostik', 'Melihat informasi runtime dan kesehatan database.', 1, 280);"#,
+                ('diagnostics.view', 'Lihat Diagnostik Sistem', 'Diagnostik', 'Melihat informasi runtime dan kesehatan database.', 1, 280),
+                ('payroll.view', 'Akses Modul Penggajian', 'Penggajian', 'Melihat estimasi dan rekap penggajian karyawan.', 1, 290),
+                ('payroll.run.create', 'Buat & Jalankan Batch Payroll', 'Penggajian', 'Membuat dan menjalankan batch payroll resmi.', 1, 300),
+                ('payroll.run.review', 'Review Batch Payroll', 'Penggajian', 'Meninjau batch payroll sebelum disetujui.', 1, 301),
+                ('payroll.run.approve', 'Setujui Batch Payroll', 'Penggajian', 'Menyetujui batch payroll yang telah direview.', 1, 302),
+                ('payroll.run.disburse', 'Tandai Dibayar & Kunci Slip', 'Penggajian', 'Menandai batch payroll sebagai dibayar dan mengunci slip.', 1, 303),
+                ('payroll.config.manage', 'Kelola Aturan Penggajian', 'Penggajian', 'Mengatur rate gaji, lembur, PPh 21, dan BPJS.', 1, 310),
+                ('payroll.export', 'Ekspor Laporan & Slip Gaji', 'Penggajian', 'Mengunduh rekap penggajian dan slip gaji.', 1, 320);"#,
                 vec![],
             ),
             // Seed Default Role Permissions untuk Role Superadmin (Role 1)
@@ -1049,16 +1197,6 @@ impl TursoClient {
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
                 WHERE permission_key NOT IN ('roles.manage', 'operators.manage');"#,
-                vec![],
-            ),
-            // Seed Shifts
-            Statement::new(
-                r#"INSERT OR IGNORE INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit, offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi) VALUES
-                (1, 1, 'Shift Pagi', '07:00', '15:00', 120, 60, 15, 480, 60, 240, 240, 180, 120, 0),
-                (2, 2, 'Shift Siang', '15:00', '23:00', 120, 60, 15, 480, 60, 240, 240, 180, 120, 0),
-                (3, 3, 'Shift Malam', '23:00', '07:00', 120, 60, 15, 480, 60, 240, 240, 180, 120, 0),
-                (4, 4, 'Shift Fleksibel', '08:00', '17:00', 120, 120, 0, 540, 60, 240, 240, 180, 120, 0),
-                (5, 5, 'Shift Khusus', '06:00', '18:00', 120, 60, 15, 720, 60, 240, 240, 180, 120, 0);"#,
                 vec![],
             ),
             // Seed Settings
@@ -1086,10 +1224,289 @@ impl TursoClient {
                 ('default_template', 'Template Default SPPG', 'landscape', ?, 1, datetime('now'), datetime('now'));"#,
                 vec![json!(serde_json::to_string(&crate::desktop::operational::default_id_card_elements()).unwrap_or_else(|_| "[]".to_string()))],
             ),
+            // Payroll DDL
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS salary_configs (
+                    id TEXT PRIMARY KEY,
+                    id_karyawan TEXT NOT NULL,
+                    rate_per_hour REAL NOT NULL,
+                    ptkp_status TEXT NOT NULL DEFAULT 'TK/0',
+                    effective_date TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(id_karyawan, effective_date),
+                    FOREIGN KEY (id_karyawan) REFERENCES master_data(id_unik) ON DELETE CASCADE
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS overtime_tier_rules (
+                    id TEXT PRIMARY KEY,
+                    rule_type TEXT NOT NULL,
+                    tier_order INTEGER NOT NULL,
+                    hour_start REAL NOT NULL,
+                    hour_end REAL,
+                    multiplier REAL NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(rule_type, tier_order)
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS payroll_components (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    calc_type TEXT NOT NULL,
+                    default_value REAL NOT NULL DEFAULT 0,
+                    applies_to TEXT NOT NULL DEFAULT 'ALL',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS tax_rules (
+                    id TEXT PRIMARY KEY,
+                    category TEXT NOT NULL,
+                    bracket_min REAL NOT NULL,
+                    bracket_max REAL,
+                    rate_percentage REAL NOT NULL,
+                    effective_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS bpjs_rules (
+                    id TEXT PRIMARY KEY,
+                    component_code TEXT UNIQUE NOT NULL,
+                    component_name TEXT NOT NULL,
+                    rate_percentage REAL NOT NULL,
+                    wage_cap REAL,
+                    effective_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS payroll_runs (
+                    id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    period_start TEXT NOT NULL,
+                    period_end TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'DRAFT',
+                    total_gross_payout INTEGER NOT NULL DEFAULT 0,
+                    total_net_payout INTEGER NOT NULL DEFAULT 0,
+                    total_employees INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS payroll_items (
+                    id TEXT PRIMARY KEY,
+                    payroll_run_id TEXT NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+                    id_karyawan TEXT NOT NULL,
+                    nama_karyawan TEXT NOT NULL,
+                    divisi TEXT NOT NULL,
+                    ptkp_status TEXT NOT NULL DEFAULT 'TK/0',
+                    total_regular_hours REAL NOT NULL,
+                    total_overtime_hours REAL NOT NULL,
+                    total_overtime_index REAL NOT NULL,
+                    rate_per_hour INTEGER NOT NULL,
+                    basic_salary INTEGER NOT NULL,
+                    overtime_salary INTEGER NOT NULL,
+                    gross_salary INTEGER NOT NULL,
+                    total_allowances INTEGER NOT NULL DEFAULT 0,
+                    total_deductions INTEGER NOT NULL DEFAULT 0,
+                    bpjs_employee_total INTEGER NOT NULL DEFAULT 0,
+                    bpjs_company_total INTEGER NOT NULL DEFAULT 0,
+                    pph21_amount INTEGER NOT NULL DEFAULT 0,
+                    net_salary INTEGER NOT NULL,
+                    breakdown_snapshot TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE (payroll_run_id, id_karyawan)
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS payroll_audit_logs (
+                    id TEXT PRIMARY KEY,
+                    payroll_run_id TEXT NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+                    action TEXT NOT NULL,
+                    old_status TEXT,
+                    new_status TEXT NOT NULL,
+                    performed_by TEXT NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_salary_configs_karyawan ON salary_configs(id_karyawan, effective_date DESC);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_overtime_rules_type ON overtime_tier_rules(rule_type, tier_order ASC);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_runs_periode ON payroll_runs(period_start, period_end, status);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_items_run ON payroll_items(payroll_run_id);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_items_karyawan ON payroll_items(id_karyawan);", vec![]),
+            // Seed Default Overtime Rules
+            Statement::new(
+                r#"INSERT OR IGNORE INTO overtime_tier_rules (id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active) VALUES
+                ('ot-work-1', 'HARI_KERJA', 1, 0.0, 1.0, 1.5, 1),
+                ('ot-work-2', 'HARI_KERJA', 2, 1.0, NULL, 2.0, 1),
+                ('ot-holiday-1', 'HARI_LIBUR', 1, 0.0, 8.0, 2.0, 1),
+                ('ot-holiday-2', 'HARI_LIBUR', 2, 8.0, 9.0, 3.0, 1),
+                ('ot-holiday-3', 'HARI_LIBUR', 3, 9.0, NULL, 4.0, 1);"#,
+                vec![],
+            ),
+            // Seed Default Tax Rules (Pasal 17 & TER Baseline)
+            Statement::new(
+                r#"INSERT OR IGNORE INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date, created_at) VALUES
+                ('tax_p17_1', 'PASAL_17', 0, 60000000, 5.0, '2026-01-01', datetime('now')),
+                ('tax_p17_2', 'PASAL_17', 60000000, 250000000, 15.0, '2026-01-01', datetime('now')),
+                ('tax_p17_3', 'PASAL_17', 250000000, 500000000, 25.0, '2026-01-01', datetime('now')),
+                ('tax_p17_4', 'PASAL_17', 500000000, 5000000000, 30.0, '2026-01-01', datetime('now')),
+                ('tax_p17_5', 'PASAL_17', 5000000000, NULL, 35.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_1', 'TER_A', 0, 5400000, 0.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_2', 'TER_A', 5400000, 5650000, 0.25, '2026-01-01', datetime('now')),
+                ('tax_ter_a_3', 'TER_A', 5650000, 5950000, 0.5, '2026-01-01', datetime('now')),
+                ('tax_ter_a_4', 'TER_A', 5950000, 6300000, 0.75, '2026-01-01', datetime('now')),
+                ('tax_ter_a_5', 'TER_A', 6300000, 6750000, 1.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_6', 'TER_A', 6750000, 7500000, 1.25, '2026-01-01', datetime('now')),
+                ('tax_ter_a_7', 'TER_A', 7500000, 8550000, 1.5, '2026-01-01', datetime('now')),
+                ('tax_ter_a_8', 'TER_A', 8550000, 9650000, 1.75, '2026-01-01', datetime('now')),
+                ('tax_ter_a_9', 'TER_A', 9650000, 10050000, 2.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_10', 'TER_A', 10050000, 10350000, 2.25, '2026-01-01', datetime('now')),
+                ('tax_ter_a_11', 'TER_A', 10350000, 10700000, 2.5, '2026-01-01', datetime('now')),
+                ('tax_ter_a_12', 'TER_A', 10700000, 11050000, 3.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_13', 'TER_A', 11050000, 11600000, 3.5, '2026-01-01', datetime('now')),
+                ('tax_ter_a_14', 'TER_A', 11600000, 12500000, 4.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_15', 'TER_A', 12500000, 13750000, 5.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_16', 'TER_A', 13750000, 15100000, 6.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_17', 'TER_A', 15100000, 16950000, 7.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_18', 'TER_A', 16950000, 19750000, 8.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_19', 'TER_A', 19750000, 24150000, 9.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_20', 'TER_A', 24150000, 26450000, 10.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_21', 'TER_A', 26450000, 28000000, 11.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_22', 'TER_A', 28000000, 30050000, 12.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_23', 'TER_A', 30050000, 32400000, 13.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_24', 'TER_A', 32400000, 35400000, 14.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_25', 'TER_A', 35400000, 39100000, 15.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_26', 'TER_A', 39100000, 43850000, 16.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_27', 'TER_A', 43850000, 47800000, 17.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_28', 'TER_A', 47800000, 51400000, 18.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_29', 'TER_A', 51400000, 56300000, 19.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_30', 'TER_A', 56300000, 62200000, 20.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_31', 'TER_A', 62200000, 68600000, 21.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_32', 'TER_A', 68600000, 77500000, 22.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_33', 'TER_A', 77500000, 89000000, 23.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_34', 'TER_A', 89000000, 103000000, 24.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_35', 'TER_A', 103000000, 125000000, 25.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_36', 'TER_A', 125000000, 157000000, 26.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_37', 'TER_A', 157000000, 206000000, 27.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_38', 'TER_A', 206000000, 337000000, 28.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_39', 'TER_A', 337000000, 454000000, 29.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_40', 'TER_A', 454000000, 550000000, 30.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_41', 'TER_A', 550000000, 695000000, 31.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_42', 'TER_A', 695000000, 910000000, 32.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_43', 'TER_A', 910000000, 1400000000, 33.0, '2026-01-01', datetime('now')),
+                ('tax_ter_a_44', 'TER_A', 1400000000, NULL, 34.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_1', 'TER_B', 0, 6200000, 0.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_2', 'TER_B', 6200000, 6500000, 0.25, '2026-01-01', datetime('now')),
+                ('tax_ter_b_3', 'TER_B', 6500000, 6850000, 0.5, '2026-01-01', datetime('now')),
+                ('tax_ter_b_4', 'TER_B', 6850000, 7300000, 0.75, '2026-01-01', datetime('now')),
+                ('tax_ter_b_5', 'TER_B', 7300000, 9200000, 1.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_6', 'TER_B', 9200000, 10750000, 1.5, '2026-01-01', datetime('now')),
+                ('tax_ter_b_7', 'TER_B', 10750000, 12500000, 2.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_8', 'TER_B', 12500000, 13750000, 3.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_9', 'TER_B', 13750000, 15100000, 4.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_10', 'TER_B', 15100000, 16950000, 5.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_11', 'TER_B', 16950000, 19750000, 6.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_12', 'TER_B', 19750000, 24150000, 7.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_13', 'TER_B', 24150000, 26450000, 8.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_14', 'TER_B', 26450000, 28000000, 9.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_15', 'TER_B', 28000000, 30050000, 10.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_16', 'TER_B', 30050000, 32400000, 11.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_17', 'TER_B', 32400000, 35400000, 12.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_18', 'TER_B', 35400000, 39100000, 13.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_19', 'TER_B', 39100000, 43850000, 14.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_20', 'TER_B', 43850000, 47800000, 15.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_21', 'TER_B', 47800000, 51400000, 16.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_22', 'TER_B', 51400000, 56300000, 17.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_23', 'TER_B', 56300000, 62200000, 18.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_24', 'TER_B', 62200000, 68600000, 19.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_25', 'TER_B', 68600000, 77500000, 20.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_26', 'TER_B', 77500000, 89000000, 21.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_27', 'TER_B', 89000000, 103000000, 22.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_28', 'TER_B', 103000000, 125000000, 23.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_29', 'TER_B', 125000000, 157000000, 24.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_30', 'TER_B', 157000000, 206000000, 25.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_31', 'TER_B', 206000000, 337000000, 26.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_32', 'TER_B', 337000000, 454000000, 27.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_33', 'TER_B', 454000000, 550000000, 28.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_34', 'TER_B', 550000000, 695000000, 29.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_35', 'TER_B', 695000000, 910000000, 30.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_36', 'TER_B', 910000000, 1400000000, 31.0, '2026-01-01', datetime('now')),
+                ('tax_ter_b_37', 'TER_B', 1400000000, NULL, 32.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_1', 'TER_C', 0, 6600000, 0.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_2', 'TER_C', 6600000, 6950000, 0.25, '2026-01-01', datetime('now')),
+                ('tax_ter_c_3', 'TER_C', 6950000, 7350000, 0.5, '2026-01-01', datetime('now')),
+                ('tax_ter_c_4', 'TER_C', 7350000, 7800000, 0.75, '2026-01-01', datetime('now')),
+                ('tax_ter_c_5', 'TER_C', 7800000, 8850000, 1.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_6', 'TER_C', 8850000, 9800000, 1.25, '2026-01-01', datetime('now')),
+                ('tax_ter_c_7', 'TER_C', 9800000, 10950000, 1.5, '2026-01-01', datetime('now')),
+                ('tax_ter_c_8', 'TER_C', 10950000, 11200000, 1.75, '2026-01-01', datetime('now')),
+                ('tax_ter_c_9', 'TER_C', 11200000, 12050000, 2.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_10', 'TER_C', 12050000, 12950000, 3.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_11', 'TER_C', 12950000, 14150000, 4.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_12', 'TER_C', 14150000, 15550000, 5.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_13', 'TER_C', 15550000, 17050000, 6.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_14', 'TER_C', 17050000, 19500000, 7.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_15', 'TER_C', 19500000, 22700000, 8.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_16', 'TER_C', 22700000, 24700000, 9.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_17', 'TER_C', 24700000, 27500000, 10.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_18', 'TER_C', 27500000, 30000000, 11.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_19', 'TER_C', 30000000, 34100000, 12.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_20', 'TER_C', 34100000, 37600000, 13.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_21', 'TER_C', 37600000, 42700000, 14.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_22', 'TER_C', 42700000, 47400000, 15.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_23', 'TER_C', 47400000, 52100000, 16.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_24', 'TER_C', 52100000, 56300000, 17.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_25', 'TER_C', 56300000, 62200000, 18.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_26', 'TER_C', 62200000, 68600000, 19.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_27', 'TER_C', 68600000, 77500000, 20.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_28', 'TER_C', 77500000, 89000000, 21.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_29', 'TER_C', 89000000, 103000000, 22.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_30', 'TER_C', 103000000, 125000000, 23.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_31', 'TER_C', 125000000, 157000000, 24.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_32', 'TER_C', 157000000, 206000000, 25.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_33', 'TER_C', 206000000, 337000000, 26.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_34', 'TER_C', 337000000, 454000000, 27.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_35', 'TER_C', 454000000, 550000000, 28.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_36', 'TER_C', 550000000, 695000000, 29.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_37', 'TER_C', 695000000, 910000000, 30.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_38', 'TER_C', 910000000, 1400000000, 31.0, '2026-01-01', datetime('now')),
+                ('tax_ter_c_39', 'TER_C', 1400000000, NULL, 32.0, '2026-01-01', datetime('now'));"#,
+                vec![],
+            ),
+            // Seed Default BPJS Rules
+            Statement::new(
+                r#"INSERT OR IGNORE INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date, created_at) VALUES
+                ('bpjs_jht_emp', 'JHT_EMP', 'JHT Tenaga Kerja (Pekerja)', 2.0, NULL, '2026-01-01', datetime('now')),
+                ('bpjs_jht_co', 'JHT_CO', 'JHT Tenaga Kerja (Perusahaan)', 3.7, NULL, '2026-01-01', datetime('now')),
+                ('bpjs_jp_emp', 'JP_EMP', 'Jaminan Pensiun (Pekerja)', 1.0, 10042300, '2026-01-01', datetime('now')),
+                ('bpjs_jp_co', 'JP_CO', 'Jaminan Pensiun (Perusahaan)', 2.0, 10042300, '2026-01-01', datetime('now')),
+                ('bpjs_jkk_co', 'JKK_CO', 'JKK Risiko Sedang (Perusahaan)', 0.54, NULL, '2026-01-01', datetime('now')),
+                ('bpjs_jkm_co', 'JKM_CO', 'Jaminan Kematian (Perusahaan)', 0.3, NULL, '2026-01-01', datetime('now')),
+                ('bpjs_kes_emp', 'BPJS_KES_EMP', 'BPJS Kesehatan (Pekerja)', 1.0, 12000000, '2026-01-01', datetime('now')),
+                ('bpjs_kes_co', 'BPJS_KES_CO', 'BPJS Kesehatan (Perusahaan)', 4.0, 12000000, '2026-01-01', datetime('now'));"#,
+                vec![],
+            ),
             // Seed Schema Migration
             Statement::new(
                 r#"INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES
-                (8, 'initial_cloud_schema', datetime('now'));"#,
+                (10, 'payroll-engine-v1', datetime('now'));"#,
                 vec![],
             ),
         ];
@@ -1189,14 +1606,124 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2003, 'payroll-engine-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+
+        // Selaraskan ulang counter AUTOINCREMENT yang terlanjur melar. Sebelum perbaikan,
+        // setiap "INSERT ... ON CONFLICT DO UPDATE" tetap menghabiskan satu nomor urut
+        // meskipun tidak ada baris baru, sehingga id melompat (mis. 7 -> 69 -> 111).
+        // Dijalankan sekali saja karena ensure_schema hanya dipanggil ketika penanda
+        // migrasi -2004 belum ada.
+        for (table, primary_key) in [
+            ("tbl_shift", "id_shift"),
+            ("id_card", "id_card_id"),
+            ("absensi_harian", "id_absensi"),
+            ("koreksi_admin", "id_koreksi"),
+            ("tbl_hari_libur", "id_libur"),
+            ("import_offline", "id_import"),
+            ("log_scan", "id_log"),
+            ("audit_absensi", "id_audit"),
+            ("master_operator", "id"),
+        ] {
+            let realign = format!(
+                "UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX({primary_key}), 0) FROM {table}) WHERE name = '{table}' AND seq > (SELECT COALESCE(MAX({primary_key}), 0) FROM {table});"
+            );
+            let _ = self.query_one(realign, vec![]).await;
+        }
+
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2004, 'autoincrement-sequence-realign-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+
+        self.ensure_sync_pulse().await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2005, 'sync-pulse-change-detection-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
 
+    /// Memasang penghitung perubahan per tabel (`sync_pulse`) beserta trigger-nya.
+    ///
+    /// Ini yang membuat pull inkremental aman: penghitung dinaikkan oleh trigger
+    /// SQLite, jadi ikut naik untuk SEMUA jalur tulis — push Desktop/Mobile,
+    /// route handler Web yang menulis langsung ke Turso, maupun perubahan manual.
+    /// Client cukup membandingkan angka ini untuk tahu tabel mana yang basi.
+    async fn ensure_sync_pulse(&self) -> Result<(), CommandError> {
+        let mut statements = vec![
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS sync_pulse (
+                    table_name TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );"#,
+                vec![],
+            ),
+        ];
+        for source in SNAPSHOT_SOURCES {
+            let table = source.table;
+            // Diseed pada revisi 1 supaya client yang sudah sinkron penuh punya
+            // angka pembanding, bukan 0 yang ambigu dengan "cursor lokal kosong".
+            statements.push(Statement::new(
+                format!(
+                    "INSERT OR IGNORE INTO sync_pulse (table_name, revision, updated_at) VALUES ('{table}', 1, datetime('now'));"
+                ),
+                vec![],
+            ));
+            for (suffix, event) in [("ins", "INSERT"), ("upd", "UPDATE"), ("del", "DELETE")] {
+                statements.push(Statement::new(
+                    format!(
+                        r#"CREATE TRIGGER IF NOT EXISTS trg_sync_pulse_{table}_{suffix}
+                        AFTER {event} ON {table}
+                        BEGIN
+                          INSERT INTO sync_pulse (table_name, revision, updated_at)
+                          VALUES ('{table}', 1, datetime('now'))
+                          ON CONFLICT(table_name) DO UPDATE SET
+                            revision = revision + 1,
+                            updated_at = datetime('now');
+                        END;"#
+                    ),
+                    vec![],
+                ));
+            }
+        }
+        // Dikirim per rombongan supaya pemasangan ~80 statement DDL ini tidak
+        // menjadi 80 round-trip berurutan saat login pertama setelah pembaruan.
+        // Tabel bisa saja belum ada di database lama, jadi kegagalan satu
+        // rombongan diulang satu per satu dan tetap tidak menggagalkan
+        // `ensure_schema` secara keseluruhan.
+        for chunk in statements.chunks(24) {
+            if self.execute_pipeline(chunk.to_vec()).await.is_ok() {
+                continue;
+            }
+            for statement in chunk {
+                let _ = self
+                    .query_one(statement.sql.clone(), statement.args.clone())
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
     async fn ensure_schema_current(&self) -> Result<(), CommandError> {
+        let cache_key = self.base_url.as_str().to_owned();
+        if schema_verified_cache()
+            .lock()
+            .map(|verified| verified.contains(&cache_key))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let current = self
             .query_one(
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2002;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2005;",
                 vec![],
             )
             .await
@@ -1206,11 +1733,131 @@ impl TursoClient {
             .and_then(|value| value.as_i64())
             .unwrap_or(0)
             > 0;
-        if current {
-            Ok(())
-        } else {
-            self.ensure_schema().await
+        if !current {
+            self.ensure_schema().await?;
         }
+        if let Ok(mut verified) = schema_verified_cache().lock() {
+            verified.insert(cache_key);
+        }
+        Ok(())
+    }
+
+    /// Pemeriksaan database provisioning bersifat READ-ONLY: tidak membuat schema,
+    /// tidak menulis apa pun. Salah input URL tidak boleh mencemari database lain.
+    pub async fn inspect_database(&self) -> Result<DatabaseCheckResult, CommandError> {
+        let started = std::time::Instant::now();
+        let tables_result = self
+            .query_one(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';",
+                vec![],
+            )
+            .await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let tables: Vec<String> = tables_result
+            .to_objects()
+            .into_iter()
+            .filter_map(|row| {
+                row.get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| name.to_owned())
+            })
+            .collect();
+        let has_table = |name: &str| tables.iter().any(|table| table == name);
+        let missing_tables: Vec<String> = DATABASE_CHECK_CORE_TABLES
+            .iter()
+            .filter(|table| !has_table(table))
+            .map(|table| (*table).to_owned())
+            .collect();
+
+        let mut check = DatabaseCheckResult {
+            reachable: true,
+            server_origin: self.base_url.origin().ascii_serialization(),
+            latency_ms: Some(latency_ms),
+            empty_database: tables.is_empty(),
+            schema_ready: missing_tables.is_empty(),
+            missing_tables,
+            table_count: tables.len() as i64,
+            bootstrap_claimed: false,
+            superadmin_exists: false,
+            superadmin_count: 0,
+            superadmin_username: None,
+            operator_count: 0,
+            karyawan_count: 0,
+            attendance_count: 0,
+            company_name: None,
+            error_code: None,
+            error_message: None,
+        };
+
+        if has_table("app_bootstrap_state") {
+            check.bootstrap_claimed = self
+                .count_scalar(
+                    "SELECT COUNT(*) AS total FROM app_bootstrap_state WHERE bootstrap_key = 'superadmin';",
+                )
+                .await?
+                > 0;
+        }
+        if has_table("master_operator") && has_table("app_role") {
+            let superadmins = self
+                .query_one(
+                    r#"SELECT m.username AS username
+                       FROM master_operator m
+                       JOIN app_role r ON r.id = m.role_id
+                       WHERE m.status = 'Aktif' AND r.is_superadmin = 1
+                       ORDER BY m.id ASC;"#,
+                    vec![],
+                )
+                .await?
+                .to_objects();
+            check.superadmin_count = superadmins.len() as i64;
+            check.superadmin_exists = check.superadmin_count > 0;
+            check.superadmin_username = superadmins
+                .first()
+                .and_then(|row| row.get("username"))
+                .and_then(Value::as_str)
+                .map(|username| username.to_owned());
+            check.operator_count = self
+                .count_scalar("SELECT COUNT(*) AS total FROM master_operator WHERE status = 'Aktif';")
+                .await?;
+        }
+        if has_table("master_data") {
+            check.karyawan_count = self
+                .count_scalar("SELECT COUNT(*) AS total FROM master_data;")
+                .await?;
+        }
+        if has_table("absensi_harian") {
+            check.attendance_count = self
+                .count_scalar("SELECT COUNT(*) AS total FROM absensi_harian;")
+                .await?;
+        }
+        if has_table("company_profile") {
+            check.company_name = self
+                .query_one("SELECT company_name FROM company_profile LIMIT 1;", vec![])
+                .await?
+                .to_objects()
+                .first()
+                .and_then(|row| row.get("company_name"))
+                .and_then(Value::as_str)
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty());
+        }
+        Ok(check)
+    }
+
+    async fn count_scalar(&self, sql: &str) -> Result<i64, CommandError> {
+        Ok(self
+            .query_one(sql, vec![])
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|row| row.get("total").cloned())
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+            })
+            .unwrap_or(0))
     }
 
     pub async fn bootstrap_status(&self) -> Result<BootstrapStatus, CommandError> {
@@ -1454,112 +2101,91 @@ impl TursoClient {
         })
     }
 
-    pub async fn pull_snapshot(&self, last_revision: i64) -> Result<Value, CommandError> {
-        self.ensure_schema_current().await?;
-        let tables = [
-            ("employees", "SELECT * FROM master_data;"),
-            ("idCards", "SELECT * FROM id_card;"),
-            ("shifts", "SELECT * FROM tbl_shift ORDER BY id_shift;"),
-            ("holidays", "SELECT * FROM tbl_hari_libur ORDER BY tanggal;"),
-            ("settings", "SELECT key, value FROM setting_gex_system;"),
-            ("companyProfiles", "SELECT * FROM company_profile;"),
-            ("idCardTemplates", "SELECT * FROM id_card_template;"),
-            ("backups", "SELECT * FROM backup_karyawan;"),
-            ("corrections", "SELECT * FROM koreksi_admin;"),
-            ("imports", "SELECT * FROM import_offline;"),
-            ("attendance", "SELECT * FROM absensi_harian;"),
-            (
-                "scanLogs",
-                "SELECT * FROM log_scan ORDER BY timestamp_scan;",
-            ),
-        ];
-
-        let cursor_results = self
-            .execute_pipeline(vec![
-                Statement::new(
-                    "SELECT DISTINCT domain FROM sync_changelog WHERE id > ?;",
-                    vec![json!(last_revision.max(0))],
-                ),
-                Statement::new(
-                    "SELECT COALESCE(MAX(id), 0) AS max_rev FROM sync_changelog;",
-                    vec![],
-                ),
-            ])
-            .await?;
-        let queried_rev = cursor_results
-            .get(1)
-            .and_then(|result| result.to_objects().into_iter().next())
-            .and_then(|row| {
-                row.get("max_rev").and_then(|value| {
+    /// Membaca penghitung perubahan per tabel dari `sync_pulse`.
+    ///
+    /// `Ok(None)` berarti database cloud belum memiliki tabel/trigger pulse
+    /// (database lama). Pemanggil wajib memperlakukannya sebagai "semua tabel
+    /// berpotensi berubah" dan menarik snapshot penuh.
+    pub async fn fetch_sync_pulse(&self) -> Result<Option<HashMap<String, i64>>, CommandError> {
+        let Ok(result) = self
+            .query_one("SELECT table_name, revision FROM sync_pulse;", vec![])
+            .await
+        else {
+            return Ok(None);
+        };
+        let mut pulse = HashMap::with_capacity(SNAPSHOT_SOURCES.len());
+        for row in result.to_objects() {
+            let Some(table) = row.get("table_name").and_then(Value::as_str) else {
+                continue;
+            };
+            let revision = row
+                .get("revision")
+                .and_then(|value| {
                     value
                         .as_i64()
                         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
                 })
-            })
-            .unwrap_or(0);
-        let max_rev = queried_rev.max(last_revision);
-
-        let mut selected_keys = HashSet::new();
-        if last_revision <= 0 {
-            selected_keys.extend(tables.iter().map(|(key, _)| *key));
-        } else {
-            for row in cursor_results
-                .first()
-                .map(|result| result.to_objects())
-                .unwrap_or_default()
-            {
-                let domain = row.get("domain").and_then(Value::as_str).unwrap_or("");
-                let keys: &[&str] = match domain {
-                    "employee" => &["employees"],
-                    "id-card" | "id_card" => &["idCards"],
-                    "shift" => &["shifts"],
-                    "holiday" => &["holidays"],
-                    "setting" => &["settings"],
-                    "company-profile" | "company_profile" => &["companyProfiles"],
-                    "id-card-template" | "id_card_template" => &["idCardTemplates"],
-                    "backup" | "backup_karyawan" => &["backups"],
-                    "correction" | "koreksi_admin" => &["corrections", "attendance", "scanLogs"],
-                    "offline-import" | "offline_import" | "import_offline" => {
-                        &["imports", "attendance", "scanLogs"]
-                    }
-                    "attendance" => &["attendance", "scanLogs"],
-                    "log-scan" | "log_scan" | "scan-log" | "scan_log" | "scan" => &["scanLogs"],
-                    // Domain baru/asing diperlakukan konservatif agar tidak ada data terlewat.
-                    _ => &[
-                        "employees",
-                        "idCards",
-                        "shifts",
-                        "holidays",
-                        "settings",
-                        "companyProfiles",
-                        "idCardTemplates",
-                        "backups",
-                        "corrections",
-                        "imports",
-                        "attendance",
-                        "scanLogs",
-                    ],
-                };
-                selected_keys.extend(keys.iter().copied());
-            }
+                .unwrap_or(0);
+            pulse.insert(table.to_owned(), revision);
         }
+        if pulse.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(pulse))
+    }
+
+    /// Menarik snapshot cloud. Bila `wanted` diisi, hanya tabel di dalamnya yang
+    /// dibaca — kunci payload tabel lain sengaja tidak dimunculkan sama sekali
+    /// agar `sync::apply_table` memperlakukannya sebagai "tidak dikirim" dan
+    /// melewatkannya (termasuk melewatkan penghapusan baris lokal).
+    pub async fn pull_snapshot_tables(
+        &self,
+        last_revision: i64,
+        wanted: Option<&HashSet<String>>,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let sources: Vec<&SnapshotSource> = SNAPSHOT_SOURCES
+            .iter()
+            .filter(|source| match wanted {
+                None => true,
+                Some(set) => set.contains(source.table),
+            })
+            .collect();
 
         let mut snapshot = json!({});
-        let selected_tables: Vec<_> = tables
-            .iter()
-            .filter(|(key, _)| selected_keys.contains(key))
-            .collect();
-        if !selected_tables.is_empty() {
-            let statements = selected_tables
+        let mut max_rev = last_revision;
+
+        if !sources.is_empty() {
+            let mut statements: Vec<Statement> = sources
                 .iter()
-                .map(|(_, sql)| Statement::new(*sql, vec![]))
+                .map(|source| Statement::new(source.sql, vec![]))
                 .collect();
+            statements.push(Statement::new(
+                "SELECT COALESCE(MAX(id), 0) AS max_rev FROM sync_changelog;",
+                vec![],
+            ));
+
             let results = self.execute_pipeline(statements).await?;
-            for (idx, (key, _)) in selected_tables.iter().enumerate() {
+            let rev_result = results.last().ok_or_else(CommandError::internal)?;
+            let queried_rev = rev_result
+                .to_objects()
+                .into_iter()
+                .next()
+                .and_then(|row| {
+                    row.get("max_rev").and_then(|value| {
+                        value
+                            .as_i64()
+                            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+                    })
+                })
+                .unwrap_or(0);
+            max_rev = queried_rev.max(last_revision);
+
+            for (idx, source) in sources.iter().enumerate() {
                 let res = results.get(idx).ok_or_else(CommandError::internal)?;
                 let rows_json: Vec<Value> =
                     res.to_objects().into_iter().map(|map| json!(map)).collect();
-                snapshot[*key] = json!(rows_json);
+                snapshot[source.payload_key] = json!(rows_json);
             }
         }
 
@@ -1590,7 +2216,67 @@ impl TursoClient {
                 created_at INTEGER NOT NULL
             );
         "#;
-        self.query_one(ensure_changelog_sql, vec![]).await?;
+
+        // Satu round-trip untuk seluruh batch: jaminan tabel changelog + pemetaan
+        // changelog dan receipt untuk semua event sekaligus. Sebelumnya setiap
+        // event menembak dua query terpisah secara berurutan, jadi satu batch 50
+        // event berarti 100+ request HTTP bolak-balik ke Turso.
+        let batch_event_ids: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .get("event_id")
+                    .or_else(|| event.get("eventId"))
+                    .and_then(Value::as_str)
+            })
+            .filter(|event_id| !event_id.is_empty())
+            .map(str::to_owned)
+            .collect();
+
+        let mut previous_events: HashMap<String, HashMap<String, Value>> = HashMap::new();
+        let mut applied_receipts: HashSet<String> = HashSet::new();
+        if batch_event_ids.is_empty() {
+            self.query_one(ensure_changelog_sql, vec![]).await?;
+        } else {
+            let placeholders = vec!["?"; batch_event_ids.len()].join(", ");
+            let args: Vec<Value> = batch_event_ids.iter().map(|id| json!(id)).collect();
+            let prefetch = self
+                .execute_pipeline(vec![
+                    Statement::new(ensure_changelog_sql, vec![]),
+                    Statement::new(
+                        format!(
+                            "SELECT id, event_id, client_id, domain, operation, entity_key, payload_json FROM sync_changelog WHERE event_id IN ({placeholders});"
+                        ),
+                        args.clone(),
+                    ),
+                    Statement::new(
+                        format!(
+                            "SELECT event_id FROM sync_operation_receipt WHERE status = 'applied' AND event_id IN ({placeholders});"
+                        ),
+                        args,
+                    ),
+                ])
+                .await?;
+            if let Some(result) = prefetch.get(1) {
+                for row in result.to_objects() {
+                    let Some(event_id) = row
+                        .get("event_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                    else {
+                        continue;
+                    };
+                    previous_events.insert(event_id, row);
+                }
+            }
+            if let Some(result) = prefetch.get(2) {
+                for row in result.to_objects() {
+                    if let Some(event_id) = row.get("event_id").and_then(Value::as_str) {
+                        applied_receipts.insert(event_id.to_owned());
+                    }
+                }
+            }
+        }
 
         for event in events {
             let event_id = event
@@ -1672,15 +2358,7 @@ impl TursoClient {
 
             // Receipt adalah sumber idempotensi event sukses. Changelog tanpa receipt
             // hanya mungkin berasal dari versi lama yang belum atomik.
-            let previous_event = self
-                .query_one(
-                    "SELECT id, client_id, domain, operation, entity_key, payload_json FROM sync_changelog WHERE event_id = ? LIMIT 1;",
-                    vec![json!(event_id)],
-                )
-                .await?
-                .to_objects()
-                .into_iter()
-                .next();
+            let previous_event = previous_events.get(event_id);
             if let Some(previous) = previous_event {
                 let previous_route = previous
                     .get("domain")
@@ -1713,24 +2391,7 @@ impl TursoClient {
                             "Revision event sinkronisasi tidak dapat ditentukan.",
                         )
                     })?;
-                let applied = self
-                    .query_one(
-                        "SELECT COUNT(*) AS total FROM sync_operation_receipt WHERE event_id = ? AND status = 'applied';",
-                        vec![json!(event_id)],
-                    )
-                    .await?
-                    .to_objects()
-                    .into_iter()
-                    .next()
-                    .and_then(|row| row.get("total").cloned())
-                    .and_then(|value| {
-                        value
-                            .as_i64()
-                            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-                    })
-                    .unwrap_or(0)
-                    > 0;
-                if applied {
+                if applied_receipts.contains(event_id) {
                     push_results.push(json!({
                         "eventId": event_id,
                         "status": "applied",
@@ -2435,6 +3096,9 @@ fn extract_attendance_row_params(row: &Value, id_sesi: &str) -> Vec<Value> {
         });
 
     vec![
+        // Nilai pertama mengisi kolom id_absensi lewat subquery pada klausa VALUES, sehingga
+        // upsert yang berakhir sebagai UPDATE tidak menghabiskan counter AUTOINCREMENT.
+        json!(id_sesi),
         json!(tanggal),
         json!(row.get("id_karyawan").and_then(Value::as_str).unwrap_or("")),
         json!(row.get("nama").and_then(Value::as_str).unwrap_or("")),
@@ -2490,6 +3154,41 @@ fn extract_attendance_row_params(row: &Value, id_sesi: &str) -> Vec<Value> {
         json!(row.get("id_karyawan_asal").and_then(Value::as_str)),
         json!(row.get("tanggal_tugas").and_then(Value::as_str)),
     ]
+}
+
+async fn insert_payroll_audit_log(
+    turso: &StatementCollector,
+    row: &Value,
+) -> Result<(), CommandError> {
+    let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+    let payroll_run_id = row
+        .get("payroll_run_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if id.is_empty() || payroll_run_id.is_empty() {
+        return Ok(());
+    }
+    turso
+        .query_one(
+            r#"
+            INSERT INTO payroll_audit_logs (
+                id, payroll_run_id, action, old_status, new_status, performed_by, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING;
+            "#,
+            vec![
+                json!(id),
+                json!(payroll_run_id),
+                json!(row.get("action").and_then(Value::as_str).unwrap_or("")),
+                json!(row.get("old_status").and_then(Value::as_str)),
+                json!(row.get("new_status").and_then(Value::as_str).unwrap_or("")),
+                json!(row.get("performed_by").and_then(Value::as_str).unwrap_or("")),
+                json!(row.get("notes").and_then(Value::as_str)),
+                json!(row.get("created_at").and_then(Value::as_str).unwrap_or("")),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn insert_log_if_missing(
@@ -2611,6 +3310,14 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("setting" | "settings" | "setting_gex_system" | "setting-gex-system", "update") => {
             ("setting", "update")
         }
+        ("payroll", "salary-config") => ("payroll", "salary-config"),
+        ("payroll", "overtime-rule") => ("payroll", "overtime-rule"),
+        ("payroll", "payroll-component") => ("payroll", "payroll-component"),
+        ("payroll", "tax-rule") => ("payroll", "tax-rule"),
+        ("payroll", "bpjs-rule") => ("payroll", "bpjs-rule"),
+        ("payroll", "delete") => ("payroll", "delete"),
+        ("payroll", "create-run") => ("payroll", "create-run"),
+        ("payroll", "transition-status") => ("payroll", "transition-status"),
         _ => return None,
     };
     sync::is_canonical_sync_route(route.0, route.1).then_some(route)
@@ -2696,8 +3403,8 @@ async fn apply_event_to_turso(
                     .await?;
                 turso
                     .query_one(
-                        "INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) VALUES (?, ?, ?, 'Belum', date('now'));",
-                        vec![json!(id_unik), json!(nama), json!(divisi)],
+                        "INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT ?, ?, ?, 'Belum', date('now') WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);",
+                        vec![json!(id_unik), json!(nama), json!(divisi), json!(id_unik)],
                     )
                     .await?;
                 for (sql, args) in [
@@ -2801,8 +3508,8 @@ async fn apply_event_to_turso(
                     .await?;
                 turso
                     .query_one(
-                        "INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) VALUES (?, ?, ?, 'Belum', date('now'));",
-                        vec![json!(id_unik), json!(nama), json!(divisi)],
+                        "INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT ?, ?, ?, 'Belum', date('now') WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);",
+                        vec![json!(id_unik), json!(nama), json!(divisi), json!(id_unik)],
                     )
                     .await?;
             }
@@ -2871,10 +3578,10 @@ async fn apply_event_to_turso(
             if !id_unik.is_empty() {
                 let sql = r#"
                     INSERT INTO id_card (
-                        id_unik, nama, divisi, idcard_status, idcard_pdf_url,
+                        id_card_id, id_unik, nama, divisi, idcard_status, idcard_pdf_url,
                         idcard_last_generate, idcard_catatan, tanggal_generate, link_qr_png
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id_unik) DO UPDATE SET
+                    ) VALUES ((SELECT id_card_id FROM id_card WHERE id_unik = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id_card_id) DO UPDATE SET
                         nama = COALESCE(NULLIF(excluded.nama, ''), id_card.nama),
                         divisi = COALESCE(NULLIF(excluded.divisi, ''), id_card.divisi),
                         idcard_status = excluded.idcard_status,
@@ -2888,6 +3595,7 @@ async fn apply_event_to_turso(
                     .query_one(
                         sql,
                         vec![
+                            json!(id_unik),
                             json!(id_unik),
                             json!(row.get("nama").and_then(Value::as_str).unwrap_or("")),
                             json!(row.get("divisi").and_then(Value::as_str).unwrap_or("")),
@@ -2941,12 +3649,12 @@ async fn apply_event_to_turso(
             }
             let sql = r#"
                 INSERT INTO tbl_shift (
-                    kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
+                    id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
                     batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
                     istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
                     offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(kode_shift) DO UPDATE SET
+                ) VALUES ((SELECT id_shift FROM tbl_shift WHERE kode_shift = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id_shift) DO UPDATE SET
                     nama_shift = excluded.nama_shift,
                     jam_masuk = excluded.jam_masuk,
                     jam_pulang = excluded.jam_pulang,
@@ -2965,6 +3673,7 @@ async fn apply_event_to_turso(
                 .query_one(
                     sql,
                     vec![
+                        json!(kode_shift),
                         json!(kode_shift),
                         json!(row.get("nama_shift").and_then(Value::as_str).unwrap_or("")),
                         json!(row.get("jam_masuk").and_then(Value::as_str).unwrap_or("")),
@@ -3037,9 +3746,9 @@ async fn apply_event_to_turso(
             let tanggal = row.get("tanggal").and_then(Value::as_str).unwrap_or("");
             if !tanggal.is_empty() {
                 let sql = r#"
-                    INSERT INTO tbl_hari_libur (tanggal, nama_libur, jenis_libur, keterangan, status_aktif)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(tanggal) DO UPDATE SET
+                    INSERT INTO tbl_hari_libur (id_libur, tanggal, nama_libur, jenis_libur, keterangan, status_aktif)
+                    VALUES ((SELECT id_libur FROM tbl_hari_libur WHERE tanggal = ?), ?, ?, ?, ?, ?)
+                    ON CONFLICT(id_libur) DO UPDATE SET
                         nama_libur = excluded.nama_libur,
                         jenis_libur = excluded.jenis_libur,
                         keterangan = excluded.keterangan,
@@ -3049,6 +3758,7 @@ async fn apply_event_to_turso(
                     .query_one(
                         sql,
                         vec![
+                            json!(tanggal),
                             json!(tanggal),
                             json!(row.get("nama_libur").and_then(Value::as_str).unwrap_or("")),
                             json!(row.get("jenis_libur").and_then(Value::as_str).unwrap_or("")),
@@ -3087,13 +3797,13 @@ async fn apply_event_to_turso(
                     if !id_sesi.is_empty() {
                         let att_sql = r#"
                             INSERT INTO absensi_harian (
-                                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                                id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                                 menit_terlambat, menit_datang_awal, jam_kerja, lembur,
                                 jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
                                 id_backup, id_karyawan_asal, tanggal_tugas
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(id_sesi) DO UPDATE SET
+                            ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(id_absensi) DO UPDATE SET
                                 tanggal = excluded.tanggal,
                                 id_karyawan = excluded.id_karyawan,
                                 nama = excluded.nama,
@@ -3134,13 +3844,13 @@ async fn apply_event_to_turso(
             if !id_sesi.is_empty() {
                 let sql = r#"
                     INSERT INTO absensi_harian (
-                        tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                        id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                         status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                         menit_terlambat, menit_datang_awal, jam_kerja, lembur,
                         jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
                         id_backup, id_karyawan_asal, tanggal_tugas
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id_sesi) DO UPDATE SET
+                    ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id_absensi) DO UPDATE SET
                         tanggal = COALESCE(NULLIF(excluded.tanggal, ''), absensi_harian.tanggal),
                         id_karyawan = COALESCE(NULLIF(excluded.id_karyawan, ''), absensi_harian.id_karyawan),
                         nama = COALESCE(NULLIF(excluded.nama, ''), absensi_harian.nama),
@@ -3322,10 +4032,10 @@ async fn apply_event_to_turso(
             if !id_referensi.is_empty() {
                 let sql = r#"
                     INSERT INTO koreksi_admin (
-                        id_referensi, tanggal, id_karyawan, nama, divisi, jenis_koreksi,
+                        id_koreksi, id_referensi, tanggal, id_karyawan, nama, divisi, jenis_koreksi,
                         jam_koreksi, keterangan_admin, status_proses, timestamp, kode_operator
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id_referensi) DO UPDATE SET
+                    ) VALUES ((SELECT id_koreksi FROM koreksi_admin WHERE id_referensi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id_koreksi) DO UPDATE SET
                         tanggal = excluded.tanggal,
                         jenis_koreksi = excluded.jenis_koreksi,
                         jam_koreksi = excluded.jam_koreksi,
@@ -3338,6 +4048,7 @@ async fn apply_event_to_turso(
                     .query_one(
                         sql,
                         vec![
+                            json!(id_referensi),
                             json!(id_referensi),
                             json!(row.get("tanggal").and_then(Value::as_str).unwrap_or("")),
                             json!(row.get("id_karyawan").and_then(Value::as_str).unwrap_or("")),
@@ -3370,13 +4081,13 @@ async fn apply_event_to_turso(
                     if !id_sesi.is_empty() {
                         let att_sql = r#"
                             INSERT INTO absensi_harian (
-                                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                                id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                                 menit_terlambat, menit_datang_awal, jam_kerja, lembur,
                                 jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
                                 id_backup, id_karyawan_asal, tanggal_tugas
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(id_sesi) DO UPDATE SET
+                            ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(id_absensi) DO UPDATE SET
                                 tanggal = excluded.tanggal,
                                 id_karyawan = excluded.id_karyawan,
                                 nama = excluded.nama,
@@ -3449,11 +4160,11 @@ async fn apply_event_to_turso(
                     .unwrap_or("");
                 let sql = r#"
                     INSERT INTO import_offline (
-                        event_key, timestamp_input, tanggal, id_unik, nama, divisi,
+                        id_import, event_key, timestamp_input, tanggal, id_unik, nama, divisi,
                         jam_masuk, jam_pulang, status_kehadiran, status_absen,
                         keterangan, status_proses, diproses_pada, pesan_error, kode_operator
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', datetime('now'), '', ?)
-                    ON CONFLICT(event_key) DO UPDATE SET
+                    ) VALUES ((SELECT id_import FROM import_offline WHERE event_key = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', datetime('now'), '', ?)
+                    ON CONFLICT(id_import) DO UPDATE SET
                         timestamp_input = COALESCE(NULLIF(excluded.timestamp_input, ''), import_offline.timestamp_input),
                         tanggal = excluded.tanggal,
                         id_unik = excluded.id_unik,
@@ -3473,6 +4184,7 @@ async fn apply_event_to_turso(
                     .query_one(
                         sql,
                         vec![
+                            json!(event_key),
                             json!(event_key),
                             json!(row
                                 .get("timestamp_input")
@@ -3500,13 +4212,13 @@ async fn apply_event_to_turso(
                     if !id_sesi.is_empty() {
                         let att_sql = r#"
                             INSERT INTO absensi_harian (
-                                tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+                                id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
                                 status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
                                 menit_terlambat, menit_datang_awal, jam_kerja, lembur,
                                 jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
                                 id_backup, id_karyawan_asal, tanggal_tugas
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(id_sesi) DO UPDATE SET
+                            ) VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(id_absensi) DO UPDATE SET
                                 tanggal = excluded.tanggal,
                                 id_karyawan = excluded.id_karyawan,
                                 nama = excluded.nama,
@@ -3742,6 +4454,346 @@ async fn apply_event_to_turso(
                 turso.query_one(sql, vec![json!(key), json!(value)]).await?;
             }
         }
+        ("payroll", "salary-config") => {
+            let row = payload.get("salaryConfig").unwrap_or(payload);
+            let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                let sql = r#"
+                    INSERT INTO salary_configs (
+                        id, id_karyawan, rate_per_hour, ptkp_status, effective_date, created_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id_karyawan, effective_date) DO UPDATE SET
+                        rate_per_hour = excluded.rate_per_hour,
+                        ptkp_status = excluded.ptkp_status,
+                        created_by = excluded.created_by;
+                "#;
+                turso
+                    .query_one(
+                        sql,
+                        vec![
+                            json!(id),
+                            json!(row.get("id_karyawan").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("rate_per_hour").and_then(Value::as_i64).unwrap_or(0)),
+                            json!(row
+                                .get("ptkp_status")
+                                .and_then(Value::as_str)
+                                .unwrap_or("TK/0")),
+                            json!(row
+                                .get("effective_date")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")),
+                            json!(row.get("created_by").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("created_at").and_then(Value::as_str).unwrap_or("")),
+                        ],
+                    )
+                    .await?;
+            }
+        }
+        ("payroll", "overtime-rule") => {
+            let row = payload.get("overtimeRule").unwrap_or(payload);
+            let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                let sql = r#"
+                    INSERT INTO overtime_tier_rules (
+                        id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(rule_type, tier_order) DO UPDATE SET
+                        hour_start = excluded.hour_start,
+                        hour_end = excluded.hour_end,
+                        multiplier = excluded.multiplier,
+                        is_active = excluded.is_active;
+                "#;
+                turso
+                    .query_one(
+                        sql,
+                        vec![
+                            json!(id),
+                            json!(row.get("rule_type").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("tier_order").and_then(Value::as_i64).unwrap_or(0)),
+                            json!(row.get("hour_start").and_then(Value::as_f64).unwrap_or(0.0)),
+                            json!(row.get("hour_end").and_then(Value::as_f64)),
+                            json!(row.get("multiplier").and_then(Value::as_f64).unwrap_or(1.0)),
+                            json!(row.get("is_active").and_then(Value::as_i64).unwrap_or(1)),
+                        ],
+                    )
+                    .await?;
+            }
+        }
+        ("payroll", "payroll-component") => {
+            let row = payload.get("component").unwrap_or(payload);
+            let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                let sql = r#"
+                    INSERT INTO payroll_components (
+                        id, name, category, calc_type, default_value, applies_to, is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        category = excluded.category,
+                        calc_type = excluded.calc_type,
+                        default_value = excluded.default_value,
+                        applies_to = excluded.applies_to,
+                        is_active = excluded.is_active;
+                "#;
+                turso
+                    .query_one(
+                        sql,
+                        vec![
+                            json!(id),
+                            json!(row.get("name").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("category").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("calc_type").and_then(Value::as_str).unwrap_or("")),
+                            json!(row
+                                .get("default_value")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0)),
+                            json!(row
+                                .get("applies_to")
+                                .and_then(Value::as_str)
+                                .unwrap_or("ALL")),
+                            json!(row.get("is_active").and_then(Value::as_i64).unwrap_or(1)),
+                        ],
+                    )
+                    .await?;
+            }
+        }
+        ("payroll", "tax-rule") => {
+            let row = payload.get("taxRule").unwrap_or(payload);
+            let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                let sql = r#"
+                    INSERT INTO tax_rules (
+                        id, category, bracket_min, bracket_max, rate_percentage, effective_date
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        category = excluded.category,
+                        bracket_min = excluded.bracket_min,
+                        bracket_max = excluded.bracket_max,
+                        rate_percentage = excluded.rate_percentage,
+                        effective_date = excluded.effective_date;
+                "#;
+                turso
+                    .query_one(
+                        sql,
+                        vec![
+                            json!(id),
+                            json!(row.get("category").and_then(Value::as_str).unwrap_or("")),
+                            json!(row.get("bracket_min").and_then(Value::as_i64).unwrap_or(0)),
+                            json!(row.get("bracket_max").and_then(Value::as_i64)),
+                            json!(row
+                                .get("rate_percentage")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0)),
+                            json!(row
+                                .get("effective_date")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")),
+                        ],
+                    )
+                    .await?;
+            }
+        }
+        ("payroll", "bpjs-rule") => {
+            let row = payload.get("bpjsRule").unwrap_or(payload);
+            let id = row.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                let sql = r#"
+                    INSERT INTO bpjs_rules (
+                        id, component_code, component_name, rate_percentage, wage_cap, effective_date
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(component_code) DO UPDATE SET
+                        component_name = excluded.component_name,
+                        rate_percentage = excluded.rate_percentage,
+                        wage_cap = excluded.wage_cap,
+                        effective_date = excluded.effective_date;
+                "#;
+                turso
+                    .query_one(
+                        sql,
+                        vec![
+                            json!(id),
+                            json!(row
+                                .get("component_code")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")),
+                            json!(row
+                                .get("component_name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")),
+                            json!(row
+                                .get("rate_percentage")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0)),
+                            json!(row.get("wage_cap").and_then(Value::as_i64)),
+                            json!(row
+                                .get("effective_date")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")),
+                        ],
+                    )
+                    .await?;
+            }
+        }
+        ("payroll", "delete") => {
+            const DELETABLE_TABLES: &[&str] = &[
+                "salary_configs",
+                "overtime_tier_rules",
+                "payroll_components",
+                "tax_rules",
+                "bpjs_rules",
+            ];
+            let table = payload.get("table").and_then(Value::as_str).unwrap_or("");
+            let id = payload.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() && DELETABLE_TABLES.contains(&table) {
+                let sql = format!("DELETE FROM {table} WHERE id = ?;");
+                turso.query_one(&sql, vec![json!(id)]).await?;
+            }
+        }
+        ("payroll", "create-run") => {
+            let run = payload.get("run").unwrap_or(payload);
+            let run_id = run.get("id").and_then(Value::as_str).unwrap_or("");
+            if run_id.is_empty() {
+                return Ok(());
+            }
+            let run_sql = r#"
+                INSERT INTO payroll_runs (
+                    id, idempotency_key, period_start, period_end, status,
+                    total_gross_payout, total_net_payout, total_employees,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING;
+            "#;
+            turso
+                .query_one(
+                    run_sql,
+                    vec![
+                        json!(run_id),
+                        json!(run
+                            .get("idempotency_key")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")),
+                        json!(run.get("period_start").and_then(Value::as_str).unwrap_or("")),
+                        json!(run.get("period_end").and_then(Value::as_str).unwrap_or("")),
+                        json!(run.get("status").and_then(Value::as_str).unwrap_or("DRAFT")),
+                        json!(run
+                            .get("total_gross_payout")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)),
+                        json!(run
+                            .get("total_net_payout")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)),
+                        json!(run
+                            .get("total_employees")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)),
+                        json!(run.get("created_by").and_then(Value::as_str).unwrap_or("")),
+                        json!(run.get("created_at").and_then(Value::as_str).unwrap_or("")),
+                        json!(run.get("updated_at").and_then(Value::as_str).unwrap_or("")),
+                    ],
+                )
+                .await?;
+
+            if let Some(items) = payload.get("items").and_then(Value::as_array) {
+                let item_sql = r#"
+                    INSERT INTO payroll_items (
+                        id, payroll_run_id, id_karyawan, nama_karyawan, divisi, ptkp_status,
+                        total_regular_hours, total_overtime_hours, total_overtime_index,
+                        rate_per_hour, basic_salary, overtime_salary, gross_salary,
+                        total_allowances, total_deductions, bpjs_employee_total, bpjs_company_total,
+                        pph21_amount, net_salary, breakdown_snapshot, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO NOTHING;
+                "#;
+                for item in items {
+                    let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    if item_id.is_empty() {
+                        continue;
+                    }
+                    turso
+                        .query_one(
+                            item_sql,
+                            vec![
+                                json!(item_id),
+                                json!(run_id),
+                                json!(item.get("id_karyawan").and_then(Value::as_str).unwrap_or("")),
+                                json!(item
+                                    .get("nama_karyawan")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")),
+                                json!(item.get("divisi").and_then(Value::as_str).unwrap_or("")),
+                                json!(item
+                                    .get("ptkp_status")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("TK/0")),
+                                json!(item
+                                    .get("total_regular_hours")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)),
+                                json!(item
+                                    .get("total_overtime_hours")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)),
+                                json!(item
+                                    .get("total_overtime_index")
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)),
+                                json!(item.get("rate_per_hour").and_then(Value::as_i64).unwrap_or(0)),
+                                json!(item.get("basic_salary").and_then(Value::as_i64).unwrap_or(0)),
+                                json!(item
+                                    .get("overtime_salary")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)),
+                                json!(item.get("gross_salary").and_then(Value::as_i64).unwrap_or(0)),
+                                json!(item
+                                    .get("total_allowances")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)),
+                                json!(item
+                                    .get("total_deductions")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)),
+                                json!(item
+                                    .get("bpjs_employee_total")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)),
+                                json!(item
+                                    .get("bpjs_company_total")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)),
+                                json!(item.get("pph21_amount").and_then(Value::as_i64).unwrap_or(0)),
+                                json!(item.get("net_salary").and_then(Value::as_i64).unwrap_or(0)),
+                                json!(item
+                                    .get("breakdown_snapshot")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("{}")),
+                                json!(item.get("created_at").and_then(Value::as_str).unwrap_or("")),
+                            ],
+                        )
+                        .await?;
+                }
+            }
+
+            if let Some(audit) = payload.get("audit") {
+                insert_payroll_audit_log(turso, audit).await?;
+            }
+        }
+        ("payroll", "transition-status") => {
+            let run_id = payload.get("id").and_then(Value::as_str).unwrap_or("");
+            let status = payload.get("status").and_then(Value::as_str).unwrap_or("");
+            let updated_at = payload.get("updated_at").and_then(Value::as_str).unwrap_or("");
+            if !run_id.is_empty() && !status.is_empty() {
+                turso
+                    .query_one(
+                        "UPDATE payroll_runs SET status = ?, updated_at = ? WHERE id = ?;",
+                        vec![json!(status), json!(updated_at), json!(run_id)],
+                    )
+                    .await?;
+            }
+            if let Some(audit) = payload.get("audit") {
+                insert_payroll_audit_log(turso, audit).await?;
+            }
+        }
         _ => {
             return Err(CommandError::new(
                 "TURSO_SYNC_OPERATION_UNSUPPORTED",
@@ -3973,8 +5025,8 @@ mod tests {
             "bulan": "Agustus"
         });
         let params_int = extract_attendance_row_params(&att_int, "SESI001");
-        assert_eq!(params_int[17], json!("Agustus"));
-        assert_eq!(params_int[18], json!(2026));
+        assert_eq!(params_int[18], json!("Agustus"));
+        assert_eq!(params_int[19], json!(2026));
 
         let att_str = json!({
             "tanggal": "2026-08-22",
@@ -3983,8 +5035,8 @@ mod tests {
             "tahun": "2026"
         });
         let params_str = extract_attendance_row_params(&att_str, "SESI001");
-        assert_eq!(params_str[17], json!("Agustus"));
-        assert_eq!(params_str[18], json!(2026));
+        assert_eq!(params_str[18], json!("Agustus"));
+        assert_eq!(params_str[19], json!(2026));
 
         let att_empty = json!({
             "tanggal": "2026-08-22",
@@ -3992,7 +5044,7 @@ mod tests {
             "nama": "Budi"
         });
         let params_empty = extract_attendance_row_params(&att_empty, "SESI001");
-        assert_eq!(params_empty[17], json!("Agustus"));
-        assert_eq!(params_empty[18], json!(2026));
+        assert_eq!(params_empty[18], json!("Agustus"));
+        assert_eq!(params_empty[19], json!(2026));
     }
 }

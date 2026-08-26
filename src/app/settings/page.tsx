@@ -10,7 +10,10 @@ import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
-import { getCurrentCoordinates } from "@/lib/client/geolocation";
+import {
+  calculateDistanceMeters,
+  getCurrentCoordinates,
+} from "@/lib/client/geolocation";
 import { formatBytes, optimizeImageFile } from "@/lib/client/image-optimizer";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -41,7 +44,10 @@ import {
   getSyncStatus,
   isDesktopSyncAvailable,
   resolveSyncConflicts,
+  resolveSyncConflictsLocal,
   retryFailedSync,
+  SYNC_COMPLETED_EVENT,
+  SYNC_FAILED_EVENT,
   type SyncConflict,
   type SyncStatus,
   syncNow,
@@ -75,6 +81,9 @@ const SYNC_TABLE_LABELS = [
   ["imports", "Import offline"],
   ["attendance", "Absensi harian"],
   ["scanLogs", "Riwayat scan"],
+  ["payrollRuns", "Batch Payroll"],
+  ["payrollItems", "Slip Gaji"],
+  ["salaryConfigs", "Rate Gaji"],
 ] as const;
 
 function formatSyncTime(timestamp: number | null | undefined) {
@@ -99,6 +108,7 @@ export default function SettingsPage() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
   const [tursoUrl, setTursoUrl] = useState<string>("");
   const [tursoToken, setTursoToken] = useState<string>("");
   const [showTursoToken, setShowTursoToken] = useState<boolean>(false);
@@ -113,6 +123,10 @@ export default function SettingsPage() {
     radiusMeter: 100,
   });
   const [geofenceBusy, setGeofenceBusy] = useState(false);
+  const [currentDeviceCoords, setCurrentDeviceCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
   const [scannerSafety, setScannerSafety] = useState<ScannerSafetySettings>({
     antiDoubleScanSeconds: 60,
     batasMultiScanMenit: 5,
@@ -225,7 +239,9 @@ export default function SettingsPage() {
   // Dengarkan event auto-sync selesai untuk memperbarui status Cloud Sync secara real-time
   useEffect(() => {
     if (!isHydrated || !isAuthenticated) return;
-    const onSyncCompleted = () => {
+    const onSyncCompleted = (event: Event) => {
+      const detail = (event as CustomEvent<SyncStatus>).detail;
+      if (detail && !detail.pushError) setAutoSyncError(null);
       if (isDesktopSyncAvailable()) {
         getSyncStatus()
           .then((status) => setSyncStatus(status))
@@ -235,9 +251,17 @@ export default function SettingsPage() {
           .catch(() => undefined);
       }
     };
-    window.addEventListener("sppg:sync-completed", onSyncCompleted);
+    // Kegagalan auto-sync dulu ditelan diam-diam sehingga tidak ada cara tahu
+    // sync sedang mati. Sekarang alasannya ditampilkan di panel Cloud Sync.
+    const onSyncFailed = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      setAutoSyncError(detail?.message ?? "Sinkronisasi otomatis gagal.");
+    };
+    window.addEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+    window.addEventListener(SYNC_FAILED_EVENT, onSyncFailed);
     return () => {
-      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
+      window.removeEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+      window.removeEventListener(SYNC_FAILED_EVENT, onSyncFailed);
     };
   }, [isHydrated, isAuthenticated]);
 
@@ -347,8 +371,8 @@ export default function SettingsPage() {
       setFeedback({
         type: "success",
         message: eventId
-          ? "Konflik berhasil diselesaikan (mengikuti master server)."
-          : "Semua konflik berhasil diselesaikan (mengikuti master server).",
+          ? "Konflik berhasil diselesaikan (mengikuti master cloud)."
+          : "Semua konflik berhasil diselesaikan (mengikuti master cloud).",
       });
     } catch (error) {
       setFeedback({
@@ -357,6 +381,31 @@ export default function SettingsPage() {
           error instanceof Error
             ? error.message
             : "Gagal menyelesaikan konflik sinkronisasi.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const resolveConflictsLocal = async (eventId?: string) => {
+    setSyncBusy(true);
+    try {
+      const status = await resolveSyncConflictsLocal(eventId);
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: eventId
+          ? "Data lokal berhasil diprioritaskan dan dikirim ke cloud."
+          : "Semua data lokal berhasil diprioritaskan dan dikirim ke cloud.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal memprioritaskan data lokal ke cloud.",
       });
     } finally {
       setSyncBusy(false);
@@ -693,6 +742,10 @@ export default function SettingsPage() {
       });
       return;
     }
+    setCurrentDeviceCoords({
+      lat: coordinates.lat,
+      lng: coordinates.lng,
+    });
     setGeofence((current) => ({
       ...current,
       latitude: Number(coordinates.lat.toFixed(7)),
@@ -1511,8 +1564,8 @@ export default function SettingsPage() {
                 className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
               />
             </label>
-            <label className="space-y-1.5 text-xs font-bold text-slate-300">
-              Radius maksimal (meter)
+            <div className="space-y-1.5 text-xs font-bold text-slate-300">
+              <span>Radius maksimal (meter)</span>
               <input
                 type="number"
                 min={10}
@@ -1527,8 +1580,29 @@ export default function SettingsPage() {
                 }
                 className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
               />
-            </label>
-            <label className="flex min-h-11 items-center gap-3 self-end rounded-xl border border-white/10 bg-slate-950 px-4 text-xs font-bold text-white">
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {[25, 50, 100, 250, 500].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() =>
+                      setGeofence((current) => ({
+                        ...current,
+                        radiusMeter: preset,
+                      }))
+                    }
+                    className={`rounded-lg px-2 py-0.5 text-[11px] font-bold transition-all ${
+                      geofence.radiusMeter === preset
+                        ? "bg-sky-400 text-slate-950 shadow-sm"
+                        : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    {preset}m
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="flex min-h-11 items-center gap-3 self-start rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-xs font-bold text-white mt-5">
               <input
                 type="checkbox"
                 checked={geofence.enabled}
@@ -1543,21 +1617,69 @@ export default function SettingsPage() {
               Wajibkan lokasi saat scan
             </label>
 
+            {currentDeviceCoords ? (
+              <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 sm:col-span-2 sm:flex-row sm:items-center lg:col-span-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
+                    <span>Posisi Perangkat Saat Ini:</span>
+                    <span className="font-mono text-sky-300">
+                      {currentDeviceCoords.lat.toFixed(6)},{" "}
+                      {currentDeviceCoords.lng.toFixed(6)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>Jarak ke Titik Kantor:</span>
+                    <span className="font-mono font-black text-white">
+                      {calculateDistanceMeters(
+                        currentDeviceCoords.lat,
+                        currentDeviceCoords.lng,
+                        geofence.latitude,
+                        geofence.longitude,
+                      )}{" "}
+                      meter
+                    </span>
+                    <span>(Radius Diizinkan: {geofence.radiusMeter}m)</span>
+                  </div>
+                </div>
+                <StatusBadge
+                  tone={
+                    calculateDistanceMeters(
+                      currentDeviceCoords.lat,
+                      currentDeviceCoords.lng,
+                      geofence.latitude,
+                      geofence.longitude,
+                    ) <= geofence.radiusMeter
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  {calculateDistanceMeters(
+                    currentDeviceCoords.lat,
+                    currentDeviceCoords.lng,
+                    geofence.latitude,
+                    geofence.longitude,
+                  ) <= geofence.radiusMeter
+                    ? "Di Dalam Radius Kantor"
+                    : "Di Luar Radius Kantor"}
+                </StatusBadge>
+              </div>
+            ) : null}
+
             <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row lg:col-span-4">
               <button
                 type="button"
                 disabled={geofenceBusy}
                 onClick={useCurrentLocation}
-                className="min-h-11 rounded-xl border border-white/10 bg-white/[0.05] px-4 text-xs font-bold text-slate-200 disabled:opacity-50"
+                className="min-h-11 rounded-xl border border-white/10 bg-white/[0.05] px-4 text-xs font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
               >
-                Gunakan lokasi perangkat ini
+                Ambil & Uji Lokasi Perangkat Ini
               </button>
               <button
                 type="submit"
-                disabled={geofenceBusy || !isOnline}
-                className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 disabled:opacity-50"
+                disabled={geofenceBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 hover:bg-sky-300 disabled:opacity-50"
               >
-                {geofenceBusy ? "Memproses..." : "Simpan pengaturan lokasi"}
+                {geofenceBusy ? "Menyimpan..." : "Simpan & Sinkronkan ke Cloud"}
               </button>
             </div>
             {!isOnline ? (
@@ -1877,6 +1999,17 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {autoSyncError ? (
+            <div className="mt-4 rounded-2xl border border-rose-400/40 bg-rose-400/10 p-4">
+              <p className="text-xs font-black text-rose-200">
+                Sinkronisasi otomatis terakhir gagal
+              </p>
+              <p className="mt-1 break-words text-xs text-rose-100/80">
+                {autoSyncError}
+              </p>
+            </div>
+          ) : null}
+
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ["Menunggu", syncStatus?.pending ?? 0],
@@ -1926,55 +2059,77 @@ export default function SettingsPage() {
           </div>
           {conflicts.length > 0 ? (
             <div className="mt-5 rounded-2xl border border-rose-400/20 bg-rose-400/5 p-4">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-black text-rose-100">
                     Konflik perlu ditinjau ({conflicts.length})
                   </p>
                   <p className="mt-0.5 text-xs text-slate-400">
                     Konflik terjadi saat data lokal berbeda versi dengan master
-                    server.
+                    cloud.
                   </p>
                 </div>
                 {hasPermission(user, "sync.retry") ? (
-                  <button
-                    type="button"
-                    disabled={syncBusy}
-                    onClick={() => resolveConflicts()}
-                    className="min-h-9 self-start rounded-xl bg-rose-400/20 px-3.5 text-xs font-black text-rose-100 hover:bg-rose-400/30 disabled:opacity-50 sm:self-auto"
-                  >
-                    Selesaikan Semua (Ikuti Server)
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={syncBusy}
+                      onClick={() => resolveConflictsLocal()}
+                      className="min-h-9 rounded-xl bg-sky-400/20 px-3.5 text-xs font-black text-sky-200 hover:bg-sky-400/30 disabled:opacity-50"
+                    >
+                      Pakai Semua Data Lokal (Timpa Cloud)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={syncBusy}
+                      onClick={() => resolveConflicts()}
+                      className="min-h-9 rounded-xl bg-rose-400/20 px-3.5 text-xs font-black text-rose-100 hover:bg-rose-400/30 disabled:opacity-50"
+                    >
+                      Selesaikan Semua (Ikuti Cloud)
+                    </button>
+                  </div>
                 ) : null}
               </div>
               <ul className="mt-3 space-y-2 text-xs text-rose-100/80">
-                {conflicts.slice(0, 10).map((item) => (
+                {conflicts.slice(0, 15).map((item) => (
                   <li
                     key={item.eventId}
-                    className="flex flex-col gap-1 rounded-xl border border-rose-400/10 bg-slate-950/40 p-3 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex flex-col gap-2 rounded-xl border border-rose-400/10 bg-slate-950/60 p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    <div>
-                      <span className="font-bold">
+                    <div className="min-w-0 flex-1">
+                      <span className="font-bold text-white">
                         {item.domain} · {item.entityKey}
                       </span>{" "}
-                      — {item.reason}
+                      <span className="text-rose-200/80">— {item.reason}</span>
                     </div>
                     {hasPermission(user, "sync.retry") ? (
-                      <button
-                        type="button"
-                        disabled={syncBusy}
-                        onClick={() => resolveConflicts(item.eventId)}
-                        className="self-end shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50 sm:self-auto"
-                      >
-                        Selesaikan
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+                        <button
+                          type="button"
+                          disabled={syncBusy}
+                          onClick={() => resolveConflictsLocal(item.eventId)}
+                          className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
+                        >
+                          Gunakan Versi Lokal
+                        </button>
+                        <button
+                          type="button"
+                          disabled={syncBusy}
+                          onClick={() => resolveConflicts(item.eventId)}
+                          className="rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+                        >
+                          Ikuti Cloud
+                        </button>
+                      </div>
                     ) : null}
                   </li>
                 ))}
               </ul>
               <p className="mt-3 text-xs text-slate-400">
-                Menyelesaikan konflik akan menandai antrean selesai dan
-                mempertahankan snapshot master dari server.
+                Pilih <strong>Gunakan Versi Lokal</strong> untuk memaksa data
+                perubahan di perangkat ini terkirim ke server Cloud, atau{" "}
+                <strong>Ikuti Cloud</strong> untuk membuang perubahan lokal dan
+                mengikuti snapshot master server.
               </p>
             </div>
           ) : null}

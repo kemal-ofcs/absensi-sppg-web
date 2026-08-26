@@ -1,8 +1,8 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 9;
-export const REQUIRED_TABLE_COUNT = 23;
+export const CURRENT_SCHEMA_VERSION = 10;
+export const REQUIRED_TABLE_COUNT = 31;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -19,7 +19,9 @@ export async function isDatabaseSchemaReady(client: Client) {
             'auth_login_rate_limit', 'sync_operation_receipt',
             'sync_change_log', 'sync_changelog', 'app_bootstrap_state',
             'import_offline', 'tbl_hari_libur',
-            'company_profile', 'id_card_template'
+            'company_profile', 'id_card_template',
+            'salary_configs', 'overtime_tier_rules', 'payroll_components',
+            'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs'
           )
         ) AS table_count;
     `);
@@ -489,21 +491,6 @@ const DEFAULT_ID_CARD_ELEMENTS_JSON = JSON.stringify([
 ]);
 
 async function seedDefaultData(client: Client) {
-  // Seed Default Shift
-  const shiftCheck = await client.execute(
-    "SELECT COUNT(*) as count FROM tbl_shift;",
-  );
-  if (Number(shiftCheck.rows[0]?.count || 0) === 0) {
-    await client.execute(`
-      INSERT OR IGNORE INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit, offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit)
-      VALUES 
-      (1, 'Shift 1 - Pagi Normal', '07:00', '15:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
-      (2, 'Shift 2 - Siang Normal', '15:00', '23:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
-      (3, 'Shift 3 - Malam', '23:00', '07:00', 120, 60, 0, 480, 60, 240, 240, 180, 120),
-      (4, 'Shift 4 - Fleksibel', '00:00', '23:59', 0, 1440, 0, 0, 0, 1440, 0, 0, 0);
-    `);
-  }
-
   // Seed Default System Settings
   const settingsCheck = await client.execute(
     "SELECT COUNT(*) as count FROM setting_gex_system;",

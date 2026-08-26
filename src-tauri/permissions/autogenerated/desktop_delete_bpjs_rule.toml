@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-delete-bpjs-rule"
+description = "Enables the desktop_delete_bpjs_rule command without any pre-configured scope."
+commands.allow = ["desktop_delete_bpjs_rule"]
+
+[[permission]]
+identifier = "deny-desktop-delete-bpjs-rule"
+description = "Denies the desktop_delete_bpjs_rule command without any pre-configured scope."
+commands.deny = ["desktop_delete_bpjs_rule"]

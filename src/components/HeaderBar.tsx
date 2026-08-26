@@ -42,6 +42,12 @@ const NAVIGATION: NavigationItem[] = [
     label: "Operasional",
   },
   {
+    area: "payroll",
+    href: "/payroll",
+    icon: "document",
+    label: "Penggajian",
+  },
+  {
     area: "operators",
     href: "/operators",
     icon: "users",

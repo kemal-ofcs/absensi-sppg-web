@@ -10,7 +10,7 @@ import {
 export class ApiRequestError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 409 | 413 | 415,
+    readonly status: 400 | 404 | 409 | 413 | 415,
   ) {
     super(message);
     this.name = "ApiRequestError";

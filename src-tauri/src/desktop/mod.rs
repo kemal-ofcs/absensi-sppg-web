@@ -11,4 +11,5 @@ pub mod sync;
 mod time_policy;
 pub mod turso;
 
+pub mod payroll;
 pub use config::DesktopState;

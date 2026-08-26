@@ -356,13 +356,13 @@ async function processRow(
   const shortage = checkIn && checkOut ? Math.max(0, normal - worked) : 0;
   const [year, month] = date.split("-").map(Number);
   await transaction.execute({
-    sql: `INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi,
+    sql: `INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi,
       jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber,
       update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup,
       id_karyawan_asal, tanggal_tugas)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
+      VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id_absensi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
       jam_pulang = excluded.jam_pulang, status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
       sumber = 'Import Manual', update_terakhir = excluded.update_terakhir,
@@ -370,6 +370,7 @@ async function processRow(
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
     args: [
+      sessionId,
       date,
       id,
       name,

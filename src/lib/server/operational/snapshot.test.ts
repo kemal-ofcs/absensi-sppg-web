@@ -29,6 +29,16 @@ describe("readOperationalSnapshot", () => {
           result(),
           result(),
           result(),
+          result([
+            { id: "sc-1", id_karyawan: "employee-1", rate_per_hour: 25000 },
+          ]),
+          result(),
+          result(),
+          result(),
+          result(),
+          result(),
+          result(),
+          result(),
           result([{ revision: 12 }]),
         ];
       },
@@ -37,7 +47,7 @@ describe("readOperationalSnapshot", () => {
     const snapshot = await readOperationalSnapshot(client);
 
     expect(receivedMode).toBe("read");
-    expect(receivedStatementCount).toBe(13);
+    expect(receivedStatementCount).toBe(21);
     expect(snapshot.revision).toBe(12);
     expect(snapshot.employees).toEqual([
       { id_unik: "employee-1", nama: "Operator Uji" },
@@ -50,6 +60,9 @@ describe("readOperationalSnapshot", () => {
     ]);
     expect(snapshot.idCardTemplates).toEqual([
       { id: "default_template", name: "Default" },
+    ]);
+    expect(snapshot.salaryConfigs).toEqual([
+      { id: "sc-1", id_karyawan: "employee-1", rate_per_hour: 25000 },
     ]);
     expect(snapshot.scanLogs).toEqual([]);
   });

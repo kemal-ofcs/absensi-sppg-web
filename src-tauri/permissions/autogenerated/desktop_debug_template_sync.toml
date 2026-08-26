@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-debug-template-sync"
+description = "Enables the desktop_debug_template_sync command without any pre-configured scope."
+commands.allow = ["desktop_debug_template_sync"]
+
+[[permission]]
+identifier = "deny-desktop-debug-template-sync"
+description = "Denies the desktop_debug_template_sync command without any pre-configured scope."
+commands.deny = ["desktop_debug_template_sync"]

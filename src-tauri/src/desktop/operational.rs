@@ -189,10 +189,11 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
     transaction
         .execute(
             r#"
-      INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate)
-      VALUES (?, ?, ?, 'Belum', ?);
+      INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate)
+      SELECT ?, ?, ?, 'Belum', ?
+      WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);
       "#,
-            params![id, name, division, today],
+            params![id, name, division, today, id],
         )
         .map_err(|_| CommandError::internal())?;
     let now = storage::now_epoch_seconds();
@@ -340,8 +341,8 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
         }
 
         let _ = transaction.execute(
-            "INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) VALUES (?, ?, ?, 'Belum', ?);",
-            params![id, name, division, reg_date],
+            "INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT ?, ?, ?, 'Belum', ? WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);",
+            params![id, name, division, reg_date, id],
         );
 
         let _ = transaction.execute(
@@ -1007,6 +1008,18 @@ pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<
                 params![key, value],
             )
             .map_err(|_| CommandError::internal())?;
+
+        // Bersihkan konflik & antrean outbox stale untuk key ini
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_conflict WHERE domain = 'setting' AND entity_key = ?;",
+            params![key],
+        );
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = ? AND status IN ('pending', 'failed', 'conflict');",
+            params![key],
+        );
+
+        // Enqueue secara otoritatif (base_revision: None) agar langsung disinkronkan ke cloud
         sync::enqueue(
             &transaction,
             &client_id,
@@ -1014,7 +1027,7 @@ pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<
             "update",
             key,
             &json!({ "key": key, "value": value }),
-            base_revision(&transaction, "setting", key),
+            None,
         )?;
     }
     transaction.commit().map_err(|_| CommandError::internal())
@@ -1077,6 +1090,18 @@ pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(
                 params![key, value],
             )
             .map_err(|_| CommandError::internal())?;
+
+        // Bersihkan konflik & antrean outbox stale untuk key ini
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_conflict WHERE domain = 'setting' AND entity_key = ?;",
+            params![key],
+        );
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = ? AND status IN ('pending', 'failed', 'conflict');",
+            params![key],
+        );
+
+        // Enqueue secara otoritatif (base_revision: None) agar langsung disinkronkan ke cloud
         sync::enqueue(
             &transaction,
             &client_id,
@@ -1084,7 +1109,7 @@ pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(
             "update",
             key,
             &json!({ "key": key, "value": value }),
-            base_revision(&transaction, "setting", key),
+            None,
         )?;
     }
     transaction.commit().map_err(|_| CommandError::internal())
@@ -1114,7 +1139,7 @@ pub fn update_id_card(state: &DesktopState, draft: &Value) -> Result<Value, Comm
     let today = &now[..10];
     transaction
         .execute(
-            "INSERT OR IGNORE INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT id_unik, nama, divisi, 'Belum', ? FROM master_data WHERE id_unik = ?;",
+            "INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT id_unik, nama, divisi, 'Belum', ? FROM master_data WHERE id_unik = ? AND NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = master_data.id_unik);",
             params![today, id],
         )
         .map_err(|_| CommandError::internal())?;
@@ -1445,19 +1470,28 @@ pub fn save_alfa_settings(state: &DesktopState, enabled: bool) -> Result<Value, 
         )
         .map_err(|_| CommandError::internal())?;
 
+    // Bersihkan konflik & antrean outbox stale untuk auto_alfa_aktif
+    let _ = transaction.execute(
+        "DELETE FROM desktop_sync_conflict WHERE domain = 'setting' AND entity_key = 'auto_alfa_aktif';",
+        [],
+    );
+    let _ = transaction.execute(
+        "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = 'auto_alfa_aktif' AND status IN ('pending', 'failed', 'conflict');",
+        [],
+    );
+
     let sync_payload = json!({
         "key": "auto_alfa_aktif",
         "value": str_val,
     });
-    let revision = base_revision(&transaction, "setting", "auto_alfa_aktif");
     sync::enqueue(
         &transaction,
         &client_id,
         "setting",
-        "upsert",
+        "update",
         "auto_alfa_aktif",
         &sync_payload,
-        revision,
+        None,
     )?;
 
     transaction.commit().map_err(|_| CommandError::internal())?;

@@ -80,3 +80,27 @@ export function watchCoordinates(): () => void {
 export function getCachedCoordinates(): { lat: number; lng: number } | null {
   return isCacheFresh() ? _cached : null;
 }
+
+/**
+ * Calculates Haversine distance in meters between two lat/lng coordinates.
+ */
+export function calculateDistanceMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  if (lat1 === 0 && lon1 === 0) return 0;
+  if (lat2 === 0 && lon2 === 0) return 0;
+  const earthRadiusM = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(earthRadiusM * c);
+}
