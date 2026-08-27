@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ATTENDANCE_SOURCE_VALUES } from "@/lib/contracts/scanner";
 
 const eventIdSchema = z.string().regex(/^evt-[a-f0-9]{64}$/);
 const clientIdSchema = z.string().regex(/^desktop-[a-f0-9]{64}$/);
@@ -9,6 +10,19 @@ const finiteNumber = z.number().finite();
 const integer = z.number().int().safe();
 
 const optionalShortText = shortText.nullable().optional();
+
+/**
+ * Gerbang nilai `absensi_harian.sumber` / `log_scan.sumber_data` di batas sync.
+ *
+ * Daftarnya diambil dari `@/lib/contracts/scanner` supaya validator ini tidak
+ * bisa drift dari tipe yang dipakai kode aplikasi. Sebelumnya kedua kolom
+ * divalidasi sebagai teks bebas, sehingga nilai di luar CHECK constraint cloud
+ * lolos sampai ke outbox dan baru ditolak setelah round-trip jaringan.
+ */
+const optionalAttendanceSource = z
+  .enum(ATTENDANCE_SOURCE_VALUES)
+  .nullable()
+  .optional();
 const optionalLongText = longText.nullable().optional();
 const optionalNumber = finiteNumber.nullable().optional();
 
@@ -81,7 +95,7 @@ const scanLogSchema = z
     divisi: optionalShortText,
     jenis_scan: shortText.min(1),
     status_proses: optionalShortText,
-    sumber_data: optionalShortText,
+    sumber_data: optionalAttendanceSource,
     catatan_sistem: optionalLongText,
     keterangan: optionalLongText,
     menit_terlambat: optionalNumber,
@@ -102,7 +116,7 @@ const attendanceSchema = z
     status_kehadiran: optionalShortText,
     status_absen: optionalShortText,
     keterangan: optionalLongText,
-    sumber: optionalShortText,
+    sumber: optionalAttendanceSource,
     update_terakhir: optionalShortText,
     menit_terlambat: optionalNumber,
     menit_datang_awal: optionalNumber,

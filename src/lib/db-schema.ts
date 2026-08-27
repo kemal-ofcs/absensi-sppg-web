@@ -87,9 +87,12 @@ export async function initDatabaseSchema(client: Client) {
         nama_operator TEXT NOT NULL,
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('Admin', 'Operator', 'Scanner')),
+        role TEXT NOT NULL DEFAULT 'Operator'
+          CHECK(role IN ('Admin', 'Operator', 'Scanner')),
         role_id INTEGER,
-        status TEXT DEFAULT 'Aktif'
+        status TEXT DEFAULT 'Aktif',
+        created_at TEXT,
+        updated_at TEXT
       );
     `);
 

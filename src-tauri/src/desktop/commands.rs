@@ -173,12 +173,25 @@ pub fn desktop_get_runtime_status(
 pub async fn desktop_get_bootstrap_status(
     state: State<'_, DesktopState>,
 ) -> Result<turso::BootstrapStatus, CommandError> {
+    // Perintah ini menentukan apakah layar provisioning muncul, jadi ia tidak
+    // boleh gagal keras. Sebelumnya, database cloud yang mati/terhapus membuat
+    // perintah ini mengembalikan Err, frontend menelannya menjadi `null`, dan
+    // perangkat terkunci selamanya di layar login tanpa jalan kembali ke
+    // provisioning. Sekarang kegagalan koneksi dilaporkan sebagai status.
     match state.get_turso_client() {
-        Ok(client) => client.bootstrap_status().await,
+        Ok(client) => {
+            let origin = state.server_origin();
+            match client.bootstrap_status().await {
+                Ok(status) => Ok(status),
+                Err(error) => Ok(turso::BootstrapStatus::unreachable(origin, &error)),
+            }
+        }
         Err(error) if error.code == "TURSO_NOT_CONFIGURED" => Ok(turso::BootstrapStatus {
             configured: false,
             required: true,
             server_origin: String::new(),
+            reachable: false,
+            message: Some(error.message),
         }),
         Err(error) => Err(error),
     }
@@ -190,6 +203,8 @@ pub async fn desktop_bootstrap_superadmin(
     draft: turso::BootstrapSuperadminDraft,
     database_url: Option<String>,
     auth_token: Option<String>,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<(), CommandError> {
     if state
         .session
@@ -203,31 +218,26 @@ pub async fn desktop_bootstrap_superadmin(
         ));
     }
 
-    match state.get_turso_client() {
-        Ok(client) => client.bootstrap_superadmin(draft).await?,
-        Err(error) if error.code == "TURSO_NOT_CONFIGURED" => {
-            let url = database_url.unwrap_or_default();
-            let token = Zeroizing::new(auth_token.unwrap_or_default());
-            if url.trim().is_empty() || token.trim().is_empty() {
-                return Err(CommandError::new(
-                    "TURSO_NOT_CONFIGURED",
-                    "URL dan Auth Token Turso wajib diisi untuk provisioning pertama.",
-                ));
-            }
-            let config = turso::TursoConfig {
-                database_url: url.trim().to_owned(),
-                auth_token: token.to_string(),
-            };
-            let client = turso::TursoClient::from_config(&config, state.http.clone())?;
-            let status = client.bootstrap_status().await?;
-            if status.required {
-                client.bootstrap_superadmin(draft).await?;
-            }
-            state.set_turso_config(&config.database_url, &config.auth_token)?;
-            let _ = sync::pull_snapshot(&state, "").await;
-        }
-        Err(error) => return Err(error),
+    // Kredensial dari form SELALU menang atas kredensial yang sudah tersimpan.
+    // Dulu cabang "sudah terkonfigurasi" langsung memakai klien vault dan
+    // membuang `database_url`/`auth_token` yang baru saja diketik, sehingga
+    // pengguna yang mengarahkan aplikasi ke database Turso baru justru
+    // memprovisioning database lama — yang bahkan mungkin sudah dihapus.
+    // `resolve_bootstrap_turso_config` memakai vault hanya bila form dikosongkan.
+    let config = resolve_bootstrap_turso_config(
+        &state,
+        database_url,
+        auth_token,
+        provider,
+        allow_insecure_transport,
+    )?;
+    let client = turso::TursoClient::from_config(&config, state.http.clone())?;
+    let status = client.bootstrap_status().await?;
+    if status.required {
+        client.bootstrap_superadmin(draft).await?;
     }
+    state.set_database_config(&config)?;
+    let _ = sync::pull_snapshot(&state, "").await;
     storage::audit(&state.data_dir, None, "bootstrap-superadmin-success", None);
     Ok(())
 }
@@ -254,36 +264,60 @@ fn resolve_bootstrap_turso_config(
     state: &DesktopState,
     database_url: Option<String>,
     auth_token: Option<String>,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<turso::TursoConfig, CommandError> {
     let url = database_url.unwrap_or_default().trim().to_owned();
     let token = auth_token.unwrap_or_default().trim().to_owned();
+    let stored = state.turso_config();
+
     if url.is_empty() {
-        return state.turso_config().ok_or_else(|| {
+        return stored.ok_or_else(|| {
             CommandError::new(
                 "TURSO_NOT_CONFIGURED",
-                "URL dan Auth Token Turso wajib diisi untuk memeriksa database.",
+                "Alamat database wajib diisi untuk memeriksa database.",
             )
         });
     }
+
+    // Provider yang tidak dikirim frontend mewarisi pilihan yang sudah tersimpan;
+    // instalasi lama yang belum punya konfigurasi apa pun tetap jatuh ke Turso.
+    let provider = provider
+        .or_else(|| stored.as_ref().map(|config| config.provider))
+        .unwrap_or_default();
+    let allow_insecure_transport = allow_insecure_transport
+        .or_else(|| {
+            stored
+                .as_ref()
+                .map(|config| config.allow_insecure_transport)
+        })
+        .unwrap_or(false);
+
+    // Token kosong berarti "pakai token vault", tapi hanya bila URL-nya memang
+    // database yang sama. Perbandingan wajib ternormalisasi: versi lama menyamakan
+    // string mentah, sehingga mengetik `https://x` untuk vault yang menyimpan
+    // `libsql://x` membuang token yang sebenarnya masih berlaku dan memunculkan
+    // "Auth Token wajib diisi" pada database yang sudah terhubung.
     let token = if token.is_empty() {
-        state
-            .turso_config()
-            .filter(|config| config.database_url.trim() == url)
-            .map(|config| config.auth_token)
+        stored
+            .as_ref()
+            .filter(|config| config.matches_url(&url))
+            .map(|config| config.auth_token.clone())
             .unwrap_or_default()
     } else {
         token
     };
-    if token.is_empty() {
+
+    let config = turso::TursoConfig::new(url, token, provider, allow_insecure_transport);
+    // Server libSQL sendiri di LAN boleh tanpa autentikasi; hanya endpoint yang
+    // benar-benar terekspos internet yang wajib bertoken.
+    if config.auth_token.trim().is_empty() && config.requires_auth_token() {
         return Err(CommandError::new(
             "TURSO_TOKEN_REQUIRED",
-            "Auth Token Turso wajib diisi untuk memeriksa database.",
+            "Auth Token wajib diisi untuk memeriksa database ini.",
         ));
     }
-    Ok(turso::TursoConfig {
-        database_url: url,
-        auth_token: token,
-    })
+    Ok(config)
 }
 
 #[tauri::command]
@@ -291,10 +325,19 @@ pub async fn desktop_check_bootstrap_database(
     state: State<'_, DesktopState>,
     database_url: Option<String>,
     auth_token: Option<String>,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<turso::DatabaseCheckResult, CommandError> {
     ensure_bootstrap_window_open(&state)?;
-    let config = resolve_bootstrap_turso_config(&state, database_url, auth_token)?;
-    let origin = turso::normalize_turso_url(&config.database_url)
+    let config = resolve_bootstrap_turso_config(
+        &state,
+        database_url,
+        auth_token,
+        provider,
+        allow_insecure_transport,
+    )?;
+    let origin = config
+        .normalized_url()
         .map(|url| url.origin().ascii_serialization())
         .unwrap_or_default();
     let client = match turso::TursoClient::from_config(&config, state.http.clone()) {
@@ -313,9 +356,17 @@ pub async fn desktop_link_bootstrap_database(
     state: State<'_, DesktopState>,
     database_url: Option<String>,
     auth_token: Option<String>,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<turso::DatabaseCheckResult, CommandError> {
     ensure_bootstrap_window_open(&state)?;
-    let config = resolve_bootstrap_turso_config(&state, database_url, auth_token)?;
+    let config = resolve_bootstrap_turso_config(
+        &state,
+        database_url,
+        auth_token,
+        provider,
+        allow_insecure_transport,
+    )?;
     let client = turso::TursoClient::from_config(&config, state.http.clone())?;
     let check = client.inspect_database().await?;
     if !check.superadmin_exists {
@@ -324,7 +375,7 @@ pub async fn desktop_link_bootstrap_database(
             "Database ini belum memiliki Superadmin aktif. Lanjutkan provisioning untuk membuat akun pertama.",
         ));
     }
-    state.set_turso_config(&config.database_url, &config.auth_token)?;
+    state.set_database_config(&config)?;
     let _ = sync::pull_snapshot(&state, "").await;
     storage::audit(&state.data_dir, None, "bootstrap-database-linked", None);
     Ok(check)
@@ -345,6 +396,13 @@ pub async fn desktop_login(
     }
     ensure_login_not_locked(&state, &identifier)?;
     let password = Zeroizing::new(password);
+
+    // Alasan kegagalan koneksi cloud, disimpan supaya pesan error terakhir bisa
+    // menyebut penyebab sebenarnya. Dulu alasan ini dibuang, sehingga perangkat
+    // yang kredensialnya menunjuk database Turso terhapus hanya melaporkan
+    // "wajib login online minimal satu kali" — pesan yang membuat pengguna
+    // mengira internetnya mati padahal internetnya aktif.
+    let mut cloud_failure: Option<String> = None;
 
     // 1. Coba login online via Turso jika Turso Client tersedia
     if let Ok(turso) = state.get_turso_client() {
@@ -417,14 +475,35 @@ pub async fn desktop_login(
                 reject_login(&state, &identifier)?;
                 return Err(err);
             }
-            Err(_) => {
+            Err(err) => {
                 // Koneksi network Turso gagal, lanjut ke fallback di bawah
+                storage::audit(
+                    &state.data_dir,
+                    None,
+                    "login-online-turso-unavailable",
+                    Some(&err.code),
+                );
+                cloud_failure = Some(err.message);
             }
         }
     }
 
-    // 2. Coba login remote HTTP legacy jika ada server URL
-    match remote::login(&state, &identifier, &password).await {
+    // 2. Login remote HTTP legacy — HANYA untuk instalasi yang memang memakai
+    //    server aplikasi, bukan database langsung.
+    //
+    //    Saat database dikonfigurasi, `server_origin` menunjuk host database itu
+    //    sendiri. Menjalankan fallback ini di sana berarti mem-POST username dan
+    //    password plaintext ke `<host-database>/api/auth/login` — endpoint yang
+    //    tidak pernah ada di sana. Pada Turso permintaan itu hanya 404, tetapi
+    //    pada server libSQL milik pengguna, body request bisa ikut tercatat di
+    //    log reverse proxy di depannya. Kredensial tidak boleh dikirim ke tempat
+    //    yang bukan endpoint autentikasi.
+    let legacy_http_login_available = state.turso_config().is_none();
+    match if legacy_http_login_available {
+        remote::login(&state, &identifier, &password).await
+    } else {
+        Err(RemoteLoginError::Unavailable)
+    } {
         Ok(login) => {
             storage::clear_login_failures(&state.data_dir, &identifier)?;
             let provisioned = secrets::provision(&state, login.operator.clone(), &password);
@@ -499,6 +578,21 @@ pub async fn desktop_login(
                 "OFFLINE_CREDENTIAL_INVALID" | "OFFLINE_SNAPSHOT_INVALID"
             ) {
                 reject_login(&state, &identifier)?;
+            }
+            // Perangkat belum punya snapshot offline DAN database cloud memang
+            // tidak menjawab: yang salah adalah konfigurasi database, bukan
+            // koneksi internet pengguna. Sebutkan penyebab aslinya.
+            if error.code == "OFFLINE_NOT_PROVISIONED" {
+                if let Some(reason) = cloud_failure {
+                    return Err(CommandError::new(
+                        "TURSO_UNREACHABLE",
+                        format!(
+                            "Database cloud ({}) tidak dapat dihubungi, sehingga login pertama pada perangkat ini belum bisa dilakukan. Penyebab: {} Periksa kembali URL dan Auth Token database pada layar konfigurasi database.",
+                            state.server_origin(),
+                            reason,
+                        ),
+                    ));
+                }
             }
             return Err(error);
         }
@@ -1276,11 +1370,37 @@ pub fn desktop_get_turso_url(
     Ok(state.turso_config().map(|c| c.database_url))
 }
 
+/// Ringkasan konfigurasi database aktif untuk halaman Pengaturan.
+///
+/// `desktop_get_turso_url` hanya mengembalikan URL, sehingga UI tidak punya cara
+/// mengetahui provider mana yang aktif dan selalu menampilkan ulang formulir
+/// dalam mode Turso — termasuk pada perangkat yang justru terhubung ke server
+/// LAN. Auth Token tetap tidak pernah ikut keluar dari vault.
+#[tauri::command]
+pub fn desktop_get_database_config(
+    state: State<'_, DesktopState>,
+) -> Result<turso::DatabaseConfigView, CommandError> {
+    let operator = require_permission(&state, "settings.view")?;
+    if !operator.is_superadmin {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Informasi konfigurasi database hanya dapat diakses Superadmin.",
+        ));
+    }
+    Ok(state
+        .turso_config()
+        .as_ref()
+        .map(turso::DatabaseConfigView::from_config)
+        .unwrap_or_else(turso::DatabaseConfigView::empty))
+}
+
 #[tauri::command]
 pub async fn desktop_save_turso_config(
     state: State<'_, DesktopState>,
     database_url: String,
     auth_token: String,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<String, CommandError> {
     let operator = require_permission(&state, "settings.manage")?;
     if !operator.is_superadmin {
@@ -1289,7 +1409,26 @@ pub async fn desktop_save_turso_config(
             "Hanya Superadmin yang berhak mengubah konfigurasi database cloud.",
         ));
     }
-    let origin = state.set_turso_config(&database_url, &auth_token)?;
+    // Provider yang tidak dikirim mewarisi pilihan tersimpan supaya klien lama
+    // yang hanya mengirim url+token tidak diam-diam menurunkan konfigurasi
+    // server sendiri menjadi Turso — yang akan langsung menolak alamat LAN-nya.
+    let stored = state.turso_config();
+    let provider = provider
+        .or_else(|| stored.as_ref().map(|config| config.provider))
+        .unwrap_or_default();
+    let allow_insecure_transport = allow_insecure_transport
+        .or_else(|| {
+            stored
+                .as_ref()
+                .map(|config| config.allow_insecure_transport)
+        })
+        .unwrap_or(false);
+    let origin = state.set_database_config(&turso::TursoConfig::new(
+        database_url,
+        auth_token,
+        provider,
+        allow_insecure_transport,
+    ))?;
     let _ = sync::pull_snapshot(&state, "").await;
     Ok(origin)
 }
@@ -1299,6 +1438,8 @@ pub async fn desktop_test_turso_connection(
     state: State<'_, DesktopState>,
     database_url: Option<String>,
     auth_token: Option<String>,
+    provider: Option<turso::DatabaseProvider>,
+    allow_insecure_transport: Option<bool>,
 ) -> Result<turso::TursoConnectionStatus, CommandError> {
     let operator = require_permission(&state, "settings.view")?;
     if !operator.is_superadmin {
@@ -1308,24 +1449,38 @@ pub async fn desktop_test_turso_connection(
         ));
     }
 
+    let stored = state.turso_config();
     let config = if let Some(u) = database_url.as_ref().filter(|u| !u.trim().is_empty()) {
+        let provider = provider
+            .or_else(|| stored.as_ref().map(|config| config.provider))
+            .unwrap_or_default();
+        let allow_insecure_transport = allow_insecure_transport
+            .or_else(|| {
+                stored
+                    .as_ref()
+                    .map(|config| config.allow_insecure_transport)
+            })
+            .unwrap_or(false);
+        // Perbandingan URL wajib ternormalisasi. Versi lama menyamakan string
+        // mentah, jadi menekan "Tes Koneksi" setelah mengetik ulang URL yang sama
+        // dengan ejaan berbeda mengirim token kosong dan selalu gagal.
         let auth_token = if let Some(t) = auth_token.as_ref().filter(|t| !t.trim().is_empty()) {
             t.trim().to_owned()
-        } else if let Some(cfg) = state.turso_config() {
-            if cfg.database_url == u.trim() {
-                cfg.auth_token
-            } else {
-                String::new()
-            }
         } else {
-            String::new()
+            stored
+                .as_ref()
+                .filter(|config| config.matches_url(u))
+                .map(|config| config.auth_token.clone())
+                .unwrap_or_default()
         };
 
-        turso::TursoConfig {
-            database_url: u.trim().to_owned(),
+        turso::TursoConfig::new(
+            u.trim().to_owned(),
             auth_token,
-        }
-    } else if let Some(cfg) = state.turso_config() {
+            provider,
+            allow_insecure_transport,
+        )
+    } else if let Some(cfg) = stored {
         cfg
     } else {
         return Err(CommandError::new(
@@ -1374,6 +1529,8 @@ pub fn desktop_clear_turso_config(state: State<'_, DesktopState>) -> Result<(), 
     secrets::clear_turso_config(&state)?;
     storage::set_system_setting(&state.data_dir, "turso_database_url", "")?;
     storage::set_system_setting(&state.data_dir, "turso_auth_token", "")?;
+    storage::set_system_setting(&state.data_dir, "turso_database_provider", "")?;
+    storage::set_system_setting(&state.data_dir, "turso_allow_insecure_transport", "")?;
     *state
         .turso_config
         .write()

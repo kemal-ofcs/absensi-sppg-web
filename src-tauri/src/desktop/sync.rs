@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::{
     config::DesktopState,
     models::{CommandError, DesktopSyncStatus},
-    remote, storage,
+    payroll_seed, remote, storage,
     turso::TursoClient,
 };
 
@@ -551,6 +551,29 @@ pub(super) fn is_canonical_sync_route(domain: &str, operation: &str) -> bool {
         .any(|route| *route == (domain, operation))
 }
 
+/// Kunci `setting_gex_system` yang HANYA berlaku untuk perangkat ini.
+///
+/// Tabel setting ikut snapshot sync, jadi tanpa penjagaan ini konfigurasi
+/// koneksi satu perangkat bisa terdorong ke cloud lalu tertarik oleh semua
+/// perangkat lain — dan `DesktopState::load` membaca `turso_database_url` saat
+/// startup untuk memilih database cloud, sehingga perangkat bisa diarahkan ke
+/// database yang salah.
+pub const DEVICE_LOCAL_SETTING_KEYS: &[&str] = &[
+    "turso_database_url",
+    "turso_auth_token",
+    "server_api_base_url",
+    // Provider dan izin transport adalah bagian tak terpisahkan dari alamat
+    // database perangkat ini. Kalau ikut tersinkronisasi, perangkat lain akan
+    // menarik "self_hosted" beserta URL LAN milik kantor dan mencoba
+    // menghubungi 192.168.x.x dari jaringan yang sama sekali berbeda.
+    "turso_database_provider",
+    "turso_allow_insecure_transport",
+];
+
+pub fn is_device_local_setting(key: &str) -> bool {
+    DEVICE_LOCAL_SETTING_KEYS.contains(&key)
+}
+
 fn sql_value(value: Option<&Value>) -> SqlValue {
     match value {
         None | Some(Value::Null) => SqlValue::Null,
@@ -835,6 +858,10 @@ fn apply_table(
             if key.is_empty() || guard.row_has_unsynced_change(definition, row, &key) {
                 continue;
             }
+            // Konfigurasi koneksi milik perangkat lain tidak boleh menimpa milik kita.
+            if definition.domain == "setting" && is_device_local_setting(&key) {
+                continue;
+            }
 
             // Lewati baris yang isinya persis sama dengan yang sudah tersimpan.
             // Inilah yang memangkas mayoritas tulisan: snapshot penuh biasanya
@@ -1006,6 +1033,13 @@ pub fn enqueue(
         return Err(CommandError::new(
             "DESKTOP_SYNC_EVENT_INVALID",
             format!("Event sinkronisasi tidak valid: {domain}/{operation}."),
+        ));
+    }
+    // Penjagaan terakhir: konfigurasi koneksi perangkat tidak boleh masuk outbox.
+    if domain == "setting" && is_device_local_setting(entity_key) {
+        return Err(CommandError::new(
+            "DESKTOP_SYNC_EVENT_INVALID",
+            format!("Pengaturan '{entity_key}' bersifat lokal perangkat dan tidak disinkronkan."),
         ));
     }
     let event_id = new_event_id(client_id, domain, operation);
@@ -1335,7 +1369,15 @@ fn pending_events(state: &DesktopState) -> Result<(String, Vec<Value>), CommandE
       FROM desktop_sync_outbox
       WHERE status = 'pending'
          OR (status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= ?)
-         OR (status = 'conflict' AND operation = 'create' AND (
+         -- Konflik UNIQUE pada shift/karyawan memang layak dicoba ulang: baris
+         -- kembarannya biasanya sudah direkonsiliasi oleh pull berikutnya.
+         -- Tetapi retry-nya WAJIB ikut backoff. Tanpa `next_retry_at`, konflik
+         -- yang tidak pernah bisa selesai (mis. kode_shift yang memang benar-benar
+         -- dobel) akan didorong ulang ke cloud setiap siklus 30 detik selamanya,
+         -- menghabiskan kuota dan baterai perangkat lapangan.
+         OR (status = 'conflict' AND operation = 'create'
+             AND (next_retry_at IS NULL OR next_retry_at <= ?)
+             AND (
               (domain = 'shift' AND last_error LIKE '%UNIQUE constraint failed: tbl_shift.kode_shift%')
               OR (domain = 'employee' AND last_error LIKE '%UNIQUE constraint failed: master_data.id_unik%')
             ))
@@ -1346,8 +1388,9 @@ fn pending_events(state: &DesktopState) -> Result<(String, Vec<Value>), CommandE
       "#,
         )
         .map_err(|_| CommandError::internal())?;
+    let now = storage::now_epoch_seconds();
     let rows = statement
-        .query_map([storage::now_epoch_seconds()], |row| {
+        .query_map([now, now], |row| {
             let payload: String = row.get(5)?;
             Ok(json!({
                 "eventId": row.get::<_, String>(0)?,
@@ -1657,15 +1700,32 @@ fn apply_push_results(
                 }
             }
         } else if sync_status == "conflict" {
+            // Konflik ikut menaikkan `attempt_count` dan menjadwalkan
+            // `next_retry_at` dengan backoff eksponensial yang sama seperti
+            // kegagalan biasa. Hanya konflik UNIQUE shift/karyawan yang benar-benar
+            // diambil ulang oleh `pending_events`, tetapi tanpa jadwal ini konflik
+            // itu didorong ulang setiap siklus 30 detik tanpa henti — termasuk
+            // konflik yang memang tidak akan pernah selesai.
+            let attempt: i64 = transaction
+                .query_row(
+                    "SELECT attempt_count FROM desktop_sync_outbox WHERE event_id = ?;",
+                    [event_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+            let exponent = u32::try_from(attempt.clamp(0, 8)).unwrap_or_default();
+            let delay = 5_i64.saturating_mul(2_i64.saturating_pow(exponent));
             transaction
                 .execute(
                     r#"
           UPDATE desktop_sync_outbox SET status = 'conflict', last_error = ?,
-            server_revision = ?, updated_at = ? WHERE event_id = ?;
+            server_revision = ?, attempt_count = attempt_count + 1,
+            next_retry_at = ?, updated_at = ? WHERE event_id = ?;
           "#,
                     params![
                         message,
                         server_revision,
+                        storage::now_epoch_seconds() + delay,
                         storage::now_epoch_seconds(),
                         event_id,
                     ],
@@ -1760,16 +1820,25 @@ fn ensure_unsynced_payroll_data_enqueued(state: &DesktopState) -> Result<(), Com
         }
     }
 
+    // Baris tarif default sudah disediakan seed di sisi lokal MAUPUN cloud, jadi
+    // tidak boleh ikut didorong backfill. Kalau ikut, instalasi baru akan
+    // menimpa tarif yang sudah disesuaikan admin dengan nilai bawaan.
+    let default_rate_ids = payroll_seed::DEFAULT_RATE_IDS
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     // 2. Overtime Tier Rules
-    if let Ok(mut stmt) = transaction.prepare(
+    if let Ok(mut stmt) = transaction.prepare(&format!(
         "SELECT id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active
          FROM overtime_tier_rules
          WHERE id NOT IN (
              SELECT entity_key FROM desktop_sync_outbox WHERE domain = 'payroll' AND operation = 'overtime-rule'
          ) AND id NOT IN (
              SELECT entity_key FROM desktop_entity_revision WHERE domain = 'payroll'
-         );",
-    ) {
+         ) AND id NOT IN ({default_rate_ids});"
+    )) {
         if let Ok(rows) = stmt
             .query_map([], |row| {
                 Ok((
@@ -1801,15 +1870,15 @@ fn ensure_unsynced_payroll_data_enqueued(state: &DesktopState) -> Result<(), Com
     }
 
     // 3. Tax Rules
-    if let Ok(mut stmt) = transaction.prepare(
+    if let Ok(mut stmt) = transaction.prepare(&format!(
         "SELECT id, category, bracket_min, bracket_max, rate_percentage, effective_date
          FROM tax_rules
          WHERE id NOT IN (
              SELECT entity_key FROM desktop_sync_outbox WHERE domain = 'payroll' AND operation = 'tax-rule'
          ) AND id NOT IN (
              SELECT entity_key FROM desktop_entity_revision WHERE domain = 'payroll'
-         );",
-    ) {
+         ) AND id NOT IN ({default_rate_ids});"
+    )) {
         if let Ok(rows) = stmt
             .query_map([], |row| {
                 Ok((
@@ -1839,15 +1908,15 @@ fn ensure_unsynced_payroll_data_enqueued(state: &DesktopState) -> Result<(), Com
     }
 
     // 4. BPJS Rules
-    if let Ok(mut stmt) = transaction.prepare(
+    if let Ok(mut stmt) = transaction.prepare(&format!(
         "SELECT id, component_code, component_name, rate_percentage, wage_cap, effective_date
          FROM bpjs_rules
          WHERE id NOT IN (
              SELECT entity_key FROM desktop_sync_outbox WHERE domain = 'payroll' AND operation = 'bpjs-rule'
          ) AND id NOT IN (
              SELECT entity_key FROM desktop_entity_revision WHERE domain = 'payroll'
-         );",
-    ) {
+         ) AND id NOT IN ({default_rate_ids});"
+    )) {
         if let Ok(rows) = stmt
             .query_map([], |row| {
                 Ok((
@@ -2021,13 +2090,22 @@ fn ensure_unsynced_payroll_data_enqueued(state: &DesktopState) -> Result<(), Com
     Ok(())
 }
 
+/// Batas jumlah batch yang boleh dikirim dalam satu siklus push.
+///
+/// Loop push berhenti ketika satu batch berisi kurang dari 50 event. Kalau
+/// seluruh 50 event dalam batch berakhir sebagai `conflict` yang layak dicoba
+/// ulang, `pending_events` bisa mengembalikan 50 baris yang sama persis pada
+/// putaran berikutnya dan loop tidak pernah berhenti. Batas ini memastikan
+/// siklus selalu selesai; sisa antrean ikut siklus berikutnya.
+const MAX_PUSH_BATCHES_PER_CYCLE: usize = 40;
+
 pub async fn push_outbox(state: &DesktopState, token: &str) -> Result<(), CommandError> {
     let _ = ensure_unsynced_payroll_data_enqueued(state);
     if let Ok(turso) = state.get_turso_client() {
         // Diperiksa sekali per siklus push, dan hanya bila benar-benar ada yang
         // dikirim, supaya sync idle tidak menambah round-trip ke Turso.
         let mut schema_checked = false;
-        loop {
+        for _ in 0..MAX_PUSH_BATCHES_PER_CYCLE {
             let (_client_id, events) = pending_events(state)?;
             if events.is_empty() {
                 return Ok(());
@@ -2064,10 +2142,11 @@ pub async fn push_outbox(state: &DesktopState, token: &str) -> Result<(), Comman
                 return Ok(());
             }
         }
+        return Ok(());
     }
 
     if !token.is_empty() {
-        loop {
+        for _ in 0..MAX_PUSH_BATCHES_PER_CYCLE {
             let (client_id, events) = pending_events(state)?;
             if events.is_empty() {
                 return Ok(());
@@ -2153,12 +2232,101 @@ pub async fn synchronize(
     let _in_flight = SyncInFlightGuard;
 
     let push_error = push_outbox(state, token).await.err();
-    match pull_snapshot(state, token).await {
+    let pulled = pull_snapshot(state, token).await;
+
+    // Penegakan RBAC dinamis untuk jalur 2-tier. Sesi Desktop/Mobile hidup di
+    // memori sampai aplikasi ditutup, jadi tanpa langkah ini operator yang baru
+    // saja dinonaktifkan atau dicabut permission-nya tetap memegang akses penuh
+    // di perangkatnya. Sisi web sudah memeriksa `rbac_revision` pada setiap
+    // request; perangkat memeriksanya sekali per siklus sinkronisasi.
+    enforce_rbac_revision(state).await;
+
+    match pulled {
         Ok(mut status) => {
             status.push_error = push_error.map(|error| error.message);
             Ok(status)
         }
         Err(pull_error) => Err(push_error.unwrap_or(pull_error)),
+    }
+}
+
+/// Cabut atau segarkan sesi aktif bila katalog RBAC cloud sudah berubah.
+///
+/// Sengaja tidak mengembalikan error: ini pekerjaan latar di akhir siklus sync,
+/// dan kegagalan jaringan TIDAK boleh menjatuhkan sinkronisasi yang sudah
+/// berhasil — apalagi mencabut sesi. Sesi hanya dicabut ketika cloud menjawab
+/// dengan pasti bahwa operatornya sudah tidak aktif.
+async fn enforce_rbac_revision(state: &DesktopState) {
+    let Some((operator_id, known_revision)) = ({
+        let Ok(guard) = state.session.lock() else {
+            return;
+        };
+        guard
+            .as_ref()
+            .map(|session| (session.operator.id, session.operator.permission_revision))
+    }) else {
+        return;
+    };
+
+    // `rbac_revision` ikut tersinkronisasi lewat `setting_gex_system`, jadi
+    // perbandingannya dibaca dari SQLite lokal — nol round-trip tambahan pada
+    // kasus normal ketika tidak ada perubahan role sama sekali.
+    let Ok(connection) = storage::database(&state.data_dir) else {
+        return;
+    };
+    let local_revision: Option<i64> = connection
+        .query_row(
+            "SELECT value FROM setting_gex_system WHERE key = 'rbac_revision' LIMIT 1;",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok());
+    drop(connection);
+
+    let Some(local_revision) = local_revision else {
+        return;
+    };
+    if local_revision == known_revision {
+        return;
+    }
+
+    let Ok(turso) = state.get_turso_client() else {
+        return;
+    };
+    match turso.reload_operator(operator_id).await {
+        Ok(Some(refreshed)) => {
+            if let Ok(mut guard) = state.session.lock() {
+                if let Some(session) = guard.as_mut() {
+                    // Hanya perbarui bila sesi masih milik operator yang sama:
+                    // pengguna bisa saja logout lalu login sebagai orang lain
+                    // selama query di atas berjalan.
+                    if session.operator.id == operator_id {
+                        session.operator = refreshed;
+                    }
+                }
+            }
+        }
+        Ok(None) => {
+            if let Ok(mut guard) = state.session.lock() {
+                if guard
+                    .as_ref()
+                    .is_some_and(|session| session.operator.id == operator_id)
+                {
+                    *guard = None;
+                }
+            }
+            storage::audit(
+                &state.data_dir,
+                Some(operator_id),
+                "session-revoked-rbac-change",
+                None,
+            );
+        }
+        // Cloud tidak menjawab: biarkan sesi apa adanya dan coba lagi siklus
+        // berikutnya. Mencabut sesi di sini akan mengeluarkan operator lapangan
+        // setiap kali sinyal terputus sesaat.
+        Err(_) => {}
     }
 }
 
@@ -2838,6 +3006,82 @@ mod tests {
         assert_eq!(cards, 2);
         assert_eq!(user_shift, 1);
         assert_eq!(shift_name, "Shift Server");
+    }
+
+    #[test]
+    fn pengaturan_koneksi_perangkat_tidak_pernah_ikut_sinkronisasi() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+
+        // Nilai koneksi milik perangkat ini.
+        connection
+            .execute(
+                "INSERT INTO setting_gex_system (key, value) VALUES ('turso_database_url', 'libsql://milik-saya.turso.io');",
+                [],
+            )
+            .expect("local connection setting");
+
+        let transaction = connection.transaction().expect("transaction");
+        // Arah keluar: tidak boleh bisa masuk outbox.
+        let ditolak = enqueue(
+            &transaction,
+            &client_id,
+            "setting",
+            "update",
+            "turso_database_url",
+            &json!({"key": "turso_database_url", "value": "libsql://milik-saya.turso.io"}),
+            None,
+        );
+        assert!(ditolak.is_err(), "kunci koneksi perangkat tidak boleh di-enqueue");
+        // Kunci pengaturan biasa tetap boleh.
+        enqueue(
+            &transaction,
+            &client_id,
+            "setting",
+            "update",
+            "geofence_enabled",
+            &json!({"key": "geofence_enabled", "value": "1"}),
+            None,
+        )
+        .expect("pengaturan operasional tetap disinkronkan");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        // Arah masuk: nilai dari perangkat lain tidak boleh menimpa milik kita.
+        let snapshot = json!({
+            "snapshot": {
+                "revision": 40,
+                "settings": [
+                    {"key": "turso_database_url", "value": "libsql://punya-perangkat-lain.turso.io"},
+                    {"key": "anti_double_scan_seconds", "value": "30"}
+                ],
+                "employees": [], "idCards": [], "shifts": [], "backups": [],
+                "corrections": [], "imports": [], "attendance": [], "scanLogs": []
+            }
+        });
+        apply_snapshot(&state, &snapshot).expect("snapshot pengaturan");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let url: String = connection
+            .query_row(
+                "SELECT value FROM setting_gex_system WHERE key = 'turso_database_url';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("connection setting");
+        assert_eq!(
+            url, "libsql://milik-saya.turso.io",
+            "URL database perangkat lain tidak boleh menimpa milik perangkat ini"
+        );
+        let scan: String = connection
+            .query_row(
+                "SELECT value FROM setting_gex_system WHERE key = 'anti_double_scan_seconds';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("operational setting");
+        assert_eq!(scan, "30", "pengaturan operasional tetap ikut sinkronisasi");
     }
 
     #[test]

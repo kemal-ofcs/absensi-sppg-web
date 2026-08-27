@@ -17,17 +17,106 @@ use super::{
     sync,
 };
 
-pub fn normalize_turso_url(raw: &str) -> Result<Url, CommandError> {
+/// Provider database cloud yang dipakai perangkat.
+///
+/// `Turso` adalah layanan terkelola (`libsql://<db>.turso.io`): selalu TLS dan
+/// selalu memerlukan Auth Token. `SelfHosted` adalah server libSQL milik
+/// pengguna sendiri (`sqld` / `libsql-server`) yang berjalan di komputer kantor,
+/// NAS, mesin LAN, atau VPS. Server seperti itu lazim dijalankan tanpa token dan
+/// tanpa sertifikat TLS, sehingga aturan validasinya memang berbeda.
+///
+/// Provider disimpan eksplisit, BUKAN ditebak dari bentuk URL. Kalau ditebak,
+/// satu salah ketik pada URL Turso (`http://` alih-alih `https://`) otomatis
+/// melonggarkan aturan transport tanpa pengguna pernah memilihnya.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseProvider {
+    #[default]
+    Turso,
+    #[serde(
+        alias = "selfHosted",
+        alias = "self-hosted",
+        alias = "custom",
+        alias = "local",
+        alias = "libsql"
+    )]
+    SelfHosted,
+}
+
+impl DatabaseProvider {
+    pub fn is_self_hosted(self) -> bool {
+        matches!(self, Self::SelfHosted)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Turso => "turso",
+            Self::SelfHosted => "self_hosted",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Turso => "Turso Cloud",
+            Self::SelfHosted => "Server Database Sendiri",
+        }
+    }
+}
+
+/// Alamat yang trafiknya tidak pernah meninggalkan perangkat atau LAN pengguna.
+///
+/// Dipakai untuk memutuskan apakah HTTP polos boleh dipakai. Daftar ini sengaja
+/// konservatif: hanya loopback, rentang privat RFC1918/RFC4193, link-local,
+/// nama domain LAN, dan dua alias host yang memang menunjuk mesin developer
+/// (`10.0.2.2` untuk emulator Android, `host.docker.internal` untuk container).
+pub fn is_private_network_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("host.docker.internal") {
+        return true;
+    }
+    // Alamat khusus emulator Android yang menunjuk balik ke mesin developer.
+    if host == "10.0.2.2" {
+        return true;
+    }
+    let lowered = host.to_ascii_lowercase();
+    if lowered.ends_with(".local") || lowered.ends_with(".lan") || lowered.ends_with(".internal") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| match ip {
+        IpAddr::V4(address) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        IpAddr::V6(address) => address.is_loopback() || address.is_unique_local(),
+    })
+}
+
+/// Validasi dan normalisasi URL endpoint database untuk provider tertentu.
+///
+/// Mengembalikan origin bersih tanpa path/query/fragment karena seluruh
+/// pemanggil menambahkan `/v2/pipeline` sendiri. Kredensial di dalam URL
+/// (`https://user:pass@host`) ditolak: token wajib lewat vault, bukan lewat URL
+/// yang ikut tersimpan di tabel setting dan ikut tampil di UI.
+pub fn normalize_database_url(
+    raw: &str,
+    provider: DatabaseProvider,
+    allow_insecure_transport: bool,
+) -> Result<Url, CommandError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(CommandError::new(
             "TURSO_URL_INVALID",
-            "URL database Turso tidak boleh kosong.",
+            "URL database tidak boleh kosong.",
         ));
     }
 
+    // `libsql://` dan `ws(s)://` hanyalah ejaan lain dari endpoint HTTP yang
+    // sama. Server libSQL self-hosted kerap dicetak dengan salah satu bentuk itu
+    // di dokumentasinya, jadi keduanya diterima dan dipetakan ke http(s).
     let https_url_str = if let Some(stripped) = trimmed.strip_prefix("libsql://") {
         format!("https://{stripped}")
+    } else if let Some(stripped) = trimmed.strip_prefix("wss://") {
+        format!("https://{stripped}")
+    } else if let Some(stripped) = trimmed.strip_prefix("ws://") {
+        format!("http://{stripped}")
     } else {
         trimmed.to_owned()
     };
@@ -35,35 +124,49 @@ pub fn normalize_turso_url(raw: &str) -> Result<Url, CommandError> {
     let mut parsed = Url::parse(&https_url_str).map_err(|_| {
         CommandError::new(
             "TURSO_URL_INVALID",
-            "Format URL database Turso tidak valid (contoh: libsql://db-name.turso.io atau https://db-name.turso.io).",
+            match provider {
+                DatabaseProvider::Turso => "Format URL database Turso tidak valid (contoh: libsql://db-name.turso.io atau https://db-name.turso.io).",
+                DatabaseProvider::SelfHosted => "Format URL server database tidak valid (contoh: http://192.168.1.10:8080 atau https://db.kantor-anda.com).",
+            },
         )
     })?;
 
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(CommandError::new(
             "TURSO_URL_INVALID",
-            "URL database Turso harus menggunakan protokol libsql://, https://, atau http://.",
+            "URL database harus memakai protokol libsql://, https://, atau http://.",
         ));
     }
     if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(CommandError::new(
             "TURSO_URL_INVALID",
-            "URL database Turso harus memiliki host dan tidak boleh memuat kredensial.",
+            "URL database harus memiliki host dan tidak boleh memuat kredensial.",
         ));
     }
+
     if parsed.scheme() == "http" {
         let host = parsed.host_str().unwrap_or_default();
-        let is_local = host.eq_ignore_ascii_case("localhost")
-            || host == "10.0.2.2"
-            || host.parse::<IpAddr>().is_ok_and(|ip| match ip {
-                IpAddr::V4(address) => address.is_loopback() || address.is_private(),
-                IpAddr::V6(address) => address.is_loopback() || address.is_unique_local(),
-            });
-        if !cfg!(debug_assertions) || !is_local {
-            return Err(CommandError::new(
-                "TURSO_URL_INSECURE",
-                "HTTP hanya diizinkan untuk localhost atau IP lokal pada build debug.",
-            ));
+        let is_private = is_private_network_host(host);
+        let allowed = match provider {
+            // Turso terkelola tidak pernah melayani HTTP polos di internet;
+            // satu-satunya HTTP yang masuk akal adalah `turso dev` lokal saat
+            // pengembangan.
+            DatabaseProvider::Turso => is_private && cfg!(debug_assertions),
+            // Server sendiri di jaringan privat: paket tidak pernah keluar dari
+            // LAN, jadi HTTP polos diizinkan pada build rilis sekalipun. Di luar
+            // jaringan privat, pengguna harus menyatakan risikonya secara sadar.
+            DatabaseProvider::SelfHosted => is_private || allow_insecure_transport,
+        };
+        if !allowed {
+            let message = match provider {
+                DatabaseProvider::Turso => {
+                    "URL database Turso wajib memakai HTTPS. Kalau ini server database Anda sendiri, pilih mode \"Server Database Sendiri\" terlebih dahulu."
+                }
+                DatabaseProvider::SelfHosted => {
+                    "Alamat server ini berada di luar jaringan privat, sehingga HTTP polos akan mengirim Auth Token dan data absensi tanpa enkripsi. Pasang HTTPS di server (misalnya lewat Caddy/Nginx), pakai alamat LAN/VPN, atau centang \"Izinkan koneksi tanpa enkripsi\" bila Anda menerima risikonya."
+                }
+            };
+            return Err(CommandError::new("TURSO_URL_INSECURE", message));
         }
     }
 
@@ -77,6 +180,121 @@ pub fn normalize_turso_url(raw: &str) -> Result<Url, CommandError> {
 pub struct TursoConfig {
     pub database_url: String,
     pub auth_token: String,
+    /// Default `Turso` supaya vault lama — yang hanya menyimpan `database_url`
+    /// dan `auth_token` — tetap terbaca apa adanya setelah aplikasi diperbarui.
+    #[serde(default)]
+    pub provider: DatabaseProvider,
+    /// Hanya bermakna untuk [`DatabaseProvider::SelfHosted`]: izin eksplisit
+    /// memakai HTTP polos ke host di luar jaringan privat.
+    #[serde(default)]
+    pub allow_insecure_transport: bool,
+}
+
+impl TursoConfig {
+    pub fn new(
+        database_url: String,
+        auth_token: String,
+        provider: DatabaseProvider,
+        allow_insecure_transport: bool,
+    ) -> Self {
+        Self {
+            database_url,
+            auth_token,
+            provider,
+            // Flag ini tidak punya arti di luar mode server sendiri; memaksanya
+            // `false` mencegah nilai basi ikut aktif kalau pengguna berpindah
+            // balik ke Turso lalu kembali lagi ke server sendiri.
+            allow_insecure_transport: provider.is_self_hosted() && allow_insecure_transport,
+        }
+    }
+
+    /// Konfigurasi Turso terkelola (bentuk lama dua-field).
+    pub fn turso(database_url: String, auth_token: String) -> Self {
+        Self::new(database_url, auth_token, DatabaseProvider::Turso, false)
+    }
+
+    /// Origin endpoint yang sudah tervalidasi menurut provider konfigurasi ini.
+    pub fn normalized_url(&self) -> Result<Url, CommandError> {
+        normalize_database_url(
+            &self.database_url,
+            self.provider,
+            self.allow_insecure_transport,
+        )
+    }
+
+    /// Apakah `raw` menunjuk database yang sama dengan konfigurasi ini.
+    ///
+    /// Perbandingan wajib ternormalisasi: `libsql://x`, `https://x`, dan
+    /// `https://x/` menunjuk database yang sama. Perbandingan string mentah
+    /// pernah membuat token yang tersimpan di vault dianggap milik database lain
+    /// hanya karena pengguna mengetik ejaan URL yang berbeda.
+    pub fn matches_url(&self, raw: &str) -> bool {
+        match (
+            self.normalized_url(),
+            normalize_database_url(raw, self.provider, self.allow_insecure_transport),
+        ) {
+            (Ok(current), Ok(candidate)) => current == candidate,
+            _ => self.database_url.trim() == raw.trim(),
+        }
+    }
+
+    /// Auth Token wajib ada sebelum koneksi boleh dicoba.
+    ///
+    /// Turso terkelola selalu wajib. Server sendiri boleh tanpa token — `sqld`
+    /// default berjalan tanpa autentikasi — kecuali endpoint-nya HTTPS publik,
+    /// yang berarti server itu terekspos ke internet dan token adalah satu-
+    /// satunya penghalang yang tersisa.
+    pub fn requires_auth_token(&self) -> bool {
+        match self.provider {
+            DatabaseProvider::Turso => true,
+            DatabaseProvider::SelfHosted => self.normalized_url().ok().is_some_and(|url| {
+                url.scheme() == "https"
+                    && !is_private_network_host(url.host_str().unwrap_or_default())
+            }),
+        }
+    }
+}
+
+/// Ringkasan konfigurasi database yang aman ditampilkan di UI.
+///
+/// Auth Token TIDAK PERNAH ikut. Frontend hanya perlu tahu bahwa token sudah
+/// tersimpan supaya bisa menampilkan "Tersimpan di Vault" dan membiarkan field
+/// isian kosong berarti "pertahankan token lama".
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseConfigView {
+    pub configured: bool,
+    pub database_url: String,
+    pub provider: String,
+    /// Nama provider yang siap ditampilkan, supaya UI tidak perlu menyimpan
+    /// salinan tabel terjemahannya sendiri dan ikut basi saat provider bertambah.
+    pub provider_label: String,
+    pub allow_insecure_transport: bool,
+    pub auth_token_saved: bool,
+}
+
+impl DatabaseConfigView {
+    pub fn empty() -> Self {
+        Self {
+            configured: false,
+            database_url: String::new(),
+            provider: DatabaseProvider::Turso.as_str().to_owned(),
+            provider_label: DatabaseProvider::Turso.label().to_owned(),
+            allow_insecure_transport: false,
+            auth_token_saved: false,
+        }
+    }
+
+    pub fn from_config(config: &TursoConfig) -> Self {
+        Self {
+            configured: true,
+            database_url: config.database_url.clone(),
+            provider: config.provider.as_str().to_owned(),
+            provider_label: config.provider.label().to_owned(),
+            allow_insecure_transport: config.allow_insecure_transport,
+            auth_token_saved: !config.auth_token.trim().is_empty(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +311,29 @@ pub struct BootstrapStatus {
     pub configured: bool,
     pub required: bool,
     pub server_origin: String,
+    /// Apakah database cloud yang tersimpan benar-benar berhasil dihubungi.
+    ///
+    /// `configured = true` hanya berarti perangkat menyimpan kredensial; tidak
+    /// berarti kredensial itu masih menunjuk database yang hidup. Kalau database
+    /// lama sudah dihapus di Turso, `configured` tetap true sementara `reachable`
+    /// menjadi false — dan layar login harus memakai perbedaan itu untuk
+    /// menawarkan konfigurasi ulang, bukan menyembunyikannya sebagai kegagalan.
+    pub reachable: bool,
+    /// Alasan `reachable = false`, apa adanya dari klien Turso.
+    pub message: Option<String>,
+}
+
+impl BootstrapStatus {
+    /// Kredensial tersimpan tetapi database cloud-nya tidak menjawab.
+    pub fn unreachable(server_origin: String, error: &CommandError) -> Self {
+        Self {
+            configured: true,
+            required: false,
+            server_origin,
+            reachable: false,
+            message: Some(error.message.clone()),
+        }
+    }
 }
 
 /// Tabel inti yang wajib ada agar database dianggap benar-benar database Absensi SPPG.
@@ -420,11 +661,21 @@ impl TursoClient {
     }
 
     pub fn from_config(config: &TursoConfig, http: Client) -> Result<Self, CommandError> {
-        let base_url = normalize_turso_url(&config.database_url)?;
-        if config.auth_token.trim().is_empty() && base_url.scheme() == "https" {
+        // Validasi URL memakai provider yang benar-benar dipilih pengguna.
+        // Memakai aturan Turso untuk server sendiri akan menolak alamat LAN
+        // ber-HTTP yang justru menjadi tujuan mode itu.
+        let base_url = config.normalized_url()?;
+        if config.auth_token.trim().is_empty() && config.requires_auth_token() {
             return Err(CommandError::new(
                 "TURSO_TOKEN_REQUIRED",
-                "Auth Token database Turso wajib diisi untuk koneksi HTTPS.",
+                match config.provider {
+                    DatabaseProvider::Turso => {
+                        "Auth Token database Turso wajib diisi untuk koneksi HTTPS."
+                    }
+                    DatabaseProvider::SelfHosted => {
+                        "Server database ini dapat dijangkau dari internet, jadi Auth Token wajib diisi."
+                    }
+                },
             ));
         }
         Ok(Self::new(base_url, config.auth_token.clone(), http))
@@ -784,9 +1035,9 @@ impl TursoClient {
                     role_key TEXT UNIQUE NOT NULL,
                     nama_role TEXT UNIQUE NOT NULL,
                     deskripsi TEXT,
-                    is_system INTEGER NOT NULL DEFAULT 0,
-                    is_superadmin INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'Aktif',
+                    is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0, 1)),
+                    is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK(is_superadmin IN (0, 1)),
+                    status TEXT NOT NULL DEFAULT 'Aktif' CHECK(status IN ('Aktif', 'Nonaktif')),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     created_by TEXT
@@ -799,7 +1050,7 @@ impl TursoClient {
                     nama TEXT NOT NULL,
                     grup TEXT NOT NULL,
                     deskripsi TEXT,
-                    is_active INTEGER NOT NULL DEFAULT 1,
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
                     sort_order INTEGER NOT NULL DEFAULT 0
                 );"#,
                 vec![],
@@ -808,7 +1059,7 @@ impl TursoClient {
                 r#"CREATE TABLE IF NOT EXISTS role_permission (
                     role_id INTEGER NOT NULL,
                     permission_key TEXT NOT NULL,
-                    is_allowed INTEGER NOT NULL DEFAULT 0,
+                    is_allowed INTEGER NOT NULL DEFAULT 0 CHECK(is_allowed IN (0, 1)),
                     updated_at TEXT NOT NULL,
                     updated_by TEXT,
                     PRIMARY KEY (role_id, permission_key),
@@ -824,7 +1075,7 @@ impl TursoClient {
                     nama_operator TEXT NOT NULL,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'Operator',
+                    role TEXT NOT NULL DEFAULT 'Operator' CHECK(role IN ('Admin', 'Operator', 'Scanner')),
                     role_id INTEGER REFERENCES app_role(id),
                     status TEXT DEFAULT 'Aktif',
                     created_at TEXT,
@@ -909,7 +1160,8 @@ impl TursoClient {
                     divisi TEXT NOT NULL,
                     jenis_scan TEXT NOT NULL,
                     status_proses TEXT NOT NULL,
-                    sumber_data TEXT NOT NULL,
+                    sumber_data TEXT NOT NULL
+                        CHECK (sumber_data IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Import Manual', 'Generate Sistem')),
                     catatan_sistem TEXT,
                     keterangan TEXT,
                     menit_terlambat INTEGER DEFAULT 0,
@@ -931,7 +1183,8 @@ impl TursoClient {
                     status_kehadiran TEXT NOT NULL,
                     status_absen TEXT NOT NULL,
                     keterangan TEXT,
-                    sumber TEXT NOT NULL,
+                    sumber TEXT NOT NULL
+                        CHECK (sumber IN ('Scanner', 'Koreksi Admin', 'Import Offline', 'Import Manual', 'Generate Sistem')),
                     update_terakhir TEXT NOT NULL,
                     menit_terlambat INTEGER DEFAULT 0,
                     menit_datang_awal INTEGER DEFAULT 0,
@@ -1052,9 +1305,9 @@ impl TursoClient {
                 r#"CREATE TABLE IF NOT EXISTS import_offline (
                     id_import INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_key TEXT UNIQUE NOT NULL,
-                    timestamp_input TEXT NOT NULL DEFAULT '',
-                    tanggal TEXT NOT NULL DEFAULT '',
-                    id_unik TEXT NOT NULL DEFAULT '',
+                    timestamp_input TEXT NOT NULL,
+                    tanggal TEXT NOT NULL,
+                    id_unik TEXT NOT NULL,
                     nama TEXT,
                     divisi TEXT,
                     jam_masuk TEXT,
@@ -1083,43 +1336,92 @@ impl TursoClient {
                 vec![],
             ),
             Statement::new(
+                // Definisi WAJIB sama dengan `db-migrations.ts`: tabel ini ditulis
+                // jalur Rust MAUPUN jalur Web. Versi lama menaruh `server_revision`
+                // sebagai NOT NULL (padahal Web menulis NULL untuk event yang
+                // rejected/conflict) dan `receipt_json` NOT NULL tanpa DEFAULT
+                // (padahal INSERT Web tidak menyertakan kolom itu) — dua-duanya
+                // membuat push dari Web gagal di database hasil provisioning
+                // Desktop/Mobile.
                 r#"CREATE TABLE IF NOT EXISTS sync_operation_receipt (
                     event_id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     domain TEXT NOT NULL,
                     operation TEXT NOT NULL,
                     entity_key TEXT NOT NULL,
-                    payload_hash TEXT,
-                    server_revision INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    result_json TEXT,
+                    payload_hash TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('applied', 'rejected', 'conflict')),
+                    result_json TEXT NOT NULL,
                     base_revision INTEGER,
-                    actor_operator_id INTEGER,
-                    receipt_json TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    processed_at TEXT
+                    server_revision INTEGER,
+                    actor_operator_id INTEGER NOT NULL,
+                    receipt_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    processed_at TEXT NOT NULL
                 );"#,
                 vec![],
             ),
             Statement::new(
+                // `app_session` dan `auth_login_rate_limit` DIMILIKI aplikasi Web
+                // (`src/lib/auth/session-store.ts` dan `login-rate-limit.ts`);
+                // Rust tidak pernah membacanya. Definisi di bawah WAJIB sama
+                // persis dengan `db-migrations.ts`. Versi lama Rust memakai
+                // kolom karangan sendiri (`last_activity_at`, `identifier_hash`),
+                // sehingga database yang di-provisioning dari Desktop/Mobile
+                // membuat login Web gagal total.
                 r#"CREATE TABLE IF NOT EXISTS app_session (
                     session_id TEXT PRIMARY KEY,
+                    token_hash TEXT UNIQUE NOT NULL,
                     operator_id INTEGER NOT NULL,
+                    permission_revision INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
-                    last_activity_at TEXT NOT NULL,
-                    ip_address TEXT,
-                    user_agent TEXT,
+                    last_seen_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    revoked_reason TEXT,
+                    user_agent_hash TEXT,
                     FOREIGN KEY (operator_id) REFERENCES master_operator(id) ON DELETE CASCADE
                 );"#,
                 vec![],
             ),
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS auth_login_rate_limit (
-                    identifier_hash TEXT PRIMARY KEY,
-                    failed_attempts INTEGER NOT NULL DEFAULT 0,
-                    lockout_until TEXT,
-                    last_attempt_at TEXT NOT NULL
+                    rate_key TEXT PRIMARY KEY,
+                    attempt_count INTEGER NOT NULL,
+                    window_started_at TEXT NOT NULL,
+                    blocked_until TEXT,
+                    updated_at TEXT NOT NULL
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                // Jejak audit RBAC, dipakai `src/lib/rbac/role-admin.ts`. Dulu
+                // hanya dibuat jalur Web, jadi database hasil provisioning
+                // Desktop/Mobile membuat manajemen role di Web gagal.
+                r#"CREATE TABLE IF NOT EXISTS role_permission_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role_id INTEGER NOT NULL,
+                    permission_key TEXT NOT NULL,
+                    before_allowed INTEGER NOT NULL,
+                    after_allowed INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    changed_by TEXT NOT NULL,
+                    revision INTEGER NOT NULL
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                // Changelog jalur Web (`src/lib/server/operational/*`). Berbeda
+                // dari `sync_changelog` milik pipeline Desktop/Mobile, dan ikut
+                // dihitung `isDatabaseSchemaReady` di sisi Web.
+                r#"CREATE TABLE IF NOT EXISTS sync_change_log (
+                    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    entity_key TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    actor_operator_id INTEGER NOT NULL
                 );"#,
                 vec![],
             ),
@@ -1229,8 +1531,9 @@ impl TursoClient {
                 r#"CREATE TABLE IF NOT EXISTS salary_configs (
                     id TEXT PRIMARY KEY,
                     id_karyawan TEXT NOT NULL,
-                    rate_per_hour REAL NOT NULL,
-                    ptkp_status TEXT NOT NULL DEFAULT 'TK/0',
+                    rate_per_hour REAL NOT NULL CHECK (rate_per_hour >= 0),
+                    ptkp_status TEXT NOT NULL DEFAULT 'TK/0'
+                        CHECK (ptkp_status IN ('TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3')),
                     effective_date TEXT NOT NULL,
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1242,12 +1545,12 @@ impl TursoClient {
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS overtime_tier_rules (
                     id TEXT PRIMARY KEY,
-                    rule_type TEXT NOT NULL,
+                    rule_type TEXT NOT NULL CHECK (rule_type IN ('HARI_KERJA', 'HARI_LIBUR')),
                     tier_order INTEGER NOT NULL,
-                    hour_start REAL NOT NULL,
+                    hour_start REAL NOT NULL CHECK (hour_start >= 0),
                     hour_end REAL,
-                    multiplier REAL NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1,
+                    multiplier REAL NOT NULL CHECK (multiplier >= 1.0),
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
                     UNIQUE(rule_type, tier_order)
                 );"#,
                 vec![],
@@ -1256,11 +1559,11 @@ impl TursoClient {
                 r#"CREATE TABLE IF NOT EXISTS payroll_components (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    calc_type TEXT NOT NULL,
-                    default_value REAL NOT NULL DEFAULT 0,
+                    category TEXT NOT NULL CHECK (category IN ('ALLOWANCE', 'DEDUCTION')),
+                    calc_type TEXT NOT NULL CHECK (calc_type IN ('FIXED', 'PERCENTAGE')),
+                    default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
                     applies_to TEXT NOT NULL DEFAULT 'ALL',
-                    is_active INTEGER NOT NULL DEFAULT 1,
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );"#,
                 vec![],
@@ -1268,10 +1571,10 @@ impl TursoClient {
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS tax_rules (
                     id TEXT PRIMARY KEY,
-                    category TEXT NOT NULL,
+                    category TEXT NOT NULL CHECK (category IN ('TER_A','TER_B','TER_C','PASAL_17')),
                     bracket_min REAL NOT NULL,
                     bracket_max REAL,
-                    rate_percentage REAL NOT NULL,
+                    rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
                     effective_date TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );"#,
@@ -1282,7 +1585,7 @@ impl TursoClient {
                     id TEXT PRIMARY KEY,
                     component_code TEXT UNIQUE NOT NULL,
                     component_name TEXT NOT NULL,
-                    rate_percentage REAL NOT NULL,
+                    rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
                     wage_cap REAL,
                     effective_date TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1295,7 +1598,8 @@ impl TursoClient {
                     idempotency_key TEXT NOT NULL UNIQUE,
                     period_start TEXT NOT NULL,
                     period_end TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'DRAFT',
+                    status TEXT NOT NULL DEFAULT 'DRAFT'
+                        CHECK (status IN ('DRAFT','SUBMITTED','REVIEWED','APPROVED','PAID','REJECTED')),
                     total_gross_payout INTEGER NOT NULL DEFAULT 0,
                     total_net_payout INTEGER NOT NULL DEFAULT 0,
                     total_employees INTEGER NOT NULL DEFAULT 0,
@@ -1317,15 +1621,15 @@ impl TursoClient {
                     total_overtime_hours REAL NOT NULL,
                     total_overtime_index REAL NOT NULL,
                     rate_per_hour INTEGER NOT NULL,
-                    basic_salary INTEGER NOT NULL,
-                    overtime_salary INTEGER NOT NULL,
-                    gross_salary INTEGER NOT NULL,
+                    basic_salary INTEGER NOT NULL CHECK (basic_salary >= 0),
+                    overtime_salary INTEGER NOT NULL CHECK (overtime_salary >= 0),
+                    gross_salary INTEGER NOT NULL CHECK (gross_salary >= 0),
                     total_allowances INTEGER NOT NULL DEFAULT 0,
                     total_deductions INTEGER NOT NULL DEFAULT 0,
                     bpjs_employee_total INTEGER NOT NULL DEFAULT 0,
                     bpjs_company_total INTEGER NOT NULL DEFAULT 0,
                     pph21_amount INTEGER NOT NULL DEFAULT 0,
-                    net_salary INTEGER NOT NULL,
+                    net_salary INTEGER NOT NULL CHECK (net_salary >= 0),
                     breakdown_snapshot TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     UNIQUE (payroll_run_id, id_karyawan)
@@ -1351,158 +1655,11 @@ impl TursoClient {
             Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_items_run ON payroll_items(payroll_run_id);", vec![]),
             Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_items_karyawan ON payroll_items(id_karyawan);", vec![]),
             // Seed Default Overtime Rules
-            Statement::new(
-                r#"INSERT OR IGNORE INTO overtime_tier_rules (id, rule_type, tier_order, hour_start, hour_end, multiplier, is_active) VALUES
-                ('ot-work-1', 'HARI_KERJA', 1, 0.0, 1.0, 1.5, 1),
-                ('ot-work-2', 'HARI_KERJA', 2, 1.0, NULL, 2.0, 1),
-                ('ot-holiday-1', 'HARI_LIBUR', 1, 0.0, 8.0, 2.0, 1),
-                ('ot-holiday-2', 'HARI_LIBUR', 2, 8.0, 9.0, 3.0, 1),
-                ('ot-holiday-3', 'HARI_LIBUR', 3, 9.0, NULL, 4.0, 1);"#,
-                vec![],
-            ),
+            Statement::new(crate::desktop::payroll_seed::OVERTIME_TIER_RULES_SEED_SQL, vec![]),
             // Seed Default Tax Rules (Pasal 17 & TER Baseline)
-            Statement::new(
-                r#"INSERT OR IGNORE INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date, created_at) VALUES
-                ('tax_p17_1', 'PASAL_17', 0, 60000000, 5.0, '2026-01-01', datetime('now')),
-                ('tax_p17_2', 'PASAL_17', 60000000, 250000000, 15.0, '2026-01-01', datetime('now')),
-                ('tax_p17_3', 'PASAL_17', 250000000, 500000000, 25.0, '2026-01-01', datetime('now')),
-                ('tax_p17_4', 'PASAL_17', 500000000, 5000000000, 30.0, '2026-01-01', datetime('now')),
-                ('tax_p17_5', 'PASAL_17', 5000000000, NULL, 35.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_1', 'TER_A', 0, 5400000, 0.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_2', 'TER_A', 5400000, 5650000, 0.25, '2026-01-01', datetime('now')),
-                ('tax_ter_a_3', 'TER_A', 5650000, 5950000, 0.5, '2026-01-01', datetime('now')),
-                ('tax_ter_a_4', 'TER_A', 5950000, 6300000, 0.75, '2026-01-01', datetime('now')),
-                ('tax_ter_a_5', 'TER_A', 6300000, 6750000, 1.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_6', 'TER_A', 6750000, 7500000, 1.25, '2026-01-01', datetime('now')),
-                ('tax_ter_a_7', 'TER_A', 7500000, 8550000, 1.5, '2026-01-01', datetime('now')),
-                ('tax_ter_a_8', 'TER_A', 8550000, 9650000, 1.75, '2026-01-01', datetime('now')),
-                ('tax_ter_a_9', 'TER_A', 9650000, 10050000, 2.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_10', 'TER_A', 10050000, 10350000, 2.25, '2026-01-01', datetime('now')),
-                ('tax_ter_a_11', 'TER_A', 10350000, 10700000, 2.5, '2026-01-01', datetime('now')),
-                ('tax_ter_a_12', 'TER_A', 10700000, 11050000, 3.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_13', 'TER_A', 11050000, 11600000, 3.5, '2026-01-01', datetime('now')),
-                ('tax_ter_a_14', 'TER_A', 11600000, 12500000, 4.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_15', 'TER_A', 12500000, 13750000, 5.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_16', 'TER_A', 13750000, 15100000, 6.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_17', 'TER_A', 15100000, 16950000, 7.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_18', 'TER_A', 16950000, 19750000, 8.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_19', 'TER_A', 19750000, 24150000, 9.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_20', 'TER_A', 24150000, 26450000, 10.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_21', 'TER_A', 26450000, 28000000, 11.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_22', 'TER_A', 28000000, 30050000, 12.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_23', 'TER_A', 30050000, 32400000, 13.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_24', 'TER_A', 32400000, 35400000, 14.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_25', 'TER_A', 35400000, 39100000, 15.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_26', 'TER_A', 39100000, 43850000, 16.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_27', 'TER_A', 43850000, 47800000, 17.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_28', 'TER_A', 47800000, 51400000, 18.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_29', 'TER_A', 51400000, 56300000, 19.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_30', 'TER_A', 56300000, 62200000, 20.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_31', 'TER_A', 62200000, 68600000, 21.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_32', 'TER_A', 68600000, 77500000, 22.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_33', 'TER_A', 77500000, 89000000, 23.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_34', 'TER_A', 89000000, 103000000, 24.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_35', 'TER_A', 103000000, 125000000, 25.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_36', 'TER_A', 125000000, 157000000, 26.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_37', 'TER_A', 157000000, 206000000, 27.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_38', 'TER_A', 206000000, 337000000, 28.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_39', 'TER_A', 337000000, 454000000, 29.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_40', 'TER_A', 454000000, 550000000, 30.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_41', 'TER_A', 550000000, 695000000, 31.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_42', 'TER_A', 695000000, 910000000, 32.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_43', 'TER_A', 910000000, 1400000000, 33.0, '2026-01-01', datetime('now')),
-                ('tax_ter_a_44', 'TER_A', 1400000000, NULL, 34.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_1', 'TER_B', 0, 6200000, 0.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_2', 'TER_B', 6200000, 6500000, 0.25, '2026-01-01', datetime('now')),
-                ('tax_ter_b_3', 'TER_B', 6500000, 6850000, 0.5, '2026-01-01', datetime('now')),
-                ('tax_ter_b_4', 'TER_B', 6850000, 7300000, 0.75, '2026-01-01', datetime('now')),
-                ('tax_ter_b_5', 'TER_B', 7300000, 9200000, 1.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_6', 'TER_B', 9200000, 10750000, 1.5, '2026-01-01', datetime('now')),
-                ('tax_ter_b_7', 'TER_B', 10750000, 12500000, 2.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_8', 'TER_B', 12500000, 13750000, 3.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_9', 'TER_B', 13750000, 15100000, 4.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_10', 'TER_B', 15100000, 16950000, 5.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_11', 'TER_B', 16950000, 19750000, 6.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_12', 'TER_B', 19750000, 24150000, 7.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_13', 'TER_B', 24150000, 26450000, 8.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_14', 'TER_B', 26450000, 28000000, 9.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_15', 'TER_B', 28000000, 30050000, 10.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_16', 'TER_B', 30050000, 32400000, 11.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_17', 'TER_B', 32400000, 35400000, 12.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_18', 'TER_B', 35400000, 39100000, 13.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_19', 'TER_B', 39100000, 43850000, 14.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_20', 'TER_B', 43850000, 47800000, 15.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_21', 'TER_B', 47800000, 51400000, 16.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_22', 'TER_B', 51400000, 56300000, 17.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_23', 'TER_B', 56300000, 62200000, 18.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_24', 'TER_B', 62200000, 68600000, 19.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_25', 'TER_B', 68600000, 77500000, 20.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_26', 'TER_B', 77500000, 89000000, 21.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_27', 'TER_B', 89000000, 103000000, 22.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_28', 'TER_B', 103000000, 125000000, 23.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_29', 'TER_B', 125000000, 157000000, 24.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_30', 'TER_B', 157000000, 206000000, 25.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_31', 'TER_B', 206000000, 337000000, 26.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_32', 'TER_B', 337000000, 454000000, 27.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_33', 'TER_B', 454000000, 550000000, 28.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_34', 'TER_B', 550000000, 695000000, 29.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_35', 'TER_B', 695000000, 910000000, 30.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_36', 'TER_B', 910000000, 1400000000, 31.0, '2026-01-01', datetime('now')),
-                ('tax_ter_b_37', 'TER_B', 1400000000, NULL, 32.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_1', 'TER_C', 0, 6600000, 0.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_2', 'TER_C', 6600000, 6950000, 0.25, '2026-01-01', datetime('now')),
-                ('tax_ter_c_3', 'TER_C', 6950000, 7350000, 0.5, '2026-01-01', datetime('now')),
-                ('tax_ter_c_4', 'TER_C', 7350000, 7800000, 0.75, '2026-01-01', datetime('now')),
-                ('tax_ter_c_5', 'TER_C', 7800000, 8850000, 1.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_6', 'TER_C', 8850000, 9800000, 1.25, '2026-01-01', datetime('now')),
-                ('tax_ter_c_7', 'TER_C', 9800000, 10950000, 1.5, '2026-01-01', datetime('now')),
-                ('tax_ter_c_8', 'TER_C', 10950000, 11200000, 1.75, '2026-01-01', datetime('now')),
-                ('tax_ter_c_9', 'TER_C', 11200000, 12050000, 2.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_10', 'TER_C', 12050000, 12950000, 3.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_11', 'TER_C', 12950000, 14150000, 4.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_12', 'TER_C', 14150000, 15550000, 5.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_13', 'TER_C', 15550000, 17050000, 6.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_14', 'TER_C', 17050000, 19500000, 7.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_15', 'TER_C', 19500000, 22700000, 8.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_16', 'TER_C', 22700000, 24700000, 9.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_17', 'TER_C', 24700000, 27500000, 10.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_18', 'TER_C', 27500000, 30000000, 11.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_19', 'TER_C', 30000000, 34100000, 12.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_20', 'TER_C', 34100000, 37600000, 13.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_21', 'TER_C', 37600000, 42700000, 14.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_22', 'TER_C', 42700000, 47400000, 15.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_23', 'TER_C', 47400000, 52100000, 16.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_24', 'TER_C', 52100000, 56300000, 17.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_25', 'TER_C', 56300000, 62200000, 18.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_26', 'TER_C', 62200000, 68600000, 19.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_27', 'TER_C', 68600000, 77500000, 20.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_28', 'TER_C', 77500000, 89000000, 21.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_29', 'TER_C', 89000000, 103000000, 22.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_30', 'TER_C', 103000000, 125000000, 23.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_31', 'TER_C', 125000000, 157000000, 24.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_32', 'TER_C', 157000000, 206000000, 25.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_33', 'TER_C', 206000000, 337000000, 26.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_34', 'TER_C', 337000000, 454000000, 27.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_35', 'TER_C', 454000000, 550000000, 28.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_36', 'TER_C', 550000000, 695000000, 29.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_37', 'TER_C', 695000000, 910000000, 30.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_38', 'TER_C', 910000000, 1400000000, 31.0, '2026-01-01', datetime('now')),
-                ('tax_ter_c_39', 'TER_C', 1400000000, NULL, 32.0, '2026-01-01', datetime('now'));"#,
-                vec![],
-            ),
+            Statement::new(crate::desktop::payroll_seed::TAX_RULES_SEED_SQL, vec![]),
             // Seed Default BPJS Rules
-            Statement::new(
-                r#"INSERT OR IGNORE INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date, created_at) VALUES
-                ('bpjs_jht_emp', 'JHT_EMP', 'JHT Tenaga Kerja (Pekerja)', 2.0, NULL, '2026-01-01', datetime('now')),
-                ('bpjs_jht_co', 'JHT_CO', 'JHT Tenaga Kerja (Perusahaan)', 3.7, NULL, '2026-01-01', datetime('now')),
-                ('bpjs_jp_emp', 'JP_EMP', 'Jaminan Pensiun (Pekerja)', 1.0, 10042300, '2026-01-01', datetime('now')),
-                ('bpjs_jp_co', 'JP_CO', 'Jaminan Pensiun (Perusahaan)', 2.0, 10042300, '2026-01-01', datetime('now')),
-                ('bpjs_jkk_co', 'JKK_CO', 'JKK Risiko Sedang (Perusahaan)', 0.54, NULL, '2026-01-01', datetime('now')),
-                ('bpjs_jkm_co', 'JKM_CO', 'Jaminan Kematian (Perusahaan)', 0.3, NULL, '2026-01-01', datetime('now')),
-                ('bpjs_kes_emp', 'BPJS_KES_EMP', 'BPJS Kesehatan (Pekerja)', 1.0, 12000000, '2026-01-01', datetime('now')),
-                ('bpjs_kes_co', 'BPJS_KES_CO', 'BPJS Kesehatan (Perusahaan)', 4.0, 12000000, '2026-01-01', datetime('now'));"#,
-                vec![],
-            ),
+            Statement::new(crate::desktop::payroll_seed::BPJS_RULES_SEED_SQL, vec![]),
             // Seed Schema Migration
             Statement::new(
                 r#"INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES
@@ -1583,6 +1740,14 @@ impl TursoClient {
             ("sync_operation_receipt", "actor_operator_id", "ALTER TABLE sync_operation_receipt ADD COLUMN actor_operator_id INTEGER;"),
             ("sync_operation_receipt", "receipt_json", "ALTER TABLE sync_operation_receipt ADD COLUMN receipt_json TEXT NOT NULL DEFAULT '{}';"),
             ("sync_operation_receipt", "processed_at", "ALTER TABLE sync_operation_receipt ADD COLUMN processed_at TEXT;"),
+            // Kolom berikut hanya dibuat jalur provisioning Rust, sehingga
+            // database yang lahir dari jalur Web tidak memilikinya. Ditambahkan
+            // di sini supaya klien mana pun bisa menyembuhkannya. Nullable:
+            // SQLite menolak `ADD COLUMN` dengan default non-konstan seperti
+            // `datetime('now')` — hanya `CREATE TABLE` yang mengizinkannya.
+            ("tax_rules", "created_at", "ALTER TABLE tax_rules ADD COLUMN created_at TEXT;"),
+            ("bpjs_rules", "created_at", "ALTER TABLE bpjs_rules ADD COLUMN created_at TEXT;"),
+            ("payroll_components", "created_at", "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
@@ -1641,12 +1806,131 @@ impl TursoClient {
         .await?;
 
         self.ensure_sync_pulse().await?;
+        self.purge_legacy_rate_rows().await?;
+        self.repair_web_owned_tables().await?;
         self.query_one(
-            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2005, 'sync-pulse-change-detection-v1', datetime('now'));",
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2006, 'sync-pulse-rate-seed-and-cloud-schema-unification-v1', datetime('now'));",
             vec![],
         )
         .await?;
 
+        Ok(())
+    }
+
+    /// Membangun ulang tabel milik Web yang terlanjur dibuat dengan skema karangan Rust.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` tidak memperbaiki tabel yang sudah ada, jadi
+    /// database yang pernah di-provisioning dari Desktop/Mobile akan selamanya
+    /// memakai kolom yang salah dan membuat login Web gagal. Kedua tabel ini
+    /// hanya menyimpan data sementara — sesi login dan penghitung rate limit —
+    /// sehingga membangunnya ulang aman: pengguna Web cukup login lagi.
+    async fn repair_web_owned_tables(&self) -> Result<(), CommandError> {
+        for (table, required_column, create_sql) in [
+            (
+                "app_session",
+                "token_hash",
+                r#"CREATE TABLE app_session (
+                    session_id TEXT PRIMARY KEY,
+                    token_hash TEXT UNIQUE NOT NULL,
+                    operator_id INTEGER NOT NULL,
+                    permission_revision INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    revoked_reason TEXT,
+                    user_agent_hash TEXT,
+                    FOREIGN KEY (operator_id) REFERENCES master_operator(id) ON DELETE CASCADE
+                );"#,
+            ),
+            (
+                "auth_login_rate_limit",
+                "rate_key",
+                r#"CREATE TABLE auth_login_rate_limit (
+                    rate_key TEXT PRIMARY KEY,
+                    attempt_count INTEGER NOT NULL,
+                    window_started_at TEXT NOT NULL,
+                    blocked_until TEXT,
+                    updated_at TEXT NOT NULL
+                );"#,
+            ),
+        ] {
+            let Ok(info) = self
+                .query_one(format!("PRAGMA table_info({table});"), vec![])
+                .await
+            else {
+                continue;
+            };
+            let rows = info.to_objects();
+            // Tabel belum ada: `ensure_schema` di atas sudah membuatnya benar.
+            if rows.is_empty() {
+                continue;
+            }
+            let correct = rows.iter().any(|row| {
+                row.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == required_column)
+            });
+            if correct {
+                continue;
+            }
+            let _ = self
+                .query_one(format!("DROP TABLE IF EXISTS {table};"), vec![])
+                .await;
+            self.query_one(create_sql, vec![]).await?;
+        }
+        Ok(())
+    }
+
+    /// Menghapus baris tarif hasil seed lokal versi lama yang sempat terdorong ke cloud.
+    ///
+    /// Seed lokal dulu memakai id bertanda hubung (`tax-p17-1`, `bpjs-jkk`) sedangkan
+    /// cloud memakai garis bawah, sehingga backfill outbox menambahkan bracket
+    /// PASAL_17 kedua di cloud dan seluruh perangkat menarik tarif dobel itu.
+    /// Daftar id sengaja eksplisit supaya tarif buatan admin tidak pernah tersentuh.
+    async fn purge_legacy_rate_rows(&self) -> Result<(), CommandError> {
+        let placeholders = vec!["?"; crate::desktop::payroll_seed::LEGACY_RATE_IDS.len()].join(", ");
+        let args: Vec<Value> = crate::desktop::payroll_seed::LEGACY_RATE_IDS
+            .iter()
+            .map(|id| json!(id))
+            .collect();
+        for table in ["tax_rules", "bpjs_rules", "overtime_tier_rules"] {
+            let _ = self
+                .query_one(
+                    format!("DELETE FROM {table} WHERE id IN ({placeholders});"),
+                    args.clone(),
+                )
+                .await;
+        }
+        // Changelog dan receipt event lama ikut dibuang supaya perangkat yang
+        // masih mengantre event tersebut tidak menghidupkannya kembali.
+        let _ = self
+            .query_one(
+                format!("DELETE FROM sync_changelog WHERE domain = 'payroll' AND entity_key IN ({placeholders});"),
+                args,
+            )
+            .await;
+
+        // Konfigurasi koneksi milik satu perangkat pernah ikut terdorong ke cloud
+        // lewat "Kirim ulang pengaturan lokal", lalu tertarik oleh perangkat lain.
+        let setting_placeholders =
+            vec!["?"; crate::desktop::sync::DEVICE_LOCAL_SETTING_KEYS.len()].join(", ");
+        let setting_args: Vec<Value> = crate::desktop::sync::DEVICE_LOCAL_SETTING_KEYS
+            .iter()
+            .map(|key| json!(key))
+            .collect();
+        let _ = self
+            .query_one(
+                format!("DELETE FROM setting_gex_system WHERE key IN ({setting_placeholders});"),
+                setting_args.clone(),
+            )
+            .await;
+        let _ = self
+            .query_one(
+                format!("DELETE FROM sync_changelog WHERE domain = 'setting' AND entity_key IN ({setting_placeholders});"),
+                setting_args,
+            )
+            .await;
         Ok(())
     }
 
@@ -1723,7 +2007,7 @@ impl TursoClient {
         }
         let current = self
             .query_one(
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2005;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2006;",
                 vec![],
             )
             .await
@@ -1886,6 +2170,8 @@ impl TursoClient {
             configured: true,
             required: active_superadmins == 0,
             server_origin: self.base_url.origin().ascii_serialization(),
+            reachable: true,
+            message: None,
         })
     }
 
@@ -2013,6 +2299,19 @@ impl TursoClient {
             )
             .await?;
         }
+        self.hydrate_operator(row, op_id).await
+    }
+
+    /// Susun `OperatorUser` lengkap dari satu baris `master_operator` + `app_role`.
+    ///
+    /// Dipakai bersama oleh login dan pemuatan ulang sesi. Menyalin blok ini ke
+    /// dua tempat akan membuat keduanya drift: permission hasil login dan
+    /// permission hasil revalidasi harus dihitung dengan aturan yang persis sama.
+    async fn hydrate_operator(
+        &self,
+        row: &HashMap<String, Value>,
+        operator_id: i64,
+    ) -> Result<OperatorUser, CommandError> {
         let kode_operator = row
             .get("kode_operator")
             .and_then(Value::as_str)
@@ -2087,7 +2386,7 @@ impl TursoClient {
             .unwrap_or(1);
 
         Ok(OperatorUser {
-            id: op_id,
+            id: operator_id,
             kode_operator,
             nama_operator,
             username,
@@ -2099,6 +2398,34 @@ impl TursoClient {
             permission_revision,
             login_at: Some(chrono_like_now_iso()),
         })
+    }
+
+    /// Muat ulang status dan permission operator yang sedang memegang sesi.
+    ///
+    /// `Ok(None)` berarti operator sudah dihapus, dinonaktifkan, atau role-nya
+    /// dimatikan di cloud — sesi perangkat WAJIB dicabut. Kegagalan jaringan
+    /// tetap dikembalikan sebagai `Err` supaya sesi tidak pernah dicabut hanya
+    /// karena koneksi sedang terganggu; itu akan membuat perangkat lapangan
+    /// terlempar keluar setiap kali sinyal turun.
+    pub async fn reload_operator(
+        &self,
+        operator_id: i64,
+    ) -> Result<Option<OperatorUser>, CommandError> {
+        let sql = r#"
+            SELECT
+                m.id, m.kode_operator, m.nama_operator, m.username,
+                m.role_id, r.role_key, r.nama_role, r.is_superadmin
+            FROM master_operator m
+            JOIN app_role r ON r.id = m.role_id
+            WHERE m.id = ? AND m.status = 'Aktif' AND r.status = 'Aktif'
+            LIMIT 1;
+        "#;
+        let result = self.query_one(sql, vec![json!(operator_id)]).await?;
+        let objects = result.to_objects();
+        let Some(row) = objects.first() else {
+            return Ok(None);
+        };
+        self.hydrate_operator(row, operator_id).await.map(Some)
     }
 
     /// Membaca penghitung perubahan per tabel dari `sync_pulse`.
@@ -2278,6 +2605,56 @@ impl TursoClient {
             }
         }
 
+        // Kondisi absensi cloud untuk seluruh batch, satu query. Dipakai menegakkan
+        // hierarki prioritas dan konkurensi optimistis sebelum baris ditimpa.
+        let mut attendance_guard: HashMap<String, AttendanceGuardRow> = HashMap::new();
+        let guarded_sessions: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                let domain = event.get("domain").and_then(Value::as_str)?;
+                let operation = event.get("operation").and_then(Value::as_str)?;
+                let (domain, operation) = canonical_sync_route(domain, operation)?;
+                let payload = event
+                    .get("payload")
+                    .or_else(|| event.get("payload_json"))
+                    .or_else(|| event.get("payloadJson"))?;
+                attendance_session_of(domain, operation, payload)
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !guarded_sessions.is_empty() {
+            let placeholders = vec!["?"; guarded_sessions.len()].join(", ");
+            let result = self
+                .query_one(
+                    format!(
+                        "SELECT id_sesi, sumber, update_terakhir FROM absensi_harian WHERE id_sesi IN ({placeholders});"
+                    ),
+                    guarded_sessions.iter().map(|id| json!(id)).collect(),
+                )
+                .await?;
+            for row in result.to_objects() {
+                let Some(id_sesi) = row.get("id_sesi").and_then(Value::as_str) else {
+                    continue;
+                };
+                attendance_guard.insert(
+                    id_sesi.to_owned(),
+                    AttendanceGuardRow {
+                        sumber: row
+                            .get("sumber")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        update_terakhir: row
+                            .get("update_terakhir")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    },
+                );
+            }
+        }
+
         for event in events {
             let event_id = event
                 .get("event_id")
@@ -2412,6 +2789,25 @@ impl TursoClient {
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or_default();
 
+            // Guard absensi dijalankan SEBELUM mutasi disusun, meniru urutan yang
+            // sudah dipakai jalur Web di `sync-push.ts`.
+            if let Err(error) = assert_attendance_precondition(
+                domain,
+                operation,
+                &parsed_payload,
+                attendance_session_of(domain, operation, &parsed_payload)
+                    .and_then(|id_sesi| attendance_guard.get(&id_sesi)),
+            ) {
+                push_results.push(json!({
+                    "eventId": event_id,
+                    "status": "conflict",
+                    "reason": error.message.clone(),
+                    "message": error.message,
+                    "serverRevision": 0
+                }));
+                continue;
+            }
+
             let collector = StatementCollector::default();
             if let Err(error) =
                 apply_event_to_turso(&collector, domain, operation, entity_key, &parsed_payload)
@@ -2482,7 +2878,7 @@ impl TursoClient {
                     receipt_json, created_at, processed_at
                 ) VALUES (?, ?, ?, ?, ?,
                     ?, (SELECT id FROM sync_changelog WHERE event_id = ?),
-                    'applied', ?, ?, 0, ?, ?, datetime('now'));"#,
+                    'applied', ?, ?, 0, ?, datetime('now'), datetime('now'));"#,
                 vec![
                     json!(event_id),
                     json!(client_id),
@@ -2494,7 +2890,6 @@ impl TursoClient {
                     json!(receipt.to_string()),
                     json!(base_revision),
                     json!(receipt.to_string()),
-                    json!(now_epoch),
                 ],
             ));
 
@@ -2622,14 +3017,28 @@ impl TursoClient {
         }
 
         let password_hash = hash_password_pbkdf2(password);
-        let now_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default();
 
+        // Kolom warisan `role` WAJIB diisi: pada database yang di-provisioning
+        // dari Web ia `NOT NULL` dengan CHECK ('Admin','Operator','Scanner') dan
+        // tanpa DEFAULT, sehingga INSERT tanpa `role` selalu ditolak. Nilainya
+        // diturunkan dari `app_role` agar tetap konsisten dengan RBAC.
         let sql = r#"
-            INSERT INTO master_operator (kode_operator, nama_operator, username, password_hash, role_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO master_operator (
+                kode_operator, nama_operator, username, password_hash,
+                role, role_id, status, created_at, updated_at
+            )
+            VALUES (
+                ?, ?, ?, ?,
+                COALESCE((
+                    SELECT CASE
+                        WHEN r.is_superadmin = 1 THEN 'Admin'
+                        WHEN LOWER(r.role_key) = 'admin' THEN 'Admin'
+                        WHEN LOWER(r.role_key) = 'scanner' THEN 'Scanner'
+                        ELSE 'Operator'
+                    END FROM app_role r WHERE r.id = ?
+                ), 'Operator'),
+                ?, ?, datetime('now'), datetime('now')
+            );
         "#;
 
         let res = self
@@ -2641,9 +3050,8 @@ impl TursoClient {
                     json!(username),
                     json!(password_hash),
                     json!(role_id),
+                    json!(role_id),
                     json!(status),
-                    json!(now_epoch),
-                    json!(now_epoch),
                 ],
             )
             .await?;
@@ -3321,6 +3729,71 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         _ => return None,
     };
     sync::is_canonical_sync_route(route.0, route.1).then_some(route)
+}
+
+/// Kondisi baris absensi cloud saat batch push dimulai.
+struct AttendanceGuardRow {
+    sumber: String,
+    update_terakhir: String,
+}
+
+/// `id_sesi` absensi yang disentuh sebuah event, bila event-nya memang menulis absensi.
+fn attendance_session_of(domain: &str, operation: &str, payload: &Value) -> Option<String> {
+    let touches_attendance = matches!(
+        (domain, operation),
+        ("attendance", "scan") | ("correction", "create") | ("offline-import", "row")
+    );
+    if !touches_attendance {
+        return None;
+    }
+    payload
+        .get("attendance")
+        .and_then(|attendance| attendance.get("id_sesi"))
+        .and_then(Value::as_str)
+        .filter(|id_sesi| !id_sesi.is_empty())
+        .map(str::to_owned)
+}
+
+/// Menegakkan hierarki prioritas absensi dan pemeriksaan konkurensi optimistis.
+///
+/// Jalur HTTP Web sudah melakukan ini di `sync-push.ts`, tetapi jalur Turso
+/// 2-tier — yang justru dipakai Desktop dan Mobile — dulu menimpa `absensi_harian`
+/// tanpa syarat. Akibatnya scan terminal yang datang belakangan bisa menghapus
+/// Koreksi Admin, dan dua perangkat yang menyunting sesi yang sama saling
+/// menimpa diam-diam. `attendanceBaseUpdatedAt` sudah dikirim client dan
+/// divalidasi `sync-schema.ts`, hanya tidak pernah dibaca di sini.
+fn assert_attendance_precondition(
+    domain: &str,
+    operation: &str,
+    payload: &Value,
+    current: Option<&AttendanceGuardRow>,
+) -> Result<(), CommandError> {
+    if attendance_session_of(domain, operation, payload).is_none() {
+        return Ok(());
+    }
+    if let Some(row) = current {
+        if row.sumber == "Koreksi Admin" && domain != "correction" {
+            return Err(CommandError::new(
+                "TURSO_SYNC_ATTENDANCE_PROTECTED",
+                "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain.",
+            ));
+        }
+    }
+    let base = payload
+        .get("attendanceBaseUpdatedAt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let stale = match current {
+        Some(row) => base.is_empty() || row.update_terakhir != base,
+        None => !base.is_empty(),
+    };
+    if stale {
+        return Err(CommandError::new(
+            "TURSO_SYNC_ATTENDANCE_STALE",
+            "Data absensi server berubah setelah event lokal dibuat.",
+        ));
+    }
+    Ok(())
 }
 
 async fn apply_event_to_turso(
@@ -4929,20 +5402,136 @@ mod tests {
 
     #[test]
     fn test_normalize_turso_url() {
+        let turso = |raw: &str| normalize_database_url(raw, DatabaseProvider::Turso, false);
         assert_eq!(
-            normalize_turso_url("libsql://my-db.turso.io")
-                .unwrap()
-                .as_str(),
+            turso("libsql://my-db.turso.io").unwrap().as_str(),
             "https://my-db.turso.io/"
         );
         assert_eq!(
-            normalize_turso_url("https://my-db.turso.io/path?query=1")
-                .unwrap()
-                .as_str(),
+            turso("https://my-db.turso.io/path?query=1").unwrap().as_str(),
             "https://my-db.turso.io/"
         );
-        assert!(normalize_turso_url("ftp://my-db.turso.io").is_err());
-        assert!(normalize_turso_url("").is_err());
+        assert!(turso("ftp://my-db.turso.io").is_err());
+        assert!(turso("").is_err());
+    }
+
+    #[test]
+    fn self_hosted_allows_plain_http_on_private_networks() {
+        // Justru inilah tujuan mode server sendiri: server libSQL di LAN kantor
+        // atau di rumah yang berjalan tanpa TLS. Ini harus lolos pada build
+        // rilis, bukan hanya pada build debug.
+        for address in [
+            "http://192.168.1.10:8080",
+            "http://10.20.30.40:8080",
+            "http://172.16.5.4:8080",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://nas.local:8080",
+            "ws://192.168.1.10:8080",
+        ] {
+            assert!(
+                normalize_database_url(address, DatabaseProvider::SelfHosted, false).is_ok(),
+                "alamat privat harus diterima: {address}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_hosted_rejects_plain_http_on_public_hosts_unless_opted_in() {
+        // VPS berisi IP publik: HTTP polos di sana mengirim Auth Token dan data
+        // absensi tanpa enkripsi, jadi harus ditolak sampai pengguna menyatakan
+        // menerima risikonya secara eksplisit.
+        let error = normalize_database_url("http://203.0.113.10:8080", DatabaseProvider::SelfHosted, false)
+            .expect_err("host publik ber-HTTP harus ditolak tanpa opt-in");
+        assert_eq!(error.code, "TURSO_URL_INSECURE");
+        assert!(
+            normalize_database_url("http://203.0.113.10:8080", DatabaseProvider::SelfHosted, true)
+                .is_ok()
+        );
+        // Opt-in tidak boleh menular ke provider Turso terkelola.
+        assert!(normalize_database_url("http://203.0.113.10:8080", DatabaseProvider::Turso, true).is_err());
+    }
+
+    #[test]
+    fn self_hosted_keeps_custom_port_and_strips_path() {
+        let url = normalize_database_url(
+            "http://192.168.1.10:9000/some/path?x=1#frag",
+            DatabaseProvider::SelfHosted,
+            false,
+        )
+        .unwrap();
+        assert_eq!(url.as_str(), "http://192.168.1.10:9000/");
+    }
+
+    #[test]
+    fn database_url_never_carries_credentials() {
+        for provider in [DatabaseProvider::Turso, DatabaseProvider::SelfHosted] {
+            assert!(
+                normalize_database_url("https://user:secret@db.example.com", provider, false)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn auth_token_is_optional_only_where_it_is_safe() {
+        // sqld di LAN lazim berjalan tanpa autentikasi sama sekali.
+        let lan = TursoConfig::new(
+            "http://192.168.1.10:8080".into(),
+            String::new(),
+            DatabaseProvider::SelfHosted,
+            false,
+        );
+        assert!(!lan.requires_auth_token());
+        assert!(TursoClient::from_config(&lan, Client::new()).is_ok());
+
+        // Server sendiri yang sudah ber-HTTPS publik berarti terekspos internet:
+        // token menjadi satu-satunya penghalang yang tersisa.
+        let public = TursoConfig::new(
+            "https://db.kantor-anda.com".into(),
+            String::new(),
+            DatabaseProvider::SelfHosted,
+            false,
+        );
+        assert!(public.requires_auth_token());
+        assert!(TursoClient::from_config(&public, Client::new()).is_err());
+
+        // Turso terkelola selalu wajib token.
+        let turso = TursoConfig::turso("libsql://my-db.turso.io".into(), String::new());
+        assert!(turso.requires_auth_token());
+        assert!(TursoClient::from_config(&turso, Client::new()).is_err());
+    }
+
+    #[test]
+    fn matches_url_compares_normalized_spellings() {
+        let config = TursoConfig::turso("libsql://my-db.turso.io".into(), "token".into());
+        assert!(config.matches_url("https://my-db.turso.io"));
+        assert!(config.matches_url("https://my-db.turso.io/"));
+        assert!(config.matches_url("  libsql://my-db.turso.io  "));
+        assert!(!config.matches_url("https://other-db.turso.io"));
+    }
+
+    #[test]
+    fn insecure_flag_is_dropped_outside_self_hosted_mode() {
+        let config = TursoConfig::new(
+            "libsql://my-db.turso.io".into(),
+            "token".into(),
+            DatabaseProvider::Turso,
+            true,
+        );
+        assert!(!config.allow_insecure_transport);
+    }
+
+    #[test]
+    fn legacy_vault_payload_defaults_to_turso_provider() {
+        // Vault yang ditulis versi lama hanya memuat dua field. Kalau default-nya
+        // tidak Turso, seluruh instalasi lama akan gagal memuat konfigurasi.
+        let config: TursoConfig = serde_json::from_str(
+            r#"{"database_url":"libsql://my-db.turso.io","auth_token":"token"}"#,
+        )
+        .unwrap();
+        assert_eq!(config.provider, DatabaseProvider::Turso);
+        assert!(!config.allow_insecure_transport);
     }
 
     #[test]
@@ -5046,5 +5635,76 @@ mod tests {
         let params_empty = extract_attendance_row_params(&att_empty, "SESI001");
         assert_eq!(params_empty[18], json!("Agustus"));
         assert_eq!(params_empty[19], json!(2026));
+    }
+
+    #[test]
+    fn scan_tidak_boleh_menimpa_koreksi_admin_di_jalur_turso() {
+        let payload = json!({
+            "attendance": { "id_sesi": "SESI-1" },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
+        });
+        let dikoreksi = AttendanceGuardRow {
+            sumber: "Koreksi Admin".into(),
+            update_terakhir: "2026-08-10 07:30:00".into(),
+        };
+
+        // Scanner terminal berada di bawah Koreksi Admin pada hierarki prioritas.
+        let ditolak =
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&dikoreksi));
+        assert_eq!(
+            ditolak.unwrap_err().code,
+            "TURSO_SYNC_ATTENDANCE_PROTECTED"
+        );
+
+        // Import offline juga tidak boleh menimpa koreksi admin.
+        assert!(
+            assert_attendance_precondition("offline-import", "row", &payload, Some(&dikoreksi))
+                .is_err()
+        );
+
+        // Koreksi admin berikutnya tetap boleh menulis.
+        assert!(
+            assert_attendance_precondition("correction", "create", &payload, Some(&dikoreksi))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn event_absensi_basi_ditolak_sebagai_konflik() {
+        let payload = json!({
+            "attendance": { "id_sesi": "SESI-1" },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
+        });
+        let berubah = AttendanceGuardRow {
+            sumber: "Scanner".into(),
+            update_terakhir: "2026-08-10 09:00:00".into(),
+        };
+        assert_eq!(
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&berubah))
+                .unwrap_err()
+                .code,
+            "TURSO_SYNC_ATTENDANCE_STALE"
+        );
+
+        // Basis sama: boleh lanjut.
+        let sama = AttendanceGuardRow {
+            sumber: "Scanner".into(),
+            update_terakhir: "2026-08-10 07:30:00".into(),
+        };
+        assert!(
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&sama)).is_ok()
+        );
+
+        // Baris belum ada dan client tidak mengirim basis: sesi baru, boleh lanjut.
+        let baru = json!({ "attendance": { "id_sesi": "SESI-2" } });
+        assert!(assert_attendance_precondition("attendance", "scan", &baru, None).is_ok());
+
+        // Client mengira ada basis padahal baris sudah hilang: konflik.
+        assert!(assert_attendance_precondition("attendance", "scan", &payload, None).is_err());
+
+        // Domain yang tidak menyentuh absensi tidak terpengaruh guard ini.
+        assert!(
+            assert_attendance_precondition("employee", "update", &payload, Some(&berubah)).is_ok()
+        );
     }
 }

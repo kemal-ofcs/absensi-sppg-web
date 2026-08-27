@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { type Client, createClient } from "@libsql/client";
 import {
   hashPassword,
@@ -134,6 +135,46 @@ describe("password hashing", () => {
       needsUpgrade: false,
     });
   }, 20000);
+});
+
+describe("provisioning silang Web dan Desktop/Mobile", () => {
+  test("migrasi menambal kolom yang hanya dibuat jalur Rust", async () => {
+    // Database yang lahir dari jalur Web versi lama: tabel tarif tanpa
+    // `created_at`, padahal seed dan bootstrap dari Desktop/Mobile memakainya.
+    const legacyClient = createClient({ url: "file::memory:" });
+    try {
+      await legacyClient.execute(`
+        CREATE TABLE tax_rules (
+          id TEXT PRIMARY KEY,
+          category TEXT NOT NULL,
+          bracket_min INTEGER NOT NULL,
+          bracket_max INTEGER,
+          rate_percentage REAL NOT NULL,
+          effective_date TEXT NOT NULL
+        );
+      `);
+      await initDatabaseSchema(legacyClient);
+
+      const info = await legacyClient.execute("PRAGMA table_info(tax_rules);");
+      const columns = info.rows.map((row) => String(row.name));
+      expect(columns).toContain("created_at");
+    } finally {
+      legacyClient.close();
+    }
+  }, 20000);
+
+  test("semua ALTER ADD COLUMN memakai default konstan", async () => {
+    // SQLite menolak `ADD COLUMN ... DEFAULT (datetime('now'))`; hanya
+    // `CREATE TABLE` yang boleh memakai default non-konstan. Aturan ini pernah
+    // membuat seluruh migrasi Web gagal di tengah jalan.
+    const source = await Bun.file(
+      fileURLToPath(new URL("../db-migrations.ts", import.meta.url)),
+    ).text();
+    const offenders = [
+      ...source.matchAll(/ADD COLUMN[^"']*DEFAULT\s*\(([^)]*)\)/gi),
+    ].map((match) => match[0]);
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("production schema initialization", () => {

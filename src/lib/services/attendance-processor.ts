@@ -11,18 +11,14 @@ import {
   type TimeScanDecision,
   tentukanTanggalKerja,
 } from "@/lib/attendance/time-policy";
-import type { ScanResult } from "@/lib/contracts/scanner";
+import type { AttendanceSource, ScanResult } from "@/lib/contracts/scanner";
 import { hitungJarakHaversine, parseQrToken } from "@/lib/validations/scanner";
 
 export interface ScanPayload {
   qrText: string;
   lat?: number | null;
   lng?: number | null;
-  sumberScan?:
-    | "Scanner"
-    | "Koreksi Admin"
-    | "Import Offline"
-    | "Generate Sistem";
+  sumberScan?: AttendanceSource;
   kodeOperator?: string;
 }
 

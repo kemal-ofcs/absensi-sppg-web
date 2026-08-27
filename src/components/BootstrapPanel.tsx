@@ -1,21 +1,40 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   type BootstrapStatus,
   bootstrapSuperadmin,
   checkBootstrapDatabase,
   type DatabaseCheckResult,
+  type DatabaseCredentials,
   linkBootstrapDatabase,
 } from "@/lib/gateways/bootstrap";
 import {
   type DatabaseCheckTone,
   summarizeDatabaseCheck,
 } from "@/lib/utils/bootstrap-check";
+import {
+  DATABASE_PROVIDER_OPTIONS,
+  type DatabaseProvider,
+  describeProvider,
+  reviewDatabaseEndpoint,
+} from "@/lib/validations/database-endpoint";
 
 type BootstrapPanelProps = {
   status: BootstrapStatus;
   onCompleted: () => void;
+  /**
+   * Diisi hanya ketika panel dibuka manual dari layar login (kredensial sudah
+   * ada tetapi database cloud-nya tidak menjawab). Tanpa jalan kembali,
+   * pengguna yang sekadar sedang offline akan terjebak di panel ini.
+   */
+  onCancel?: () => void;
 };
 
 const TONE_CARD: Record<DatabaseCheckTone, string> = {
@@ -36,7 +55,13 @@ const TONE_LABEL: Record<DatabaseCheckTone, string> = {
   danger: "Bahaya",
 };
 
-export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
+export function BootstrapPanel({
+  status,
+  onCompleted,
+  onCancel,
+}: BootstrapPanelProps) {
+  const [provider, setProvider] = useState<DatabaseProvider>("turso");
+  const [allowInsecure, setAllowInsecure] = useState(false);
   const [databaseUrl, setDatabaseUrl] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [name, setName] = useState("");
@@ -58,31 +83,52 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
       (!summary.requiresConfirmation || forceProceed),
   );
 
+  const providerInfo = describeProvider(provider);
+
+  // Cermin sisi klien dari aturan Rust: memberi tahu sebelum tombol ditekan,
+  // bukan setelah IPC gagal. Backend tetap penjaga yang sebenarnya.
+  const endpoint = useMemo(
+    () => reviewDatabaseEndpoint(databaseUrl, provider, allowInsecure),
+    [databaseUrl, provider, allowInsecure],
+  );
+
+  const credentialsReady =
+    !needsCredentials ||
+    (endpoint.valid &&
+      (!endpoint.tokenRequired || authToken.trim().length > 0));
+
   const resetCheck = useCallback(() => {
     setCheck(null);
     setForceProceed(false);
   }, []);
 
-  const runCheck = useCallback(
-    async (credentials: { databaseUrl?: string; authToken?: string }) => {
-      setChecking(true);
-      setFeedback("");
-      try {
-        setCheck(await checkBootstrapDatabase(credentials));
-        setForceProceed(false);
-      } catch (error: unknown) {
-        setCheck(null);
-        setFeedback(
-          error instanceof Error
-            ? error.message
-            : "Pemeriksaan database tidak dapat diproses.",
-        );
-      } finally {
-        setChecking(false);
-      }
-    },
-    [],
-  );
+  const credentials = useCallback((): DatabaseCredentials => {
+    if (!needsCredentials) return {};
+    return {
+      databaseUrl,
+      authToken,
+      provider,
+      allowInsecureTransport: allowInsecure,
+    };
+  }, [needsCredentials, databaseUrl, authToken, provider, allowInsecure]);
+
+  const runCheck = useCallback(async (payload: DatabaseCredentials) => {
+    setChecking(true);
+    setFeedback("");
+    try {
+      setCheck(await checkBootstrapDatabase(payload));
+      setForceProceed(false);
+    } catch (error: unknown) {
+      setCheck(null);
+      setFeedback(
+        error instanceof Error
+          ? error.message
+          : "Pemeriksaan database tidak dapat diproses.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }, []);
 
   // Kredensial sudah tersimpan di vault: periksa otomatis tanpa input ulang.
   useEffect(() => {
@@ -92,16 +138,14 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
   }, [status.configured, editingDatabase, runCheck]);
 
   const handleCheck = () => {
-    void runCheck(needsCredentials ? { databaseUrl, authToken } : {});
+    void runCheck(credentials());
   };
 
   const handleUseExisting = async () => {
     setLinking(true);
     setFeedback("");
     try {
-      await linkBootstrapDatabase(
-        needsCredentials ? { databaseUrl, authToken } : {},
-      );
+      await linkBootstrapDatabase(credentials());
       onCompleted();
     } catch (error: unknown) {
       setFeedback(
@@ -136,6 +180,8 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
         password,
         databaseUrl: needsCredentials ? databaseUrl : undefined,
         authToken: needsCredentials ? authToken : undefined,
+        provider: needsCredentials ? provider : undefined,
+        allowInsecureTransport: needsCredentials ? allowInsecure : undefined,
       });
       setPassword("");
       setConfirmation("");
@@ -165,6 +211,15 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
           Database diperiksa lebih dulu agar salah input URL dapat ditahan, dan
           agar terlihat apakah Superadmin sudah pernah dibuat di sana.
         </p>
+        {status.configured && !status.reachable ? (
+          <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-950/40 p-3 text-xs leading-5 text-amber-100">
+            <span className="font-bold">
+              Database cloud tersimpan tidak dapat dihubungi.
+            </span>{" "}
+            {status.message ??
+              "Perangkat ini masih menunjuk database lama. Kalau database itu memang sudah dihapus atau diganti, tekan “Ganti database” lalu masukkan URL dan Auth Token yang baru."}
+          </div>
+        ) : null}
         {status.configured ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 truncate rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-sky-200">
@@ -191,21 +246,67 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
         <div className="mt-5 grid gap-4">
           {needsCredentials ? (
             <>
+              <fieldset className="grid gap-2">
+                <legend className="text-xs font-bold text-slate-300">
+                  Jenis database
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {DATABASE_PROVIDER_OPTIONS.map((option) => (
+                    <label
+                      key={option.value}
+                      className={`grid min-w-0 cursor-pointer gap-1 rounded-xl border p-3 text-xs leading-4 transition ${
+                        provider === option.value
+                          ? "border-sky-400/60 bg-sky-400/10 text-sky-100"
+                          : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 font-black">
+                        <input
+                          type="radio"
+                          name="database-provider"
+                          value={option.value}
+                          checked={provider === option.value}
+                          onChange={() => {
+                            setProvider(option.value);
+                            setAllowInsecure(false);
+                            resetCheck();
+                          }}
+                          className="size-4 shrink-0 accent-sky-400"
+                        />
+                        <span className="min-w-0 truncate">{option.label}</span>
+                      </span>
+                      <span className="font-normal opacity-80">
+                        {option.description}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
               <label className="grid gap-1.5 text-xs font-bold text-slate-300">
-                URL database Turso
+                {provider === "turso"
+                  ? "URL database Turso"
+                  : "Alamat server database"}
                 <input
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   value={databaseUrl}
                   onChange={(event) => {
                     setDatabaseUrl(event.target.value);
                     resetCheck();
                   }}
-                  placeholder="libsql://database-anda.turso.io"
+                  placeholder={providerInfo.urlPlaceholder}
                   className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
                 />
+                {databaseUrl.trim().length > 0 && endpoint.issue ? (
+                  <span className="font-normal leading-5 text-amber-300">
+                    {endpoint.issue.message}
+                  </span>
+                ) : null}
               </label>
               <label className="grid gap-1.5 text-xs font-bold text-slate-300">
-                Auth Token Turso
+                {endpoint.tokenRequired
+                  ? "Auth Token"
+                  : "Auth Token (opsional)"}
                 <input
                   type="password"
                   value={authToken}
@@ -213,21 +314,34 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
                     setAuthToken(event.target.value);
                     resetCheck();
                   }}
+                  placeholder={providerInfo.tokenPlaceholder}
                   autoComplete="off"
                   className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
                 />
               </label>
+              {provider === "self_hosted" &&
+              endpoint.issue?.code === "INSECURE_PUBLIC" ? (
+                <label className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-[11px] font-bold leading-4 text-rose-100">
+                  <input
+                    type="checkbox"
+                    checked={allowInsecure}
+                    onChange={(event) => {
+                      setAllowInsecure(event.target.checked);
+                      resetCheck();
+                    }}
+                    className="mt-0.5 size-4 shrink-0 accent-rose-400"
+                  />
+                  Izinkan koneksi tanpa enkripsi. Auth Token dan data absensi
+                  akan dikirim sebagai teks biasa — hanya pakai ini pada
+                  jaringan yang benar-benar Anda percayai.
+                </label>
+              ) : null}
             </>
           ) : null}
           <button
             type="button"
             onClick={handleCheck}
-            disabled={
-              checking ||
-              linking ||
-              submitting ||
-              (needsCredentials && (!databaseUrl.trim() || !authToken.trim()))
-            }
+            disabled={checking || linking || submitting || !credentialsReady}
             className="min-h-12 rounded-2xl border border-sky-400/40 bg-sky-400/10 px-4 text-sm font-black text-sky-200 disabled:opacity-50"
           >
             {checking ? "Memeriksa database..." : "Cek database"}
@@ -370,6 +484,15 @@ export function BootstrapPanel({ status, onCompleted }: BootstrapPanelProps) {
             diperiksa dan dinyatakan siap.
           </p>
         )}
+        {onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="mt-4 min-h-11 w-full rounded-2xl border border-white/15 px-4 text-xs font-bold text-slate-300 hover:border-sky-400/40 hover:text-sky-200"
+          >
+            Kembali ke layar login
+          </button>
+        ) : null}
       </section>
     </main>
   );

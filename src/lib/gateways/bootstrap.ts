@@ -2,11 +2,23 @@
 
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
+import type { DatabaseProvider } from "@/lib/validations/database-endpoint";
 
 export type BootstrapStatus = {
   configured: boolean;
   required: boolean;
   serverOrigin: string;
+  /**
+   * Apakah database cloud tersimpan benar-benar menjawab.
+   *
+   * `configured` hanya berarti perangkat menyimpan kredensial. Kredensial yang
+   * menunjuk database Turso yang sudah dihapus tetap `configured: true` dengan
+   * `reachable: false` — layar login memakai selisih itu untuk menawarkan
+   * konfigurasi ulang database alih-alih membuntu di form login.
+   */
+  reachable: boolean;
+  /** Alasan `reachable: false`, langsung dari klien Turso. */
+  message: string | null;
 };
 
 export type BootstrapDraft = {
@@ -16,6 +28,8 @@ export type BootstrapDraft = {
   password: string;
   databaseUrl?: string;
   authToken?: string;
+  provider?: DatabaseProvider;
+  allowInsecureTransport?: boolean;
 };
 
 export async function getBootstrapStatus(): Promise<BootstrapStatus | null> {
@@ -38,6 +52,8 @@ export async function bootstrapSuperadmin(
     },
     databaseUrl: draft.databaseUrl?.trim() || null,
     authToken: draft.authToken?.trim() || null,
+    provider: draft.provider ?? null,
+    allowInsecureTransport: draft.allowInsecureTransport ?? null,
   });
 }
 
@@ -64,7 +80,22 @@ export type DatabaseCheckResult = {
 export type DatabaseCredentials = {
   databaseUrl?: string;
   authToken?: string;
+  /**
+   * Provider yang dipilih di formulir. Dikirim eksplisit supaya alamat LAN
+   * ber-HTTP tidak divalidasi memakai aturan Turso — yang akan menolaknya.
+   */
+  provider?: DatabaseProvider;
+  allowInsecureTransport?: boolean;
 };
+
+function credentialArgs(credentials: DatabaseCredentials) {
+  return {
+    databaseUrl: credentials.databaseUrl?.trim() || null,
+    authToken: credentials.authToken?.trim() || null,
+    provider: credentials.provider ?? null,
+    allowInsecureTransport: credentials.allowInsecureTransport ?? null,
+  };
+}
 
 /**
  * Pemeriksaan read-only database cloud sebelum Superadmin dibuat.
@@ -80,10 +111,7 @@ export async function checkBootstrapDatabase(
   }
   return invokeDesktop<DatabaseCheckResult>(
     "desktop_check_bootstrap_database",
-    {
-      databaseUrl: credentials.databaseUrl?.trim() || null,
-      authToken: credentials.authToken?.trim() || null,
-    },
+    credentialArgs(credentials),
   );
 }
 
@@ -96,8 +124,8 @@ export async function linkBootstrapDatabase(
       "Konfigurasi database hanya tersedia pada aplikasi desktop/mobile.",
     );
   }
-  return invokeDesktop<DatabaseCheckResult>("desktop_link_bootstrap_database", {
-    databaseUrl: credentials.databaseUrl?.trim() || null,
-    authToken: credentials.authToken?.trim() || null,
-  });
+  return invokeDesktop<DatabaseCheckResult>(
+    "desktop_link_bootstrap_database",
+    credentialArgs(credentials),
+  );
 }

@@ -2671,7 +2671,11 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
 
     for setting in settings {
         let key = setting.get("key").and_then(Value::as_str).unwrap_or("");
-        if !key.is_empty() {
+        // Kunci koneksi hanya berlaku di perangkat ini. Dulu tombol "Kirim ulang
+        // pengaturan lokal" ikut mendorong `turso_database_url` dan
+        // `server_api_base_url` ke cloud, lalu perangkat lain menariknya dan bisa
+        // diarahkan ke database yang salah saat startup.
+        if !key.is_empty() && !sync::is_device_local_setting(key) {
             let _ = sync::enqueue(
                 &transaction,
                 &client_id,

@@ -54,14 +54,20 @@ import {
 } from "@/lib/gateways/sync-status";
 import {
   clearTursoConfig,
-  getTursoUrl,
+  getDatabaseConfig,
   saveTursoConfig,
   type TursoConnectionStatus,
   testTursoConnection,
 } from "@/lib/gateways/turso-config";
-import { resetAppLogo, saveAppLogo, useAppLogo } from "@/lib/hooks/useAppLogo";
+import { syncAppLogoCache, useAppLogo } from "@/lib/hooks/useAppLogo";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
+import {
+  DATABASE_PROVIDER_OPTIONS,
+  type DatabaseProvider,
+  describeProvider,
+  reviewDatabaseEndpoint,
+} from "@/lib/validations/database-endpoint";
 import { validateGeofenceSettings } from "@/lib/validations/geofence";
 import { validateScannerSafetySettings } from "@/lib/validations/scanner-settings";
 
@@ -109,7 +115,11 @@ export default function SettingsPage() {
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [syncBusy, setSyncBusy] = useState(false);
   const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
   const [tursoUrl, setTursoUrl] = useState<string>("");
+  const [tursoProvider, setTursoProvider] = useState<DatabaseProvider>("turso");
+  const [tursoAllowInsecure, setTursoAllowInsecure] = useState<boolean>(false);
+  const [tursoTokenSaved, setTursoTokenSaved] = useState<boolean>(false);
   const [tursoToken, setTursoToken] = useState<string>("");
   const [showTursoToken, setShowTursoToken] = useState<boolean>(false);
   const [tursoTestStatus, setTursoTestStatus] =
@@ -182,11 +192,16 @@ export default function SettingsPage() {
       .catch(() => undefined);
 
     if (user?.isSuperadmin) {
-      getTursoUrl()
-        .then((url) => {
-          if (!cancelled && url) {
-            setTursoUrl(url);
-          }
+      // Provider ikut dimuat: tanpa itu perangkat yang terhubung ke server LAN
+      // selalu menampilkan ulang formulir dalam mode Turso, dan penyimpanan
+      // berikutnya akan menolak alamat LAN-nya sendiri.
+      getDatabaseConfig()
+        .then((config) => {
+          if (cancelled || !config.configured) return;
+          setTursoUrl(config.databaseUrl);
+          setTursoProvider(config.provider);
+          setTursoAllowInsecure(config.allowInsecureTransport);
+          setTursoTokenSaved(config.authTokenSaved);
         })
         .catch(() => undefined);
     }
@@ -460,26 +475,52 @@ export default function SettingsPage() {
     }
   };
 
+  // Cermin sisi klien dari `normalize_database_url` di Rust. Backend tetap
+  // penjaga sebenarnya; ini hanya supaya formulir bisa menjelaskan lebih awal.
+  const tursoEndpoint = reviewDatabaseEndpoint(
+    tursoUrl,
+    tursoProvider,
+    tursoAllowInsecure,
+  );
+  const tursoProviderInfo = describeProvider(tursoProvider);
+
   const handleTursoSave = async (e: FormEvent) => {
     e.preventDefault();
-    if (!tursoUrl.trim()) {
+    // Tahan input yang jelas salah di sini supaya pengguna melihat alasannya di
+    // sebelah field, bukan sebagai kegagalan IPC generik setelah penyimpanan.
+    if (!tursoEndpoint.valid) {
       setFeedback({
         type: "error",
-        message: "URL database cloud Turso tidak boleh kosong.",
+        message:
+          tursoEndpoint.issue?.message ?? "URL database tidak dapat dipakai.",
+      });
+      return;
+    }
+    if (tursoEndpoint.tokenRequired && !tursoToken.trim() && !tursoTokenSaved) {
+      setFeedback({
+        type: "error",
+        message: "Auth Token wajib diisi untuk alamat database ini.",
       });
       return;
     }
     setTursoBusy(true);
     try {
-      await saveTursoConfig(tursoUrl.trim(), tursoToken.trim());
+      await saveTursoConfig(tursoUrl.trim(), tursoToken.trim(), {
+        provider: tursoProvider,
+        allowInsecureTransport: tursoAllowInsecure,
+      });
+      setTursoTokenSaved(tursoToken.trim().length > 0 ? true : tursoTokenSaved);
       setFeedback({
         type: "success",
-        message:
-          "Konfigurasi database cloud Turso berhasil disimpan ke vault terenkripsi!",
+        message: `Konfigurasi ${describeProvider(tursoProvider).label} berhasil disimpan ke vault terenkripsi!`,
       });
       const status = await testTursoConnection(
         tursoUrl.trim(),
         tursoToken.trim(),
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
       );
       setTursoTestStatus(status);
     } catch (error) {
@@ -501,12 +542,16 @@ export default function SettingsPage() {
       const status = await testTursoConnection(
         tursoUrl.trim() || undefined,
         tursoToken.trim() || undefined,
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
       );
       setTursoTestStatus(status);
       if (status.connected) {
         setFeedback({
           type: "success",
-          message: `Koneksi ke Database Turso Berhasil! Latensi: ${status.latency_ms ?? 0} ms`,
+          message: `Koneksi ke database berhasil! Latensi: ${status.latency_ms ?? 0} ms`,
         });
       } else {
         setFeedback({
@@ -540,6 +585,9 @@ export default function SettingsPage() {
       await clearTursoConfig();
       setTursoUrl("");
       setTursoToken("");
+      setTursoProvider("turso");
+      setTursoAllowInsecure(false);
+      setTursoTokenSaved(false);
       setTursoTestStatus(null);
       setFeedback({
         type: "success",
@@ -558,7 +606,7 @@ export default function SettingsPage() {
     }
   };
 
-  const handleLogoUpload = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -580,40 +628,67 @@ export default function SettingsPage() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onerror = () => {
+    // Logo disimpan ke `company_profile.logo_url` supaya ikut outbox dan
+    // tersebar ke cloud, Desktop lain, dan Mobile. Sebelumnya logo hanya
+    // ditulis ke localStorage perangkat ini sehingga tidak pernah tersinkron.
+    setLogoBusy(true);
+    try {
+      const optimized = await optimizeImageFile(file, {
+        maxWidth: 600,
+        maxHeight: 600,
+        quality: 0.92,
+        mimeType: "image/png",
+        fit: "contain",
+      });
+      const updated = await updateCompanyProfile({
+        ...companyProfile,
+        logo_url: optimized.dataUrl,
+      });
+      setCompanyProfile(updated);
+      syncAppLogoCache(updated.logo_url);
+      setFeedback({
+        type: "success",
+        message: `Logo tersimpan di profil instansi (${formatBytes(optimized.originalSizeBytes)} ➔ ${formatBytes(optimized.optimizedSizeBytes)}) dan akan tersinkron ke perangkat lain.`,
+      });
+    } catch (error) {
       setFeedback({
         type: "error",
-        message: "File logo tidak dapat dibaca. Silakan coba file lain.",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Logo tidak dapat disimpan. Silakan coba file lain.",
       });
-    };
-    reader.onload = () => {
-      if (typeof reader.result !== "string") return;
-
-      try {
-        saveAppLogo(reader.result);
-        setFeedback({
-          type: "success",
-          message: "Logo berhasil diperbarui dan langsung diterapkan.",
-        });
-      } catch {
-        setFeedback({
-          type: "error",
-          message:
-            "Penyimpanan lokal penuh. Gunakan logo berukuran lebih kecil.",
-        });
-      }
-    };
-    reader.readAsDataURL(file);
-    event.target.value = "";
+    } finally {
+      setLogoBusy(false);
+      event.target.value = "";
+    }
   };
 
-  const handleResetLogo = () => {
-    resetAppLogo();
-    setFeedback({
-      type: "success",
-      message: "Logo dikembalikan ke identitas default SPPG.",
-    });
+  const handleResetLogo = async () => {
+    setLogoBusy(true);
+    try {
+      const updated = await updateCompanyProfile({
+        ...companyProfile,
+        logo_url: null,
+      });
+      setCompanyProfile(updated);
+      syncAppLogoCache(updated.logo_url);
+      setFeedback({
+        type: "success",
+        message:
+          "Logo dikembalikan ke identitas default SPPG untuk semua perangkat.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal mengembalikan logo ke default.",
+      });
+    } finally {
+      setLogoBusy(false);
+    }
   };
 
   const handleCompanyProfileSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -909,11 +984,12 @@ export default function SettingsPage() {
               className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 focus-within:ring-2 focus-within:ring-sky-200"
             >
               <Icon name="upload" className="size-4" />
-              Pilih logo baru
+              {logoBusy ? "Menyimpan logo…" : "Pilih logo baru"}
               <input
                 id="logo-upload-input"
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
+                disabled={logoBusy}
                 onChange={handleLogoUpload}
                 className="sr-only"
               />
@@ -921,6 +997,7 @@ export default function SettingsPage() {
             {logoUrl ? (
               <button
                 type="button"
+                disabled={logoBusy}
                 onClick={handleResetLogo}
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.05] px-4 text-sm font-bold text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               >
@@ -930,9 +1007,10 @@ export default function SettingsPage() {
             ) : null}
           </div>
 
-          <p className="mt-4 text-xs leading-5 text-amber-100/70">
-            Saat ini logo tersimpan di perangkat ini. Sinkronisasi logo lintas
-            perangkat akan ditentukan pada tahap offline–online.
+          <p className="mt-4 text-xs leading-5 text-slate-400">
+            Logo disimpan pada profil instansi dan ikut antrean sinkronisasi,
+            sehingga otomatis diterapkan di Desktop lain maupun Mobile setelah
+            sync berikutnya.
           </p>
         </section>
 
@@ -1340,7 +1418,7 @@ export default function SettingsPage() {
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-base font-black text-white">
-                    Konfigurasi Database Cloud (Turso LibSQL)
+                    Konfigurasi Database (LibSQL)
                   </h2>
                   <span className="rounded-md bg-cyan-400/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-300 border border-cyan-400/20">
                     Superadmin Only
@@ -1348,9 +1426,10 @@ export default function SettingsPage() {
                 </div>
                 <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
                   Aplikasi Desktop dan Mobile terhubung langsung ke database
-                  Cloud Turso (LibSQL HTTP Pipeline). Kredensial disimpan secara
-                  aman di dalam Vault terenkripsi AES-256-GCM pada perangkat
-                  ini.
+                  LibSQL lewat HTTP Pipeline — baik Turso Cloud maupun server
+                  libSQL milik Anda sendiri di kantor, rumah, atau VPS.
+                  Kredensial disimpan aman di dalam Vault terenkripsi
+                  AES-256-GCM pada perangkat ini.
                 </p>
               </div>
             </div>
@@ -1366,38 +1445,105 @@ export default function SettingsPage() {
               {tursoTestStatus?.connected
                 ? `Terhubung (${tursoTestStatus.latency_ms ?? 0} ms)`
                 : tursoUrl
-                  ? "Terkonfigurasi"
+                  ? tursoProviderInfo.label
                   : "Database Lokal"}
             </StatusBadge>
           </div>
 
           <form onSubmit={handleTursoSave} className="mt-6 space-y-4">
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-bold text-slate-300">
+                Jenis Database
+              </legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {DATABASE_PROVIDER_OPTIONS.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`grid min-w-0 cursor-pointer gap-1 rounded-xl border p-3 text-xs leading-4 transition ${
+                      tursoProvider === option.value
+                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-100"
+                        : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 font-black">
+                      <input
+                        type="radio"
+                        name="settings-database-provider"
+                        value={option.value}
+                        checked={tursoProvider === option.value}
+                        onChange={() => {
+                          setTursoProvider(option.value);
+                          setTursoAllowInsecure(false);
+                          setTursoTestStatus(null);
+                        }}
+                        className="size-4 shrink-0 accent-cyan-400"
+                      />
+                      <span className="min-w-0 truncate">{option.label}</span>
+                    </span>
+                    <span className="font-normal opacity-80">
+                      {option.description}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
-                URL Database Cloud Turso
+                {tursoProvider === "turso"
+                  ? "URL Database Cloud Turso"
+                  : "Alamat Server Database Anda"}
                 <div className="relative">
                   <input
                     type="text"
+                    inputMode="url"
                     value={tursoUrl}
-                    onChange={(e) => setTursoUrl(e.target.value)}
-                    placeholder="libsql://absensi-sppg-org.turso.io atau https://absensi-sppg-org.turso.io"
+                    onChange={(e) => {
+                      setTursoUrl(e.target.value);
+                      setTursoTestStatus(null);
+                    }}
+                    placeholder={tursoProviderInfo.urlPlaceholder}
                     className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-cyan-400"
                   />
                 </div>
-                <span className="text-[11px] font-normal text-slate-500">
-                  Contoh format:{" "}
-                  <code className="text-slate-400">
-                    libsql://nama-db-org.turso.io
-                  </code>{" "}
-                  atau{" "}
-                  <code className="text-slate-400">
-                    https://nama-db-org.turso.io
-                  </code>
-                </span>
+                {tursoUrl.trim().length > 0 && tursoEndpoint.issue ? (
+                  <span className="block text-[11px] font-normal text-amber-300">
+                    {tursoEndpoint.issue.message}
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-normal text-slate-500">
+                    {tursoProvider === "turso" ? (
+                      <>
+                        Contoh format:{" "}
+                        <code className="text-slate-400">
+                          libsql://nama-db-org.turso.io
+                        </code>{" "}
+                        atau{" "}
+                        <code className="text-slate-400">
+                          https://nama-db-org.turso.io
+                        </code>
+                      </>
+                    ) : (
+                      <>
+                        Contoh format:{" "}
+                        <code className="text-slate-400">
+                          http://192.168.1.10:8080
+                        </code>{" "}
+                        (LAN) atau{" "}
+                        <code className="text-slate-400">
+                          https://db.kantor-anda.com
+                        </code>{" "}
+                        (VPS ber-TLS)
+                      </>
+                    )}
+                  </span>
+                )}
               </label>
 
               <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
-                Auth Token Database (Bearer Token)
+                {tursoEndpoint.tokenRequired
+                  ? "Auth Token Database (Bearer Token)"
+                  : "Auth Token Database (opsional untuk server tanpa autentikasi)"}
                 <div className="relative">
                   <input
                     type={showTursoToken ? "text" : "password"}
@@ -1436,6 +1582,29 @@ export default function SettingsPage() {
               </label>
             </div>
 
+            {tursoProvider === "self_hosted" &&
+            (tursoEndpoint.issue?.code === "INSECURE_PUBLIC" ||
+              tursoAllowInsecure) ? (
+              <label className="flex items-start gap-2 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-[11px] font-bold leading-4 text-rose-200">
+                <input
+                  type="checkbox"
+                  checked={tursoAllowInsecure}
+                  onChange={(e) => {
+                    setTursoAllowInsecure(e.target.checked);
+                    setTursoTestStatus(null);
+                  }}
+                  className="mt-0.5 size-4 shrink-0 accent-rose-400"
+                />
+                <span>
+                  Izinkan koneksi tanpa enkripsi ke alamat publik. Auth Token
+                  dan seluruh data absensi akan dikirim sebagai teks biasa dan
+                  dapat dibaca siapa pun di jalur jaringan. Pakai ini hanya bila
+                  Anda benar-benar memercayai jaringannya; jalur yang aman
+                  adalah memasang HTTPS di server atau memakai alamat LAN/VPN.
+                </span>
+              </label>
+            ) : null}
+
             {tursoTestStatus ? (
               <div
                 className={`rounded-2xl border p-4 ${
@@ -1468,7 +1637,7 @@ export default function SettingsPage() {
                 <span>
                   {tursoBusy
                     ? "Menyimpan ke Vault..."
-                    : "Simpan Konfigurasi Turso"}
+                    : "Simpan Konfigurasi Database"}
                 </span>
               </button>
 

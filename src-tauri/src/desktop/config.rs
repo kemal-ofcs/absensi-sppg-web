@@ -6,8 +6,8 @@ use url::Url;
 
 use super::{
     models::{CommandError, DesktopSession},
-    secrets, storage,
-    turso::{normalize_turso_url, TursoClient, TursoConfig},
+    secrets, storage, sync,
+    turso::{DatabaseProvider, TursoClient, TursoConfig},
 };
 
 const BUILD_OFFLINE_MAX_AGE_HOURS: Option<&str> = option_env!("SPPG_OFFLINE_AUTH_MAX_AGE_HOURS");
@@ -30,6 +30,27 @@ pub struct DesktopState {
     pub turso_config: std::sync::RwLock<Option<TursoConfig>>,
     pub session: std::sync::Mutex<Option<DesktopSession>>,
     pub vault_lock: std::sync::Mutex<()>,
+}
+
+/// Baca provider database dari tabel setting lokal.
+///
+/// Nilai yang tidak dikenal (atau belum pernah ditulis, seperti pada instalasi
+/// yang dibuat sebelum mode server sendiri ada) selalu jatuh ke Turso terkelola
+/// — aturan validasi yang paling ketat, sehingga default-nya aman.
+fn parse_provider_setting(raw: Option<&str>) -> DatabaseProvider {
+    match raw.map(str::trim) {
+        Some("self_hosted") | Some("self-hosted") | Some("selfHosted") | Some("custom")
+        | Some("local") | Some("libsql") => DatabaseProvider::SelfHosted,
+        _ => DatabaseProvider::Turso,
+    }
+}
+
+/// Baca flag boolean dari tabel setting lokal (disimpan sebagai "1"/"0").
+fn parse_bool_setting(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
 }
 
 fn parse_offline_hours_value(configured: Option<&str>, debug_build: bool) -> Result<u64, String> {
@@ -127,22 +148,38 @@ impl DesktopState {
             .map_err(|error| error.message)?;
         let db_turso_token = storage::get_system_setting(&data_dir, "turso_auth_token")
             .map_err(|error| error.message)?;
+        // Provider dan izin transport ikut dicermin ke tabel setting lokal
+        // (keduanya bukan rahasia) supaya jalur pemulihan ini tahu bahwa URL LAN
+        // ber-HTTP memang disengaja, bukan URL Turso yang salah ketik.
+        let db_provider = storage::get_system_setting(&data_dir, "turso_database_provider")
+            .map_err(|error| error.message)?;
+        let db_allow_insecure =
+            storage::get_system_setting(&data_dir, "turso_allow_insecure_transport")
+                .map_err(|error| error.message)?;
 
         let resolved_config = vault_config.clone().or_else(|| {
-            if let (Some(u), Some(t)) = (db_turso_url.as_ref(), db_turso_token.as_ref()) {
+            // Token boleh kosong. Server libSQL sendiri kerap berjalan tanpa
+            // autentikasi, dan token Turso memang dikosongkan dari tabel setting
+            // begitu dipindahkan ke vault. Versi lama menuntut `Some(_)` untuk
+            // token, sehingga perangkat yang tidak pernah punya baris
+            // `turso_auth_token` gagal memulihkan URL-nya sama sekali.
+            if let Some(u) = db_turso_url.as_ref() {
                 if !u.trim().is_empty() {
-                    return Some(TursoConfig {
-                        database_url: u.trim().to_owned(),
-                        auth_token: t.trim().to_owned(),
-                    });
+                    return Some(TursoConfig::new(
+                        u.trim().to_owned(),
+                        db_turso_token
+                            .as_deref()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_owned(),
+                        parse_provider_setting(db_provider.as_deref()),
+                        parse_bool_setting(db_allow_insecure.as_deref()),
+                    ));
                 }
             }
             if let (Some(u), Some(t)) = (BUILD_TURSO_DATABASE_URL, BUILD_TURSO_AUTH_TOKEN) {
                 if !u.trim().is_empty() {
-                    return Some(TursoConfig {
-                        database_url: u.trim().to_owned(),
-                        auth_token: t.trim().to_owned(),
-                    });
+                    return Some(TursoConfig::turso(u.trim().to_owned(), t.trim().to_owned()));
                 }
             }
             None
@@ -163,7 +200,7 @@ impl DesktopState {
         }
 
         let server_origin = if let Some(ref cfg) = resolved_config {
-            normalize_turso_url(&cfg.database_url)
+            cfg.normalized_url()
                 .map(|u| u.origin().ascii_serialization())
                 .map_err(|error| error.message)?
         } else {
@@ -212,7 +249,7 @@ impl DesktopState {
         } else {
             Err(CommandError::new(
                 "TURSO_NOT_CONFIGURED",
-                "Database Cloud Turso belum dikonfigurasi. Silakan tambahkan URL dan Auth Token di Pengaturan.",
+                "Database belum dikonfigurasi. Pilih Turso Cloud atau Server Database Sendiri, lalu isi alamatnya di Pengaturan.",
             ))
         }
     }
@@ -224,54 +261,84 @@ impl DesktopState {
             .clone()
     }
 
-    pub fn set_turso_config(
-        &self,
-        raw_url: &str,
-        auth_token: &str,
-    ) -> Result<String, CommandError> {
-        let normalized = normalize_turso_url(raw_url)?;
+    /// Simpan konfigurasi database aktif — provider, URL, dan token — sekaligus.
+    ///
+    /// Ini satu-satunya pintu penulisan konfigurasi database. Provider ikut
+    /// disimpan karena aturan validasi transport bergantung padanya; menebaknya
+    /// ulang dari bentuk URL akan salah untuk server sendiri yang sudah ber-HTTPS.
+    pub fn set_database_config(&self, requested: &TursoConfig) -> Result<String, CommandError> {
+        let normalized = requested.normalized_url()?;
         let origin = normalized.origin().ascii_serialization();
+        let previous = self.turso_config();
 
-        let resolved_token = if auth_token.trim().is_empty() {
-            self.turso_config()
-                .filter(|config| {
-                    normalize_turso_url(&config.database_url).is_ok_and(|url| url == normalized)
-                })
-                .map(|config| config.auth_token)
-                .ok_or_else(|| {
-                    CommandError::new(
-                        "TURSO_TOKEN_REQUIRED",
-                        "Auth Token wajib diisi saat URL database Turso berubah.",
-                    )
-                })?
+        // Token kosong berarti "pertahankan token yang sudah ada di vault":
+        // frontend memang tidak pernah menerima token plaintext untuk dikirim
+        // balik. Itu hanya sah bila URL-nya masih menunjuk database yang sama.
+        let resolved_token = if requested.auth_token.trim().is_empty() {
+            previous
+                .as_ref()
+                .filter(|config| config.normalized_url().is_ok_and(|url| url == normalized))
+                .map(|config| config.auth_token.clone())
+                .unwrap_or_default()
         } else {
-            auth_token.trim().to_owned()
+            requested.auth_token.trim().to_owned()
         };
 
-        let config = TursoConfig {
-            database_url: raw_url.trim().to_owned(),
-            auth_token: resolved_token,
-        };
+        let config = TursoConfig::new(
+            requested.database_url.trim().to_owned(),
+            resolved_token,
+            requested.provider,
+            requested.allow_insecure_transport,
+        );
 
-        let old_url = self.turso_config().map(|c| c.database_url);
-        let url_changed = old_url.as_deref() != Some(config.database_url.as_str());
+        // Turso terkelola — dan server sendiri yang terekspos internet — wajib
+        // punya token. Server libSQL di LAN boleh tanpa autentikasi sama sekali,
+        // jadi token kosong di sana adalah nilai akhir yang sah, bukan error.
+        if config.auth_token.trim().is_empty() && config.requires_auth_token() {
+            return Err(CommandError::new(
+                "TURSO_TOKEN_REQUIRED",
+                "Auth Token wajib diisi saat URL database berubah.",
+            ));
+        }
+
+        // Perbandingan wajib memakai URL ternormalisasi: `libsql://x` dan
+        // `https://x` menunjuk database yang sama, dan menyimpan ulang URL yang
+        // sama dalam ejaan berbeda tidak boleh dianggap pindah database.
+        let url_changed = !previous
+            .as_ref()
+            .and_then(|config| config.normalized_url().ok())
+            .is_some_and(|previous_url| previous_url == normalized);
 
         // Simpan ke vault terenkripsi
         secrets::save_turso_config(self, &config)?;
 
-        // URL non-rahasia boleh disimpan lokal; token hanya boleh berada di vault.
+        // Nilai non-rahasia boleh disimpan lokal; token hanya boleh berada di vault.
         storage::set_system_setting(&self.data_dir, "turso_database_url", &config.database_url)?;
         storage::set_system_setting(&self.data_dir, "turso_auth_token", "")?;
+        storage::set_system_setting(
+            &self.data_dir,
+            "turso_database_provider",
+            config.provider.as_str(),
+        )?;
+        storage::set_system_setting(
+            &self.data_dir,
+            "turso_allow_insecure_transport",
+            if config.allow_insecure_transport {
+                "1"
+            } else {
+                "0"
+            },
+        )?;
 
         if url_changed {
-            if let Ok(connection) = storage::database(&self.data_dir) {
-                let _ = connection.execute("DELETE FROM desktop_sync_cursor WHERE domain = 'operational';", []);
-                let _ = connection.execute("DELETE FROM desktop_entity_revision;", []);
-                // Cursor pulse per tabel juga harus direset: database Turso baru
-                // punya penghitung sendiri, dan sisa cursor lama bisa membuat
-                // pull inkremental mengira semua tabel sudah mutakhir.
-                let _ = connection.execute("DELETE FROM desktop_sync_table_cursor;", []);
-            }
+            // Pindah database bukan sekadar ganti kredensial. Seluruh SQLite lokal
+            // adalah cache milik database lama: karyawan, absensi, log scan, payroll,
+            // pengaturan, sampai outbox yang belum terkirim. Kalau tidak dibuang,
+            // data database lama tetap tampil di aplikasi dan outbox lamanya justru
+            // terdorong masuk ke database baru. Snapshot pull tidak bisa
+            // membereskannya karena `delete_missing` memang dimatikan untuk hampir
+            // semua tabel demi melindungi data lokal yang belum dilacak server.
+            storage::reset_cloud_linked_data(&self.data_dir, sync::DEVICE_LOCAL_SETTING_KEYS)?;
         }
 
         *self
@@ -300,14 +367,48 @@ impl DesktopState {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_turso_url, parse_offline_hours_value, parse_server_url};
+    use super::super::turso::normalize_database_url;
+    use super::{
+        parse_bool_setting, parse_offline_hours_value, parse_provider_setting, parse_server_url,
+        DatabaseProvider,
+    };
 
     #[test]
     fn turso_endpoint_normalization() {
-        assert!(normalize_turso_url("libsql://customer.turso.io").is_ok());
-        assert!(normalize_turso_url("https://customer.turso.io").is_ok());
-        assert!(normalize_turso_url("http://localhost:8080").is_ok());
-        assert!(normalize_turso_url("").is_err());
+        let turso = |raw: &str| normalize_database_url(raw, DatabaseProvider::Turso, false);
+        assert!(turso("libsql://customer.turso.io").is_ok());
+        assert!(turso("https://customer.turso.io").is_ok());
+        assert!(turso("http://localhost:8080").is_ok());
+        assert!(turso("").is_err());
+    }
+
+    #[test]
+    fn provider_setting_defaults_to_turso_for_unknown_values() {
+        assert_eq!(
+            parse_provider_setting(Some("self_hosted")),
+            DatabaseProvider::SelfHosted
+        );
+        assert_eq!(
+            parse_provider_setting(Some("self-hosted")),
+            DatabaseProvider::SelfHosted
+        );
+        // Instalasi lama tidak pernah menulis baris ini; default-nya harus
+        // aturan yang paling ketat, bukan yang paling longgar.
+        assert_eq!(parse_provider_setting(None), DatabaseProvider::Turso);
+        assert_eq!(parse_provider_setting(Some("")), DatabaseProvider::Turso);
+        assert_eq!(
+            parse_provider_setting(Some("postgres")),
+            DatabaseProvider::Turso
+        );
+    }
+
+    #[test]
+    fn bool_setting_only_accepts_explicit_truth() {
+        assert!(parse_bool_setting(Some("1")));
+        assert!(parse_bool_setting(Some("true")));
+        assert!(!parse_bool_setting(Some("0")));
+        assert!(!parse_bool_setting(None));
+        assert!(!parse_bool_setting(Some("")));
     }
 
     #[test]

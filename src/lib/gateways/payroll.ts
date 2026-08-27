@@ -1,11 +1,12 @@
 "use client";
 
 import { requestWebApi } from "@/lib/client/api-client";
-import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
+import { requestSyncNow } from "@/lib/gateways/sync-status";
+import { isDesktopRuntime, isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 
 function kickDesktopSync() {
-  void invokeDesktop("desktop_sync_now").catch(() => undefined);
+  requestSyncNow();
 }
 
 export interface SalaryConfigRow {
@@ -422,6 +423,12 @@ export async function getPayrollRecap(
   periodStart: string,
   periodEnd: string,
 ): Promise<PayrollRecapRow[]> {
+  if (isMobileRuntime()) {
+    return invokeDesktop<PayrollRecapRow[]>("mobile_get_payroll_recap", {
+      periodStart,
+      periodEnd,
+    });
+  }
   if (isDesktopRuntime()) {
     return invokeDesktop<PayrollRecapRow[]>("desktop_get_payroll_recap", {
       periodStart,
@@ -639,6 +646,18 @@ export async function getEmployeePayrollEstimate(
 export async function getMyPayrollSlips(
   idKaryawan: string,
 ): Promise<MobileSlipSummary[]> {
+  // Build Mobile tidak mendaftarkan command administrasi payroll, jadi jalur
+  // "kumpulkan semua run lalu ambil detailnya" di bawah akan gagal di sana.
+  // Mobile punya command khusus yang membaca tabel hasil sync dalam satu query.
+  if (isMobileRuntime()) {
+    const slips = await invokeDesktop<MobileSlipSummary[]>(
+      "mobile_get_my_payroll_slips",
+      { idKaryawan },
+    );
+    return slips.filter(
+      (slip) => slip.status === "PAID" || slip.status === "APPROVED",
+    );
+  }
   const runs = await listPayrollRuns();
   const paidRuns = runs.filter(
     (r) => r.status === "PAID" || r.status === "APPROVED",
@@ -669,6 +688,14 @@ export async function getMyPayrollSlips(
 export async function getPayrollSlipDetail(
   slipId: string,
 ): Promise<MobileSlipDetail> {
+  if (isMobileRuntime()) {
+    const detail = await invokeDesktop<Omit<MobileSlipDetail, "total_hadir">>(
+      "mobile_get_payroll_slip_detail",
+      { payrollItemId: slipId },
+    );
+    // `total_hadir` tidak disimpan pada baris slip; hanya dipakai layar estimasi.
+    return { ...detail, total_hadir: 0 };
+  }
   const runs = await listPayrollRuns();
   for (const run of runs) {
     try {

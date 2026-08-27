@@ -219,6 +219,46 @@ export async function runDatabaseMigrations(client: Client) {
     );
   }
 
+  // Kolom di bawah dibuat oleh jalur provisioning Rust (`turso.rs`) tetapi dulu
+  // tidak ada di jalur Web. Database yang di-provisioning dari Web membuat
+  // Desktop/Mobile gagal: `authenticate_operator` menulis `updated_at` saat
+  // meng-upgrade hash lama, dan seed tarif payroll menulis `created_at`.
+  // Keduanya sekarang saling menyusul lewat migrasi idempoten ini.
+  for (const [table, column, alterSql] of [
+    [
+      "master_operator",
+      "created_at",
+      "ALTER TABLE master_operator ADD COLUMN created_at TEXT;",
+    ],
+    [
+      "master_operator",
+      "updated_at",
+      "ALTER TABLE master_operator ADD COLUMN updated_at TEXT;",
+    ],
+    [
+      "tax_rules",
+      "created_at",
+      "ALTER TABLE tax_rules ADD COLUMN created_at TEXT;",
+    ],
+    [
+      "bpjs_rules",
+      "created_at",
+      "ALTER TABLE bpjs_rules ADD COLUMN created_at TEXT;",
+    ],
+    [
+      "payroll_components",
+      "created_at",
+      "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;",
+    ],
+  ] as const) {
+    if (
+      (await hasTable(client, table)) &&
+      !(await hasColumn(client, table, column))
+    ) {
+      await client.execute(alterSql);
+    }
+  }
+
   const now = new Date().toISOString();
 
   if (!(await hasColumn(client, "sync_operation_receipt", "receipt_json"))) {
@@ -475,7 +515,7 @@ export async function runDatabaseMigrations(client: Client) {
         CHECK (ptkp_status IN ('TK/0','TK/1','TK/2','TK/3','K/0','K/1','K/2','K/3')),
       effective_date TEXT NOT NULL,
       created_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(id_karyawan, effective_date)
     );
   `);
@@ -501,7 +541,8 @@ export async function runDatabaseMigrations(client: Client) {
       calc_type TEXT NOT NULL CHECK (calc_type IN ('FIXED', 'PERCENTAGE')),
       default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
       applies_to TEXT NOT NULL DEFAULT 'ALL',
-      is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+      is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 
@@ -512,7 +553,8 @@ export async function runDatabaseMigrations(client: Client) {
       bracket_min INTEGER NOT NULL,
       bracket_max INTEGER,
       rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
-      effective_date TEXT NOT NULL
+      effective_date TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 
@@ -539,8 +581,8 @@ export async function runDatabaseMigrations(client: Client) {
       total_net_payout INTEGER NOT NULL DEFAULT 0,
       total_employees INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 
@@ -566,7 +608,7 @@ export async function runDatabaseMigrations(client: Client) {
       pph21_amount INTEGER NOT NULL DEFAULT 0,
       net_salary INTEGER NOT NULL CHECK (net_salary >= 0),
       breakdown_snapshot TEXT NOT NULL,
-      created_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (payroll_run_id, id_karyawan)
     );
   `);
@@ -580,7 +622,7 @@ export async function runDatabaseMigrations(client: Client) {
       new_status TEXT NOT NULL,
       performed_by TEXT NOT NULL,
       notes TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 

@@ -25,10 +25,18 @@ export default function LoginPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [bootstrapStatus, setBootstrapStatus] =
     useState<BootstrapStatus | null>(null);
+  // Dibuka manual ketika kredensial database tersimpan tetapi database cloud-nya
+  // tidak menjawab — misalnya database Turso lama sudah dihapus. Tanpa pintu
+  // ini, layar provisioning tidak pernah muncul lagi dan tidak ada tempat untuk
+  // memasukkan URL database baru.
+  const [showDatabaseSetup, setShowDatabaseSetup] = useState(false);
 
   const refreshBootstrapStatus = useCallback(() => {
     void getBootstrapStatus()
-      .then(setBootstrapStatus)
+      .then((status) => {
+        setBootstrapStatus(status);
+        if (status?.reachable) setShowDatabaseSetup(false);
+      })
       .catch(() => setBootstrapStatus(null));
   }, []);
 
@@ -86,6 +94,15 @@ export default function LoginPage() {
       />
     );
   }
+  if (bootstrapStatus && showDatabaseSetup) {
+    return (
+      <BootstrapPanel
+        status={bootstrapStatus}
+        onCompleted={refreshBootstrapStatus}
+        onCancel={() => setShowDatabaseSetup(false)}
+      />
+    );
+  }
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8 font-sans relative overflow-hidden select-none">
@@ -120,6 +137,32 @@ export default function LoginPage() {
             </p>
           </div>
         </div>
+
+        {/* Database cloud tersimpan tetapi tidak menjawab: tawarkan konfigurasi
+            ulang, jangan biarkan pengguna menebak-nebak di form login. */}
+        {bootstrapStatus?.configured && !bootstrapStatus.reachable ? (
+          <div className="p-3.5 bg-amber-950/50 border border-amber-700/60 rounded-2xl text-amber-100 text-xs space-y-1.5">
+            <p className="font-bold text-amber-300">
+              Database cloud tidak dapat dihubungi
+            </p>
+            <p className="text-amber-200/90">
+              {bootstrapStatus.message ??
+                "Aplikasi ini masih menunjuk database lama."}
+            </p>
+            <p className="text-amber-200/70">
+              Kalau jaringan aktif dan database sudah diganti atau dihapus,
+              arahkan aplikasi ke database yang baru. Login offline tetap bisa
+              dipakai bila perangkat ini pernah login online sebelumnya.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowDatabaseSetup(true)}
+              className="mt-1 w-full min-h-10 rounded-xl border border-amber-600/50 bg-amber-500/10 px-3 text-xs font-bold text-amber-200 hover:bg-amber-500/20 transition"
+            >
+              Konfigurasi ulang database
+            </button>
+          </div>
+        ) : null}
 
         {/* Error Alert Message */}
         {errorMsg && (
