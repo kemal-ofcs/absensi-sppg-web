@@ -10,6 +10,8 @@ import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { DeviceProfileCard } from "@/components/visual/DeviceProfileCard";
+import { VisualTierControl } from "@/components/visual/VisualTierControl";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import {
   calculateDistanceMeters,
@@ -1036,6 +1038,14 @@ export default function SettingsPage() {
               variant="segmented"
               className="w-full justify-between"
             />
+          </div>
+
+          <div className="mt-4">
+            <DeviceProfileCard />
+          </div>
+
+          <div className="mt-4">
+            <VisualTierControl />
           </div>
 
           <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-3">

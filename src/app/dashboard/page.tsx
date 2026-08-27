@@ -4,6 +4,10 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { Icon } from "@/components/ui/Icon";
+import { AnimatedCounter } from "@/components/visual/AnimatedCounter";
+import { FadeIn } from "@/components/visual/FadeIn";
+import { Skeleton } from "@/components/visual/Skeleton";
+import { SpotlightCard } from "@/components/visual/SpotlightCard";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -141,6 +145,10 @@ export default function DashboardPage() {
     () => loading || harianLoading,
     [loading, harianLoading],
   );
+
+  // Metrik belum pernah tiba: tampilkan penanda tempat, bukan angka 0 yang
+  // terbaca seperti hasil sebenarnya.
+  const metricsPending = loading && metrics === null;
 
   // ── Export Handlers (CSV & Excel) with file save picker ───────────────────
   const handleExportCSV = async () => {
@@ -402,58 +410,102 @@ export default function DashboardPage() {
 
         {/* 4 Metric Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-2">
-            <span className="text-slate-400 text-xs font-medium uppercase tracking-wider">
-              Total Karyawan Aktif
-            </span>
-            <div className="text-2xl font-bold text-white">
-              {metrics?.totalKaryawan || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-500 font-mono">
-              Terdaftar di Master Data
-            </p>
-          </div>
+          <FadeIn className="h-full" delaySeconds={0}>
+            <SpotlightCard>
+              <div className="h-full bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-2">
+                <span className="text-slate-400 text-xs font-medium uppercase tracking-wider">
+                  Total Karyawan Aktif
+                </span>
+                <div className="text-2xl font-bold text-white">
+                  {metricsPending ? (
+                    <Skeleton className="h-7 w-28" />
+                  ) : (
+                    <AnimatedCounter
+                      suffix=" Orang"
+                      value={metrics?.totalKaryawan ?? 0}
+                    />
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500 font-mono">
+                  Terdaftar di Master Data
+                </p>
+              </div>
+            </SpotlightCard>
+          </FadeIn>
 
-          <div className="bg-slate-900/80 border border-sky-500/40 rounded-2xl p-5 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sky-400 text-xs font-medium uppercase tracking-wider">
-                Hadir Hari Ini
-              </span>
-              <span className="px-2 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded-full text-[10px] font-mono font-bold">
-                {metrics?.persentaseKehadiran || 0}% Rate
-              </span>
-            </div>
-            <div className="text-2xl font-bold text-sky-300">
-              {metrics?.hadirHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Status Hadir Berhasil
-            </p>
-          </div>
+          <FadeIn className="h-full" delaySeconds={0.06}>
+            <SpotlightCard>
+              <div className="h-full bg-slate-900/80 border border-sky-500/40 rounded-2xl p-5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sky-400 text-xs font-medium uppercase tracking-wider">
+                    Hadir Hari Ini
+                  </span>
+                  <span className="px-2 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded-full text-[10px] font-mono font-bold">
+                    {metrics?.persentaseKehadiran || 0}% Rate
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-sky-300">
+                  {metricsPending ? (
+                    <Skeleton className="h-7 w-28" />
+                  ) : (
+                    <AnimatedCounter
+                      suffix=" Orang"
+                      value={metrics?.hadirHariIni ?? 0}
+                    />
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 font-mono">
+                  Status Hadir Berhasil
+                </p>
+              </div>
+            </SpotlightCard>
+          </FadeIn>
 
-          <div className="bg-slate-900/80 border border-amber-500/40 rounded-2xl p-5 space-y-2">
-            <span className="text-amber-400 text-xs font-medium uppercase tracking-wider">
-              Terlambat Hari Ini
-            </span>
-            <div className="text-2xl font-bold text-amber-300">
-              {metrics?.terlambatHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Datang melebihi toleransi
-            </p>
-          </div>
+          <FadeIn className="h-full" delaySeconds={0.12}>
+            <SpotlightCard>
+              <div className="h-full bg-slate-900/80 border border-amber-500/40 rounded-2xl p-5 space-y-2">
+                <span className="text-amber-400 text-xs font-medium uppercase tracking-wider">
+                  Terlambat Hari Ini
+                </span>
+                <div className="text-2xl font-bold text-amber-300">
+                  {metricsPending ? (
+                    <Skeleton className="h-7 w-28" />
+                  ) : (
+                    <AnimatedCounter
+                      suffix=" Orang"
+                      value={metrics?.terlambatHariIni ?? 0}
+                    />
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 font-mono">
+                  Datang melebihi toleransi
+                </p>
+              </div>
+            </SpotlightCard>
+          </FadeIn>
 
-          <div className="bg-slate-900/80 border border-rose-500/40 rounded-2xl p-5 space-y-2">
-            <span className="text-rose-400 text-xs font-medium uppercase tracking-wider">
-              Alfa / Tidak Hadir
-            </span>
-            <div className="text-2xl font-bold text-rose-300">
-              {metrics?.alfaHariIni || 0} Orang
-            </div>
-            <p className="text-[11px] text-slate-400 font-mono">
-              Sakit/Izin: {metrics?.sakitIzinHariIni || 0} Orang
-            </p>
-          </div>
+          <FadeIn className="h-full" delaySeconds={0.18}>
+            <SpotlightCard>
+              <div className="h-full bg-slate-900/80 border border-rose-500/40 rounded-2xl p-5 space-y-2">
+                <span className="text-rose-400 text-xs font-medium uppercase tracking-wider">
+                  Alfa / Tidak Hadir
+                </span>
+                <div className="text-2xl font-bold text-rose-300">
+                  {metricsPending ? (
+                    <Skeleton className="h-7 w-28" />
+                  ) : (
+                    <AnimatedCounter
+                      suffix=" Orang"
+                      value={metrics?.alfaHariIni ?? 0}
+                    />
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 font-mono">
+                  Sakit/Izin: {metrics?.sakitIzinHariIni || 0} Orang
+                </p>
+              </div>
+            </SpotlightCard>
+          </FadeIn>
         </div>
 
         {/* Tab Navigation & Dynamic Filter Controls Bar */}

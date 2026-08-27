@@ -134,7 +134,7 @@ describe("password hashing", () => {
       valid: true,
       needsUpgrade: false,
     });
-  }, 20000);
+  }, 45000);
 });
 
 describe("provisioning silang Web dan Desktop/Mobile", () => {

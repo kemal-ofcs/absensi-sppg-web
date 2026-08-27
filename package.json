@@ -31,17 +31,23 @@
   },
   "dependencies": {
     "@libsql/client": "0.17.4",
+    "@react-three/fiber": "9.3.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@tauri-apps/api": "^2.2.0",
     "@zxing/browser": "0.2.0",
+    "clsx": "2.1.1",
     "exceljs": "4.4.0",
+    "motion": "12.34.2",
     "next": "16.3.0",
     "postcss": "^8.5.26",
     "qrcode": "1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "tailwind-merge": "3.4.1",
     "tailwindcss": "^4.3.3",
-    "zod": "4.3.6"
+    "three": "0.182.0",
+    "zod": "4.3.6",
+    "zustand": "5.0.9"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",
@@ -51,6 +57,7 @@
     "@types/qrcode": "1.5.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "0.182.0",
     "babel-plugin-react-compiler": "1.0.0",
     "typescript": "^5"
   },

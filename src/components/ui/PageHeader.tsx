@@ -14,7 +14,7 @@ export function PageHeader({
   title,
 }: PageHeaderProps) {
   return (
-    <header className="flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <header className="visual-fade-in flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div className="max-w-3xl">
         <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-amber-300">
           {eyebrow}

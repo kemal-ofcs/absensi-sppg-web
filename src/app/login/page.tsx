@@ -4,6 +4,8 @@ import { redirect, useRouter } from "next/navigation";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { BootstrapPanel } from "@/components/BootstrapPanel";
+import { LoginSceneGate } from "@/components/visual/LoginSceneGate";
+import { VisualProvider } from "@/components/visual/VisualProvider";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   type BootstrapStatus,
@@ -109,6 +111,11 @@ export default function LoginPage() {
       {/* Background Decorative Glow */}
       <div className="absolute -top-40 -left-40 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none"></div>
       <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-sky-600/15 rounded-full blur-3xl pointer-events-none"></div>
+
+      {/* Konstelasi 3D: hanya dimuat bila perangkat sanggup, dan tidak pernah
+          menghalangi form login karena berada di lapisan paling belakang. */}
+      <VisualProvider />
+      <LoginSceneGate className="pointer-events-none absolute inset-0 z-0 opacity-80" />
 
       {/* Main Glass Card Container */}
       <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 backdrop-blur-2xl rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 relative z-10">

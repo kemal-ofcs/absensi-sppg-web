@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { AutoAlfaRunner } from "./AutoAlfaRunner";
 import { AutoSyncRunner } from "./AutoSyncRunner";
 import { HeaderBar } from "./HeaderBar";
+import { AuroraBackground } from "./visual/AuroraBackground";
+import { VisualProvider } from "./visual/VisualProvider";
 
 interface AppShellProps {
   children: ReactNode;
@@ -13,6 +15,8 @@ interface AppShellProps {
 export function AppShell({ children, contentClassName = "" }: AppShellProps) {
   return (
     <div className="app-shell min-h-dvh text-slate-100">
+      <VisualProvider />
+      <AuroraBackground />
       <AutoAlfaRunner />
       <AutoSyncRunner />
       <a
@@ -24,7 +28,7 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
       <HeaderBar />
       <main
         id="main-content"
-        className={`flex min-h-0 flex-1 flex-col pb-24 lg:pb-0 ${contentClassName}`}
+        className={`visual-page-enter relative z-10 flex min-h-0 flex-1 flex-col pb-24 lg:pb-0 ${contentClassName}`}
       >
         {children}
       </main>

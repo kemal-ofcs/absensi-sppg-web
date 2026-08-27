@@ -24,7 +24,7 @@ export function Modal({
   };
 
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/85 p-4 backdrop-blur-md">
+    <div className="visual-modal-backdrop fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/85 p-4 backdrop-blur-md">
       <div
         role="dialog"
         aria-modal="true"
@@ -33,7 +33,7 @@ export function Modal({
         tabIndex={-1}
         ref={focusDialog}
         onKeyDown={handleKeyDown}
-        className="my-auto max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-6"
+        className="visual-modal-panel my-auto max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:p-6"
       >
         <div className="mb-5 flex items-center justify-between gap-4 border-b border-slate-800 pb-3">
           <h2 id={titleId} className="text-base font-bold text-white">

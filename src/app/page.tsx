@@ -7,6 +7,9 @@ import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { FadeIn } from "@/components/visual/FadeIn";
+import { SpotlightCard } from "@/components/visual/SpotlightCard";
+import { TiltCard } from "@/components/visual/TiltCard";
 import { type AppArea, canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDashboardMetrics } from "@/lib/gateways/report";
@@ -286,28 +289,37 @@ export default function Home() {
           Pilih pekerjaan utama
         </h2>
         <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {visibleModules.map((module) => (
-            <Link
+          {visibleModules.map((module, index) => (
+            <FadeIn
+              className="h-full"
+              delaySeconds={index * 0.05}
               key={module.href}
-              href={module.href}
-              className={`group rounded-3xl border bg-slate-900/80 p-6 shadow-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${module.tone === "sky" ? "border-sky-400/15 hover:border-sky-400/45" : "border-amber-300/15 hover:border-amber-300/45"}`}
             >
-              <span
-                className={`grid size-12 place-items-center rounded-2xl border ${module.tone === "sky" ? "border-sky-400/25 bg-sky-400/10 text-sky-200" : "border-amber-300/25 bg-amber-300/10 text-amber-200"}`}
-              >
-                <Icon name={module.icon} className="size-6" />
-              </span>
-              <h3 className="mt-5 text-lg font-black text-white">
-                {module.title}
-              </h3>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                {module.description}
-              </p>
-              <span className="mt-5 inline-flex items-center gap-1 text-xs font-bold text-sky-200">
-                {module.label}
-                <Icon name="chevron-right" className="size-3.5" />
-              </span>
-            </Link>
+              <TiltCard maxTilt={5}>
+                <SpotlightCard className="rounded-3xl">
+                  <Link
+                    href={module.href}
+                    className={`group block h-full rounded-3xl border bg-slate-900/80 p-6 shadow-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${module.tone === "sky" ? "border-sky-400/15 hover:border-sky-400/45" : "border-amber-300/15 hover:border-amber-300/45"}`}
+                  >
+                    <span
+                      className={`grid size-12 place-items-center rounded-2xl border ${module.tone === "sky" ? "border-sky-400/25 bg-sky-400/10 text-sky-200" : "border-amber-300/25 bg-amber-300/10 text-amber-200"}`}
+                    >
+                      <Icon name={module.icon} className="size-6" />
+                    </span>
+                    <h3 className="mt-5 text-lg font-black text-white">
+                      {module.title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      {module.description}
+                    </p>
+                    <span className="mt-5 inline-flex items-center gap-1 text-xs font-bold text-sky-200">
+                      {module.label}
+                      <Icon name="chevron-right" className="size-3.5" />
+                    </span>
+                  </Link>
+                </SpotlightCard>
+              </TiltCard>
+            </FadeIn>
           ))}
         </div>
       </section>

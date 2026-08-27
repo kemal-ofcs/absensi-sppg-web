@@ -93,8 +93,8 @@ function NavigationLink({
       href={item.href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
-      className={`group flex min-h-11 items-center gap-3 rounded-xl font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
-        compact ? "px-3 text-xs" : "px-4 text-sm"
+      className={`group flex items-center gap-2 rounded-xl font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
+        compact ? "min-h-10 px-2.5 text-xs xl:px-3" : "min-h-11 px-4 text-sm"
       } ${
         active
           ? "bg-sky-400 text-slate-950 shadow-lg shadow-sky-950/20"
@@ -173,29 +173,28 @@ export function HeaderBar() {
     <>
       <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/90 px-3 py-2.5 shadow-xl shadow-slate-950/30 backdrop-blur-xl sm:px-5">
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-4">
+          <div className="flex min-w-0 items-center gap-3 xl:gap-4">
             <Link
               href="/"
               onClick={() => {
                 setDesktopMenuOpen(false);
                 setMobileMenuOpen(false);
               }}
-              className="group flex min-w-0 shrink-0 items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              className="group flex min-w-0 shrink-0 items-center gap-2 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               aria-label="Buka Home Absensi SPPG"
             >
-              <BrandLogo size={38} />
+              <BrandLogo size={36} />
               <span className="min-w-0 leading-tight">
-                <span className="block max-w-32 truncate text-sm font-black tracking-tight text-white">
+                <span className="block max-w-28 truncate text-sm font-black tracking-tight text-white xl:max-w-36">
                   Absensi SPPG
                 </span>
                 <span className="flex items-center gap-1.5 text-[10px] font-medium text-slate-400">
                   <span
                     className={`size-1.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-amber-300"}`}
                   />
-                  <span className="sm:hidden">
+                  <span className="truncate">
                     {isOnline ? "Online" : "Offline"}
                   </span>
-                  <span className="hidden sm:inline">Desktop & Web</span>
                 </span>
               </span>
             </Link>
@@ -221,7 +220,7 @@ export function HeaderBar() {
                     aria-expanded={desktopMenuOpen}
                     aria-controls="desktop-management-menu"
                     onClick={() => setDesktopMenuOpen((open) => !open)}
-                    className={`flex min-h-11 items-center gap-2 rounded-xl px-3 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
+                    className={`flex min-h-10 items-center gap-1.5 rounded-xl px-2.5 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 xl:px-3 ${
                       activeManagementItem
                         ? "bg-sky-400 text-slate-950"
                         : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
@@ -231,7 +230,7 @@ export function HeaderBar() {
                       name={activeManagementItem?.icon ?? "tools"}
                       className="size-4"
                     />
-                    <span className="max-w-24 truncate">
+                    <span className="max-w-20 truncate xl:max-w-24">
                       {activeManagementItem?.label ?? "Kelola"}
                     </span>
                     <span
@@ -266,34 +265,15 @@ export function HeaderBar() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <span
-              className={`hidden min-h-8 items-center gap-2 rounded-full border px-3 text-[11px] font-bold 2xl:inline-flex ${
-                isOnline
-                  ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
-                  : "border-amber-300/25 bg-amber-300/10 text-amber-200"
-              }`}
-            >
-              <Icon
-                name={isOnline ? "wifi" : "wifi-off"}
-                className="size-3.5"
-              />
-              {isOnline ? "Jaringan tersedia" : "Menunggu jaringan"}
-            </span>
-
             {/* Theme Switcher Toggle */}
-            <div className="hidden sm:block">
-              <ThemeToggle variant="segmented" />
-            </div>
-            <div className="sm:hidden">
-              <ThemeToggle variant="compact" />
-            </div>
+            <ThemeToggle variant="compact" />
 
-            <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 xl:flex">
+            <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-1.5 xl:flex">
               <span className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-xs font-black text-slate-950">
                 {user.nama_operator.charAt(0).toUpperCase()}
               </span>
               <span className="min-w-0 leading-tight">
-                <span className="block max-w-28 truncate text-xs font-bold text-white">
+                <span className="block max-w-24 truncate text-xs font-bold text-white xl:max-w-28">
                   {user.nama_operator}
                 </span>
                 <span className="block text-[10px] font-medium text-sky-300">
@@ -307,7 +287,7 @@ export function HeaderBar() {
               onClick={logout}
               aria-label="Keluar dari aplikasi"
               title="Keluar"
-              className="grid size-10 place-items-center rounded-xl border border-rose-400/20 bg-rose-400/10 text-rose-200 transition hover:bg-rose-400/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 sm:size-11"
+              className="grid size-10 place-items-center rounded-xl border border-rose-400/20 bg-rose-400/10 text-rose-200 transition hover:bg-rose-400/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
             >
               <Icon name="logout" className="size-4" />
             </button>

@@ -842,3 +842,341 @@ samp {
     transition-duration: 0.01ms;
   }
 }
+
+/* ==========================================================================
+   LAPISAN VISUAL (aurora, spotlight, tilt, kaca)
+   Seluruh animasi di bawah ini hanya menyentuh `transform` dan `opacity`
+   sehingga dikerjakan compositor GPU tanpa memicu layout atau repaint.
+   ========================================================================== */
+
+:root {
+  --visual-spotlight: rgb(56 189 248 / 16%);
+  --visual-aurora-primary: rgb(56 189 248 / 26%);
+  --visual-aurora-accent: rgb(129 140 248 / 20%);
+  --visual-aurora-gold: rgb(246 196 83 / 14%);
+  --visual-grid-line: rgb(148 163 184 / 7%);
+  --visual-glass-bg: rgb(15 23 42 / 72%);
+  --visual-glass-border: rgb(255 255 255 / 12%);
+}
+
+html[data-theme="light"],
+html.light {
+  --visual-spotlight: rgb(2 132 199 / 12%);
+  --visual-aurora-primary: rgb(2 132 199 / 14%);
+  --visual-aurora-accent: rgb(99 102 241 / 12%);
+  --visual-aurora-gold: rgb(217 119 6 / 10%);
+  --visual-grid-line: rgb(15 23 42 / 5%);
+  --visual-glass-bg: rgb(255 255 255 / 86%);
+  --visual-glass-border: rgb(15 23 42 / 8%);
+}
+
+.visual-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.visual-aurora__blob {
+  position: absolute;
+  display: block;
+  border-radius: 9999px;
+  filter: blur(80px);
+  will-change: transform;
+}
+
+.visual-aurora__blob--primary {
+  top: -20rem;
+  left: -14rem;
+  width: 44rem;
+  height: 44rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-primary),
+    transparent 70%
+  );
+}
+
+.visual-aurora__blob--accent {
+  right: -16rem;
+  bottom: -22rem;
+  width: 42rem;
+  height: 42rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-accent),
+    transparent 70%
+  );
+}
+
+.visual-aurora__blob--gold {
+  top: 22%;
+  right: 8%;
+  width: 26rem;
+  height: 26rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-gold),
+    transparent 70%
+  );
+}
+
+.visual-aurora__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--visual-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--visual-grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(
+    ellipse 78% 58% at 50% 0%,
+    rgb(0 0 0 / 100%),
+    transparent 100%
+  );
+}
+
+@keyframes visual-drift-primary {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(6rem, 4rem, 0) scale(1.12);
+  }
+}
+
+@keyframes visual-drift-accent {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  to {
+    transform: translate3d(-7rem, -3rem, 0) scale(1);
+  }
+}
+
+@keyframes visual-drift-gold {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-3rem, 5rem, 0);
+  }
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--primary {
+  animation: visual-drift-primary 28s ease-in-out infinite alternate;
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--accent {
+  animation: visual-drift-accent 34s ease-in-out infinite alternate;
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--gold {
+  animation: visual-drift-gold 24s ease-in-out infinite alternate;
+}
+
+@keyframes visual-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Transisi masuk halaman: pendek, sekali jalan, murni compositor. */
+.visual-page-enter {
+  animation: visual-fade-up 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.visual-fade-in {
+  animation: visual-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes visual-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes visual-pop {
+  from {
+    transform: scale(0.4);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes visual-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.visual-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(148 163 184 / 14%);
+}
+
+.visual-skeleton::after {
+  position: absolute;
+  content: "";
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 9%),
+    transparent
+  );
+  animation: visual-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes visual-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes visual-modal-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.visual-modal-backdrop {
+  animation: visual-backdrop-in 180ms ease-out both;
+}
+
+.visual-modal-panel {
+  animation: visual-modal-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Umpan balik tekan pada seluruh tombol: kecil, cepat, dan hanya transform. */
+@media (prefers-reduced-motion: no-preference) {
+  button:not(:disabled):active {
+    transform: scale(0.985);
+  }
+}
+
+.visual-sync-dot[data-phase="syncing"] {
+  animation: visual-pulse 1.4s ease-in-out infinite;
+}
+
+.visual-sync-dot[data-phase="success"] {
+  animation: visual-pop 420ms ease-out;
+}
+
+.visual-spotlight-card {
+  position: relative;
+  height: 100%;
+}
+
+/* Specificity nol: radius bawaan ini selalu kalah dari utility `rounded-*`
+   yang dipasang di komponen, sehingga sorotan mengikuti sudut kartunya. */
+:where(.visual-spotlight-card) {
+  border-radius: 1rem;
+}
+
+.visual-spotlight-card__glow {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.visual-spotlight-card:hover .visual-spotlight-card__glow {
+  opacity: 1;
+}
+
+.visual-spotlight-card__content {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.visual-tilt {
+  height: 100%;
+  perspective: 1000px;
+}
+
+.visual-tilt__inner {
+  height: 100%;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.visual-glass {
+  border: 1px solid var(--visual-glass-border);
+  background: var(--visual-glass-bg);
+  box-shadow: 0 30px 80px rgb(2 8 23 / 34%);
+  backdrop-filter: blur(20px);
+}
+
+html[data-theme="light"] .visual-glass,
+html.light .visual-glass {
+  box-shadow: 0 18px 50px rgb(15 23 42 / 8%);
+}
+
+/* Tier rendah / mati: seluruh gerakan latar dihentikan, tampilan tetap utuh. */
+html[data-visual-tier="low"] .visual-aurora__blob,
+html[data-visual-tier="off"] .visual-aurora__blob {
+  animation: none;
+}
+
+html[data-visual-tier="off"] .visual-aurora {
+  display: none;
+}
+
+html[data-visual-tier="off"] .visual-page-enter,
+html[data-visual-tier="off"] .visual-fade-in,
+html[data-visual-tier="off"] .visual-sync-dot,
+html[data-visual-tier="off"] .visual-modal-backdrop,
+html[data-visual-tier="off"] .visual-modal-panel {
+  animation: none;
+}
+
+html[data-visual-tier="off"] button:active {
+  transform: none;
+}
+
+html[data-visual-tier="off"] .visual-skeleton::after {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .visual-aurora__blob {
+    animation: none;
+  }
+
+  .visual-page-enter,
+  .visual-fade-in,
+  .visual-sync-dot,
+  .visual-modal-backdrop,
+  .visual-modal-panel,
+  .visual-skeleton::after {
+    animation: none;
+  }
+}
