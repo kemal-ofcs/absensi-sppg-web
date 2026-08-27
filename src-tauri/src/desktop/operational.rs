@@ -392,6 +392,10 @@ pub fn update_employee(
     };
     let tanggal_mulai_aktif = text(draft, "tanggal_mulai_aktif");
     let tanggal_selesai_aktif = text(draft, "tanggal_selesai_aktif");
+    // Tanggal Mulai Masuk (tanggal_daftar) kini bisa dikoreksi manual dari form
+    // Edit Karyawan. Kosong berarti "jangan ubah" supaya klien lama yang belum
+    // mengirim field ini tidak menghapus tanggal yang sudah tersimpan.
+    let tanggal_daftar = text(draft, "tanggal_daftar");
 
     transaction
         .execute(
@@ -408,7 +412,8 @@ pub fn update_employee(
         catatan = ?,
         jenis_personil = ?,
         tanggal_mulai_aktif = ?,
-        tanggal_selesai_aktif = ?
+        tanggal_selesai_aktif = ?,
+        tanggal_daftar = COALESCE(NULLIF(?, ''), tanggal_daftar)
       WHERE id_unik = ?;
       "#,
             params![
@@ -425,6 +430,7 @@ pub fn update_employee(
                 jenis_personil,
                 tanggal_mulai_aktif,
                 tanggal_selesai_aktif,
+                tanggal_daftar,
                 id,
             ],
         )

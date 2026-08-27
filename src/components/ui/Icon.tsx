@@ -19,6 +19,8 @@ export type IconName =
   | "home"
   | "logout"
   | "lock"
+  | "monitor"
+  | "moon"
   | "palette"
   | "phone"
   | "plus"
@@ -27,6 +29,7 @@ export type IconName =
   | "scanner"
   | "settings"
   | "share"
+  | "sun"
   | "sync"
   | "tools"
   | "trash"
@@ -137,6 +140,14 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </>
   ),
+  monitor: (
+    <>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <line x1="8" x2="16" y1="21" y2="21" />
+      <line x1="12" x2="12" y1="17" y2="21" />
+    </>
+  ),
+  moon: <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />,
   palette: (
     <>
       <circle cx="13.5" cy="6.5" r="1" />
@@ -177,6 +188,12 @@ const paths: Record<IconName, ReactNode> = {
       <circle cx="18" cy="19" r="3" />
       <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
       <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
     </>
   ),
   sync: (

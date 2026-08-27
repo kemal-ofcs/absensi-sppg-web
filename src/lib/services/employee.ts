@@ -296,6 +296,12 @@ export async function updateKaryawan(
     updates.push("tanggal_selesai_aktif = ?");
     args.push(data.tanggal_selesai_aktif);
   }
+  // Tanggal Mulai Masuk. String kosong diabaikan agar form yang mengirim
+  // nilai kosong tidak menghapus tanggal pendaftaran yang sudah ada.
+  if (data.tanggal_daftar) {
+    updates.push("tanggal_daftar = ?");
+    args.push(data.tanggal_daftar);
+  }
 
   if (updates.length > 0) {
     args.push(id_unik);

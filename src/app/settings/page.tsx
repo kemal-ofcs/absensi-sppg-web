@@ -9,6 +9,7 @@ import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import {
   calculateDistanceMeters,
@@ -1016,15 +1017,25 @@ export default function SettingsPage() {
 
         <section className="app-panel rounded-3xl p-5 sm:p-7">
           <div className="flex items-start gap-4">
-            <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-amber-300/20 bg-amber-300/10 text-amber-200">
+            <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
               <Icon name="palette" className="size-5" />
             </span>
             <div>
-              <h2 className="text-base font-black text-white">Sistem visual</h2>
+              <h2 className="text-base font-black text-white">Tema & visual</h2>
               <p className="mt-1 text-sm leading-6 text-slate-400">
-                Palet utama yang konsisten untuk Web dan Desktop.
+                Pilih tema tampilan aplikasi dan palet warna visual.
               </p>
             </div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-xs font-bold text-slate-300 mb-2">
+              Mode Tema Tampilan:
+            </p>
+            <ThemeToggle
+              variant="segmented"
+              className="w-full justify-between"
+            />
           </div>
 
           <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-3">

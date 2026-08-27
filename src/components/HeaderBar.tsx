@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon, type IconName } from "@/components/ui/Icon";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { type AppArea, canAccessArea } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
@@ -279,6 +280,14 @@ export function HeaderBar() {
               {isOnline ? "Jaringan tersedia" : "Menunggu jaringan"}
             </span>
 
+            {/* Theme Switcher Toggle */}
+            <div className="hidden sm:block">
+              <ThemeToggle variant="segmented" />
+            </div>
+            <div className="sm:hidden">
+              <ThemeToggle variant="compact" />
+            </div>
+
             <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 xl:flex">
               <span className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-xs font-black text-slate-950">
                 {user.nama_operator.charAt(0).toUpperCase()}
@@ -333,14 +342,17 @@ export function HeaderBar() {
                   {user.nama_operator} · {user.role}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(false)}
-                className="grid size-10 place-items-center rounded-xl bg-white/[0.06] text-xl text-slate-300"
-                aria-label="Tutup semua menu"
-              >
-                ×
-              </button>
+              <div className="flex items-center gap-2">
+                <ThemeToggle variant="segmented" />
+                <button
+                  type="button"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="grid size-10 place-items-center rounded-xl bg-white/[0.06] text-xl text-slate-300"
+                  aria-label="Tutup semua menu"
+                >
+                  &times;
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {visibleNavigation.map((item) => (

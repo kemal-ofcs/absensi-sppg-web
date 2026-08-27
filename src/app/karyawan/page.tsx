@@ -1160,8 +1160,8 @@ export default function KaryawanPage() {
               </div>
             </div>
 
-            {/* No HP & Status Aktif */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* No HP, Status Aktif & Tanggal Daftar */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label
                   htmlFor="employee-phone"
@@ -1201,6 +1201,26 @@ export default function KaryawanPage() {
                   <option value="Aktif">Aktif</option>
                   <option value="Nonaktif">Nonaktif</option>
                 </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="employee-reg-date"
+                  className="mb-1 block text-slate-400 font-semibold"
+                >
+                  Tgl Daftar / Bergabung:
+                </label>
+                <input
+                  id="employee-reg-date"
+                  type="date"
+                  value={formData.tanggal_daftar || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      tanggal_daftar: e.target.value,
+                    })
+                  }
+                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
+                />
               </div>
             </div>
 

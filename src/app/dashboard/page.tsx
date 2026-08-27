@@ -1,9 +1,11 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { Icon } from "@/components/ui/Icon";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
+import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   type DashboardMetrics,
@@ -23,8 +25,12 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<
     "harian" | "bulanan" | "leaderboard"
   >("harian");
-  const [selectedDate, setSelectedDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+  const [filterMode, setFilterMode] = useState<"single" | "range">("single");
+  const [startDate, setStartDate] = useState<string>(
+    new Date().toLocaleDateString("en-CA"),
+  );
+  const [endDate, setEndDate] = useState<string>(
+    new Date().toLocaleDateString("en-CA"),
   );
   const [rekapHarianList, setRekapHarianList] = useState<
     Record<string, unknown>[]
@@ -37,9 +43,10 @@ export default function DashboardPage() {
   >([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
 
   // ── Overview data: metrics, bulanan, leaderboard ─────────────────────────
-  // Only fetched once after authentication. Does NOT depend on selectedDate.
+  // Only fetched once after authentication.
   useEffect(() => {
     if (!isHydrated || !isAuthenticated) return;
 
@@ -76,32 +83,28 @@ export default function DashboardPage() {
     };
   }, [isHydrated, isAuthenticated]);
 
-  // ── Harian data: rekap per-tanggal ────────────────────────────────────────
-  // Re-fetched whenever selectedDate changes (fast, isolated query).
+  // ── Harian data: rekap per-tanggal / rentang ───────────────────────────────
   const [harianLoading, setHarianLoading] = useState(false);
-  useEffect(() => {
+  const loadHarianData = useCallback(async () => {
     if (!isHydrated || !isAuthenticated) return;
-
-    let isCancelled = false;
     setHarianLoading(true);
-
-    async function loadHarianData() {
-      try {
-        const harianData = await getRekapHarian({ tanggal: selectedDate });
-        if (isCancelled) return;
-        setRekapHarianList(harianData);
-      } catch {
-        // Silently ignore harian load errors – overview error is already shown.
-      } finally {
-        if (!isCancelled) setHarianLoading(false);
-      }
+    try {
+      const filter =
+        filterMode === "range"
+          ? { tanggal_mulai: startDate, tanggal_selesai: endDate }
+          : { tanggal: startDate };
+      const harianData = await getRekapHarian(filter);
+      setRekapHarianList(harianData);
+    } catch {
+      // Silently ignore harian load errors
+    } finally {
+      setHarianLoading(false);
     }
+  }, [isHydrated, isAuthenticated, filterMode, startDate, endDate]);
 
-    loadHarianData();
-    return () => {
-      isCancelled = true;
-    };
-  }, [isHydrated, isAuthenticated, selectedDate]);
+  useEffect(() => {
+    void loadHarianData();
+  }, [loadHarianData]);
 
   // Re-fetch dashboard data automatically when auto-sync pulls new scans from Cloud
   useEffect(() => {
@@ -112,7 +115,11 @@ export default function DashboardPage() {
         getDashboardMetrics(),
         getRekapBulanan(),
         getTopKaryawanTerajin(5),
-        getRekapHarian({ tanggal: selectedDate }),
+        getRekapHarian(
+          filterMode === "range"
+            ? { tanggal_mulai: startDate, tanggal_selesai: endDate }
+            : { tanggal: startDate },
+        ),
       ])
         .then(([metricsData, bulananData, topData, harianData]) => {
           setMetrics(metricsData);
@@ -127,7 +134,7 @@ export default function DashboardPage() {
     return () => {
       window.removeEventListener("sppg:sync-completed", onSyncCompleted);
     };
-  }, [isHydrated, isAuthenticated, selectedDate]);
+  }, [isHydrated, isAuthenticated, filterMode, startDate, endDate]);
 
   // Combined loading state for skeleton rendering
   const isLoading = useMemo(
@@ -135,35 +142,172 @@ export default function DashboardPage() {
     [loading, harianLoading],
   );
 
-  // Export CSV Data
-  const exportToCSV = () => {
+  // ── Export Handlers (CSV & Excel) with file save picker ───────────────────
+  const handleExportCSV = async () => {
     if (!hasPermission(user, "dashboard.export")) return;
-    if (activeTab === "harian") {
-      let csvContent =
-        "data:text/csv;charset=utf-8,ID,Nama,Divisi,Jam Masuk,Jam Pulang,Status Kehadiran,Menit Terlambat,Keterangan\n";
-      for (const row of rekapHarianList) {
-        csvContent += `"${row.id_karyawan}","${row.nama}","${row.kelas_divisi}","${row.jam_masuk}","${row.jam_pulang}","${row.status_kehadiran}","${row.menit_terlambat}","${row.keterangan}"\n`;
+    setExportMessage(null);
+    try {
+      if (activeTab === "harian") {
+        const filename =
+          filterMode === "range" && startDate !== endDate
+            ? `Rekap_Harian_${startDate}_sd_${endDate}.csv`
+            : `Rekap_Harian_${startDate}.csv`;
+        const headers = [
+          "ID / NIK",
+          "Nama Karyawan",
+          "Divisi",
+          "Tanggal",
+          "Jam Masuk",
+          "Jam Pulang",
+          "Status Kehadiran",
+          "Menit Terlambat",
+          "Keterangan",
+        ];
+        const rows = rekapHarianList.map((row) => [
+          String(row.id_karyawan ?? ""),
+          String(row.nama ?? ""),
+          String(row.kelas_divisi ?? row.divisi ?? ""),
+          String(row.tanggal ?? startDate),
+          String(row.jam_masuk ?? "-"),
+          String(row.jam_pulang ?? "-"),
+          String(row.status_kehadiran ?? ""),
+          Number(row.menit_terlambat ?? 0),
+          String(row.keterangan ?? "-"),
+        ]);
+        const res = await exportToCsv(filename, headers, rows);
+        if (res.sukses) {
+          setExportMessage(
+            `Berkas CSV berhasil disimpan: ${res.filename || filename}`,
+          );
+        }
+      } else if (activeTab === "bulanan") {
+        const filename = `Rekap_Bulanan_Absensi_${new Date().toLocaleDateString("en-CA")}.csv`;
+        const headers = [
+          "ID Karyawan",
+          "Nama",
+          "Divisi",
+          "Total Hadir",
+          "Total Telat (Menit)",
+          "Frekuensi Telat",
+          "Total Sakit",
+          "Total Izin",
+          "Total Alfa",
+          "Total Jam Kerja",
+          "Total Lembur",
+        ];
+        const rows = rekapBulananList.map((row) => [
+          row.idKaryawan,
+          row.nama,
+          row.divisi,
+          row.totalHadir,
+          row.totalTerlambat,
+          row.frekuensiTelat,
+          row.totalSakit,
+          row.totalIzin,
+          row.totalAlfa,
+          row.totalJamKerja,
+          row.totalLembur,
+        ]);
+        const res = await exportToCsv(filename, headers, rows);
+        if (res.sukses) {
+          setExportMessage(
+            `Berkas CSV berhasil disimpan: ${res.filename || filename}`,
+          );
+        }
       }
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `Rekap_Harian_${selectedDate}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } else if (activeTab === "bulanan") {
-      let csvContent =
-        "data:text/csv;charset=utf-8,ID,Nama,Divisi,Total Hadir,Total Telat (Menit),Frekuensi Telat,Total Sakit,Total Izin,Total Alfa,Total Jam Kerja,Total Lembur\n";
-      for (const row of rekapBulananList) {
-        csvContent += `"${row.idKaryawan}","${row.nama}","${row.divisi}","${row.totalHadir}","${row.totalTerlambat}","${row.frekuensiTelat}","${row.totalSakit}","${row.totalIzin}","${row.totalAlfa}","${row.totalJamKerja}","${row.totalLembur}"\n`;
+    } catch (err) {
+      setLoadError(
+        err instanceof Error ? err.message : "Gagal mengekspor data CSV.",
+      );
+    }
+  };
+
+  const handleExportExcel = async () => {
+    if (!hasPermission(user, "dashboard.export")) return;
+    setExportMessage(null);
+    try {
+      if (activeTab === "harian") {
+        const filename =
+          filterMode === "range" && startDate !== endDate
+            ? `Rekap_Harian_${startDate}_sd_${endDate}.xlsx`
+            : `Rekap_Harian_${startDate}.xlsx`;
+        const headers = [
+          "ID / NIK",
+          "Nama Karyawan",
+          "Divisi",
+          "Tanggal",
+          "Jam Masuk",
+          "Jam Pulang",
+          "Status Kehadiran",
+          "Menit Terlambat",
+          "Keterangan",
+        ];
+        const rows = rekapHarianList.map((row) => [
+          String(row.id_karyawan ?? ""),
+          String(row.nama ?? ""),
+          String(row.kelas_divisi ?? row.divisi ?? ""),
+          String(row.tanggal ?? startDate),
+          String(row.jam_masuk ?? "-"),
+          String(row.jam_pulang ?? "-"),
+          String(row.status_kehadiran ?? ""),
+          Number(row.menit_terlambat ?? 0),
+          String(row.keterangan ?? "-"),
+        ]);
+        const res = await exportToExcel(
+          filename,
+          "Rekap Harian",
+          headers,
+          rows,
+        );
+        if (res.sukses) {
+          setExportMessage(
+            `Berkas Excel berhasil disimpan: ${res.filename || filename}`,
+          );
+        }
+      } else if (activeTab === "bulanan") {
+        const filename = `Rekap_Bulanan_Absensi_${new Date().toLocaleDateString("en-CA")}.xlsx`;
+        const headers = [
+          "ID Karyawan",
+          "Nama",
+          "Divisi",
+          "Total Hadir",
+          "Total Telat (Menit)",
+          "Frekuensi Telat",
+          "Total Sakit",
+          "Total Izin",
+          "Total Alfa",
+          "Total Jam Kerja",
+          "Total Lembur",
+        ];
+        const rows = rekapBulananList.map((row) => [
+          row.idKaryawan,
+          row.nama,
+          row.divisi,
+          row.totalHadir,
+          row.totalTerlambat,
+          row.frekuensiTelat,
+          row.totalSakit,
+          row.totalIzin,
+          row.totalAlfa,
+          row.totalJamKerja,
+          row.totalLembur,
+        ]);
+        const res = await exportToExcel(
+          filename,
+          "Rekap Bulanan",
+          headers,
+          rows,
+        );
+        if (res.sukses) {
+          setExportMessage(
+            `Berkas Excel berhasil disimpan: ${res.filename || filename}`,
+          );
+        }
       }
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", "Rekap_Bulanan_Absensi.csv");
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    } catch (err) {
+      setLoadError(
+        err instanceof Error ? err.message : "Gagal mengekspor data Excel.",
+      );
     }
   };
 
@@ -186,7 +330,7 @@ export default function DashboardPage() {
   return (
     <AppShell contentClassName="px-4 py-6 sm:px-6 md:py-8 lg:px-8">
       <div className="mx-auto w-full max-w-7xl space-y-8">
-        {/* Top Header Navigation */}
+        {/* Top Header Navigation with Action Buttons */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
           <div>
             <span className="text-xs uppercase tracking-widest text-amber-400 font-semibold font-mono">
@@ -197,25 +341,54 @@ export default function DashboardPage() {
             </h1>
           </div>
 
-          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-white outline-none focus:border-sky-500 sm:w-auto"
-            />
-
+          <div className="flex flex-wrap items-center gap-2">
             {hasPermission(user, "dashboard.export") ? (
-              <button
-                type="button"
-                onClick={exportToCSV}
-                className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-sky-950/60 transition hover:from-sky-500 hover:to-blue-500 active:scale-95 sm:w-auto"
-              >
-                Export CSV Report
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  disabled={
+                    isLoading ||
+                    (activeTab === "harian"
+                      ? rekapHarianList.length === 0
+                      : rekapBulananList.length === 0)
+                  }
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-sky-200 shadow-md transition hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <Icon name="download" className="size-3.5" />
+                  <span>Ekspor CSV</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportExcel}
+                  disabled={
+                    isLoading ||
+                    (activeTab === "harian"
+                      ? rekapHarianList.length === 0
+                      : rekapBulananList.length === 0)
+                  }
+                  className="flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-2 text-xs font-bold text-white shadow-lg shadow-emerald-950/60 transition hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50"
+                >
+                  <Icon name="document" className="size-3.5" />
+                  <span>Ekspor Excel (.xlsx)</span>
+                </button>
+              </>
             ) : null}
           </div>
         </div>
+
+        {exportMessage ? (
+          <output className="rounded-2xl border border-emerald-400/25 bg-emerald-400/10 p-4 text-sm text-emerald-100 flex items-center justify-between">
+            <p className="font-bold">{exportMessage}</p>
+            <button
+              type="button"
+              onClick={() => setExportMessage(null)}
+              className="text-xs text-emerald-300 hover:text-white"
+            >
+              &times;
+            </button>
+          </output>
+        ) : null}
 
         {loadError && (
           <div
@@ -283,41 +456,151 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="bg-slate-900/60 p-1.5 border border-slate-800 rounded-xl flex items-center gap-2 max-w-md">
-          <button
-            type="button"
-            onClick={() => setActiveTab("harian")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "harian"
-                ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Rekap Harian ({selectedDate})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("bulanan")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "bulanan"
-                ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Rekap Bulanan
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("leaderboard")}
-            className={`flex-1 py-2 rounded-lg text-xs font-semibold transition ${
-              activeTab === "leaderboard"
-                ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            Leaderboard
-          </button>
+        {/* Tab Navigation & Dynamic Filter Controls Bar */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+          <div className="bg-slate-900/60 p-1.5 border border-slate-800 rounded-xl flex items-center gap-1.5 w-full xl:w-auto overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setActiveTab("harian")}
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition ${
+                activeTab === "harian"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              {filterMode === "single" || startDate === endDate
+                ? `Rekap Harian (${startDate})`
+                : `Rekap (${startDate} s/d ${endDate})`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("bulanan")}
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition ${
+                activeTab === "bulanan"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Rekap Bulanan
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("leaderboard")}
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition ${
+                activeTab === "leaderboard"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Leaderboard
+            </button>
+          </div>
+
+          {/* Date Filter Controls Bar (Right side of Tab Bar) */}
+          {activeTab === "harian" ? (
+            <div className="flex flex-wrap items-center gap-2 bg-slate-900/60 border border-slate-800 p-1.5 rounded-xl">
+              <div className="inline-flex rounded-lg border border-white/10 bg-slate-950/60 p-0.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("single")}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition ${
+                    filterMode === "single"
+                      ? "bg-sky-500 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  1 Tanggal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("range")}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition ${
+                    filterMode === "range"
+                      ? "bg-sky-500 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Rentang
+                </button>
+              </div>
+
+              {filterMode === "single" ? (
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => {
+                    setStartDate(e.target.value);
+                    setEndDate(e.target.value);
+                  }}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1 font-mono text-xs text-white outline-none focus:border-sky-500"
+                />
+              ) : (
+                <div className="flex items-center gap-1.5 font-mono text-xs">
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-white outline-none focus:border-sky-500"
+                  />
+                  <span className="text-slate-400 text-xs font-sans">s/d</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-white outline-none focus:border-sky-500"
+                  />
+                </div>
+              )}
+
+              {/* Quick Presets */}
+              <div className="hidden sm:flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const today = new Date().toLocaleDateString("en-CA");
+                    setStartDate(today);
+                    setEndDate(today);
+                    setFilterMode("single");
+                  }}
+                  className="px-2 py-1 text-[10px] font-semibold rounded-md border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                >
+                  Hari Ini
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const now = new Date();
+                    const past = new Date(
+                      now.getTime() - 6 * 24 * 60 * 60 * 1000,
+                    );
+                    setStartDate(past.toLocaleDateString("en-CA"));
+                    setEndDate(now.toLocaleDateString("en-CA"));
+                    setFilterMode("range");
+                  }}
+                  className="px-2 py-1 text-[10px] font-semibold rounded-md border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                >
+                  7 Hari
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const now = new Date();
+                    const firstDay = new Date(
+                      now.getFullYear(),
+                      now.getMonth(),
+                      1,
+                    ).toLocaleDateString("en-CA");
+                    setStartDate(firstDay);
+                    setEndDate(now.toLocaleDateString("en-CA"));
+                    setFilterMode("range");
+                  }}
+                  className="px-2 py-1 text-[10px] font-semibold rounded-md border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                >
+                  Bulan Ini
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Table Data Container */}
@@ -359,7 +642,7 @@ export default function DashboardPage() {
                       <tr
                         key={String(
                           row.id_absensi ??
-                            `${row.id_karyawan}-${selectedDate}`,
+                            `${row.id_karyawan}-${row.tanggal || startDate}`,
                         )}
                         className="hover:bg-slate-800/40 transition"
                       >
@@ -370,7 +653,7 @@ export default function DashboardPage() {
                           {String(row.nama)}
                         </td>
                         <td className="p-4 text-slate-300">
-                          {String(row.kelas_divisi)}
+                          {String(row.kelas_divisi || row.divisi || "-")}
                         </td>
                         <td className="p-4 text-slate-300">
                           {String(row.jam_masuk || "-")}
@@ -382,13 +665,15 @@ export default function DashboardPage() {
                           <span
                             className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
                               row.status_kehadiran === "Hadir"
-                                ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                                : row.status_kehadiran === "Alfa"
-                                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                                  : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                : row.status_kehadiran === "Terlambat"
+                                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                  : row.status_kehadiran === "Alfa"
+                                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                    : "bg-sky-500/20 text-sky-300 border border-sky-500/40"
                             }`}
                           >
-                            {String(row.status_kehadiran)}
+                            {String(row.status_kehadiran || "-")}
                           </span>
                         </td>
                         <td className="p-4 text-amber-300">
