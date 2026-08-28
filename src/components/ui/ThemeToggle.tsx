@@ -37,7 +37,11 @@ export function ThemeToggle({
           className="peer absolute inset-0 cursor-pointer opacity-0"
         >
           {THEME_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
+            <option
+              key={opt.value}
+              value={opt.value}
+              className="bg-slate-900 text-slate-100 dark:bg-slate-900 dark:text-slate-100"
+            >
               Tema: {opt.label}
             </option>
           ))}
@@ -66,15 +70,15 @@ export function ThemeToggle({
             type="button"
             aria-pressed={isSelected}
             onClick={() => setTheme(opt.value)}
-            className={`group flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
+            className={`group flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-xl px-3 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
               isSelected
                 ? "bg-sky-500 text-white shadow-md shadow-sky-950/40"
-                : "text-slate-400 hover:bg-white/[0.06] hover:text-slate-100"
+                : "text-slate-300 hover:bg-white/[0.08] hover:text-white"
             }`}
           >
             <Icon
               name={opt.icon}
-              className={`size-3.5 transition ${isSelected ? "text-white" : "text-slate-400 group-hover:text-slate-200"}`}
+              className={`size-3.5 transition ${isSelected ? "text-white" : "text-slate-300 group-hover:text-white"}`}
             />
             <span>{opt.label}</span>
           </button>

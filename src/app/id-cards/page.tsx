@@ -1137,7 +1137,7 @@ export default function IdCardsPage() {
                     className={`group relative flex flex-col justify-between rounded-2xl border transition-all p-5 ${
                       isSelected
                         ? "border-sky-400/80 bg-sky-950/20 shadow-lg shadow-sky-950/30"
-                        : "border-white/10 bg-gradient-to-br from-slate-900/90 to-slate-950 hover:border-white/20"
+                        : "border-white/10 bg-slate-900/80 hover:border-white/20"
                     }`}
                   >
                     {/* Checkbox Header */}
@@ -1195,7 +1195,7 @@ export default function IdCardsPage() {
                           setPreviewEmployee(row);
                           setPreviewSide("front");
                         }}
-                        className="flex-1 rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-bold text-white hover:bg-white/10 transition"
+                        className="flex-1 rounded-xl border border-white/10 bg-slate-800 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 transition"
                       >
                         Pratinjau
                       </button>
@@ -1587,7 +1587,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -1%
                       </button>
@@ -1601,7 +1601,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -0.1%
                       </button>
@@ -1615,7 +1615,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +0.1%
                       </button>
@@ -1629,7 +1629,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +1%
                       </button>
@@ -1685,7 +1685,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -1%
                       </button>
@@ -1699,7 +1699,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -0.1%
                       </button>
@@ -1713,7 +1713,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +0.1%
                       </button>
@@ -1727,7 +1727,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +1%
                       </button>
@@ -1789,7 +1789,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -5%
                       </button>
@@ -1805,7 +1805,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -1%
                       </button>
@@ -1821,7 +1821,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +1%
                       </button>
@@ -1837,7 +1837,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +5%
                       </button>
@@ -1896,7 +1896,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -5%
                       </button>
@@ -1912,7 +1912,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         -1%
                       </button>
@@ -1928,7 +1928,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +1%
                       </button>
@@ -1944,7 +1944,7 @@ export default function IdCardsPage() {
                             ),
                           })
                         }
-                        className="rounded-lg bg-slate-800/90 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
+                        className="rounded-lg border border-slate-700/50 bg-slate-800 py-1 text-center font-mono text-[10px] font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
                       >
                         +5%
                       </button>

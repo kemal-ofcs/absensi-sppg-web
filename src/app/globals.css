@@ -235,22 +235,52 @@ html[data-theme="light"] .bg-slate-900,
 html[data-theme="light"] .bg-slate-950,
 html[data-theme="light"] .bg-slate-900\/98,
 html[data-theme="light"] .bg-slate-900\/90,
+html[data-theme="light"] .bg-slate-900\/85,
 html[data-theme="light"] .bg-slate-900\/80,
+html[data-theme="light"] .bg-slate-900\/70,
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-900\/50,
 html[data-theme="light"] .bg-slate-900\/40,
 html[data-theme="light"] .bg-slate-950\/96,
 html[data-theme="light"] .bg-slate-950\/90,
 html[data-theme="light"] .bg-slate-950\/80,
+html[data-theme="light"] .bg-slate-950\/70,
+html[data-theme="light"] .bg-slate-950\/60,
+html[data-theme="light"] .bg-slate-950\/50,
 html[data-theme="light"] .bg-slate-950\/40,
+html[data-theme="light"] .from-slate-900\/90,
+html[data-theme="light"] .to-slate-950,
+html[data-theme="light"] dl.bg-slate-950\/50,
+html[data-theme="light"] .divide-white\/10,
+html[data-theme="light"] .bg-white\/\[0\.02\],
+html[data-theme="light"] .bg-white\/\[0\.03\],
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.05\],
 html.light .bg-slate-900,
 html.light .bg-slate-950,
 html.light .bg-slate-900\/98,
 html.light .bg-slate-900\/90,
+html.light .bg-slate-900\/85,
 html.light .bg-slate-900\/80,
+html.light .bg-slate-900\/70,
+html.light .bg-slate-900\/60,
+html.light .bg-slate-900\/50,
 html.light .bg-slate-900\/40,
 html.light .bg-slate-950\/96,
 html.light .bg-slate-950\/90,
 html.light .bg-slate-950\/80,
-html.light .bg-slate-950\/40 {
+html.light .bg-slate-950\/70,
+html.light .bg-slate-950\/60,
+html.light .bg-slate-950\/50,
+html.light .bg-slate-950\/40,
+html.light .from-slate-900\/90,
+html.light .to-slate-950,
+html.light dl.bg-slate-950\/50,
+html.light .divide-white\/10,
+html.light .bg-white\/\[0\.02\],
+html.light .bg-white\/\[0\.03\],
+html.light .bg-white\/\[0\.04\],
+html.light .bg-white\/\[0\.05\] {
   background-color: #ffffff !important;
   border-color: #e2e8f0 !important;
 }
@@ -337,30 +367,80 @@ html.light .hover\:text-slate-950:hover {
   color: #0f172a !important;
 }
 
-/* 6. Action Buttons (CSV, Excel, Scanner Primary/Stop, Refresh) */
-/* Secondary button (Ekspor CSV, Refresh) */
+/* 6. Action Buttons (CSV, Excel, Scanner Primary/Stop, Refresh, Labels, Steppers) */
+/* Secondary button & labels (Ekspor CSV, Refresh, Label upload, Pratinjau, Reset logo, Steppers) */
 html[data-theme="light"] button.bg-slate-800,
+html[data-theme="light"] button.bg-slate-800\/90,
+html[data-theme="light"] button.bg-slate-800\/80,
+html[data-theme="light"] .bg-slate-800\/90,
+html[data-theme="light"] .bg-slate-800\/80,
+html[data-theme="light"] label.bg-slate-800,
+html[data-theme="light"] a.bg-slate-800,
 html[data-theme="light"] .bg-slate-800.border-slate-700,
+html[data-theme="light"] button.bg-white\/5,
+html[data-theme="light"] button.bg-white\/\[0\.05\],
+html[data-theme="light"] a.bg-white\/\[0\.05\],
 html.light button.bg-slate-800,
-html.light .bg-slate-800.border-slate-700 {
+html.light button.bg-slate-800\/90,
+html.light button.bg-slate-800\/80,
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light label.bg-slate-800,
+html.light a.bg-slate-800,
+html.light .bg-slate-800.border-slate-700,
+html.light button.bg-white\/5,
+html.light button.bg-white\/\[0\.05\],
+html.light a.bg-white\/\[0\.05\] {
   background-color: #ffffff !important;
   border-color: #cbd5e1 !important;
   color: #1e293b !important;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08) !important;
 }
 html[data-theme="light"] button.bg-slate-800:hover,
-html.light button.bg-slate-800:hover {
+html[data-theme="light"] button.bg-slate-800\/90:hover,
+html[data-theme="light"] button.bg-slate-800\/80:hover,
+html[data-theme="light"] label.bg-slate-800:hover,
+html[data-theme="light"] a.bg-slate-800:hover,
+html[data-theme="light"] button.bg-white\/5:hover,
+html[data-theme="light"] button.bg-white\/\[0\.05\]:hover,
+html[data-theme="light"] a.bg-white\/\[0\.05\]:hover,
+html.light button.bg-slate-800:hover,
+html.light button.bg-slate-800\/90:hover,
+html.light button.bg-slate-800\/80:hover,
+html.light label.bg-slate-800:hover,
+html.light a.bg-slate-800:hover,
+html.light button.bg-white\/5:hover,
+html.light button.bg-white\/\[0\.05\]:hover,
+html.light a.bg-white\/\[0\.05\]:hover {
   background-color: #f8fafc !important;
   border-color: #94a3b8 !important;
   color: #0f172a !important;
 }
 html[data-theme="light"] button.bg-slate-800 *,
-html.light button.bg-slate-800 * {
+html[data-theme="light"] button.bg-slate-800\/90 *,
+html[data-theme="light"] button.bg-slate-800\/80 *,
+html[data-theme="light"] label.bg-slate-800 *,
+html.light button.bg-slate-800 *,
+html.light button.bg-slate-800\/90 *,
+html.light button.bg-slate-800\/80 *,
+html.light label.bg-slate-800 * {
   color: inherit !important;
 }
 html[data-theme="light"] button.bg-slate-800 svg,
-html.light button.bg-slate-800 svg {
+html[data-theme="light"] label.bg-slate-800 svg,
+html.light button.bg-slate-800 svg,
+html.light label.bg-slate-800 svg {
   color: #0284c7 !important;
+}
+
+/* Neutral status badges & Nonaktif indicators */
+html[data-theme="light"] span.bg-slate-800,
+html[data-theme="light"] div.bg-slate-800:not(button),
+html.light span.bg-slate-800,
+html.light div.bg-slate-800:not(button) {
+  background-color: #f1f5f9 !important;
+  color: #64748b !important;
+  border-color: #cbd5e1 !important;
 }
 
 /* Excel Export Button */
@@ -583,6 +663,28 @@ html.light .bg-amber-950\/80 * {
   color: inherit !important;
 }
 
+/* VIOLET / PURPLE TONE (Operator, Superadmin, RBAC) */
+html[data-theme="light"] .bg-violet-950,
+html[data-theme="light"] .bg-violet-950\/80,
+html[data-theme="light"] .bg-violet-950\/40,
+html[data-theme="light"] .bg-violet-400\/25,
+html[data-theme="light"] .bg-violet-400\/10,
+html.light .bg-violet-950,
+html.light .bg-violet-950\/80,
+html.light .bg-violet-950\/40,
+html.light .bg-violet-400\/25,
+html.light .bg-violet-400\/10 {
+  background-color: #f3e8ff !important;
+  border-color: #d8b4fe !important;
+  color: #7e22ce !important;
+}
+html[data-theme="light"] .text-violet-300,
+html[data-theme="light"] .text-violet-200,
+html.light .text-violet-300,
+html.light .text-violet-200 {
+  color: #7e22ce !important;
+}
+
 /* 8. Date Range Switcher & Presets */
 html[data-theme="light"] .bg-slate-950\/60.border-white\/10,
 html.light .bg-slate-950\/60.border-white\/10 {
@@ -791,15 +893,24 @@ html.light td.sticky {
 }
 
 /* 12. Form Controls in Light Mode */
-html[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]),
+html[data-theme="light"]
+input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
 html[data-theme="light"] select,
 html[data-theme="light"] textarea,
-html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
 html.light select,
 html.light textarea {
   background-color: #ffffff !important;
   color: #0f172a !important;
   border: 1px solid #cbd5e1 !important;
+}
+html[data-theme="light"] input.bg-transparent,
+html.light input.bg-transparent {
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #0284c7 !important;
 }
 html[data-theme="light"] input::placeholder,
 html[data-theme="light"] textarea::placeholder,
@@ -807,14 +918,27 @@ html.light input::placeholder,
 html.light textarea::placeholder {
   color: #94a3b8 !important;
 }
-html[data-theme="light"] input:focus,
+html[data-theme="light"]
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
 html[data-theme="light"] select:focus,
 html[data-theme="light"] textarea:focus,
-html.light input:focus,
+html.light
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
 html.light select:focus,
 html.light textarea:focus {
   border-color: #0284c7 !important;
   box-shadow: 0 0 0 3px rgb(2 132 199 / 15%) !important;
+}
+
+select option {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+html[data-theme="light"] select option,
+html.light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
 }
 
 .mobile-safe-bottom {
@@ -1179,4 +1303,51 @@ html[data-visual-tier="off"] .visual-skeleton::after {
   .visual-skeleton::after {
     animation: none;
   }
+}
+
+/* ==========================================================================
+   DASHBOARD 3D PODIUM & WEEKLY TREND (LIGHT THEME HARMONIZATION)
+   ========================================================================== */
+
+/* Gold Podium Card in Light Mode */
+html[data-theme="light"] .border-amber-400\/60.from-amber-950\/40,
+html.light .border-amber-400\/60.from-amber-950\/40 {
+  background: linear-gradient(to bottom, #fffbeb, #ffffff) !important;
+  border-color: #f59e0b !important;
+  box-shadow: 0 10px 25px rgba(245, 158, 11, 0.15) !important;
+}
+html[data-theme="light"] .border-amber-400\/60.from-amber-950\/40 h4,
+html.light .border-amber-400\/60.from-amber-950\/40 h4 {
+  color: #78350f !important;
+}
+
+/* Silver Podium Card in Light Mode */
+html[data-theme="light"] .border-slate-400\/30.from-slate-800\/90,
+html.light .border-slate-400\/30.from-slate-800\/90 {
+  background: linear-gradient(to bottom, #f8fafc, #ffffff) !important;
+  border-color: #94a3b8 !important;
+  box-shadow: 0 10px 25px rgba(100, 116, 139, 0.12) !important;
+}
+html[data-theme="light"] .border-slate-400\/30.from-slate-800\/90 h4,
+html.light .border-slate-400\/30.from-slate-800\/90 h4 {
+  color: #0f172a !important;
+}
+
+/* Bronze Podium Card in Light Mode */
+html[data-theme="light"] .border-amber-700\/40.from-stone-900\/90,
+html.light .border-amber-700\/40.from-stone-900\/90 {
+  background: linear-gradient(to bottom, #fff7ed, #ffffff) !important;
+  border-color: #d97706 !important;
+  box-shadow: 0 10px 25px rgba(217, 119, 6, 0.12) !important;
+}
+html[data-theme="light"] .border-amber-700\/40.from-stone-900\/90 h4,
+html.light .border-amber-700\/40.from-stone-900\/90 h4 {
+  color: #7c2d12 !important;
+}
+
+/* Weekly Trend Bar Track in Light Mode */
+html[data-theme="light"] .bg-slate-950\/80,
+html.light .bg-slate-950\/80 {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
 }

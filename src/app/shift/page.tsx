@@ -502,7 +502,7 @@ export default function ShiftPage() {
                           Aktif
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 font-medium text-[10px]">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 font-medium text-[10px] border border-slate-700/50">
                           Nonaktif
                         </span>
                       )}
