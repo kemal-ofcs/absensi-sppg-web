@@ -17,6 +17,8 @@ interface AuthApiResponse {
   sukses: boolean;
   pesan?: string;
   operator?: OperatorUser | null;
+  /** Password sudah benar, tinggal kode verifikasi dua langkah. */
+  requiresTotp?: boolean;
 }
 
 const LEGACY_SESSION_KEY = "absensi_sppg_operator_session";
@@ -95,14 +97,18 @@ export async function refreshWebSession() {
   }
 }
 
-export async function loginWebSession(username: string, password: string) {
+export async function loginWebSession(
+  username: string,
+  password: string,
+  totpCode?: string,
+) {
   try {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, totpCode }),
     });
     const body = await readResponse(response);
     if (response.ok && body.sukses && body.operator) {
@@ -113,6 +119,7 @@ export async function loginWebSession(username: string, password: string) {
     emit({ user: null, isLoading: false });
     return {
       sukses: false,
+      requiresTotp: body.requiresTotp === true,
       pesan: body.pesan ?? "Username atau password tidak sesuai.",
     };
   } catch {

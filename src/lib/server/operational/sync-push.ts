@@ -438,8 +438,9 @@ async function applyShift(
           kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
           batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
           istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-          offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi,
+          shift_lanjutan_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
         args: [
           code,
@@ -456,6 +457,7 @@ async function applyShift(
           number(payload, "offset_generate_alfa", 180),
           number(payload, "buffer_shift_malam_menit", 120),
           number(payload, "izinkan_multi_sesi", 0),
+          number(payload, "shift_lanjutan_id", 0),
         ],
       });
       serverId = Number(result.lastInsertRowid);
@@ -470,7 +472,8 @@ async function applyShift(
           awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
           jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
           offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?,
-          izinkan_multi_sesi = ?
+          izinkan_multi_sesi = ?,
+          shift_lanjutan_id = ?
         WHERE id_shift = ?;
       `,
       args: [
@@ -487,6 +490,7 @@ async function applyShift(
         number(payload, "offset_generate_alfa", 180),
         number(payload, "buffer_shift_malam_menit", 120),
         number(payload, "izinkan_multi_sesi", 0),
+        number(payload, "shift_lanjutan_id", 0),
         serverId,
       ],
     });
@@ -765,21 +769,46 @@ async function applyAttendance(
       throw new Error("Data ABSENSI_HARIAN belum lengkap.");
     }
     const existing = await transaction.execute({
-      sql: `SELECT sumber, update_terakhir
+      sql: `SELECT sumber, update_terakhir,
+                   COALESCE(jam_masuk, '') AS jam_masuk,
+                   COALESCE(jam_pulang, '') AS jam_pulang,
+                   COALESCE(status_kehadiran, '') AS status_kehadiran
             FROM absensi_harian WHERE id_sesi = ? LIMIT 1;`,
       args: [idSesi],
     });
     const current = existing.rows[0];
     if (current && String(current.sumber) === "Koreksi Admin") {
-      throw new Error(
-        "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa scanner.",
-      );
+      // Perlindungan berlaku pada KOLOM yang benar-benar diisi admin, bukan
+      // seluruh baris. Scan pulang yang hanya mengisi jam_pulang kosong tidak
+      // menimpa keputusan admin apa pun.
+      const menimpa = (tersimpan: unknown, baru: unknown) => {
+        const lama = String(tersimpan ?? "");
+        return lama !== "" && lama !== String(baru ?? "");
+      };
+      // Koreksi Sakit/Izin/Dispen/Alfa sengaja MENGOSONGKAN kedua jam, jadi
+      // aturan "boleh mengisi kolom kosong" saja akan membuat scan
+      // menghidupkannya kembali menjadi Hadir.
+      const keputusanKetidakhadiran =
+        String(current.status_kehadiran ?? "") !== "Hadir";
+      if (
+        keputusanKetidakhadiran ||
+        menimpa(current.jam_masuk, data.jam_masuk) ||
+        menimpa(current.jam_pulang, data.jam_pulang)
+      ) {
+        throw new Error(
+          "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa scanner.",
+        );
+      }
     }
+    // Operator memilih "Gunakan Versi Lokal": lewati pemeriksaan konkurensi
+    // optimistis, kalau tidak konfliknya tidak pernah bisa diselesaikan.
+    const forceLocal = event.payload.forceLocalOverride === true;
     const baseUpdatedAt = text(event.payload, "attendanceBaseUpdatedAt");
     if (
-      (current && !baseUpdatedAt) ||
-      (current && String(current.update_terakhir) !== baseUpdatedAt) ||
-      (!current && baseUpdatedAt)
+      !forceLocal &&
+      ((current && !baseUpdatedAt) ||
+        (current && String(current.update_terakhir) !== baseUpdatedAt) ||
+        (!current && baseUpdatedAt))
     ) {
       throw new Error(
         "Data absensi server berubah setelah scan lokal diproses.",
@@ -906,7 +935,7 @@ async function applyCorrection(
       const idKaryawan = String(kor.id_karyawan);
       const tanggal = String(kor.tanggal);
       const remRes = await transaction.execute({
-        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
         args: [idKaryawan, tanggal],
       });
       const absRes = await transaction.execute({
@@ -1274,7 +1303,7 @@ async function applyOfflineImport(
         args: [eventKey, idUnik, tanggal],
       });
       const remRes = await transaction.execute({
-        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+        sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
         args: [idUnik, tanggal],
       });
       const absRes = await transaction.execute({

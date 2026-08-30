@@ -21,6 +21,7 @@ interface ShiftDraft {
   offset_generate_alfa?: number;
   buffer_shift_malam_menit?: number;
   izinkan_multi_sesi?: number | boolean;
+  shift_lanjutan_id?: number;
 }
 
 export function createEmployeeIdentifiers(uuid: string) {

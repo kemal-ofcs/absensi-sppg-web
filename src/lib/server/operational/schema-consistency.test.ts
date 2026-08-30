@@ -35,7 +35,8 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'import_offline', 'tbl_hari_libur',
         'company_profile', 'id_card_template',
         'salary_configs', 'overtime_tier_rules', 'payroll_components',
-        'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs'
+        'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
+        'password_reset_request', 'app_mail_config'
       );
     `);
     const tableCount = Number(tablesRes.rows[0]?.count ?? 0);

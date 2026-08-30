@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use base64::prelude::*;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
@@ -629,6 +631,7 @@ pub fn list_shifts(state: &DesktopState) -> Result<Value, CommandError> {
                 "offset_generate_alfa": row.get::<_, i64>(12)?,
                 "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
                 "izinkan_multi_sesi": row.get::<_, Option<i64>>(14)?.unwrap_or(0),
+                "shift_lanjutan_id": row.get::<_, Option<i64>>(15)?.unwrap_or(0),
             }))
         })
         .map_err(|_| CommandError::internal())?;
@@ -715,6 +718,14 @@ fn insert_shift(
     } else {
         0
     };
+    // Shift tujuan sesi lanjutan. Hanya bermakna saat multi-sesi menyala;
+    // 0 berarti belum ditentukan sehingga scanner kembali ke pencocokan
+    // jendela otomatis seperti perilaku lama.
+    let continuation_shift = if multi_session == 1 {
+        integer(draft, "shift_lanjutan_id", 0).max(0)
+    } else {
+        0
+    };
 
     transaction
         .execute(
@@ -724,8 +735,8 @@ fn insert_shift(
         awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
         jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
         offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
-        izinkan_multi_sesi
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        izinkan_multi_sesi, shift_lanjutan_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       "#,
             params![
                 id,
@@ -743,6 +754,7 @@ fn insert_shift(
                 alfa_offset,
                 night_buffer,
                 multi_session,
+                continuation_shift,
             ],
         )
         .map_err(|error| {
@@ -795,6 +807,14 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
     } else {
         0
     };
+    // Shift tujuan sesi lanjutan. Hanya bermakna saat multi-sesi menyala;
+    // 0 berarti belum ditentukan sehingga scanner kembali ke pencocokan
+    // jendela otomatis seperti perilaku lama.
+    let continuation_shift = if multi_session == 1 {
+        integer(draft, "shift_lanjutan_id", 0).max(0)
+    } else {
+        0
+    };
 
     transaction
         .execute(
@@ -804,7 +824,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
         awal_absen_menit = ?, batas_masuk_menit = ?, toleransi_masuk_menit = ?,
         jam_kerja_normal_menit = ?, istirahat_menit = ?, batas_pulang_menit = ?,
         offset_istirahat_mulai = ?, offset_generate_alfa = ?, buffer_shift_malam_menit = ?,
-        izinkan_multi_sesi = ?
+        izinkan_multi_sesi = ?, shift_lanjutan_id = ?
       WHERE id_shift = ?;
       "#,
             params![
@@ -821,6 +841,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
                 alfa_offset,
                 night_buffer,
                 multi_session,
+                continuation_shift,
                 id,
             ],
         )
@@ -833,7 +854,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
                awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
                jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
                offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
-               izinkan_multi_sesi
+               izinkan_multi_sesi, shift_lanjutan_id
         FROM tbl_shift WHERE id_shift = ?;
         "#,
             [id],
@@ -854,6 +875,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
                     "offset_generate_alfa": row.get::<_, i64>(12)?,
                     "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
                     "izinkan_multi_sesi": row.get::<_, i64>(14)?,
+                    "shift_lanjutan_id": row.get::<_, Option<i64>>(15)?.unwrap_or(0),
                 }))
             },
         )
@@ -1543,6 +1565,8 @@ pub fn generate_alfa_harian(
             "jumlahBelumWaktunya": 0,
             "jumlahFleksibel": 0,
             "jumlahNonaktif": 0,
+            "jumlahLibur": 0,
+            "jumlahShiftTidakValid": 0,
             "status": "NONAKTIF",
             "pesan": "Generate Alfa dimatikan melalui Pengaturan"
         }));
@@ -1570,6 +1594,8 @@ pub fn generate_alfa_harian(
                 "jumlahBelumWaktunya": 0,
                 "jumlahFleksibel": 0,
                 "jumlahNonaktif": 0,
+                "jumlahLibur": 0,
+                "jumlahShiftTidakValid": 0,
                 "status": "ERROR",
                 "pesan": "Waktu sistem tidak dapat diproses"
             }));
@@ -1605,6 +1631,10 @@ pub fn generate_alfa_harian(
     let mut sudah_ada = 0;
     let mut belum_waktunya = 0;
     let mut fleksibel = 0;
+    // Dulu dua kondisi ini keluar lewat "continue" tanpa jejak, sehingga
+    // ringkasan hanya menampilkan nol tanpa alasan.
+    let mut libur = 0;
+    let mut shift_tidak_valid = 0;
 
     let now_minute = parse_time_to_minutes(&now_moment.time);
 
@@ -1624,35 +1654,83 @@ pub fn generate_alfa_harian(
     ];
 
     for (id_unik, nama, divisi, id_shift) in employees {
-        let shift_config: Option<(String, String, i64, i64, i64)> = transaction
+        let shift_config: Option<(String, String, i64, i64, i64, i64)> = transaction
             .query_row(
-                "SELECT jam_masuk, jam_pulang, COALESCE(offset_generate_alfa, 180), COALESCE(jam_kerja_normal_menit, 0), kode_shift FROM tbl_shift WHERE id_shift = ?;",
+                r#"
+                SELECT jam_masuk,
+                       jam_pulang,
+                       COALESCE(offset_generate_alfa, 180),
+                       COALESCE(jam_kerja_normal_menit, 0),
+                       COALESCE(batas_pulang_menit, 240),
+                       COALESCE(buffer_shift_malam_menit, 120)
+                FROM tbl_shift WHERE id_shift = ?;
+                "#,
                 [id_shift],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()
             .unwrap_or(None);
 
-        let (jam_masuk, jam_pulang, offset_alfa, jam_kerja_normal, kode_shift) = match shift_config
-        {
-            Some(cfg) => cfg,
-            None => continue,
-        };
+        let (jam_masuk, jam_pulang, offset_alfa, jam_kerja_normal, batas_pulang, buffer_malam) =
+            match shift_config {
+                Some(cfg) => cfg,
+                None => {
+                    // Shift karyawan hilang / tidak terbaca. Dulu dilewati diam-diam,
+                    // sehingga karyawan tidak pernah di-Alfa-kan tanpa satu pun jejak.
+                    shift_tidak_valid += 1;
+                    transaction
+                        .execute(
+                            r#"
+                            INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
+                            VALUES (?, 'Skip Generate Alfa', ?, ?, ?, '', ?, 'Gagal');
+                            "#,
+                            params![
+                                now_str,
+                                now_moment.date,
+                                id_unik,
+                                nama,
+                                format!("Shift id {id_shift} tidak ditemukan di tbl_shift."),
+                            ],
+                        )
+                        .map_err(|_| CommandError::internal())?;
+                    continue;
+                }
+            };
 
-        if kode_shift == 4
-            || (jam_masuk == "00:00" && jam_pulang == "23:59")
-            || jam_kerja_normal == 0
-        {
+        // Shift fleksibel tidak lagi dilewati. Karyawannya bebas absen jam
+        // berapa saja, jadi ketidakhadiran baru boleh dinilai setelah hari
+        // kalendernya habis — yang di-generate adalah hari kemarin, sama
+        // seperti shift malam yang diselesaikan pagi harinya.
+        let shift_kind =
+            super::time_policy::shift_kind_of(&jam_masuk, &jam_pulang, jam_kerja_normal);
+        let is_fleksibel = shift_kind == super::time_policy::ShiftKind::Flexible;
+        if is_fleksibel {
             fleksibel += 1;
-            continue;
         }
 
         let shift_in_min = parse_time_to_minutes(&jam_masuk);
         let shift_out_min = parse_time_to_minutes(&jam_pulang);
-        let is_overnight = shift_out_min < shift_in_min;
+        let is_overnight = !is_fleksibel && shift_out_min < shift_in_min;
+
+        // Hari kerja yang sedang dinilai mundur satu hari selama kita masih
+        // berada di dalam shift yang belum selesai.
+        let masih_di_hari_sebelumnya = if is_fleksibel {
+            now_minute < super::time_policy::END_OF_DAY_MINUTE
+        } else {
+            is_overnight && now_minute < shift_in_min
+        };
 
         let mut work_date = now_moment.date.clone();
-        if is_overnight && now_minute < shift_in_min {
+        if masih_di_hari_sebelumnya {
             if let Ok(prev) = super::time_policy::add_days(&now_moment.date, -1) {
                 work_date = prev;
             }
@@ -1668,14 +1746,36 @@ pub fn generate_alfa_harian(
             .unwrap_or(None)
             .unwrap_or(false);
         if holiday_check {
+            libur += 1;
             continue;
         }
 
-        let cutoff_timeline_minute = if is_overnight {
-            shift_out_min + 1440 - offset_alfa
-        } else {
-            shift_out_min - offset_alfa
+        // Alfa baru boleh dibuat setelah jendela scan pulang benar-benar tertutup
+        // (jam pulang + batas pulang + buffer shift malam), lalu ditambah
+        // offset_generate_alfa. Rumus lama "jam_pulang - offset" mengabaikan
+        // batas_pulang_menit dan membuat Alfa selagi karyawan masih berhak
+        // scan pulang.
+        let shift_policy = super::time_policy::ShiftPolicy {
+            kind: shift_kind,
+            start: jam_masuk.clone(),
+            end: jam_pulang.clone(),
+            early_window_minutes: 0,
+            normal_entry_minutes: 0,
+            late_tolerance_minutes: 0,
+            checkout_limit_minutes: batas_pulang,
+            night_buffer_minutes: buffer_malam,
+            break_offset_minutes: 0,
+            normal_work_minutes: jam_kerja_normal,
+            break_minutes: 0,
         };
+        let cutoff_timeline_minute =
+            match super::time_policy::alfa_generation_minute(&shift_policy, offset_alfa) {
+                Some(minute) => minute,
+                None => {
+                    shift_tidak_valid += 1;
+                    continue;
+                }
+            };
 
         let current_timeline_minute =
             match super::time_policy::days_between(&work_date, &now_moment.date) {
@@ -1809,12 +1909,12 @@ pub fn generate_alfa_harian(
             if alfa_dibuat > 0 {
                 (
                     "SELESAI",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             } else {
                 (
                     "IDLE",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             }
         }
@@ -1828,8 +1928,577 @@ pub fn generate_alfa_harian(
         "jumlahBelumWaktunya": belum_waktunya,
         "jumlahFleksibel": fleksibel,
         "jumlahNonaktif": nonaktif_count,
+        "jumlahLibur": libur,
+        "jumlahShiftTidakValid": shift_tidak_valid,
         "status": status,
         "pesan": pesan
+    }))
+}
+
+/// Satu temuan audit kualitas absensi untuk satu karyawan.
+struct TemuanAudit {
+    id_karyawan: String,
+    nama: String,
+    divisi: String,
+    nama_shift: String,
+    jam_shift: String,
+    kategori: &'static str,
+    keparahan: &'static str,
+    detail: String,
+    jam_masuk: String,
+    jam_pulang: String,
+    status_kehadiran: String,
+    sumber: String,
+}
+
+/// Urutan tampil temuan: yang paling mendesak lebih dulu.
+fn peringkat_keparahan(keparahan: &str) -> i64 {
+    match keparahan {
+        "tinggi" => 0,
+        "sedang" => 1,
+        "rendah" => 2,
+        _ => 3,
+    }
+}
+
+/// Ubah menit garis waktu tanggal kerja menjadi label jam yang bisa dibaca.
+/// Menit di atas 1440 berarti hari berikutnya (shift malam).
+fn label_menit(minute: i64) -> String {
+    let hari = minute.div_euclid(1440);
+    let sisa = minute.rem_euclid(1440);
+    let jam = format!("{:02}:{:02}", sisa / 60, sisa % 60);
+    if hari > 0 {
+        format!("{jam} (H+{hari})")
+    } else {
+        jam
+    }
+}
+
+/// Audit kualitas absensi untuk satu tanggal kerja.
+///
+/// Murni baca — tidak menulis `absensi_harian` maupun outbox. Generate Alfa
+/// tetap jadi tombol terpisah di Pengaturan supaya "melihat kualitas" tidak
+/// diam-diam mengubah data.
+pub fn get_attendance_audit(
+    state: &DesktopState,
+    tanggal: Option<String>,
+) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+
+    let (hari_ini, jam_sekarang): (String, String) = connection
+        .query_row(
+            "SELECT date('now','+7 hours'), strftime('%H:%M:%S','now','+7 hours');",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let tanggal_target = tanggal
+        .map(|value| value.trim().to_owned())
+        .filter(|value| value.len() == 10)
+        .unwrap_or_else(|| hari_ini.clone());
+
+    let hari_ini_juga = tanggal_target == hari_ini;
+    let masa_depan = tanggal_target > hari_ini;
+    // Garis waktu relatif tanggal kerja, rumus yang sama dipakai
+    // generate_alfa_harian. Sentinel "tanggal lampau = semua jendela lewat"
+    // salah untuk shift malam: jendela pulangnya baru tutup pukul 09:00 H+1,
+    // sehingga sesi yang masih berjalan dilaporkan "Belum Scan Pulang" saat
+    // diaudit pagi harinya.
+    let menit_berjalan =
+        match super::time_policy::days_between(&tanggal_target, &hari_ini) {
+            Ok(selisih) => selisih * 1440 + parse_time_to_minutes(&jam_sekarang),
+            Err(_) => i64::MAX / 4,
+        };
+
+    let hari_libur: Option<String> = connection
+        .query_row(
+            "SELECT nama_libur FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+            [&tanggal_target],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+
+    // ── Pre-load shift ──────────────────────────────────────────────────────
+    let mut shift_statement = connection
+        .prepare(
+            r#"
+            SELECT id_shift, nama_shift, jam_masuk, jam_pulang,
+                   COALESCE(batas_masuk_menit, 60),
+                   COALESCE(toleransi_masuk_menit, 0),
+                   COALESCE(batas_pulang_menit, 240),
+                   COALESCE(buffer_shift_malam_menit, 120),
+                   COALESCE(jam_kerja_normal_menit, 0)
+            FROM tbl_shift;
+            "#,
+        )
+        .map_err(|_| CommandError::internal())?;
+    let mut shifts: HashMap<i64, (String, String, String, i64, i64, i64, i64, i64)> = HashMap::new();
+    let shift_rows = shift_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+    for row in shift_rows {
+        let (id, nama, masuk, pulang, batas_masuk, toleransi, batas_pulang, buffer, normal) =
+            row.map_err(|_| CommandError::internal())?;
+        shifts.insert(
+            id,
+            (
+                nama,
+                masuk,
+                pulang,
+                batas_masuk,
+                toleransi,
+                batas_pulang,
+                buffer,
+                normal,
+            ),
+        );
+    }
+    drop(shift_statement);
+
+    // ── Pre-load absensi sesi NORMAL pada tanggal target ────────────────────
+    let mut att_statement = connection
+        .prepare(
+            r#"
+            SELECT id_karyawan,
+                   COALESCE(jam_masuk, ''),
+                   COALESCE(jam_pulang, ''),
+                   COALESCE(status_kehadiran, ''),
+                   COALESCE(sumber, ''),
+                   COALESCE(menit_terlambat, 0),
+                   COALESCE(jam_kerja_kurang, 0)
+            FROM absensi_harian
+            WHERE tanggal = ?
+              AND (mode_tugas = 'NORMAL' OR mode_tugas IS NULL OR mode_tugas = '');
+            "#,
+        )
+        .map_err(|_| CommandError::internal())?;
+    let mut absensi: HashMap<String, (String, String, String, String, i64, i64)> = HashMap::new();
+    let att_rows = att_statement
+        .query_map([&tanggal_target], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+    for row in att_rows {
+        let (id, masuk, pulang, kehadiran, sumber, terlambat, kurang) =
+            row.map_err(|_| CommandError::internal())?;
+        absensi.insert(id, (masuk, pulang, kehadiran, sumber, terlambat, kurang));
+    }
+    drop(att_statement);
+
+    // ── Pre-load scan bermasalah pada tanggal target ────────────────────────
+    let mut scan_statement = connection
+        .prepare(
+            r#"
+            SELECT id_karyawan, status_proses, COUNT(*)
+            FROM log_scan
+            WHERE tanggal_kerja = ? AND status_proses IN ('Perlu Verifikasi', 'Ditolak')
+            GROUP BY id_karyawan, status_proses;
+            "#,
+        )
+        .map_err(|_| CommandError::internal())?;
+    let mut scan_masalah: HashMap<String, (i64, i64)> = HashMap::new();
+    let scan_rows = scan_statement
+        .query_map([&tanggal_target], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+    for row in scan_rows {
+        let (id, status, jumlah) = row.map_err(|_| CommandError::internal())?;
+        let entry = scan_masalah.entry(id).or_insert((0, 0));
+        if status == "Perlu Verifikasi" {
+            entry.0 += jumlah;
+        } else {
+            entry.1 += jumlah;
+        }
+    }
+    drop(scan_statement);
+
+    // ── Karyawan aktif ──────────────────────────────────────────────────────
+    let mut emp_statement = connection
+        .prepare(
+            "SELECT id_unik, nama, divisi, COALESCE(id_shift, 1) FROM master_data WHERE status_aktif = 'Aktif' ORDER BY nama;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let employees = emp_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandError::internal())?;
+    drop(emp_statement);
+
+    let total_aktif = employees.len() as i64;
+    let mut wajib_absen = 0i64;
+    let mut hadir = 0i64;
+    let mut alfa = 0i64;
+    let mut izin_sakit = 0i64;
+    let mut belum_scan_masuk = 0i64;
+    let mut belum_scan_pulang = 0i64;
+    let mut sedang_bekerja = 0i64;
+    let mut menunggu_jam_absen = 0i64;
+    let mut terlambat = 0i64;
+    let mut jam_kerja_kurang = 0i64;
+    let mut perlu_verifikasi = 0i64;
+    let mut scan_ditolak = 0i64;
+    let mut koreksi_admin = 0i64;
+    let mut fleksibel = 0i64;
+    let mut tanpa_data = 0i64;
+    let mut shift_tidak_valid = 0i64;
+    let mut karyawan_bermasalah = 0i64;
+    let mut temuan: Vec<TemuanAudit> = Vec::new();
+
+    for (id_unik, nama, divisi, id_shift) in employees {
+        let Some((
+            nama_shift,
+            jam_masuk_shift,
+            jam_pulang_shift,
+            batas_masuk,
+            toleransi_masuk,
+            batas_pulang,
+            buffer_malam,
+            jam_kerja_normal,
+        )) = shifts.get(&id_shift).cloned()
+        else {
+            shift_tidak_valid += 1;
+            karyawan_bermasalah += 1;
+            temuan.push(TemuanAudit {
+                id_karyawan: id_unik,
+                nama,
+                divisi,
+                nama_shift: format!("Shift {id_shift}"),
+                jam_shift: "-".to_owned(),
+                kategori: "Shift Tidak Valid",
+                keparahan: "tinggi",
+                detail: format!(
+                    "Shift id {id_shift} tidak ada di tabel shift, absensi karyawan ini tidak dapat dinilai."
+                ),
+                jam_masuk: String::new(),
+                jam_pulang: String::new(),
+                status_kehadiran: String::new(),
+                sumber: String::new(),
+            });
+            continue;
+        };
+
+        let jam_shift = format!("{jam_masuk_shift} - {jam_pulang_shift}");
+
+        // Shift fleksibel tetap dinilai: bebas jam absen bukan berarti bebas
+        // tidak absen. Jendela waktunya saja yang berbeda — baru tertutup di
+        // akhir hari (lihat `entry_window_close_minute`), sehingga selama
+        // harinya berjalan karyawan berstatus "Menunggu Jam Absen".
+        let shift_kind = super::time_policy::shift_kind_of(
+            &jam_masuk_shift,
+            &jam_pulang_shift,
+            jam_kerja_normal,
+        );
+        if shift_kind == super::time_policy::ShiftKind::Flexible {
+            fleksibel += 1;
+        }
+
+        // Hari libur aktif: tidak ada kewajiban absen, jadi tidak dinilai.
+        if hari_libur.is_some() {
+            continue;
+        }
+
+        wajib_absen += 1;
+
+        let shift_policy = super::time_policy::ShiftPolicy {
+            kind: shift_kind,
+            start: jam_masuk_shift.clone(),
+            end: jam_pulang_shift.clone(),
+            early_window_minutes: 0,
+            normal_entry_minutes: batas_masuk,
+            late_tolerance_minutes: toleransi_masuk,
+            checkout_limit_minutes: batas_pulang,
+            night_buffer_minutes: buffer_malam,
+            break_offset_minutes: 0,
+            normal_work_minutes: jam_kerja_normal,
+            break_minutes: 0,
+        };
+        let tutup_masuk = super::time_policy::entry_window_close_minute(&shift_policy);
+        let tutup_pulang = super::time_policy::latest_checkout_minute(&shift_policy);
+
+        let mut bermasalah = false;
+        let catat = |kategori: &'static str,
+                         keparahan: &'static str,
+                         detail: String,
+                         record: Option<&(String, String, String, String, i64, i64)>,
+                         temuan: &mut Vec<TemuanAudit>| {
+            temuan.push(TemuanAudit {
+                id_karyawan: id_unik.clone(),
+                nama: nama.clone(),
+                divisi: divisi.clone(),
+                nama_shift: nama_shift.clone(),
+                jam_shift: jam_shift.clone(),
+                kategori,
+                keparahan,
+                detail,
+                jam_masuk: record.map(|r| r.0.clone()).unwrap_or_default(),
+                jam_pulang: record.map(|r| r.1.clone()).unwrap_or_default(),
+                status_kehadiran: record.map(|r| r.2.clone()).unwrap_or_default(),
+                sumber: record.map(|r| r.3.clone()).unwrap_or_default(),
+            });
+        };
+
+        match absensi.get(&id_unik) {
+            None => {
+                if masa_depan {
+                    menunggu_jam_absen += 1;
+                } else if tutup_masuk.is_some_and(|tutup| menit_berjalan < tutup) {
+                    menunggu_jam_absen += 1;
+                    catat(
+                        "Menunggu Jam Absen",
+                        "info",
+                        format!(
+                            "Belum scan masuk, tetapi jendela scan masuk baru tutup pukul {}.",
+                            tutup_masuk.map(label_menit).unwrap_or_else(|| "-".into())
+                        ),
+                        None,
+                        &mut temuan,
+                    );
+                } else if hari_ini_juga {
+                    belum_scan_masuk += 1;
+                    bermasalah = true;
+                    catat(
+                        "Belum Scan Masuk",
+                        "tinggi",
+                        format!(
+                            "Jendela scan masuk sudah tutup pukul {} dan belum ada satu pun scan.",
+                            tutup_masuk.map(label_menit).unwrap_or_else(|| "-".into())
+                        ),
+                        None,
+                        &mut temuan,
+                    );
+                } else {
+                    tanpa_data += 1;
+                    bermasalah = true;
+                    catat(
+                        "Tanpa Data Absensi",
+                        "tinggi",
+                        "Tanggal kerja sudah lewat tetapi tidak ada baris absensi sama sekali."
+                            .to_owned(),
+                        None,
+                        &mut temuan,
+                    );
+                }
+            }
+            Some(record) => {
+                let (masuk, pulang, kehadiran, sumber, menit_terlambat, menit_kurang) = record;
+
+                match kehadiran.as_str() {
+                    "Alfa" => {
+                        alfa += 1;
+                        bermasalah = true;
+                        catat(
+                            "Alfa",
+                            "tinggi",
+                            format!("Tercatat Alfa melalui sumber \"{sumber}\"."),
+                            Some(record),
+                            &mut temuan,
+                        );
+                    }
+                    "Hadir" => hadir += 1,
+                    _ => izin_sakit += 1,
+                }
+
+                if !masuk.is_empty() && pulang.is_empty() && kehadiran.as_str() != "Alfa" {
+                    if tutup_pulang.is_some_and(|tutup| menit_berjalan > tutup) {
+                        belum_scan_pulang += 1;
+                        bermasalah = true;
+                        catat(
+                            "Belum Scan Pulang",
+                            "sedang",
+                            format!(
+                                "Sudah scan masuk {masuk} tetapi jendela scan pulang tutup pukul {} tanpa scan pulang.",
+                                tutup_pulang.map(label_menit).unwrap_or_else(|| "-".into())
+                            ),
+                            Some(record),
+                            &mut temuan,
+                        );
+                    } else {
+                        sedang_bekerja += 1;
+                    }
+                }
+
+                if *menit_terlambat > 0 {
+                    terlambat += 1;
+                    catat(
+                        "Terlambat",
+                        "rendah",
+                        format!("Terlambat {menit_terlambat} menit dari jadwal shift."),
+                        Some(record),
+                        &mut temuan,
+                    );
+                }
+
+                if *menit_kurang > 0 {
+                    jam_kerja_kurang += 1;
+                    catat(
+                        "Jam Kerja Kurang",
+                        "rendah",
+                        format!("Kekurangan {menit_kurang} menit dari jam kerja normal."),
+                        Some(record),
+                        &mut temuan,
+                    );
+                }
+
+                if sumber.as_str() == "Koreksi Admin" {
+                    koreksi_admin += 1;
+                    catat(
+                        "Koreksi Admin",
+                        "info",
+                        "Baris ini hasil koreksi manual admin, bukan scan karyawan.".to_owned(),
+                        Some(record),
+                        &mut temuan,
+                    );
+                }
+            }
+        }
+
+        if let Some((verifikasi, ditolak)) = scan_masalah.get(&id_unik).copied() {
+            let record = absensi.get(&id_unik);
+            if verifikasi > 0 {
+                perlu_verifikasi += 1;
+                bermasalah = true;
+                catat(
+                    "Perlu Verifikasi",
+                    "sedang",
+                    format!("Ada {verifikasi} scan berstatus Perlu Verifikasi yang belum ditindaklanjuti."),
+                    record,
+                    &mut temuan,
+                );
+            }
+            if ditolak > 0 {
+                scan_ditolak += 1;
+                bermasalah = true;
+                catat(
+                    "Scan Ditolak",
+                    "sedang",
+                    format!("Ada {ditolak} scan ditolak (geofence, multi-scan, atau di luar jendela)."),
+                    record,
+                    &mut temuan,
+                );
+            }
+        }
+
+        if bermasalah {
+            karyawan_bermasalah += 1;
+        }
+    }
+
+    temuan.sort_by(|a, b| {
+        peringkat_keparahan(a.keparahan)
+            .cmp(&peringkat_keparahan(b.keparahan))
+            .then_with(|| a.nama.cmp(&b.nama))
+            .then_with(|| a.kategori.cmp(b.kategori))
+    });
+
+    let skor = if wajib_absen <= 0 {
+        100
+    } else {
+        (((wajib_absen - karyawan_bermasalah).max(0) * 100) as f64 / wajib_absen as f64).round()
+            as i64
+    };
+
+    let daftar_temuan: Vec<Value> = temuan
+        .iter()
+        .map(|item| {
+            json!({
+                "idKaryawan": item.id_karyawan,
+                "nama": item.nama,
+                "divisi": item.divisi,
+                "namaShift": item.nama_shift,
+                "jamShift": item.jam_shift,
+                "kategori": item.kategori,
+                "keparahan": item.keparahan,
+                "detail": item.detail,
+                "jamMasuk": item.jam_masuk,
+                "jamPulang": item.jam_pulang,
+                "statusKehadiran": item.status_kehadiran,
+                "sumber": item.sumber,
+            })
+        })
+        .collect();
+
+    let mut log_statement = connection
+        .prepare(
+            "SELECT waktu, jenis, nama, detail, status FROM audit_absensi WHERE tanggal = ? ORDER BY id_audit DESC LIMIT 20;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let log_audit = log_statement
+        .query_map([&tanggal_target], |row| {
+            Ok(json!({
+                "waktu": row.get::<_, String>(0)?,
+                "jenis": row.get::<_, String>(1)?,
+                "nama": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                "detail": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                "status": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandError::internal())?;
+    drop(log_statement);
+
+    Ok(json!({
+        "tanggal": tanggal_target,
+        "waktuAudit": format!("{hari_ini} {jam_sekarang}"),
+        "hariLibur": hari_libur,
+        "ringkasan": {
+            "totalKaryawanAktif": total_aktif,
+            "wajibAbsen": wajib_absen,
+            "hadir": hadir,
+            "alfa": alfa,
+            "izinSakit": izin_sakit,
+            "belumScanMasuk": belum_scan_masuk,
+            "belumScanPulang": belum_scan_pulang,
+            "sedangBekerja": sedang_bekerja,
+            "menungguJamAbsen": menunggu_jam_absen,
+            "terlambat": terlambat,
+            "jamKerjaKurang": jam_kerja_kurang,
+            "perluVerifikasi": perlu_verifikasi,
+            "scanDitolak": scan_ditolak,
+            "koreksiAdmin": koreksi_admin,
+            "fleksibel": fleksibel,
+            "tanpaData": tanpa_data,
+            "shiftTidakValid": shift_tidak_valid,
+            "karyawanBermasalah": karyawan_bermasalah,
+            "skorKualitas": skor,
+        },
+        "temuan": daftar_temuan,
+        "logAudit": log_audit,
     }))
 }
 
@@ -2490,7 +3159,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
                    awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
                    jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
                    offset_istirahat_mulai, offset_generate_alfa, buffer_shift_malam_menit,
-                   izinkan_multi_sesi
+                   izinkan_multi_sesi, shift_lanjutan_id
             FROM tbl_shift ORDER BY id_shift ASC;
             "#,
         )
@@ -2513,6 +3182,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
                 "offset_generate_alfa": row.get::<_, i64>(12)?,
                 "buffer_shift_malam_menit": row.get::<_, i64>(13)?,
                 "izinkan_multi_sesi": row.get::<_, i64>(14)?,
+                "shift_lanjutan_id": row.get::<_, Option<i64>>(15)?.unwrap_or(0),
             }))
         })
         .map_err(|_| CommandError::internal())?

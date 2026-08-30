@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isShiftFleksibel } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface EditAbsensiHarianPatch {
@@ -72,6 +73,11 @@ export async function editAbsensiHarian(
   const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
   const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
   const isOvernightShift = shiftOutMin < shiftInMin;
+  const shiftFleksibel = isShiftFleksibel(
+    shiftJamMasukStr,
+    shiftJamPulangStr,
+    normalShiftMin,
+  );
 
   const nextDate = (() => {
     const d = new Date(tanggal);
@@ -128,7 +134,13 @@ export async function editAbsensiHarian(
         userInTimeline += 1440;
       }
       const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-      if (userInTimeline < shiftInMin) {
+      if (shiftFleksibel) {
+        // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+        // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+        // dihitung hanyalah jam kerjanya.
+        calculatedLate = 0;
+        calculatedEarly = 0;
+      } else if (userInTimeline < shiftInMin) {
         calculatedEarly = shiftInMin - userInTimeline;
       } else if (userInTimeline <= batasNormalMasuk) {
         calculatedLate = 0;
@@ -301,7 +313,7 @@ export async function hapusLogScan(
   });
 
   const remainRes = await db.execute({
-    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
     args: [idKaryawan, tanggalKerja],
   });
 
@@ -371,6 +383,11 @@ export async function hapusLogScan(
       const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
       const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
       const isOvernightShift = shiftOutMin < shiftInMin;
+      const shiftFleksibel = isShiftFleksibel(
+        shiftJamMasukStr,
+        shiftJamPulangStr,
+        normalShiftMin,
+      );
 
       let calculatedLate = 0;
       let calculatedEarly = 0;
@@ -391,7 +408,13 @@ export async function hapusLogScan(
             userInTimeline += 1440;
           }
           const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-          if (userInTimeline < shiftInMin) {
+          if (shiftFleksibel) {
+            // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+            // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+            // dihitung hanyalah jam kerjanya.
+            calculatedLate = 0;
+            calculatedEarly = 0;
+          } else if (userInTimeline < shiftInMin) {
             calculatedEarly = shiftInMin - userInTimeline;
           } else if (userInTimeline <= batasNormalMasuk) {
             calculatedLate = 0;
@@ -430,6 +453,37 @@ export async function hapusLogScan(
           idSesi,
         ],
       });
+    }
+  }
+
+  // Riwayat asal ikut terhapus begitu tidak ada lagi log yang merujuknya.
+  // Selama masih ada log lain dengan referensi sama — misalnya satu import yang
+  // membuat baris Masuk DAN Pulang — riwayatnya dipertahankan supaya log yang
+  // tersisa tidak menggantung tanpa asal-usul.
+  //
+  // Prefiks id_referensi membedakan sumbernya: `KOR-` koreksi admin, `IMP-`
+  // import manual. ID penugasan backup tidak berawalan keduanya, jadi penugasan
+  // backup tidak pernah ikut terhapus.
+  const referensi = String(log.id_referensi ?? "");
+  if (referensi) {
+    const sisaRes = await db.execute({
+      sql: "SELECT COUNT(*) AS total FROM log_scan WHERE COALESCE(id_referensi, '') = ?;",
+      args: [referensi],
+    });
+    const masihDirujuk = Number(sisaRes.rows[0]?.total ?? 0) > 0;
+
+    if (!masihDirujuk) {
+      if (referensi.startsWith("KOR-")) {
+        await db.execute({
+          sql: "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+          args: [referensi],
+        });
+      } else if (referensi.startsWith("IMP-")) {
+        await db.execute({
+          sql: "DELETE FROM import_offline WHERE event_key = ?;",
+          args: [referensi],
+        });
+      }
     }
   }
 
@@ -487,7 +541,7 @@ export async function hapusImportOffline(
 
   // Check remaining scan logs
   const remRes = await db.execute({
-    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
     args: [idUnik, tanggal],
   });
 
@@ -536,6 +590,11 @@ export async function hapusImportOffline(
       const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
       const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
       const isOvernightShift = shiftOutMin < shiftInMin;
+      const shiftFleksibel = isShiftFleksibel(
+        shiftJamMasukStr,
+        shiftJamPulangStr,
+        normalShiftMin,
+      );
 
       let calculatedLate = 0;
       let calculatedEarly = 0;
@@ -552,7 +611,13 @@ export async function hapusImportOffline(
           userInTimeline += 1440;
         }
         const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-        if (userInTimeline < shiftInMin) {
+        if (shiftFleksibel) {
+          // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+          // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+          // dihitung hanyalah jam kerjanya.
+          calculatedLate = 0;
+          calculatedEarly = 0;
+        } else if (userInTimeline < shiftInMin) {
           calculatedEarly = shiftInMin - userInTimeline;
         } else if (userInTimeline <= batasNormalMasuk) {
           calculatedLate = 0;

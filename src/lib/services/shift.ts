@@ -17,6 +17,8 @@ export interface ShiftInput {
   offset_generate_alfa?: number;
   buffer_shift_malam_menit?: number;
   izinkan_multi_sesi?: number | boolean;
+  /** Shift tujuan sesi lanjutan; 0 = pencocokan jendela otomatis. */
+  shift_lanjutan_id?: number;
 }
 
 /**
@@ -107,8 +109,9 @@ export async function tambahShift(data: ShiftInput) {
         kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
         batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
         istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-        offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi,
+        shift_lanjutan_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     args: [
       data.kode_shift,
@@ -127,6 +130,7 @@ export async function tambahShift(data: ShiftInput) {
       data.izinkan_multi_sesi === true || Number(data.izinkan_multi_sesi) === 1
         ? 1
         : 0,
+      Math.max(0, Number(data.shift_lanjutan_id ?? 0) || 0),
     ],
   });
 
@@ -194,6 +198,10 @@ export async function updateShift(id_shift: number, data: Partial<ShiftInput>) {
         ? 1
         : 0,
     );
+  }
+  if (data.shift_lanjutan_id !== undefined) {
+    updates.push("shift_lanjutan_id = ?");
+    args.push(Math.max(0, Number(data.shift_lanjutan_id) || 0));
   }
 
   if (updates.length > 0) {

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { redirect, useRouter } from "next/navigation";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
@@ -23,6 +24,11 @@ export default function LoginPage() {
   const [username, setUsername] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  // Kolom kode baru muncul setelah server menyatakan password sudah benar dan
+  // tinggal kode 2FA-nya. Menampilkannya lebih awal akan membocorkan akun mana
+  // yang memakai verifikasi dua langkah.
+  const [totpCode, setTotpCode] = useState<string>("");
+  const [needsTotp, setNeedsTotp] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [bootstrapStatus, setBootstrapStatus] =
@@ -57,10 +63,15 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      const res = await login(username.trim(), password);
+      const res = await login(
+        username.trim(),
+        password,
+        needsTotp ? totpCode : undefined,
+      );
       if (res.sukses) {
         router.replace("/");
       } else {
+        if (res.requiresTotp) setNeedsTotp(true);
         setErrorMsg(res.pesan);
       }
     } catch (err: unknown) {
@@ -242,6 +253,40 @@ export default function LoginPage() {
               <span>Masuk Aplikasi →</span>
             )}
           </button>
+
+          {needsTotp ? (
+            <div className="space-y-1.5">
+              <label
+                htmlFor="totp-input"
+                className="text-xs font-semibold text-slate-300 uppercase tracking-wider block"
+              >
+                Kode Verifikasi 2FA
+              </label>
+              <input
+                id="totp-input"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={16}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                placeholder="123456 atau kode cadangan"
+                className="w-full bg-slate-950/90 border border-slate-800 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white px-4 py-3 rounded-xl text-sm font-mono tracking-[0.3em] transition outline-none"
+              />
+              <p className="text-[11px] text-slate-500">
+                Buka aplikasi autentikator Anda, atau masukkan salah satu kode
+                cadangan.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="text-center">
+            <Link
+              href="/lupa-password"
+              className="text-xs font-semibold text-slate-400 transition hover:text-emerald-300"
+            >
+              Lupa Password?
+            </Link>
+          </div>
         </form>
 
         {/* Footer info */}

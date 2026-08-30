@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-disable-two-factor"
+description = "Enables the desktop_disable_two_factor command without any pre-configured scope."
+commands.allow = ["desktop_disable_two_factor"]
+
+[[permission]]
+identifier = "deny-desktop-disable-two-factor"
+description = "Denies the desktop_disable_two_factor command without any pre-configured scope."
+commands.deny = ["desktop_disable_two_factor"]

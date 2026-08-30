@@ -28,6 +28,10 @@ tauri-plugin-stronghold = "2.3.1"
 reqwest = { version = "0.13.4", features = ["json", "gzip", "brotli", "deflate"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
+# TOTP memakai SHA-1 (RFC 6238). Bukan pilihan gaya: Google Authenticator
+# mengabaikan parameter algorithm pada URI otpauth dan selalu memakai SHA-1,
+# sehingga SHA-256 akan menghasilkan kode yang tidak pernah cocok.
+sha1 = "0.10"
 hex = "0.4.3"
 url = "2.5.7"
 zeroize = "1.8.2"

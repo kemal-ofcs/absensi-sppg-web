@@ -8,6 +8,8 @@ export interface RoleRecord {
   isSystem: boolean;
   isSuperadmin: boolean;
   status: "Aktif" | "Nonaktif";
+  /** Operator dengan role ini wajib mengaktifkan verifikasi dua langkah. */
+  requireTotp: boolean;
   operatorCount: number;
   permissions: PermissionKey[];
 }
@@ -16,4 +18,5 @@ export interface RoleDraft {
   name: string;
   description?: string;
   status?: "Aktif" | "Nonaktif";
+  requireTotp?: boolean;
 }

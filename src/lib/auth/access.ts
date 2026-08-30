@@ -11,8 +11,10 @@ export type AppArea =
   | "holidays"
   | "operational"
   | "payroll"
+  | "audit"
   | "settings"
   | "operators"
+  | "password_reset"
   | "diagnostics";
 
 export interface AccessSubject {
@@ -33,8 +35,10 @@ const AREA_PERMISSION: Record<
   shift: "shifts.view",
   holidays: "holidays.view",
   payroll: "payroll.view",
+  audit: "attendance_audit.view",
   settings: "branding.manage",
   operators: "operators.view",
+  password_reset: "password_reset.view",
   diagnostics: "diagnostics.view",
 };
 

@@ -1,8 +1,8 @@
 import type { Client } from "@libsql/client";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 10;
-export const REQUIRED_TABLE_COUNT = 31;
+export const CURRENT_SCHEMA_VERSION = 12;
+export const REQUIRED_TABLE_COUNT = 33;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -21,7 +21,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'import_offline', 'tbl_hari_libur',
             'company_profile', 'id_card_template',
             'salary_configs', 'overtime_tier_rules', 'payroll_components',
-            'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs'
+            'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
+            'password_reset_request', 'app_mail_config'
           )
         ) AS table_count;
     `);
@@ -90,6 +91,12 @@ export async function initDatabaseSchema(client: Client) {
         role TEXT NOT NULL DEFAULT 'Operator'
           CHECK(role IN ('Admin', 'Operator', 'Scanner')),
         role_id INTEGER,
+        email TEXT,
+        no_hp TEXT,
+        totp_secret TEXT,
+        totp_enabled INTEGER NOT NULL DEFAULT 0,
+        totp_confirmed_at TEXT,
+        totp_recovery_codes TEXT,
         status TEXT DEFAULT 'Aktif',
         created_at TEXT,
         updated_at TEXT
@@ -113,7 +120,8 @@ export async function initDatabaseSchema(client: Client) {
         offset_istirahat_mulai INTEGER DEFAULT 240,
         offset_generate_alfa INTEGER DEFAULT 180,
         buffer_shift_malam_menit INTEGER DEFAULT 120,
-        izinkan_multi_sesi INTEGER DEFAULT 0
+        izinkan_multi_sesi INTEGER DEFAULT 0,
+        shift_lanjutan_id INTEGER DEFAULT 0
       );
     `);
 

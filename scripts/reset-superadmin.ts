@@ -115,7 +115,8 @@ async function main() {
         "Masukkan Username Superadmin yang ingin dihapus: ",
       );
       const confirm = await ask(
-        `Yakin ingin menghapus Superadmin '${username}'? (y/n): `,
+        `Yakin ingin menghapus Superadmin '${username}'? Riwayat reset password ` +
+          `beserta foto verifikasinya ikut terhapus. (y/n): `,
       );
 
       if (confirm.toLowerCase() === "y") {

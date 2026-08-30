@@ -9,6 +9,7 @@ import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   createOperator,
@@ -21,6 +22,7 @@ import {
   updateMasterOperator,
   updateRole,
 } from "@/lib/gateways/master-operator";
+import { adminDisableTwoFactor } from "@/lib/gateways/two-factor";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import type { OperatorDraft, OperatorRecord } from "@/lib/operators/types";
 import {
@@ -36,6 +38,8 @@ const EMPTY_OPERATOR: OperatorDraft = {
   kodeOperator: "",
   name: "",
   username: "",
+  email: "",
+  noHp: "",
   password: "",
   roleId: 0,
   status: "Aktif",
@@ -58,6 +62,7 @@ interface RoleFormState {
   name: string;
   description: string;
   status: "Aktif" | "Nonaktif";
+  requireTotp: boolean;
 }
 
 function errorMessage(error: unknown) {
@@ -92,6 +97,7 @@ export default function MasterOperatorPage() {
     name: "",
     description: "",
     status: "Aktif",
+    requireTotp: false,
   });
   const [selectedPermissions, setSelectedPermissions] = useState<
     Set<PermissionKey>
@@ -151,6 +157,8 @@ export default function MasterOperatorPage() {
       kodeOperator: operator.kodeOperator,
       name: operator.name,
       username: operator.username,
+      email: operator.email,
+      noHp: operator.noHp,
       password: "",
       roleId: operator.roleId,
       status: operator.status,
@@ -186,9 +194,32 @@ export default function MasterOperatorPage() {
 
   const openNewRole = () => {
     setEditingRole(null);
-    setRoleDraft({ name: "", description: "", status: "Aktif" });
+    setRoleDraft({
+      name: "",
+      description: "",
+      status: "Aktif",
+      requireTotp: false,
+    });
     setSelectedPermissions(new Set());
     setRoleModal(true);
+  };
+
+  const resetOperatorTwoFactor = async (operator: OperatorRecord) => {
+    if (!user) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await adminDisableTwoFactor(operator.id);
+      setFeedback({
+        tone: "success",
+        message: `Verifikasi dua langkah ${operator.name} dimatikan. Minta yang bersangkutan mengaktifkannya lagi dari Pengaturan.`,
+      });
+      await loadData();
+    } catch (error) {
+      setFeedback({ tone: "error", message: errorMessage(error) });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const openEditRole = (role: RoleRecord) => {
@@ -197,6 +228,7 @@ export default function MasterOperatorPage() {
       name: role.name,
       description: role.description,
       status: role.status,
+      requireTotp: role.requireTotp,
     });
     setSelectedPermissions(new Set(role.permissions));
     setRoleModal(true);
@@ -317,7 +349,10 @@ export default function MasterOperatorPage() {
         <OperatorTable
           operators={operators}
           currentUserId={user.id}
+          saving={saving}
+          canResetTwoFactor={hasPermission(user, "two_factor.reset")}
           onEdit={openEditOperator}
+          onResetTwoFactor={(item) => void resetOperatorTwoFactor(item)}
           onDelete={(item) => setDeleteTarget({ type: "operator", item })}
         />
       ) : (
@@ -447,6 +482,42 @@ function OperatorFormModal({
             className="app-input"
           />
         </FormField>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField label="Email" htmlFor="operator-email">
+            <input
+              id="operator-email"
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="operator@sppg.id"
+              value={draft.email}
+              onChange={(event) =>
+                onChange({ ...draft, email: event.target.value })
+              }
+              className="app-input"
+            />
+          </FormField>
+          <FormField label="Nomor HP" htmlFor="operator-phone">
+            <input
+              id="operator-phone"
+              type="tel"
+              required
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="08xxxxxxxxxx"
+              value={draft.noHp}
+              onChange={(event) =>
+                onChange({ ...draft, noHp: event.target.value })
+              }
+              className="app-input"
+            />
+          </FormField>
+        </div>
+        <p className="text-xs text-slate-500">
+          Email dan nomor HP wajib diisi. Email dipakai untuk mengirim link
+          pemulihan pada fitur Lupa Password, jadi akun tanpa email tidak dapat
+          memulihkan passwordnya sendiri.
+        </p>
         <FormField
           label={
             editingOperator
@@ -626,6 +697,28 @@ function RoleFormModal({
           </FormField>
         ) : null}
         {!editingRole?.isSuperadmin ? (
+          <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-3">
+            <input
+              type="checkbox"
+              checked={draft.requireTotp}
+              onChange={(event) =>
+                onDraftChange({ ...draft, requireTotp: event.target.checked })
+              }
+              className="mt-0.5 size-4 shrink-0"
+            />
+            <span className="text-xs leading-5 text-slate-300">
+              <strong className="text-white">
+                Wajibkan verifikasi dua langkah
+              </strong>
+              <br />
+              Operator dengan role ini tidak dapat login sampai mengaktifkan 2FA
+              di Pengaturan. Nyalakan hanya setelah mereka sempat
+              mendaftarkannya — bila tidak, mereka akan tertahan di layar login
+              dan perlu dibukakan Admin.
+            </span>
+          </label>
+        ) : null}
+        {!editingRole?.isSuperadmin ? (
           <ModalActions saving={saving} onCancel={onClose} />
         ) : null}
       </form>
@@ -636,12 +729,18 @@ function RoleFormModal({
 function OperatorTable({
   operators,
   currentUserId,
+  saving,
+  canResetTwoFactor,
   onEdit,
+  onResetTwoFactor,
   onDelete,
 }: {
   operators: OperatorRecord[];
   currentUserId: number;
+  saving: boolean;
+  canResetTwoFactor: boolean;
   onEdit: (operator: OperatorRecord) => void;
+  onResetTwoFactor: (operator: OperatorRecord) => void;
   onDelete: (operator: OperatorRecord) => void;
 }) {
   return (
@@ -653,6 +752,7 @@ function OperatorTable({
               <th className="p-4">Operator</th>
               <th className="p-4">Kode / Username</th>
               <th className="p-4">Role</th>
+              <th className="p-4">2FA</th>
               <th className="p-4">Status</th>
               <th className="p-4 text-right">Aksi</th>
             </tr>
@@ -669,12 +769,25 @@ function OperatorTable({
                 <td className="p-4 font-mono">
                   <p>{operator.kodeOperator}</p>
                   <p className="text-slate-500">@{operator.username}</p>
+                  <p className="text-slate-500">
+                    {operator.email || "Email belum diisi"}
+                  </p>
+                  <p className="text-slate-500">
+                    {operator.noHp || "Nomor HP belum diisi"}
+                  </p>
                 </td>
                 <td className="p-4">
                   <StatusBadge
                     tone={operator.isSuperadmin ? "warning" : "info"}
                   >
                     {operator.roleName}
+                  </StatusBadge>
+                </td>
+                <td className="p-4">
+                  <StatusBadge
+                    tone={operator.totpEnabled ? "success" : "neutral"}
+                  >
+                    {operator.totpEnabled ? "Aktif" : "Mati"}
                   </StatusBadge>
                 </td>
                 <td className="p-4">
@@ -693,6 +806,17 @@ function OperatorTable({
                     >
                       Edit
                     </button>
+                    {canResetTwoFactor && operator.totpEnabled ? (
+                      <button
+                        type="button"
+                        onClick={() => onResetTwoFactor(operator)}
+                        disabled={saving}
+                        title="Matikan verifikasi dua langkah operator ini"
+                        className="min-h-10 rounded-lg border border-violet-300/20 bg-violet-300/10 px-3 font-bold text-violet-200 disabled:opacity-40"
+                      >
+                        Reset 2FA
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => onDelete(operator)}

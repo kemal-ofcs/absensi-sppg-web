@@ -1,5 +1,10 @@
 import type { Client } from "@libsql/client";
 import { hashPassword } from "@/lib/auth/password";
+import {
+  assertOperatorContact,
+  normalizeOperatorEmail,
+  normalizeOperatorPhone,
+} from "@/lib/operators/contact";
 import type { OperatorDraft, OperatorRecord } from "@/lib/operators/types";
 
 export function validateOperatorDraft(draft: OperatorDraft) {
@@ -16,6 +21,10 @@ export function validateOperatorDraft(draft: OperatorDraft) {
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) {
     throw new Error("Username harus 3-40 karakter tanpa spasi.");
   }
+  // Email dan nomor HP wajib pada setiap penyimpanan, termasuk saat menyunting
+  // akun lama yang lahir sebelum kolom ini ada. Email adalah satu-satunya jalur
+  // pengiriman link "Lupa Password", jadi akun tanpa email tidak bisa dipulihkan.
+  assertOperatorContact(draft.email, draft.noHp);
   if (!Number.isSafeInteger(draft.roleId) || draft.roleId < 1) {
     throw new Error("Role operator wajib dipilih.");
   }
@@ -30,6 +39,9 @@ function toOperatorRecord(row: Record<string, unknown>): OperatorRecord {
     kodeOperator: String(row.kode_operator),
     name: String(row.nama_operator),
     username: String(row.username),
+    email: row.email == null ? "" : String(row.email),
+    noHp: row.no_hp == null ? "" : String(row.no_hp),
+    totpEnabled: Number(row.totp_enabled ?? 0) === 1,
     roleId: Number(row.role_id),
     roleKey: String(row.role_key),
     roleName: String(row.nama_role),
@@ -41,7 +53,9 @@ function toOperatorRecord(row: Record<string, unknown>): OperatorRecord {
 export async function listOperators(client: Client) {
   const result = await client.execute(`
     SELECT
-      m.id, m.kode_operator, m.nama_operator, m.username, m.role_id, m.status,
+      m.id, m.kode_operator, m.nama_operator, m.username, m.email, m.no_hp,
+      COALESCE(m.totp_enabled, 0) AS totp_enabled,
+      m.role_id, m.status,
       r.role_key, r.nama_role, r.is_superadmin
     FROM master_operator m
     JOIN app_role r ON r.id = m.role_id
@@ -70,17 +84,22 @@ export async function insertOperator(client: Client, draft: OperatorDraft) {
   const result = await client.execute({
     sql: `
       INSERT INTO master_operator (
-        kode_operator, nama_operator, username, password_hash, role, role_id, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?);
+        kode_operator, nama_operator, username, email, no_hp,
+        password_hash, role, role_id, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     args: [
       draft.kodeOperator.trim().toUpperCase(),
       draft.name.trim(),
       draft.username.trim(),
+      normalizeOperatorEmail(draft.email),
+      normalizeOperatorPhone(draft.noHp),
       await hashPassword(draft.password),
       await getLegacyRole(client, draft.roleId),
       draft.roleId,
       draft.status,
+      new Date().toISOString(),
+      new Date().toISOString(),
     ],
   });
   return { success: true, id: Number(result.lastInsertRowid) };
@@ -161,17 +180,23 @@ export async function editOperator(
     "kode_operator = ?",
     "nama_operator = ?",
     "username = ?",
+    "email = ?",
+    "no_hp = ?",
     "role = ?",
     "role_id = ?",
     "status = ?",
+    "updated_at = ?",
   ];
   const args: (string | number)[] = [
     draft.kodeOperator.trim().toUpperCase(),
     draft.name.trim(),
     draft.username.trim(),
+    normalizeOperatorEmail(draft.email),
+    normalizeOperatorPhone(draft.noHp),
     await getLegacyRole(client, draft.roleId),
     draft.roleId,
     draft.status,
+    new Date().toISOString(),
   ];
   if (draft.password) {
     updates.push("password_hash = ?");
@@ -249,6 +274,22 @@ export async function removeOperator(
   if (references.some((result) => Number(result.rows[0]?.total) > 0)) {
     throw new Error(
       "Operator memiliki histori transaksi. Nonaktifkan akun agar audit tetap utuh.",
+    );
+  }
+
+  // `password_reset_request` punya FOREIGN KEY ... ON DELETE CASCADE ke tabel
+  // ini, dan libSQL menegakkan foreign key (PRAGMA foreign_keys = 1). Tanpa
+  // penjagaan ini, menghapus operator akan diam-diam ikut memusnahkan seluruh
+  // riwayat pengajuan reset password beserta foto wajah pemohonnya — bukti
+  // audit yang justru paling perlu bertahan. Dicek terpisah dari blok di atas
+  // supaya pesannya bisa menunjuk jalan keluar yang benar.
+  const resetHistory = await client.execute({
+    sql: "SELECT COUNT(*) AS total FROM password_reset_request WHERE operator_id = ?;",
+    args: [operatorId],
+  });
+  if (Number(resetHistory.rows[0]?.total) > 0) {
+    throw new Error(
+      "Operator memiliki riwayat pengajuan reset password beserta foto verifikasinya. Hapus riwayat itu lebih dulu di halaman Riwayat Reset Password, atau nonaktifkan akun agar bukti audit tetap utuh.",
     );
   }
 

@@ -156,6 +156,17 @@ const MODULES: ModuleCard[] = [
     tone: "violet",
   },
   {
+    area: "password_reset",
+    category: "system",
+    href: "/riwayat-reset-password",
+    icon: "lock",
+    label: "Lihat Riwayat",
+    title: "Riwayat Reset Password",
+    description:
+      "Siapa saja yang mengajukan Lupa Password, foto verifikasi wajahnya, hasil uji liveness, dan status pengiriman link pemulihan.",
+    tone: "violet",
+  },
+  {
     area: "settings",
     category: "system",
     href: "/settings",

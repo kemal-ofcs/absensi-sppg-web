@@ -38,10 +38,11 @@ async function createFixture(): Promise<Fixture> {
   await client.execute({
     sql: `
       INSERT INTO master_operator (
-        kode_operator, nama_operator, username, password_hash, role, role_id, status
+        kode_operator, nama_operator, username, email, no_hp,
+        password_hash, role, role_id, status
       ) VALUES
-        ('SPD_TEST', 'Superadmin Test', 'super-test', 'unused', 'Operator', ?, 'Aktif'),
-        ('ADM_TEST', 'Admin Test', 'admin-test', 'unused', 'Admin', ?, 'Aktif');
+        ('SPD_TEST', 'Superadmin Test', 'super-test', 'super-test@sppg.id', '+6281200000001', 'unused', 'Operator', ?, 'Aktif'),
+        ('ADM_TEST', 'Admin Test', 'admin-test', 'admin-test@sppg.id', '+6281200000002', 'unused', 'Admin', ?, 'Aktif');
     `,
     args: [Number(superRole.id), Number(adminRole.id)],
   });
@@ -181,6 +182,8 @@ describe("Web RBAC trusted boundary", () => {
           kodeOperator: superadmin.kode_operator,
           name: superadmin.nama_operator,
           username: superadmin.username,
+          email: "super-test@sppg.id",
+          noHp: "+6281200000001",
           password: "",
           roleId: admin.roleId,
           status: "Aktif",

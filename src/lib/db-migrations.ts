@@ -14,6 +14,8 @@ const HOLIDAY_MIGRATION_VERSION = 7;
 const COMPANY_PROFILE_AND_TEMPLATE_MIGRATION_VERSION = 8;
 const TWO_TIER_SECURITY_MIGRATION_VERSION = 9;
 const PAYROLL_MIGRATION_VERSION = 10;
+const OPERATOR_CONTACT_AND_RESET_MIGRATION_VERSION = 11;
+const TWO_FACTOR_MIGRATION_VERSION = 12;
 
 const SYSTEM_ROLES = [
   {
@@ -74,6 +76,7 @@ export async function runDatabaseMigrations(client: Client) {
       is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0, 1)),
       is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK(is_superadmin IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'Aktif' CHECK(status IN ('Aktif', 'Nonaktif')),
+      require_totp INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       created_by TEXT
@@ -140,6 +143,57 @@ export async function runDatabaseMigrations(client: Client) {
       window_started_at TEXT NOT NULL,
       blocked_until TEXT,
       updated_at TEXT NOT NULL
+    );
+  `);
+
+  // Permintaan "Lupa Password". Cloud-only (tidak ikut SNAPSHOT_TABLES):
+  // berisi bukti foto liveness dan hash token reset yang tidak boleh
+  // direplikasi ke SQLite lokal setiap perangkat.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS password_reset_request (
+      id TEXT PRIMARY KEY,
+      operator_id INTEGER NOT NULL,
+      identifier_used TEXT NOT NULL,
+      contact_channel TEXT NOT NULL DEFAULT 'email',
+      contact_target TEXT NOT NULL,
+      challenge_hash TEXT NOT NULL,
+      challenge_sequence TEXT NOT NULL,
+      token_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'Menunggu Verifikasi'
+        CHECK(status IN (
+          'Menunggu Verifikasi', 'Terkirim', 'Terpakai', 'Kedaluwarsa', 'Dibatalkan'
+        )),
+      liveness_score REAL,
+      liveness_report TEXT,
+      photo_mime TEXT,
+      photo_base64 TEXT,
+      delivery_status TEXT,
+      delivery_error TEXT,
+      requested_at TEXT NOT NULL,
+      verified_at TEXT,
+      sent_at TEXT,
+      used_at TEXT,
+      expires_at TEXT NOT NULL,
+      request_ip_hash TEXT,
+      user_agent_hash TEXT,
+      FOREIGN KEY (operator_id) REFERENCES master_operator(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Konfigurasi pengirim email (HTTP API). Cloud-only dan tidak pernah
+  // di-snapshot: kunci API tidak boleh mendarat di SQLite tiap perangkat.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS app_mail_config (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'resend'
+        CHECK(provider IN ('resend', 'brevo')),
+      api_key TEXT,
+      sender_email TEXT,
+      sender_name TEXT,
+      reset_base_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
     );
   `);
 
@@ -213,6 +267,9 @@ export async function runDatabaseMigrations(client: Client) {
     );
   `);
 
+  // Kontak operator: wajib diisi lewat validasi aplikasi, tetapi NULL-able di
+  // DDL supaya baris operator lama tidak rusak saat migrasi berjalan. Kolom ini
+  // dipakai fitur "Lupa Password" untuk mengirim link reset.
   if (!(await hasColumn(client, "master_operator", "role_id"))) {
     await client.execute(
       "ALTER TABLE master_operator ADD COLUMN role_id INTEGER;",
@@ -229,6 +286,45 @@ export async function runDatabaseMigrations(client: Client) {
       "master_operator",
       "created_at",
       "ALTER TABLE master_operator ADD COLUMN created_at TEXT;",
+    ],
+    [
+      "master_operator",
+      "email",
+      "ALTER TABLE master_operator ADD COLUMN email TEXT;",
+    ],
+    [
+      "master_operator",
+      "no_hp",
+      "ALTER TABLE master_operator ADD COLUMN no_hp TEXT;",
+    ],
+    // Verifikasi dua langkah. `totp_enabled` sengaja tanpa CHECK: SQLite
+    // membatasi bentuk constraint pada ALTER TABLE ADD COLUMN, dan menaruh CHECK
+    // hanya di CREATE TABLE akan membuat database hasil migrasi berbeda dari
+    // database baru — persis drift yang dilarang di sini.
+    [
+      "master_operator",
+      "totp_secret",
+      "ALTER TABLE master_operator ADD COLUMN totp_secret TEXT;",
+    ],
+    [
+      "master_operator",
+      "totp_enabled",
+      "ALTER TABLE master_operator ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;",
+    ],
+    [
+      "master_operator",
+      "totp_confirmed_at",
+      "ALTER TABLE master_operator ADD COLUMN totp_confirmed_at TEXT;",
+    ],
+    [
+      "master_operator",
+      "totp_recovery_codes",
+      "ALTER TABLE master_operator ADD COLUMN totp_recovery_codes TEXT;",
+    ],
+    [
+      "app_role",
+      "require_totp",
+      "ALTER TABLE app_role ADD COLUMN require_totp INTEGER NOT NULL DEFAULT 0;",
     ],
     [
       "master_operator",
@@ -380,6 +476,11 @@ export async function runDatabaseMigrations(client: Client) {
     args: [OFFLINE_IMPORT_MIGRATION_VERSION, now],
   });
 
+  if (!(await hasColumn(client, "tbl_shift", "shift_lanjutan_id"))) {
+    await client.execute(
+      "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER DEFAULT 0;",
+    );
+  }
   if (!(await hasColumn(client, "tbl_shift", "izinkan_multi_sesi"))) {
     await client.execute(
       "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
@@ -668,8 +769,44 @@ export async function runDatabaseMigrations(client: Client) {
     args: [PAYROLL_MIGRATION_VERSION, now],
   });
 
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO app_mail_config (
+            id, provider, api_key, sender_email, sender_name,
+            reset_base_url, is_active, updated_at, updated_by
+          ) VALUES ('default', 'resend', NULL, NULL, NULL, NULL, 0, ?, 'migration');`,
+    args: [now],
+  });
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'operator-contact-and-password-reset', ?);`,
+    args: [OPERATOR_CONTACT_AND_RESET_MIGRATION_VERSION, now],
+  });
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'two-factor-totp', ?);`,
+    args: [TWO_FACTOR_MIGRATION_VERSION, now],
+  });
+
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_master_operator_role_id ON master_operator(role_id);",
+  );
+
+  // Email operator dipakai sebagai identitas pencarian pada "Lupa Password",
+  // jadi ia harus unik. Index parsial: baris operator lama yang email-nya masih
+  // NULL tidak saling bentrok dan tetap boleh ada lebih dari satu.
+  await client.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_master_operator_email ON master_operator(LOWER(email)) WHERE email IS NOT NULL AND TRIM(email) <> '';",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_password_reset_operator ON password_reset_request(operator_id, status, requested_at DESC);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_request(token_hash);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_password_reset_challenge ON password_reset_request(challenge_hash);",
   );
 
   await client.execute(

@@ -572,7 +572,19 @@ pub fn create_correction(
 
     // Smart Shift Detection jika jam koreksi berada di luar shift saat ini dan id_shift tidak dipilih eksplisit
     let explicit_shift = text(draft, "id_shift").parse::<i64>().ok();
-    if explicit_shift.is_none() && (is_in_check || is_out_check) && !correction_time.is_empty() {
+    // Shift fleksibel (00:00-23:59) tidak punya rentang jadwal, jadi jam koreksi
+    // apa pun sah. Tanpa pengecualian ini shift karyawan dianggap "tidak cocok"
+    // lalu diam-diam dipindahkan ke shift reguler oleh deteksi di bawah.
+    let shift_awal_fleksibel = super::time_policy::is_flexible_shift(
+        &shift_config.0,
+        &shift_config.1,
+        shift_config.2,
+    );
+    if explicit_shift.is_none()
+        && (is_in_check || is_out_check)
+        && !correction_time.is_empty()
+        && !shift_awal_fleksibel
+    {
         let user_time = to_minutes(correction_time);
         let fits_current = if is_in_check {
             let shift_in = to_minutes(&shift_config.0);
@@ -618,6 +630,9 @@ pub fn create_correction(
 
             for s_res in shifts {
                 if let Ok(s) = s_res {
+                    if super::time_policy::is_flexible_shift(&s.1, &s.2, s.3) {
+                        continue;
+                    }
                     let s_in = to_minutes(&s.1);
                     let s_out = to_minutes(&s.2);
                     let fits = if is_in_check {
@@ -649,6 +664,14 @@ pub fn create_correction(
         }
     }
 
+    // shift_config bisa berganti akibat Smart Shift Detection di atas, jadi
+    // status fleksibel dihitung ulang dari shift yang benar-benar dipakai.
+    let shift_fleksibel = super::time_policy::is_flexible_shift(
+        &shift_config.0,
+        &shift_config.1,
+        shift_config.2,
+    );
+
     if matches!(correction_type, "Sakit" | "Izin" | "Dispen" | "Alfa") {
         scan_kind = correction_type;
         transaction.execute(
@@ -656,7 +679,7 @@ pub fn create_correction(
             params![correction_type, note, now, session_id],
         ).map_err(|_| CommandError::internal())?;
     } else {
-        if is_in_check {
+        if is_in_check && !shift_fleksibel {
             let user_in = to_minutes(correction_time);
             let shift_in = to_minutes(&shift_config.0);
             let mut diff = user_in - shift_in;
@@ -675,7 +698,7 @@ pub fn create_correction(
                     ),
                 ));
             }
-        } else if is_out_check {
+        } else if is_out_check && !shift_fleksibel {
             let user_out = to_minutes(correction_time);
             let shift_out = to_minutes(&shift_config.1);
             let mut diff = user_out - shift_out;
@@ -735,7 +758,7 @@ pub fn create_correction(
                 late = 0;
                 early = 0;
             }
-        } else if !check_in.is_empty() {
+        } else if !check_in.is_empty() && !shift_fleksibel {
             let in_time_str = clean_time(&check_in);
             let mut arrival = to_minutes(&in_time_str);
             if is_overnight_shift && arrival < shift_start_min - 720 {
@@ -918,6 +941,41 @@ pub fn list_backups(state: &DesktopState, filter: &Value) -> Result<Value, Comma
     )
 }
 
+/// Selaraskan `master_data.status_backup` dengan penugasan backup yang aktif.
+///
+/// Kolom ini dibaca filter "Karyawan Utama / Backup" di layar Karyawan, tetapi
+/// sebelumnya tidak pernah ditulis sama sekali — sehingga filternya tidak
+/// pernah cocok dan tampak mati di Desktop maupun Mobile.
+fn selaraskan_status_backup(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    employee_id: &str,
+) -> Result<(), CommandError> {
+    let changed = transaction
+        .execute(
+            r#"
+        UPDATE master_data
+        SET status_backup = CASE
+            WHEN EXISTS(
+                SELECT 1 FROM backup_karyawan
+                WHERE id_karyawan_pengganti = ?1 AND status_tugas = 'Aktif'
+            ) THEN 'BACKUP' ELSE 'NORMAL' END
+        WHERE id_unik = ?1
+          AND COALESCE(status_backup, 'NORMAL') <> CASE
+            WHEN EXISTS(
+                SELECT 1 FROM backup_karyawan
+                WHERE id_karyawan_pengganti = ?1 AND status_tugas = 'Aktif'
+            ) THEN 'BACKUP' ELSE 'NORMAL' END;
+        "#,
+            params![employee_id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    if changed == 0 {
+        return Ok(());
+    }
+    sync::enqueue_employee_snapshot(transaction, client_id, employee_id)
+}
+
 pub fn create_backup(
     state: &DesktopState,
     draft: &Value,
@@ -1002,6 +1060,7 @@ pub fn create_backup(
         &json!({ "backup": backup }),
         None,
     )?;
+    selaraskan_status_backup(&transaction, &client_id, &replacement.0)?;
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(
         json!({ "sukses": true, "pesan": format!("Penugasan backup {} menggantikan {} berhasil dibuat.", replacement.1, original.1), "id_backup": id }),
@@ -1026,6 +1085,17 @@ pub fn cancel_backup(
             |row| row.get(0),
         )
         .map_err(|_| CommandError::internal())?;
+    // Pengganti dibaca SEBELUM dibatalkan, karena setelahnya baris tidak lagi
+    // berstatus Aktif dan tidak bisa ditemukan lewat filter yang sama.
+    let pengganti: Option<String> = transaction
+        .query_row(
+            "SELECT id_karyawan_pengganti FROM backup_karyawan WHERE id_backup = ? AND status_tugas = 'Aktif' LIMIT 1;",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
     let changed = transaction.execute(
         "UPDATE backup_karyawan SET status_tugas = 'Dibatalkan', waktu_dibatalkan = ?, operator_pembatalan = ? WHERE id_backup = ? AND status_tugas = 'Aktif';",
         params![now, operator, id],
@@ -1045,6 +1115,9 @@ pub fn cancel_backup(
         &json!({ "id_backup": id, "waktu_dibatalkan": now, "operator_pembatalan": operator }),
         current_revision,
     )?;
+    if let Some(pengganti) = pengganti.as_deref() {
+        selaraskan_status_backup(&transaction, &client_id, pengganti)?;
+    }
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true, "pesan": format!("Penugasan backup '{id}' berhasil dibatalkan.") }))
 }
@@ -1411,7 +1484,13 @@ pub fn import_offline(
                 text(row, "status_kehadiran")
             };
 
-            if attendance_status == "Hadir" {
+            // Shift fleksibel tidak punya rentang jadwal: seluruh batasnya bernilai
+            // 0, sehingga rumus di bawah menolak setiap jam selain jam masuk
+            // shift itu sendiri.
+            let shift_fleksibel_import =
+                super::time_policy::is_flexible_shift(&shift.0, &shift.1, shift.2);
+
+            if attendance_status == "Hadir" && !shift_fleksibel_import {
                 if !check_in_time.is_empty() {
                     let user_in = to_min(&check_in_time);
                     let shift_in = to_min(&shift.0);
@@ -1457,15 +1536,25 @@ pub fn import_offline(
             let mut late = 0_i64;
             let mut early = 0_i64;
 
-            if !check_in.is_empty() {
+            // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+            // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+            // dihitung hanyalah jam kerjanya.
+            if !check_in.is_empty() && !shift_fleksibel_import {
                 let in_time_str = clean_time(&check_in);
                 let mut user_in = to_min(&in_time_str);
                 let shift_in = to_min(&shift.0);
                 if is_overnight_shift && user_in < shift_in - 720 {
                     user_in += 1440;
                 }
-                if user_in > shift_in + shift.4 {
-                    late = (user_in - shift_in).max(0);
+                // Batas tepat waktu = jam masuk + batas_masuk_menit (shift.6).
+                // `toleransi_masuk_menit` (shift.4) hanya menentukan sampai kapan
+                // scan masih DITERIMA, bukan titik awal penghitungan telat. Rumus
+                // lama memakai toleransi sebagai ambang lalu mengukur selisih dari
+                // jam shift, sehingga scan 23:01 pada shift 22:00 dengan batas
+                // masuk 60 menit tercatat telat 61 menit, bukan 1 menit.
+                let batas_tepat_waktu = shift_in + shift.6;
+                if user_in > batas_tepat_waktu {
+                    late = (user_in - batas_tepat_waktu).max(0);
                 } else if user_in < shift_in {
                     early = (shift_in - user_in).max(0);
                 }
@@ -1529,7 +1618,12 @@ pub fn import_offline(
                 }
                 let log_late = if kind == "Masuk" { late } else { 0 };
                 let log_early = if kind == "Masuk" { early } else { 0 };
-                let log_timestamp = value.to_owned();
+                // `timestamp_scan` adalah kapan barisnya DIBUAT, bukan jam
+                // kerja yang diimpor. Jam kerjanya tetap tersimpan di
+                // `jam_scan` + `tanggal_kerja`. Tanpa ini, import yang
+                // dikerjakan hari ini untuk tanggal lampau tampil seolah-olah
+                // dibuat pada tanggal lampau itu.
+                let log_timestamp = now.clone();
                 let log_time = clean_time(value);
                 let log = json!({ "timestamp_scan": log_timestamp, "tanggal_kerja": &date, "jam_scan": log_time, "id_karyawan": id, "nama": name, "divisi": division, "jenis_scan": kind, "status_proses": "Berhasil", "sumber_data": "Import Offline", "catatan_sistem": if backup_id.is_empty() { "Import Offline".to_owned() } else { format!("Import Offline sebagai karyawan pengganti. ID Backup: {backup_id}") }, "keterangan": text(row, "keterangan"), "menit_terlambat": log_late, "menit_datang_awal": log_early, "id_referensi": if backup_id.is_empty() { &event_key } else { &backup_id }, "kode_operator": operator });
                 transaction.execute("DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data = 'Import Offline' AND (COALESCE(id_referensi, '') = ? OR COALESCE(id_referensi, '') = ?);", params![&date, id, kind, &backup_id, &event_key]).map_err(|_| CommandError::internal())?;
@@ -1867,7 +1961,7 @@ pub fn delete_correction(
         } else {
             let in_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY timestamp_scan ASC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY jam_scan ASC LIMIT 1;",
                     params![id_karyawan, tanggal],
                     |r| r.get(0),
                 )
@@ -1875,7 +1969,7 @@ pub fn delete_correction(
                 .unwrap_or(None);
             let out_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY timestamp_scan DESC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY jam_scan DESC LIMIT 1;",
                     params![id_karyawan, tanggal],
                     |r| r.get(0),
                 )
@@ -2331,16 +2425,16 @@ pub fn delete_log_scan(
         .transaction()
         .map_err(|_| CommandError::internal())?;
 
-    let current: Option<(String, String, String, String)> = transaction
+    let current: Option<(String, String, String, String, String)> = transaction
         .query_row(
-            "SELECT id_karyawan, tanggal_kerja, nama, jenis_scan FROM log_scan WHERE id_log = ? LIMIT 1;",
+            "SELECT id_karyawan, tanggal_kerja, nama, jenis_scan, COALESCE(id_referensi, '') FROM log_scan WHERE id_log = ? LIMIT 1;",
             params![id_log],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(|_| CommandError::internal())?;
 
-    let Some((id_karyawan, tanggal, nama, jenis_scan_deleted)) = current else {
+    let Some((id_karyawan, tanggal, nama, jenis_scan_deleted, referensi)) = current else {
         return Err(CommandError::new(
             "OPERATIONAL_NOT_FOUND",
             "Log scan tidak ditemukan.",
@@ -2399,7 +2493,7 @@ pub fn delete_log_scan(
         } else {
             let in_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY timestamp_scan ASC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY jam_scan ASC LIMIT 1;",
                     params![id_karyawan, tanggal],
                     |r| r.get(0),
                 )
@@ -2407,7 +2501,7 @@ pub fn delete_log_scan(
                 .unwrap_or(None);
             let out_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY timestamp_scan DESC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY jam_scan DESC LIMIT 1;",
                     params![id_karyawan, tanggal],
                     |r| r.get(0),
                 )
@@ -2530,6 +2624,78 @@ pub fn delete_log_scan(
         }
     }
 
+    // Riwayat asal ikut terhapus begitu tidak ada lagi log yang merujuknya.
+    // Selama masih ada log lain dengan referensi sama — misalnya satu import
+    // yang membuat baris Masuk DAN Pulang — riwayatnya dipertahankan supaya
+    // log yang tersisa tidak menggantung tanpa asal-usul.
+    //
+    // Prefiks id_referensi membedakan sumbernya: `KOR-` koreksi admin,
+    // `IMP-` import manual. ID penugasan backup tidak berawalan keduanya,
+    // jadi penugasan backup tidak pernah ikut terhapus.
+    if !referensi.is_empty() {
+        let masih_dirujuk: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM log_scan WHERE COALESCE(id_referensi, '') = ?;",
+                params![&referensi],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        if masih_dirujuk == 0 {
+            if referensi.starts_with("KOR-") {
+                let terhapus = transaction
+                    .execute(
+                        "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+                        params![&referensi],
+                    )
+                    .unwrap_or(0);
+                if terhapus > 0 {
+                    let rev = revision(&transaction, "correction", &referensi);
+                    sync::enqueue(
+                        &transaction,
+                        &client_id,
+                        "correction",
+                        "delete",
+                        &referensi,
+                        &json!({ "id_referensi": &referensi }),
+                        rev,
+                    )?;
+                    transaction
+                        .execute(
+                            "INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status) VALUES (?, 'Hapus Koreksi Admin', ?, ?, ?, ?, ?, 'Berhasil');",
+                            params![now, tanggal, id_karyawan, nama, &referensi, format!("Ikut terhapus bersama log scan terakhir yang merujuknya (Operator {operator}).")],
+                        )
+                        .map_err(|_| CommandError::internal())?;
+                }
+            } else if referensi.starts_with("IMP-") {
+                let terhapus = transaction
+                    .execute(
+                        "DELETE FROM import_offline WHERE event_key = ?;",
+                        params![&referensi],
+                    )
+                    .unwrap_or(0);
+                if terhapus > 0 {
+                    let rev = revision(&transaction, "offline-import", &referensi);
+                    sync::enqueue(
+                        &transaction,
+                        &client_id,
+                        "offline-import",
+                        "delete",
+                        &referensi,
+                        &json!({ "event_key": &referensi }),
+                        rev,
+                    )?;
+                    transaction
+                        .execute(
+                            "INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status) VALUES (?, 'Hapus Import Manual', ?, ?, ?, ?, ?, 'Berhasil');",
+                            params![now, tanggal, id_karyawan, nama, &referensi, format!("Ikut terhapus bersama log scan terakhir yang merujuknya (Operator {operator}).")],
+                        )
+                        .map_err(|_| CommandError::internal())?;
+                }
+            }
+        }
+    }
+
     transaction
         .execute(
             "INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status) VALUES (?, 'Hapus Log Scan', ?, ?, ?, ?, ?, 'Berhasil');",
@@ -2639,7 +2805,7 @@ pub fn delete_import_offline(
         } else {
             let in_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY timestamp_scan ASC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Masuk' ORDER BY jam_scan ASC LIMIT 1;",
                     params![id_unik, tanggal],
                     |r| r.get(0),
                 )
@@ -2647,7 +2813,7 @@ pub fn delete_import_offline(
                 .unwrap_or(None);
             let out_log: Option<String> = transaction
                 .query_row(
-                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY timestamp_scan DESC LIMIT 1;",
+                    "SELECT jam_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? AND jenis_scan = 'Pulang' ORDER BY jam_scan DESC LIMIT 1;",
                     params![id_unik, tanggal],
                     |r| r.get(0),
                 )
@@ -2964,6 +3130,142 @@ mod tests {
         let import_res = import_offline(&state, &rows, "SPD001").expect("import offline");
         assert_eq!(import_res["berhasil"], 2);
         assert_eq!(import_res["gagal"], 0);
+    }
+
+    #[test]
+    fn status_backup_dipelihara_saat_backup_dibuat_dan_dibatalkan() {
+        let (_directory, state) = fixture();
+
+        let res = create_backup(
+            &state,
+            &json!({
+                "tanggal_tugas": "2026-08-15",
+                "id_karyawan_asal": "K001",
+                "id_karyawan_pengganti": "K002",
+                "id_shift_backup": 2,
+                "kode_operator": "SPD001",
+            }),
+            "SPD001",
+        )
+        .expect("create backup");
+        let id_backup = res["id_backup"].as_str().expect("id_backup").to_owned();
+
+        let baca = |state: &DesktopState, id: &str| -> String {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .query_row(
+                    "SELECT COALESCE(status_backup, 'NORMAL') FROM master_data WHERE id_unik = ?;",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("status backup")
+        };
+
+        // Pengganti ditandai BACKUP; karyawan asal tetap NORMAL.
+        assert_eq!(baca(&state, "K002"), "BACKUP");
+        assert_eq!(baca(&state, "K001"), "NORMAL");
+
+        // master_data ikut disinkronkan, jadi perubahannya wajib punya outbox.
+        {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            let jumlah: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM desktop_sync_outbox WHERE domain = 'employee' AND operation = 'update' AND entity_key = 'K002';",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("outbox employee");
+            assert_eq!(jumlah, 1);
+        }
+
+        super::cancel_backup(&state, &id_backup, "SPD001").expect("cancel backup");
+        assert_eq!(baca(&state, "K002"), "NORMAL");
+    }
+
+    #[test]
+    fn import_menghitung_telat_dari_batas_tepat_waktu() {
+        let (_directory, state) = fixture();
+        {
+            // Shift malam 22:00 dengan batas tepat waktu 60 menit dan toleransi
+            // terlambat 60 menit: tepat waktu sampai 23:00, masih diterima
+            // sampai 24:00 tetapi dihitung terlambat sejak 23:00.
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .execute_batch(
+                    r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          jam_kerja_normal_menit, istirahat_menit, awal_absen_menit,
+          batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit,
+          buffer_shift_malam_menit
+        ) VALUES (5, 5, 'Shift Malam', '22:00', '06:00', 420, 60, 120, 60, 60, 240, 120);
+        UPDATE master_data SET id_shift = 5 WHERE id_unik = 'K001';
+        "#,
+                )
+                .expect("seed shift malam");
+        }
+
+        let rows = vec![json!({
+            "tanggal": "20/08/2026",
+            "id_unik": "K001",
+            "jam_masuk": "23:01",
+            "status_kehadiran": "Hadir",
+        })];
+        let hasil = import_offline(&state, &rows, "SPD001").expect("import offline");
+        assert_eq!(hasil["gagal"], 0, "import ditolak: {hasil}");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let telat: i64 = connection
+            .query_row(
+                "SELECT menit_terlambat FROM absensi_harian WHERE id_karyawan = 'K001' AND tanggal = '2026-08-20';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("baris absensi");
+        // 23:01 - 23:00 = 1 menit. Rumus lama mengukur dari 22:00 dan
+        // menghasilkan 61 menit.
+        assert_eq!(telat, 1);
+    }
+
+    #[test]
+    fn import_tepat_waktu_di_dalam_batas_masuk_tidak_telat() {
+        let (_directory, state) = fixture();
+        {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .execute_batch(
+                    r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          jam_kerja_normal_menit, istirahat_menit, awal_absen_menit,
+          batas_masuk_menit, toleransi_masuk_menit, batas_pulang_menit,
+          buffer_shift_malam_menit
+        ) VALUES (5, 5, 'Shift Malam', '22:00', '06:00', 420, 60, 120, 60, 60, 240, 120);
+        UPDATE master_data SET id_shift = 5 WHERE id_unik = 'K001';
+        "#,
+                )
+                .expect("seed shift malam");
+        }
+
+        // Tepat di batas tepat waktu: masih 0 menit.
+        let rows = vec![json!({
+            "tanggal": "20/08/2026",
+            "id_unik": "K001",
+            "jam_masuk": "23:00",
+            "status_kehadiran": "Hadir",
+        })];
+        let hasil = import_offline(&state, &rows, "SPD001").expect("import offline");
+        assert_eq!(hasil["gagal"], 0, "import ditolak: {hasil}");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let telat: i64 = connection
+            .query_row(
+                "SELECT menit_terlambat FROM absensi_harian WHERE id_karyawan = 'K001' AND tanggal = '2026-08-20';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("baris absensi");
+        assert_eq!(telat, 0);
     }
 
     #[test]

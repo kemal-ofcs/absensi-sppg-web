@@ -35,7 +35,8 @@ interface AuthContextType {
   login: (
     username: string,
     passwordPlain: string,
-  ) => Promise<{ sukses: boolean; pesan: string }>;
+    totpCode?: string,
+  ) => Promise<{ sukses: boolean; pesan: string; requiresTotp?: boolean }>;
   logout: () => void;
 }
 
@@ -64,23 +65,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     : webSessionSnapshot.user;
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  const login = useCallback(async (username: string, passwordPlain: string) => {
-    setIsLoading(true);
-    try {
-      if (!isDesktopRuntime()) {
-        return await loginWebSession(username, passwordPlain);
+  const login = useCallback(
+    async (username: string, passwordPlain: string, totpCode?: string) => {
+      setIsLoading(true);
+      try {
+        if (!isDesktopRuntime()) {
+          return await loginWebSession(username, passwordPlain, totpCode);
+        }
+        return await loginDesktopSession(username, passwordPlain, totpCode);
+      } catch (err: unknown) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Terjadi kesalahan saat memproses login.";
+        return { sukses: false, pesan: msg };
+      } finally {
+        setIsLoading(false);
       }
-      return await loginDesktopSession(username, passwordPlain);
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Terjadi kesalahan saat memproses login.";
-      return { sukses: false, pesan: msg };
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const logout = useCallback(() => {
     setIsLoading(true);

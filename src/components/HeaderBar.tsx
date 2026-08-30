@@ -49,10 +49,22 @@ const NAVIGATION: NavigationItem[] = [
     label: "Penggajian",
   },
   {
+    area: "audit",
+    href: "/audit-absensi",
+    icon: "alert",
+    label: "Audit Absensi",
+  },
+  {
     area: "operators",
     href: "/operators",
     icon: "users",
     label: "Operator",
+  },
+  {
+    area: "password_reset",
+    href: "/riwayat-reset-password",
+    icon: "lock",
+    label: "Riwayat Reset",
   },
   {
     area: "settings",

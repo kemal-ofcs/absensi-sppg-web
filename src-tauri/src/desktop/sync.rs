@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 10;
+pub const CLIENT_SCHEMA_VERSION: i64 = 12;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -145,6 +145,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "offset_generate_alfa",
             "buffer_shift_malam_menit",
             "izinkan_multi_sesi",
+            "shift_lanjutan_id",
         ],
         conflict_column: "kode_shift",
         entity_column: "id_shift",
@@ -266,7 +267,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_referensi",
         entity_column: "id_referensi",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "imports",
@@ -291,7 +292,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "event_key",
         entity_column: "event_key",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "attendance",
@@ -325,7 +326,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_sesi",
         entity_column: "id_sesi",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "scanLogs",
@@ -351,7 +352,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_log",
         entity_column: "id_log",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "salaryConfigs",
@@ -1012,6 +1013,64 @@ pub fn new_local_id() -> i64 {
         .unwrap_or(1);
     const MAX_SAFE_JSON_INTEGER: u128 = 9_007_199_254_740_991;
     -((nanos % (MAX_SAFE_JSON_INTEGER - 1)) as i64 + 1)
+}
+
+/// Daftarkan snapshot terkini satu karyawan ke outbox sebagai `employee/update`.
+///
+/// Dipakai setiap kali kolom di `master_data` berubah di luar layar Karyawan —
+/// perpindahan shift lanjutan oleh scanner, dan pemeliharaan `status_backup`
+/// saat penugasan backup dibuat atau dibatalkan. `master_data` ikut
+/// disinkronkan, jadi perubahan tanpa event outbox tidak akan pernah sampai ke
+/// perangkat lain.
+pub fn enqueue_employee_snapshot(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    employee_id: &str,
+) -> Result<(), CommandError> {
+    let revision: Option<i64> = transaction
+        .query_row(
+            "SELECT server_revision FROM desktop_entity_revision WHERE domain = 'employee' AND entity_key = ?;",
+            params![employee_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+
+    let payload_json: String = transaction
+        .query_row(
+            r#"
+        SELECT json_object(
+          'id_unik', id_unik, 'kode_karyawan', COALESCE(kode_karyawan, ''),
+          'nama', COALESCE(nama, ''), 'divisi', COALESCE(divisi, ''),
+          'jabatan_status', COALESCE(jabatan_status, ''), 'no_hp', COALESCE(no_hp, ''),
+          'lp', COALESCE(lp, ''), 'id_shift', id_shift,
+          'status_aktif', COALESCE(status_aktif, ''),
+          'tanggal_daftar', COALESCE(tanggal_daftar, ''), 'catatan', COALESCE(catatan, ''),
+          'token_absensi', COALESCE(token_absensi, ''), 'qr_code', COALESCE(qr_code, ''),
+          'status_qr', COALESCE(status_qr, ''), 'jenis_personil', COALESCE(jenis_personil, ''),
+          'tanggal_mulai_aktif', COALESCE(tanggal_mulai_aktif, ''),
+          'tanggal_selesai_aktif', COALESCE(tanggal_selesai_aktif, ''),
+          'status_backup', COALESCE(status_backup, 'NORMAL')
+        ) FROM master_data WHERE id_unik = ?;
+        "#,
+            params![employee_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())?;
+    let payload: Value =
+        serde_json::from_str(&payload_json).map_err(|_| CommandError::internal())?;
+
+    enqueue(
+        transaction,
+        client_id,
+        "employee",
+        "update",
+        employee_id,
+        &payload,
+        revision,
+    )?;
+    Ok(())
 }
 
 pub fn enqueue(
@@ -2496,7 +2555,11 @@ pub fn resolve_conflicts_local(
             .map_err(|_| CommandError::internal())?;
         transaction
             .execute(
-                "UPDATE desktop_sync_outbox SET status = 'pending', base_revision = NULL, attempt_count = 0, last_error = NULL, updated_at = ? WHERE event_id = ? AND status = 'conflict';",
+                // Payload ikut ditandai supaya server tahu ini keputusan sadar
+                // operator, bukan push biasa. Tanpa tanda ini konfliknya abadi:
+                // basis optimistis di payload tidak pernah berubah, jadi setiap
+                // percobaan ulang ditolak dengan pesan yang sama.
+                "UPDATE desktop_sync_outbox SET status = 'pending', base_revision = NULL, attempt_count = 0, last_error = NULL, payload_json = json_set(payload_json, '$.forceLocalOverride', json('true')), updated_at = ? WHERE event_id = ? AND status = 'conflict';",
                 params![now, event_id],
             )
             .map_err(|_| CommandError::internal())?;
@@ -2509,7 +2572,7 @@ pub fn resolve_conflicts_local(
             .map_err(|_| CommandError::internal())?;
         transaction
             .execute(
-                "UPDATE desktop_sync_outbox SET status = 'pending', base_revision = NULL, attempt_count = 0, last_error = NULL, updated_at = ? WHERE status = 'conflict';",
+                "UPDATE desktop_sync_outbox SET status = 'pending', base_revision = NULL, attempt_count = 0, last_error = NULL, payload_json = json_set(payload_json, '$.forceLocalOverride', json('true')), updated_at = ? WHERE status = 'conflict';",
                 [now],
             )
             .map_err(|_| CommandError::internal())?;

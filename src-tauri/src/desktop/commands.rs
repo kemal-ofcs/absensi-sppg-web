@@ -19,6 +19,23 @@ struct OnlineAccess {
     token: Zeroizing<String>,
 }
 
+/// Sesi login yang sah, tanpa menuntut izin tertentu.
+///
+/// Dipakai tindakan yang hanya menyentuh akun milik pemanggil sendiri —
+/// mendaftarkan atau mematikan verifikasi dua langkahnya sendiri. Memaksakan
+/// sebuah izin di sini akan salah: setiap operator berhak mengamankan akunnya,
+/// termasuk role paling terbatas sekalipun.
+fn require_session(state: &DesktopState) -> Result<OperatorUser, CommandError> {
+    let session = state.session.lock().map_err(|_| CommandError::internal())?;
+    let session = session.as_ref().ok_or_else(|| {
+        CommandError::new(
+            "DESKTOP_SESSION_MISSING",
+            "Session Desktop tidak tersedia. Silakan login kembali.",
+        )
+    })?;
+    Ok(session.operator.clone())
+}
+
 fn require_permission(
     state: &DesktopState,
     permission: &str,
@@ -386,6 +403,7 @@ pub async fn desktop_login(
     state: State<'_, DesktopState>,
     identifier: String,
     password: String,
+    totp_code: Option<String>,
 ) -> Result<DesktopLoginResult, CommandError> {
     let identifier = identifier.trim().to_owned();
     if identifier.len() < 3 || identifier.len() > 64 || password.len() > 256 {
@@ -406,7 +424,10 @@ pub async fn desktop_login(
 
     // 1. Coba login online via Turso jika Turso Client tersedia
     if let Ok(turso) = state.get_turso_client() {
-        match turso.authenticate_operator(&identifier, &password).await {
+        match turso
+            .authenticate_operator(&identifier, &password, totp_code.as_deref())
+            .await
+        {
             Ok(operator) => {
                 storage::clear_login_failures(&state.data_dir, &identifier)?;
                 let provisioned = secrets::provision(&state, operator.clone(), &password);
@@ -473,6 +494,26 @@ pub async fn desktop_login(
                     Some(&err.code),
                 );
                 reject_login(&state, &identifier)?;
+                return Err(err);
+            }
+            // Kegagalan 2FA BUKAN "cloud tidak terjangkau". Tanpa lengan ini
+            // ketiga kode di bawah jatuh ke lengan Err umum, yang meneruskan
+            // login ke fallback offline — dan fallback itu hanya memeriksa
+            // username + password, sehingga verifikasi dua langkah terlewati
+            // seluruhnya pada perangkat yang punya cache offline.
+            Err(err)
+                if matches!(
+                    err.code,
+                    "TOTP_REQUIRED" | "TOTP_INVALID" | "TOTP_ENROLLMENT_REQUIRED"
+                ) =>
+            {
+                storage::audit(&state.data_dir, None, "login-online-totp", Some(&err.code));
+                // Hanya kode yang SALAH yang dihitung sebagai percobaan gagal.
+                // "Belum mengirim kode" adalah langkah normal alur login, dan
+                // menghitungnya akan mengunci akun yang justru patuh memakai 2FA.
+                if err.code == "TOTP_INVALID" {
+                    reject_login(&state, &identifier)?;
+                }
                 return Err(err);
             }
             Err(err) => {
@@ -638,6 +679,242 @@ pub async fn desktop_logout(state: State<'_, DesktopState>) -> Result<(), Comman
     Ok(())
 }
 
+/// Riwayat "Lupa Password".
+///
+/// Berbeda dengan command `desktop_password_reset_*` yang sengaja terbuka tanpa
+/// sesi, membaca dan menghapus riwayat butuh izin: setiap baris menyimpan foto
+/// wajah pemohon.
+#[tauri::command]
+pub async fn desktop_list_password_reset_history(
+    state: State<'_, DesktopState>,
+    status: Option<String>,
+    search: Option<String>,
+    limit: Option<i64>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "password_reset.view")?;
+    state
+        .get_turso_client()?
+        .list_password_reset_history(
+            status.as_deref().unwrap_or("SEMUA"),
+            search.as_deref().unwrap_or(""),
+            limit.unwrap_or(100),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_get_password_reset_photo(
+    state: State<'_, DesktopState>,
+    request_id: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "password_reset.view")?;
+    state
+        .get_turso_client()?
+        .get_password_reset_photo(&request_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_delete_password_reset_history(
+    state: State<'_, DesktopState>,
+    request_id: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "password_reset.delete")?;
+    state
+        .get_turso_client()?
+        .delete_password_reset_history(&request_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_purge_password_reset_history(
+    state: State<'_, DesktopState>,
+    older_than_days: i64,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "password_reset.delete")?;
+    state
+        .get_turso_client()?
+        .purge_password_reset_history(older_than_days)
+        .await
+}
+
+/// Perintah alur "Lupa Password".
+
+///
+/// Sengaja TIDAK memakai `require_permission`: pemohon justru sedang terkunci
+/// di luar akunnya sendiri, jadi tidak ada sesi yang bisa diperiksa. Penjaganya
+/// adalah verifikasi wajah, urutan tantangan acak yang hanya diketahui
+/// database, umur token yang pendek, dan penyerahan link lewat email pemilik
+/// akun — bukan sesi.
+#[tauri::command]
+pub async fn desktop_password_reset_lookup(
+    state: State<'_, DesktopState>,
+    identifier: String,
+) -> Result<Value, CommandError> {
+    state.get_turso_client()?.password_reset_lookup(&identifier).await
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_confirm(
+    state: State<'_, DesktopState>,
+    identifier: String,
+    confirmation: String,
+) -> Result<Value, CommandError> {
+    state
+        .get_turso_client()?
+        .password_reset_confirm(&identifier, &confirmation)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_swap_challenge(
+    state: State<'_, DesktopState>,
+    request_id: String,
+    challenge_token: String,
+    step_index: i64,
+) -> Result<Value, CommandError> {
+    state
+        .get_turso_client()?
+        .password_reset_swap_challenge(&request_id, &challenge_token, step_index)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_verify(
+    state: State<'_, DesktopState>,
+    request_id: String,
+    challenge_token: String,
+    verdict: Value,
+    photo_base64: String,
+    photo_mime: String,
+) -> Result<Value, CommandError> {
+    state
+        .get_turso_client()?
+        .password_reset_verify(
+            &request_id,
+            &challenge_token,
+            &verdict,
+            &photo_base64,
+            &photo_mime,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_inspect(
+    state: State<'_, DesktopState>,
+    token: String,
+) -> Result<Value, CommandError> {
+    state.get_turso_client()?.password_reset_inspect(&token).await
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_complete(
+    state: State<'_, DesktopState>,
+    token: String,
+    password: String,
+) -> Result<Value, CommandError> {
+    let password = Zeroizing::new(password);
+    state
+        .get_turso_client()?
+        .password_reset_complete(&token, &password)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_send_test_mail(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let actor = require_permission(&state, "settings.manage")?;
+    state.get_turso_client()?.send_test_mail(actor.id).await
+}
+
+#[tauri::command]
+pub async fn desktop_get_mail_config(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "settings.manage")?;
+    state.get_turso_client()?.get_mail_config().await
+}
+
+#[tauri::command]
+pub async fn desktop_save_mail_config(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let actor = require_permission(&state, "settings.manage")?;
+    state
+        .get_turso_client()?
+        .save_mail_config(&draft, &actor.kode_operator)
+        .await
+}
+
+/// Pengelolaan verifikasi dua langkah.
+///
+/// `status`, `begin`, `confirm`, dan `disable` selalu bekerja pada akun
+/// PEMANGGIL — id operatornya diambil dari sesi, tidak pernah dari argumen.
+/// Tanpa aturan itu, siapa pun yang punya sesi bisa mematikan 2FA milik orang
+/// lain hanya dengan menebak id.
+#[tauri::command]
+pub async fn desktop_get_two_factor_status(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let actor = require_session(&state)?;
+    state
+        .get_turso_client()?
+        .get_two_factor_status(actor.id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_begin_two_factor_setup(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let actor = require_session(&state)?;
+    state
+        .get_turso_client()?
+        .begin_two_factor_setup(actor.id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_confirm_two_factor_setup(
+    state: State<'_, DesktopState>,
+    code: String,
+) -> Result<Value, CommandError> {
+    let actor = require_session(&state)?;
+    state
+        .get_turso_client()?
+        .confirm_two_factor_setup(actor.id, &code)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_disable_two_factor(
+    state: State<'_, DesktopState>,
+    code: String,
+) -> Result<Value, CommandError> {
+    let actor = require_session(&state)?;
+    state
+        .get_turso_client()?
+        .disable_two_factor(actor.id, true, &code)
+        .await
+}
+
+/// Mematikan 2FA operator lain — untuk operator yang kehilangan ponselnya.
+/// Dijaga izin `two_factor.reset` yang masuk daftar mutasi sensitif.
+#[tauri::command]
+pub async fn desktop_admin_disable_two_factor(
+    state: State<'_, DesktopState>,
+    operator_id: i64,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "two_factor.reset")?;
+    state
+        .get_turso_client()?
+        .disable_two_factor(operator_id, false, "")
+        .await
+}
+
 #[tauri::command]
 pub async fn desktop_get_master_operators(
     state: State<'_, DesktopState>,
@@ -704,9 +981,9 @@ pub async fn desktop_delete_operator(
     state: State<'_, DesktopState>,
     operator_id: i64,
 ) -> Result<Value, CommandError> {
-    require_permission(&state, "operators.manage")?;
+    let actor = require_permission(&state, "operators.manage")?;
     if let Ok(turso) = state.get_turso_client() {
-        return turso.delete_operator(operator_id).await;
+        return turso.delete_operator(actor.id, operator_id).await;
     }
     secured_api(
         &state,
@@ -1261,6 +1538,15 @@ pub fn desktop_trigger_generate_alfa(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "alfa.trigger")?;
     operational::generate_alfa_harian(&state, simulated_time)
+}
+
+#[tauri::command]
+pub fn desktop_get_attendance_audit(
+    state: State<'_, DesktopState>,
+    tanggal: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "attendance_audit.view")?;
+    operational::get_attendance_audit(&state, tanggal)
 }
 
 #[tauri::command]

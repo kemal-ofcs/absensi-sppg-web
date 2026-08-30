@@ -7,7 +7,9 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
+import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { saveFileWithPicker } from "@/lib/client/download";
 import {
@@ -56,6 +58,7 @@ export default function KaryawanPage() {
   const [search, setSearch] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
+  const [filterBackup, setFilterBackup] = useState<string>("");
   const [filterDivisi, setFilterDivisi] = useState<string>("");
   const importInputRef = useRef<HTMLInputElement>(null);
   const isSubmittingRef = useRef<boolean>(false);
@@ -142,6 +145,15 @@ export default function KaryawanPage() {
   }, [loadData]);
 
   // Extract unique divisions for filter — memoized to avoid recalc on every render
+  // `status_backup` tidak tersedia sebagai parameter di gateway, jadi disaring
+  // di sisi klien — pola yang sama dipakai versi Mobile.
+  const karyawanTampil = useMemo(() => {
+    if (!filterBackup) return karyawanList;
+    return karyawanList.filter(
+      (row) => String(row.status_backup ?? "NORMAL") === filterBackup,
+    );
+  }, [karyawanList, filterBackup]);
+
   const divisions = useMemo(
     () =>
       Array.from(
@@ -310,7 +322,7 @@ export default function KaryawanPage() {
 
   const handleExportEmployees = async () => {
     try {
-      const res = await exportEmployees(karyawanList);
+      const res = await exportEmployees(karyawanTampil);
       if (res.cancelled) return;
       if (res.path) {
         setAlertMsg(`Data karyawan berhasil diekspor ke: ${res.path}`);
@@ -393,74 +405,69 @@ export default function KaryawanPage() {
 
   return (
     <AppShell contentClassName="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
-      {/* Top Action Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
-        <div>
-          <span className="text-xs uppercase tracking-widest text-sky-400 font-semibold font-mono">
-            Master Data Management
-          </span>
-          <h1 className="text-xl sm:text-2xl font-bold text-white mt-1">
-            👥 Manajemen Master Data Karyawan
-          </h1>
-          <p className="text-xs text-slate-400">
-            Kelola profil lengkap 14 parameter karyawan, shift kerja, status
-            keaktifan, dan QR token absensi.
-          </p>
-        </div>
+      <PageHeader
+        eyebrow="Master Data Management"
+        title="Manajemen Master Data Karyawan"
+        description="Kelola profil lengkap 14 parameter karyawan, shift kerja, status keaktifan, dan QR token absensi."
+        actions={
+          canManage ? (
+            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleImport(file);
+                }}
+              />
+              <button
+                type="button"
+                disabled={bulkWorking}
+                onClick={() => importInputRef.current?.click()}
+                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-slate-800 px-3.5 py-2 text-xs font-semibold text-emerald-300 shadow-sm transition hover:bg-slate-700 disabled:opacity-50"
+              >
+                <Icon name="upload" className="size-3.5" />
+                <span>{bulkWorking ? "Memproses…" : "Import Excel"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-300 transition hover:bg-slate-700"
+              >
+                <Icon name="document" className="size-3.5" />
+                <span>Template</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportEmployees}
+                className="flex items-center gap-1.5 rounded-xl border border-sky-500/40 bg-slate-800 px-3.5 py-2 text-xs font-semibold text-sky-300 shadow-sm transition hover:bg-slate-700"
+              >
+                <Icon name="download" className="size-3.5" />
+                <span>Export Excel</span>
+              </button>
 
-        {canManage ? (
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".xlsx"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleImport(file);
-              }}
-            />
-            <button
-              type="button"
-              disabled={bulkWorking}
-              onClick={() => importInputRef.current?.click()}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold text-xs rounded-xl border border-emerald-500/40 disabled:opacity-50 transition shadow-sm"
-            >
-              {bulkWorking ? "⏳ Memproses..." : "📥 Import Excel"}
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadTemplate}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700 transition"
-            >
-              📄 Template
-            </button>
-            <button
-              type="button"
-              onClick={handleExportEmployees}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs rounded-xl border border-sky-500/40 transition shadow-sm"
-            >
-              📊 Export Excel
-            </button>
+              <button
+                type="button"
+                onClick={handleGenerateMassal}
+                className="flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-slate-800 px-3.5 py-2 text-xs font-semibold text-amber-300 shadow-sm transition hover:bg-slate-700"
+              >
+                <Icon name="scanner" className="size-3.5" />
+                <span>Generate QR Massal</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={handleGenerateMassal}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs rounded-xl border border-amber-500/40 transition shadow-sm"
-            >
-              ⚡ Generate QR Massal
-            </button>
-
-            <button
-              type="button"
-              onClick={openAddModal}
-              className="px-4 py-2 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white font-bold text-xs rounded-xl transition shadow-lg shadow-sky-950/60 flex items-center gap-1.5 active:scale-95"
-            >
-              ➕ Tambah Karyawan
-            </button>
-          </div>
-        ) : null}
-      </div>
+              <button
+                type="button"
+                onClick={openAddModal}
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-sky-950/60 transition hover:from-sky-500 hover:to-blue-500 active:scale-95"
+              >
+                <span>+ Tambah Karyawan</span>
+              </button>
+            </div>
+          ) : null
+        }
+      />
 
       {/* Alert Feedback */}
       {alertMsg ? (
@@ -521,6 +528,17 @@ export default function KaryawanPage() {
             <option value="Aktif">Status: Aktif</option>
             <option value="Nonaktif">Status: Nonaktif</option>
           </select>
+
+          <select
+            value={filterBackup}
+            onChange={(e) => setFilterBackup(e.target.value)}
+            className="min-h-10 rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500"
+            aria-label="Saring berdasarkan tipe penugasan"
+          >
+            <option value="">Semua Tipe</option>
+            <option value="NORMAL">Karyawan Utama</option>
+            <option value="BACKUP">Sedang Jadi Backup</option>
+          </select>
         </div>
       </form>
 
@@ -528,8 +546,8 @@ export default function KaryawanPage() {
       <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3 text-xs font-mono text-slate-400 bg-slate-950/40">
           <span>
-            Menampilkan {karyawanList.length} karyawan terdaftar (
-            {karyawanList.filter((k) => k.status_aktif === "Aktif").length}{" "}
+            Menampilkan {karyawanTampil.length} karyawan terdaftar (
+            {karyawanTampil.filter((k) => k.status_aktif === "Aktif").length}{" "}
             Aktif)
           </span>
           {appliedSearch ? (
@@ -572,7 +590,7 @@ export default function KaryawanPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                {karyawanList.length === 0 ? (
+                {karyawanTampil.length === 0 ? (
                   <tr>
                     <td
                       colSpan={16}
@@ -582,7 +600,7 @@ export default function KaryawanPage() {
                     </td>
                   </tr>
                 ) : (
-                  karyawanList.map((row) => (
+                  karyawanTampil.map((row) => (
                     <tr
                       key={String(row.id_unik)}
                       className="hover:bg-slate-800/40 transition"

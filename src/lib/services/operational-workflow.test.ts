@@ -90,7 +90,8 @@ beforeEach(async () => {
               ) VALUES
               (1, 1, 'Shift 1 Pagi', '07:00', '15:00', 120, 0, 120, 480, 60, 240, 240, 180, 120, 0),
               (2, 2, 'Shift 2 Siang', '15:00', '23:00', 120, 0, 120, 480, 60, 240, 240, 180, 120, 0),
-              (3, 3, 'Shift 3 Malam', '23:00', '07:00', 120, 0, 120, 480, 60, 240, 240, 180, 120, 0);`,
+              (3, 3, 'Shift 3 Malam', '23:00', '07:00', 120, 0, 120, 480, 60, 240, 240, 180, 120, 0),
+              (9, 9, 'Shift 9 Fleksibel', '00:00', '23:59', 0, 0, 0, 1439, 0, 0, 0, 0, 0, 0);`,
         args: [],
       },
     ],
@@ -649,5 +650,143 @@ describe("workflow operasional: import offline / spreadsheet manual", () => {
     expect(attRes.rows.length).toBeGreaterThan(0);
     const att = attRes.rows[0] as Record<string, unknown>;
     expect(Number(att.menit_terlambat || 0)).toBe(0);
+  });
+});
+
+describe("workflow operasional: shift fleksibel", () => {
+  beforeEach(async () => {
+    await db.execute({
+      sql: "UPDATE master_data SET id_shift = 9 WHERE id_unik = ?;",
+      args: [EMP_A.id],
+    });
+  });
+
+  test("shift fleksibel: import manual menerima jam berapa pun", async () => {
+    // Semua batas shift fleksibel bernilai 0, sehingga rumus rentang lama
+    // menolak setiap jam selain 00:00 dengan pesan "di luar rentang jadwal".
+    const res = await prosesImportOffline(
+      [
+        {
+          tanggal: "20/08/2026",
+          id_unik: EMP_A.id,
+          jam_masuk: "07:00",
+          jam_pulang: "19:30",
+          status_kehadiran: "Hadir",
+        },
+      ],
+      "SPD001",
+    );
+
+    expect(res.gagal).toBe(0);
+    expect(res.berhasil).toBe(1);
+
+    const cek = await db.execute({
+      sql: "SELECT id_shift, jam_masuk, jam_pulang FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-20';",
+      args: [EMP_A.id],
+    });
+    expect(cek.rows.length).toBe(1);
+    expect(Number(cek.rows[0]?.id_shift)).toBe(9);
+  });
+
+  test("koreksi admin pada shift fleksibel tidak dipindahkan ke shift reguler", async () => {
+    // Jam 07:00 kebetulan cocok dengan Shift 1. Smart Shift Detection dulu
+    // menganggap shift fleksibel "tidak cocok" lalu diam-diam memindahkan
+    // karyawan ke shift itu.
+    const res = await prosesKoreksiAdmin({
+      tanggal: "2026-08-21",
+      id_karyawan: EMP_A.id,
+      jenis_koreksi: "Lupa Absen Masuk",
+      jam_koreksi: "07:00",
+      kode_operator: "SPD001",
+    });
+
+    expect(res.sukses).toBe(true);
+
+    const cek = await db.execute({
+      sql: "SELECT id_shift FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-21';",
+      args: [EMP_A.id],
+    });
+    expect(cek.rows.length).toBe(1);
+    expect(Number(cek.rows[0]?.id_shift)).toBe(9);
+  });
+});
+
+describe("workflow operasional: hapus log scan merapikan riwayat asal", () => {
+  test("hapus log scan menghapus riwayat koreksi admin yang merujuknya", async () => {
+    const kor = await prosesKoreksiAdmin({
+      tanggal: "2026-08-25",
+      id_karyawan: EMP_A.id,
+      jenis_koreksi: "Lupa Absen Masuk",
+      jam_koreksi: "07:30",
+      kode_operator: "SPD001",
+    });
+    expect(kor.sukses).toBe(true);
+
+    const logRes = await db.execute({
+      sql: "SELECT id_log, id_referensi FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = '2026-08-25';",
+      args: [EMP_A.id],
+    });
+    expect(logRes.rows.length).toBe(1);
+    const idLog = Number(logRes.rows[0]?.id_log);
+    const referensi = String(logRes.rows[0]?.id_referensi ?? "");
+    expect(referensi.startsWith("KOR-")).toBe(true);
+
+    const sebelum = await db.execute({
+      sql: "SELECT COUNT(*) AS total FROM koreksi_admin WHERE id_referensi = ?;",
+      args: [referensi],
+    });
+    expect(Number(sebelum.rows[0]?.total)).toBe(1);
+
+    const hasil = await hapusLogScan(idLog, "SPD001");
+    expect(hasil.sukses).toBe(true);
+
+    // Log terakhir yang merujuk koreksi itu hilang, jadi riwayatnya ikut hilang.
+    const sesudah = await db.execute({
+      sql: "SELECT COUNT(*) AS total FROM koreksi_admin WHERE id_referensi = ?;",
+      args: [referensi],
+    });
+    expect(Number(sesudah.rows[0]?.total)).toBe(0);
+  });
+
+  test("riwayat import manual bertahan selagi masih ada log lain yang merujuknya", async () => {
+    const imp = await prosesImportOffline(
+      [
+        {
+          tanggal: "26/08/2026",
+          id_unik: EMP_A.id,
+          jam_masuk: "07:00",
+          jam_pulang: "15:30",
+          status_kehadiran: "Hadir",
+        },
+      ],
+      "SPD001",
+    );
+    expect(imp.berhasil).toBe(1);
+
+    const logRes = await db.execute({
+      sql: "SELECT id_log, id_referensi, jenis_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = '2026-08-26' ORDER BY jenis_scan ASC;",
+      args: [EMP_A.id],
+    });
+    // Satu import membuat dua log: Masuk dan Pulang, dengan referensi sama.
+    expect(logRes.rows.length).toBe(2);
+    const referensi = String(logRes.rows[0]?.id_referensi ?? "");
+    expect(referensi.startsWith("IMP-")).toBe(true);
+
+    await hapusLogScan(Number(logRes.rows[0]?.id_log), "SPD001");
+
+    // Masih ada satu log yang merujuk, jadi riwayat import dipertahankan.
+    const tengah = await db.execute({
+      sql: "SELECT COUNT(*) AS total FROM import_offline WHERE event_key = ?;",
+      args: [referensi],
+    });
+    expect(Number(tengah.rows[0]?.total)).toBe(1);
+
+    await hapusLogScan(Number(logRes.rows[1]?.id_log), "SPD001");
+
+    const akhir = await db.execute({
+      sql: "SELECT COUNT(*) AS total FROM import_offline WHERE event_key = ?;",
+      args: [referensi],
+    });
+    expect(Number(akhir.rows[0]?.total)).toBe(0);
   });
 });

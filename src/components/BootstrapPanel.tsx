@@ -66,6 +66,8 @@ export function BootstrapPanel({
   const [authToken, setAuthToken] = useState("");
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [noHp, setNoHp] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -177,6 +179,8 @@ export function BootstrapPanel({
         kodeOperator: "SPD001",
         namaOperator: name,
         username,
+        email,
+        noHp,
         password,
         databaseUrl: needsCredentials ? databaseUrl : undefined,
         authToken: needsCredentials ? authToken : undefined,
@@ -440,6 +444,38 @@ export function BootstrapPanel({
                 className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
               />
             </label>
+            {/* Kontak Superadmin wajib: akun pertama aplikasi ini adalah satu-
+                satunya akun yang tidak bisa dipulihkan oleh siapa pun kecuali
+                lewat email pada alur Lupa Password. */}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                Email
+                <input
+                  required
+                  type="email"
+                  maxLength={120}
+                  placeholder="superadmin@sppg.id"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  className="min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                Nomor HP
+                <input
+                  required
+                  type="tel"
+                  inputMode="tel"
+                  maxLength={20}
+                  placeholder="08xxxxxxxxxx"
+                  value={noHp}
+                  onChange={(event) => setNoHp(event.target.value)}
+                  autoComplete="tel"
+                  className="min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                />
+              </label>
+            </div>
             <label className="grid gap-1.5 text-xs font-bold text-slate-300">
               Password kuat
               <input

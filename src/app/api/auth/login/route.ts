@@ -9,6 +9,7 @@ import {
 } from "@/lib/auth/web-session";
 import { authenticateWebOperator } from "@/lib/server/auth/authenticate";
 import { createWebSession } from "@/lib/server/auth/session";
+import { evaluateTwoFactorGate } from "@/lib/server/auth/two-factor";
 import {
   ensureServerDatabaseInitialized,
   getServerDatabase,
@@ -27,6 +28,8 @@ export const runtime = "nodejs";
 interface LoginBody {
   username?: unknown;
   password?: unknown;
+  /** Kode 6 digit autentikator, atau kode cadangan. */
+  totpCode?: unknown;
 }
 
 function errorResponse(message: string, status: number) {
@@ -90,6 +93,42 @@ export async function POST(request: NextRequest) {
   if (!operator) {
     return errorResponse("Username atau password tidak sesuai.", 401);
   }
+
+  // Gerbang 2FA dijalankan SETELAH password terbukti benar, supaya layar login
+  // tidak bisa dipakai memetakan akun mana yang memakai verifikasi dua langkah.
+  const gate = await evaluateTwoFactorGate(
+    database,
+    operator.id,
+    typeof body.totpCode === "string" ? body.totpCode : undefined,
+  );
+  if (gate.outcome === "code_required" || gate.outcome === "code_invalid") {
+    const response = errorResponse(
+      gate.outcome === "code_required"
+        ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
+        : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
+      401,
+    );
+    // Penanda ini yang membuat form login menampilkan kolom kode; password
+    // sudah benar, jadi memberitahukannya di sini tidak membocorkan apa pun.
+    return NextResponse.json(
+      {
+        sukses: false,
+        pesan:
+          gate.outcome === "code_required"
+            ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
+            : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
+        requiresTotp: true,
+      },
+      { status: 401, headers: response.headers },
+    );
+  }
+  if (gate.outcome === "enrollment_required") {
+    return errorResponse(
+      "Role akun ini mewajibkan verifikasi dua langkah, tetapi akun Anda belum mendaftarkannya. Hubungi Admin untuk membuka pendaftaran 2FA.",
+      403,
+    );
+  }
+
   await clearLoginFailures(database, clientAddress, username);
 
   const session = await createWebSession(

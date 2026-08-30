@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { InValue, Transaction } from "@libsql/client";
+import { isShiftFleksibel } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface OfflineImportRow {
@@ -305,8 +306,16 @@ async function processRow(
   const shiftMasukMin = parseTimeMin(shiftJamMasuk);
   const shiftPulangMin = parseTimeMin(shiftJamPulang);
 
+  // Shift fleksibel tidak punya rentang jadwal: jam berapa pun sah, sehingga
+  // import manual tidak boleh menolaknya (semua batas bernilai 0).
+  const shiftFleksibel = isShiftFleksibel(
+    shiftJamMasuk,
+    shiftJamPulang,
+    normal,
+  );
+
   // Shift Window Validation for Hadir
-  if (statusAttendance === "Hadir") {
+  if (statusAttendance === "Hadir" && !shiftFleksibel) {
     if (row.jam_masuk) {
       const userMasukMin = parseTimeMin(row.jam_masuk);
       let diff = userMasukMin - shiftMasukMin;
@@ -334,7 +343,9 @@ async function processRow(
   let menitTerlambat = 0;
   let menitDatangAwal = 0;
 
-  if (checkIn) {
+  // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+  // keterlambatan maupun datang awal yang bisa dihitung.
+  if (checkIn && !shiftFleksibel) {
     const checkInTime = checkIn.includes(" ") ? checkIn.split(" ")[1] : checkIn;
     let userMasukMin = parseTimeMin(checkInTime);
     if (isOvernightShift && userMasukMin < shiftMasukMin - 720) {
@@ -402,8 +413,8 @@ async function processRow(
   ] as const) {
     if (!time) continue;
     await transaction.execute({
-      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND COALESCE(id_referensi, '') = ? AND (sumber_data = 'Import Offline' OR sumber_data = 'Import Manual');",
-      args: [date, id, kind, backupId],
+      sql: "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND (COALESCE(id_referensi, '') = ? OR COALESCE(id_referensi, '') = ?) AND (sumber_data = 'Import Offline' OR sumber_data = 'Import Manual');",
+      args: [date, id, kind, backupId, eventKey],
     });
     await transaction.execute({
       sql: `INSERT INTO log_scan (timestamp_scan, tanggal_kerja, jam_scan,
@@ -412,7 +423,8 @@ async function processRow(
         id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil',
         'Import Manual', ?, ?, ?, ?, ?, ?);`,
       args: [
-        time,
+        // Waktu pembuatan baris, bukan jam kerja yang diimpor.
+        now,
         date,
         time.slice(11),
         id,
@@ -425,7 +437,10 @@ async function processRow(
         row.keterangan ?? statusAttendance,
         kind === "Masuk" ? menitTerlambat : 0,
         kind === "Masuk" ? menitDatangAwal : 0,
-        backupId,
+        // Tanpa backup, referensinya adalah event import itu sendiri — sama
+        // seperti jalur Rust. Kalau dikosongkan, penghapusan log tidak bisa
+        // menemukan riwayat import yang harus ikut dibersihkan.
+        backupId || eventKey,
         operator,
       ],
     });

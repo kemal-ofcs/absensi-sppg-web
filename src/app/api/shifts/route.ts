@@ -70,6 +70,7 @@ function parseDraft(value: unknown): ShiftInput {
       Number(draft.izinkan_multi_sesi) === 1
         ? 1
         : 0,
+    shift_lanjutan_id: Math.max(0, Number(draft.shift_lanjutan_id ?? 0) || 0),
   };
   const message = firstValidationMessage(validateShiftDraft(parsed));
   if (message) throw new ApiRequestError(message, 400);

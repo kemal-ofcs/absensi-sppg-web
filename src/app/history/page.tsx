@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
+import { Icon } from "@/components/ui/Icon";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -11,7 +13,6 @@ import {
   editAbsensiHarian,
   getRekapHarian,
   getRiwayatScan,
-  hapusAbsensiHarian,
   hapusLogScan,
 } from "@/lib/gateways/report";
 import { syncNow } from "@/lib/gateways/sync-status";
@@ -179,10 +180,7 @@ export default function HistoryPage() {
     setActionBusy(true);
     setError(null);
     try {
-      const result =
-        deleteData.type === "scan"
-          ? await hapusLogScan(deleteData.id)
-          : await hapusAbsensiHarian(String(deleteData.id));
+      const result = await hapusLogScan(deleteData.id);
 
       if (result.sukses) {
         setSuccessMsg(result.pesan);
@@ -584,40 +582,33 @@ export default function HistoryPage() {
 
   return (
     <AppShell contentClassName="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
-      {/* Top Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
-        <div>
-          <span className="text-xs uppercase tracking-widest text-sky-400 font-semibold font-mono">
-            Audited Database Records
-          </span>
-          <h1 className="text-xl sm:text-2xl font-bold text-white mt-1">
-            📜 Riwayat Log Scan & Absensi Harian
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Tinjau seluruh rekaman log scan terminal dan mutasi absensi harian
-            tersimpan dengan parameter lengkap.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleExportCSV}
-            disabled={loading || exporting || filteredRows.length === 0}
-            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-sky-300 font-mono font-bold text-xs rounded-xl transition border border-slate-700 shadow-md flex items-center gap-2 disabled:opacity-50"
-          >
-            <span>📥</span> Ekspor CSV
-          </button>
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            disabled={loading || exporting || filteredRows.length === 0}
-            className="px-4 py-2.5 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 font-mono font-bold text-xs rounded-xl transition border border-emerald-700/60 shadow-md flex items-center gap-2 disabled:opacity-50"
-          >
-            <span>📊</span> Ekspor Excel (.xlsx)
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Audited Database Records"
+        title="Riwayat Log Scan & Absensi Harian"
+        description="Tinjau seluruh rekaman log scan terminal dan mutasi absensi harian tersimpan dengan parameter lengkap."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              disabled={loading || exporting || filteredRows.length === 0}
+              className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-sky-300 shadow-md transition hover:bg-slate-700 disabled:opacity-50"
+            >
+              <Icon name="download" className="size-3.5" />
+              <span>Ekspor CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              disabled={loading || exporting || filteredRows.length === 0}
+              className="flex items-center gap-2 rounded-xl border border-emerald-700/60 bg-emerald-950/80 px-4 py-2.5 text-xs font-bold text-emerald-300 shadow-md transition hover:bg-emerald-900 disabled:opacity-50"
+            >
+              <Icon name="document" className="size-3.5" />
+              <span>Ekspor Excel (.xlsx)</span>
+            </button>
+          </div>
+        }
+      />
 
       {successMsg ? (
         <FeedbackBanner tone="success" onDismiss={() => setSuccessMsg(null)}>
@@ -1324,24 +1315,6 @@ export default function HistoryPage() {
                                 >
                                   <span>✏️</span>
                                   <span>Edit</span>
-                                </button>
-                              ) : null}
-                              {hasPermission(user, "history.delete") ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setDeleteData({
-                                      type: "daily",
-                                      id: String(row.id_sesi || ""),
-                                      title: `Hapus Absensi: ${row.nama}`,
-                                      subtitle: `Tanggal: ${formatDisplayDate(row.tanggal)} | Sesi: ${row.id_sesi}`,
-                                    })
-                                  }
-                                  className="px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1"
-                                  title="Hapus data absensi harian ini"
-                                >
-                                  <span>🗑️</span>
-                                  <span>Hapus</span>
                                 </button>
                               ) : null}
                             </div>

@@ -397,6 +397,12 @@ pub struct BootstrapSuperadminDraft {
     pub kode_operator: String,
     pub nama_operator: String,
     pub username: String,
+    /// Kontak Superadmin. Wajib sejak schema versi 11: tanpa email, akun
+    /// pertama aplikasi tidak punya jalur pemulihan password sama sekali.
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub no_hp: String,
     pub password: String,
 }
 
@@ -529,6 +535,21 @@ static SCHEMA_VERIFIED: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync:
 
 fn schema_verified_cache() -> &'static Mutex<HashSet<String>> {
     SCHEMA_VERIFIED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Apakah pesan error menandakan skema cloud tertinggal dari kode ini.
+///
+/// `ensure_schema_current` hanya melihat satu baris sentinel `schema_migration`,
+/// jadi database cloud yang sudah punya sentinel lama dianggap mutakhir dan
+/// seluruh `ensure_column` dilewati. Kalau seseorang lupa menaikkan sentinel
+/// setelah menambah kolom, setiap push berubah jadi "konflik" permanen yang
+/// tidak bisa diselesaikan operator dari UI. Deteksi ini membuat push
+/// menyembuhkan dirinya sekali, alih-alih menyalahkan datanya.
+fn is_recoverable_schema_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("has no column named")
+        || lower.contains("no such column")
+        || lower.contains("no such table")
 }
 
 /// Satu tabel operasional cloud yang ikut ditarik ke SQLite lokal.
@@ -1077,10 +1098,71 @@ impl TursoClient {
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL DEFAULT 'Operator' CHECK(role IN ('Admin', 'Operator', 'Scanner')),
                     role_id INTEGER REFERENCES app_role(id),
+                    email TEXT,
+                    no_hp TEXT,
+                    totp_secret TEXT,
+                    totp_enabled INTEGER NOT NULL DEFAULT 0,
+                    totp_confirmed_at TEXT,
+                    totp_recovery_codes TEXT,
                     status TEXT DEFAULT 'Aktif',
                     created_at TEXT,
                     updated_at TEXT
                 );"#,
+                vec![],
+            ),
+            // Tabel milik Web (definisi asli di db-migrations.ts). Rust ikut
+            // membuatnya supaya database yang lahir dari Desktop/Mobile tetap
+            // bisa dipakai aplikasi Web, dan sebaliknya. Cloud-only: tidak
+            // pernah masuk SNAPSHOT_TABLES karena berisi bukti foto dan hash
+            // token reset yang tidak boleh direplikasi ke setiap perangkat.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS password_reset_request (
+                    id TEXT PRIMARY KEY,
+                    operator_id INTEGER NOT NULL,
+                    identifier_used TEXT NOT NULL,
+                    contact_channel TEXT NOT NULL DEFAULT 'email',
+                    contact_target TEXT NOT NULL,
+                    challenge_hash TEXT NOT NULL,
+                    challenge_sequence TEXT NOT NULL,
+                    token_hash TEXT,
+                    status TEXT NOT NULL DEFAULT 'Menunggu Verifikasi'
+                        CHECK(status IN (
+                            'Menunggu Verifikasi', 'Terkirim', 'Terpakai', 'Kedaluwarsa', 'Dibatalkan'
+                        )),
+                    liveness_score REAL,
+                    liveness_report TEXT,
+                    photo_mime TEXT,
+                    photo_base64 TEXT,
+                    delivery_status TEXT,
+                    delivery_error TEXT,
+                    requested_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    sent_at TEXT,
+                    used_at TEXT,
+                    expires_at TEXT NOT NULL,
+                    request_ip_hash TEXT,
+                    user_agent_hash TEXT,
+                    FOREIGN KEY (operator_id) REFERENCES master_operator(id) ON DELETE CASCADE
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS app_mail_config (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL DEFAULT 'resend'
+                        CHECK(provider IN ('resend', 'brevo')),
+                    api_key TEXT,
+                    sender_email TEXT,
+                    sender_name TEXT,
+                    reset_base_url TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0, 1)),
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "INSERT OR IGNORE INTO app_mail_config (id, provider, is_active, updated_at, updated_by) VALUES ('default', 'resend', 0, datetime('now'), 'rust-bootstrap');",
                 vec![],
             ),
             Statement::new(
@@ -1138,7 +1220,8 @@ impl TursoClient {
                     offset_istirahat_mulai INTEGER DEFAULT 240,
                     offset_generate_alfa INTEGER DEFAULT 180,
                     buffer_shift_malam_menit INTEGER DEFAULT 120,
-                    izinkan_multi_sesi INTEGER DEFAULT 0
+                    izinkan_multi_sesi INTEGER DEFAULT 0,
+                    shift_lanjutan_id INTEGER DEFAULT 0
                 );"#,
                 vec![],
             ),
@@ -1439,6 +1522,9 @@ impl TursoClient {
             Statement::new("CREATE INDEX IF NOT EXISTS idx_log_scan_tanggal ON log_scan(tanggal_kerja);", vec![]),
             Statement::new("CREATE INDEX IF NOT EXISTS idx_absensi_tanggal ON absensi_harian(tanggal);", vec![]),
             Statement::new("CREATE INDEX IF NOT EXISTS idx_operator_username ON master_operator(username);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_operator ON password_reset_request(operator_id, status, requested_at DESC);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_request(token_hash);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_challenge ON password_reset_request(challenge_hash);", vec![]),
             // Seed Roles
             Statement::new(
                 r#"INSERT OR IGNORE INTO app_role (id, role_key, nama_role, deskripsi, is_system, is_superadmin, status, created_at, updated_at) VALUES
@@ -1474,7 +1560,7 @@ impl TursoClient {
                 ('operators.view', 'Lihat Daftar Operator', 'Operator', 'Melihat data operator dan akun pengguna.', 1, 210),
                 ('operators.manage', 'Kelola Operator', 'Operator', 'Menambah dan mengubah data operator aplikasi.', 1, 220),
                 ('roles.manage', 'Kelola Hak Akses & Role', 'Role', 'Mengatur permission matriks untuk setiap role.', 1, 230),
-                ('settings.manage', 'Kelola Pengaturan Sistem', 'Pengaturan', 'Mengubah radius geofence, multi-scan, dan sistem.', 1, 240),
+                ('settings.manage', 'Kelola Pengaturan Sistem & Auto Alfa', 'Pengaturan', 'Mengubah radius geofence, multi-scan, sistem, dan status Auto Generate Alfa.', 1, 240),
                 ('branding.manage', 'Kelola Profil & Template ID Card', 'Branding', 'Mengubah logo instansi dan desain kartu.', 1, 250),
                 ('sync.view', 'Lihat Status Sinkronisasi', 'Sinkronisasi', 'Melihat indikator dan status antrean sync cloud.', 1, 260),
                 ('sync.retry', 'Kirim Ulang & Atasi Konflik', 'Sinkronisasi', 'Memicu sinkronisasi manual dan resolusi konflik.', 1, 270),
@@ -1663,7 +1749,9 @@ impl TursoClient {
             // Seed Schema Migration
             Statement::new(
                 r#"INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES
-                (10, 'payroll-engine-v1', datetime('now'));"#,
+                (10, 'payroll-engine-v1', datetime('now')),
+                (11, 'operator-contact-and-password-reset', datetime('now')),
+                (12, 'two-factor-totp', datetime('now'));"#,
                 vec![],
             ),
         ];
@@ -1727,7 +1815,18 @@ impl TursoClient {
             ("master_operator", "status", "ALTER TABLE master_operator ADD COLUMN status TEXT DEFAULT 'Aktif';"),
             ("master_operator", "created_at", "ALTER TABLE master_operator ADD COLUMN created_at TEXT;"),
             ("master_operator", "updated_at", "ALTER TABLE master_operator ADD COLUMN updated_at TEXT;"),
+            // Kontak operator. NULL-able supaya baris operator lama tidak rusak;
+            // kewajiban mengisinya ditegakkan di lapisan validasi aplikasi.
+            ("master_operator", "email", "ALTER TABLE master_operator ADD COLUMN email TEXT;"),
+            ("master_operator", "no_hp", "ALTER TABLE master_operator ADD COLUMN no_hp TEXT;"),
+            // Verifikasi dua langkah (schema versi 12).
+            ("master_operator", "totp_secret", "ALTER TABLE master_operator ADD COLUMN totp_secret TEXT;"),
+            ("master_operator", "totp_enabled", "ALTER TABLE master_operator ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;"),
+            ("master_operator", "totp_confirmed_at", "ALTER TABLE master_operator ADD COLUMN totp_confirmed_at TEXT;"),
+            ("master_operator", "totp_recovery_codes", "ALTER TABLE master_operator ADD COLUMN totp_recovery_codes TEXT;"),
+            ("app_role", "require_totp", "ALTER TABLE app_role ADD COLUMN require_totp INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "izinkan_multi_sesi", "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER NOT NULL DEFAULT 0;"),
+            ("tbl_shift", "shift_lanjutan_id", "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER NOT NULL DEFAULT 0;"),
             ("import_offline", "timestamp_input", "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;"),
             ("import_offline", "id_unik", "ALTER TABLE import_offline ADD COLUMN id_unik TEXT;"),
             ("import_offline", "status_absen", "ALTER TABLE import_offline ADD COLUMN status_absen TEXT;"),
@@ -1751,6 +1850,18 @@ impl TursoClient {
         ] {
             self.ensure_column(table, column, sql).await?;
         }
+
+        // Indeks ini WAJIB dibuat setelah loop di atas, bukan di dalam pipeline
+        // DDL. Pada database cloud yang sudah ada, `master_operator` lahir tanpa
+        // kolom `email`, sehingga CREATE INDEX di pipeline gagal dengan
+        // "no such column: email" — dan karena satu statement gagal membatalkan
+        // seluruh pipeline, `ensure_column` yang justru menambahkan kolom itu
+        // tidak pernah sempat berjalan. Database lama akan terkunci selamanya.
+        self.query_one(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_master_operator_email ON master_operator(LOWER(email)) WHERE email IS NOT NULL AND TRIM(email) <> '';",
+            vec![],
+        )
+        .await?;
 
         // If template in Turso Cloud has empty '[]', upgrade it with default elements
         let default_elements_str =
@@ -1809,7 +1920,17 @@ impl TursoClient {
         self.purge_legacy_rate_rows().await?;
         self.repair_web_owned_tables().await?;
         self.query_one(
-            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2006, 'sync-pulse-rate-seed-and-cloud-schema-unification-v1', datetime('now'));",
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2007, 'tbl-shift-continuation-column-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2008, 'operator-contact-and-password-reset-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2009, 'two-factor-totp-v1', datetime('now'));",
             vec![],
         )
         .await?;
@@ -1996,6 +2117,19 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Menjalankan ulang `ensure_schema` tanpa mempedulikan sentinel maupun
+    /// cache proses. Dipakai saat push gagal karena kolom/tabel belum ada.
+    async fn heal_schema(&self) -> Result<(), CommandError> {
+        if let Ok(mut verified) = schema_verified_cache().lock() {
+            verified.remove(self.base_url.as_str());
+        }
+        self.ensure_schema().await?;
+        if let Ok(mut verified) = schema_verified_cache().lock() {
+            verified.insert(self.base_url.as_str().to_owned());
+        }
+        Ok(())
+    }
+
     async fn ensure_schema_current(&self) -> Result<(), CommandError> {
         let cache_key = self.base_url.as_str().to_owned();
         if schema_verified_cache()
@@ -2007,7 +2141,11 @@ impl TursoClient {
         }
         let current = self
             .query_one(
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2006;",
+                // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
+                // tabel atau kolom. Tanpa itu database cloud yang sudah ada
+                // dianggap mutakhir dan seluruh ensure_column dilewati, sehingga
+                // push gagal dengan "has no column named ...".
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2009;",
                 vec![],
             )
             .await
@@ -2217,13 +2355,15 @@ impl TursoClient {
             ),
             Statement::new(
                 r#"INSERT INTO master_operator (
-                    kode_operator, nama_operator, username, password_hash,
+                    kode_operator, nama_operator, username, email, no_hp, password_hash,
                     role, role_id, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'Admin', ?, 'Aktif', datetime('now'), datetime('now'));"#,
+                ) VALUES (?, ?, ?, ?, ?, ?, 'Admin', ?, 'Aktif', datetime('now'), datetime('now'));"#,
                 vec![
                     json!(draft.kode_operator.trim().to_ascii_uppercase()),
                     json!(draft.nama_operator.trim()),
                     json!(draft.username.trim()),
+                    json!(normalize_operator_email(&draft.email)),
+                    json!(normalize_operator_phone(&draft.no_hp)),
                     json!(password_hash),
                     json!(superadmin_role_id),
                 ],
@@ -2248,10 +2388,219 @@ impl TursoClient {
         Ok(())
     }
 
+    /// Waktu dari jam DATABASE, bukan jam perangkat.
+    ///
+    /// Kode TOTP yang sah harus diterima sama di Web maupun Desktop. Kalau
+    /// masing-masing memakai jamnya sendiri, satu kode bisa lolos di satu
+    /// platform dan ditolak di platform lain — dan jam ponsel murah memang
+    /// sering meleset. Prinsip yang sama dipakai `time_policy.rs`.
+    async fn database_unix_seconds(&self) -> Result<i64, CommandError> {
+        self.query_one(
+            "SELECT CAST(strftime('%s','now') AS INTEGER) AS now;",
+            vec![],
+        )
+        .await?
+        .to_objects()
+        .into_iter()
+        .next()
+        .and_then(|row| row.get("now").and_then(Value::as_i64))
+        .ok_or_else(|| CommandError::new("TURSO_QUERY_FAILED", "Jam database tidak dapat dibaca."))
+    }
+
+    /// Status 2FA satu operator.
+    pub async fn get_two_factor_status(&self, operator_id: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.read_operator_totp(operator_id).await?;
+        Ok(json!({
+            "status": {
+                "enabled": row.enabled,
+                "confirmedAt": row.confirmed_at,
+                "recoveryRemaining": row.recovery_codes.len(),
+                "requiredByRole": row.require_totp,
+            }
+        }))
+    }
+
+    async fn read_operator_totp(&self, operator_id: i64) -> Result<OperatorTotp, CommandError> {
+        let row = self
+            .query_one(
+                r#"SELECT COALESCE(m.totp_secret, '') AS totp_secret,
+                          COALESCE(m.totp_enabled, 0) AS totp_enabled,
+                          COALESCE(m.totp_confirmed_at, '') AS totp_confirmed_at,
+                          COALESCE(m.totp_recovery_codes, '[]') AS totp_recovery_codes,
+                          m.username,
+                          COALESCE(r.require_totp, 0) AS require_totp
+                   FROM master_operator m
+                   LEFT JOIN app_role r ON r.id = m.role_id
+                   WHERE m.id = ? LIMIT 1;"#,
+                vec![json!(operator_id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError::new("VALIDATION_ERROR", "Operator tidak ditemukan."))?;
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let recovery_codes: Vec<String> =
+            serde_json::from_str(&text("totp_recovery_codes")).unwrap_or_default();
+        Ok(OperatorTotp {
+            secret: text("totp_secret"),
+            enabled: row.get("totp_enabled").and_then(Value::as_i64) == Some(1),
+            confirmed_at: text("totp_confirmed_at"),
+            recovery_codes,
+            username: text("username"),
+            require_totp: row.get("require_totp").and_then(Value::as_i64) == Some(1),
+        })
+    }
+
+    /// Menerbitkan rahasia baru dalam keadaan BELUM aktif.
+    pub async fn begin_two_factor_setup(&self, operator_id: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.read_operator_totp(operator_id).await?;
+        if row.enabled {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Verifikasi dua langkah sudah aktif. Nonaktifkan dulu sebelum mendaftarkan perangkat baru.",
+            ));
+        }
+        let secret = generate_totp_secret();
+        self.query_one(
+            "UPDATE master_operator SET totp_secret = ?, totp_enabled = 0, totp_confirmed_at = NULL, totp_recovery_codes = NULL WHERE id = ?;",
+            vec![json!(secret), json!(operator_id)],
+        )
+        .await?;
+        let label = format!("Absensi SPPG:{}", row.username);
+        Ok(json!({
+            "setup": {
+                "secret": secret,
+                "otpauthUri": format!(
+                    "otpauth://totp/{}?secret={}&issuer=Absensi%20SPPG&algorithm=SHA1&digits=6&period=30",
+                    urlencoding_minimal(&label),
+                    secret
+                ),
+            }
+        }))
+    }
+
+    /// Mengaktifkan 2FA setelah kode pertama terbukti cocok.
+    pub async fn confirm_two_factor_setup(
+        &self,
+        operator_id: i64,
+        code: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.read_operator_totp(operator_id).await?;
+        if row.enabled {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Verifikasi dua langkah sudah aktif.",
+            ));
+        }
+        if row.secret.is_empty() {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Pendaftaran belum dimulai. Buka kembali layar pengaturan 2FA.",
+            ));
+        }
+        let now = self.database_unix_seconds().await?;
+        if !verify_totp(&row.secret, code, now, TOTP_WINDOW_ONLINE) {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Kode tidak cocok. Pastikan jam ponsel Anda otomatis dan kodenya belum berganti.",
+            ));
+        }
+        let recovery_codes = generate_recovery_codes(8);
+        let hashed: Vec<String> = recovery_codes
+            .iter()
+            .map(|code| sha256_hex(&normalize_recovery_code(code)))
+            .collect();
+        self.query_one(
+            "UPDATE master_operator SET totp_enabled = 1, totp_confirmed_at = datetime('now'), totp_recovery_codes = ? WHERE id = ?;",
+            vec![
+                json!(serde_json::to_string(&hashed).unwrap_or_else(|_| "[]".to_string())),
+                json!(operator_id),
+            ],
+        )
+        .await?;
+        Ok(json!({ "recoveryCodes": recovery_codes }))
+    }
+
+    /// Mematikan 2FA. `require_proof` benar ketika operator mematikan miliknya
+    /// sendiri; Admin yang menolong operator kehilangan ponsel memakai `false`.
+    pub async fn disable_two_factor(
+        &self,
+        operator_id: i64,
+        require_proof: bool,
+        code: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.read_operator_totp(operator_id).await?;
+        if !row.enabled {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Verifikasi dua langkah memang belum aktif.",
+            ));
+        }
+        if require_proof && !self.consume_totp_or_recovery(operator_id, &row, code).await? {
+            return Err(CommandError::new(
+                "FORBIDDEN",
+                "Kode verifikasi tidak cocok.",
+            ));
+        }
+        self.query_one(
+            "UPDATE master_operator SET totp_secret = NULL, totp_enabled = 0, totp_confirmed_at = NULL, totp_recovery_codes = NULL WHERE id = ?;",
+            vec![json!(operator_id)],
+        )
+        .await?;
+        Ok(json!({ "sukses": true }))
+    }
+
+    /// Memeriksa kode TOTP atau kode cadangan; kode cadangan yang cocok
+    /// langsung dihapus pada percobaan yang berhasil itu juga.
+    async fn consume_totp_or_recovery(
+        &self,
+        operator_id: i64,
+        row: &OperatorTotp,
+        code: &str,
+    ) -> Result<bool, CommandError> {
+        let now = self.database_unix_seconds().await?;
+        if verify_totp(&row.secret, code, now, TOTP_WINDOW_ONLINE) {
+            return Ok(true);
+        }
+        let normalized = normalize_recovery_code(code);
+        if normalized.len() < 6 {
+            return Ok(false);
+        }
+        let hashed = sha256_hex(&normalized);
+        if !row.recovery_codes.iter().any(|item| *item == hashed) {
+            return Ok(false);
+        }
+        let remaining: Vec<&String> = row
+            .recovery_codes
+            .iter()
+            .filter(|item| **item != hashed)
+            .collect();
+        self.query_one(
+            "UPDATE master_operator SET totp_recovery_codes = ? WHERE id = ?;",
+            vec![
+                json!(serde_json::to_string(&remaining).unwrap_or_else(|_| "[]".to_string())),
+                json!(operator_id),
+            ],
+        )
+        .await?;
+        Ok(true)
+    }
+
     pub async fn authenticate_operator(
         &self,
         identifier: &str,
         password: &str,
+        totp_code: Option<&str>,
     ) -> Result<OperatorUser, CommandError> {
         self.ensure_schema_current().await?;
         let id_clean = identifier.trim();
@@ -2299,6 +2648,32 @@ impl TursoClient {
             )
             .await?;
         }
+        // Gerbang 2FA dijalankan SETELAH password terbukti benar. Urutan itu
+        // penting: memberi tahu bahwa sebuah akun memakai 2FA sebelum
+        // passwordnya benar akan mengubah layar login menjadi alat pemetaan
+        // akun mana yang bernilai diserang.
+        let totp = self.read_operator_totp(op_id).await?;
+        if totp.enabled {
+            let code = totp_code.unwrap_or("").trim();
+            if code.is_empty() {
+                return Err(CommandError::new(
+                    "TOTP_REQUIRED",
+                    "Masukkan kode 6 digit dari aplikasi autentikator Anda.",
+                ));
+            }
+            if !self.consume_totp_or_recovery(op_id, &totp, code).await? {
+                return Err(CommandError::new(
+                    "TOTP_INVALID",
+                    "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
+                ));
+            }
+        } else if totp.require_totp {
+            return Err(CommandError::new(
+                "TOTP_ENROLLMENT_REQUIRED",
+                "Role akun ini mewajibkan verifikasi dua langkah, tetapi akun Anda belum mendaftarkannya. Hubungi Admin untuk membuka pendaftaran 2FA.",
+            ));
+        }
+
         self.hydrate_operator(row, op_id).await
     }
 
@@ -2628,7 +3003,7 @@ impl TursoClient {
             let result = self
                 .query_one(
                     format!(
-                        "SELECT id_sesi, sumber, update_terakhir FROM absensi_harian WHERE id_sesi IN ({placeholders});"
+                        "SELECT id_sesi, sumber, update_terakhir, COALESCE(jam_masuk, '') AS jam_masuk, COALESCE(jam_pulang, '') AS jam_pulang, COALESCE(status_kehadiran, '') AS status_kehadiran FROM absensi_harian WHERE id_sesi IN ({placeholders});"
                     ),
                     guarded_sessions.iter().map(|id| json!(id)).collect(),
                 )
@@ -2647,6 +3022,21 @@ impl TursoClient {
                             .to_owned(),
                         update_terakhir: row
                             .get("update_terakhir")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        jam_masuk: row
+                            .get("jam_masuk")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        jam_pulang: row
+                            .get("jam_pulang")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        status_kehadiran: row
+                            .get("status_kehadiran")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_owned(),
@@ -2893,7 +3283,23 @@ impl TursoClient {
                 ],
             ));
 
-            if let Err(error) = self.execute_atomic(transaction_statements).await {
+            // Statement disalin dulu supaya batch yang sama bisa diulang setelah
+            // skema disembuhkan; `execute_atomic` mengonsumsi vektornya.
+            let retry_statements = transaction_statements.clone();
+            let mut atomic_result = self.execute_atomic(transaction_statements).await;
+            if let Err(error) = &atomic_result {
+                if is_recoverable_schema_error(&error.message) {
+                    match self.heal_schema().await {
+                        Ok(()) => {
+                            atomic_result = self.execute_atomic(retry_statements).await;
+                        }
+                        Err(heal_error) => {
+                            atomic_result = Err(heal_error);
+                        }
+                    }
+                }
+            }
+            if let Err(error) = atomic_result {
                 let current_revision = if let Some(base_revision) = base_revision {
                     self.query_one(
                         "SELECT COALESCE(MAX(id), 0) AS revision FROM sync_changelog WHERE domain = ? AND entity_key = ?;",
@@ -2962,6 +3368,9 @@ impl TursoClient {
         let sql = r#"
             SELECT
                 m.id, m.kode_operator, m.nama_operator, m.username,
+                COALESCE(m.email, '') AS email,
+                COALESCE(m.no_hp, '') AS no_hp,
+                COALESCE(m.totp_enabled, 0) AS totp_enabled,
                 COALESCE(m.role_id, 2) AS role_id,
                 COALESCE(m.status, 'Aktif') AS status,
                 COALESCE(r.nama_role, 'Admin') AS nama_role,
@@ -3004,6 +3413,12 @@ impl TursoClient {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("Aktif");
+        let email = normalize_operator_email(
+            draft.get("email").and_then(Value::as_str).unwrap_or(""),
+        );
+        let no_hp = normalize_operator_phone(
+            draft.get("no_hp").and_then(Value::as_str).unwrap_or(""),
+        );
 
         if kode_operator.is_empty()
             || nama_operator.is_empty()
@@ -3015,6 +3430,7 @@ impl TursoClient {
                 "Data operator tidak lengkap.",
             ));
         }
+        validate_operator_contact(&email, &no_hp)?;
 
         let password_hash = hash_password_pbkdf2(password);
 
@@ -3024,11 +3440,11 @@ impl TursoClient {
         // diturunkan dari `app_role` agar tetap konsisten dengan RBAC.
         let sql = r#"
             INSERT INTO master_operator (
-                kode_operator, nama_operator, username, password_hash,
+                kode_operator, nama_operator, username, email, no_hp, password_hash,
                 role, role_id, status, created_at, updated_at
             )
             VALUES (
-                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
                 COALESCE((
                     SELECT CASE
                         WHEN r.is_superadmin = 1 THEN 'Admin'
@@ -3048,6 +3464,8 @@ impl TursoClient {
                     json!(kode_operator),
                     json!(nama_operator),
                     json!(username),
+                    json!(email),
+                    json!(no_hp),
                     json!(password_hash),
                     json!(role_id),
                     json!(role_id),
@@ -3064,6 +3482,8 @@ impl TursoClient {
                 "kode_operator": kode_operator,
                 "nama_operator": nama_operator,
                 "username": username,
+                "email": email,
+                "no_hp": no_hp,
                 "role_id": role_id,
                 "status": status
             }
@@ -3123,6 +3543,52 @@ impl TursoClient {
             updates.push("status = ?");
             args.push(json!(status));
         }
+        // Kontak hanya divalidasi ketika formulir benar-benar mengirimkannya,
+        // supaya pemanggil yang hanya mengubah status/role tidak dipaksa
+        // mengirim ulang seluruh data akun.
+        let next_email = draft
+            .get("email")
+            .and_then(Value::as_str)
+            .map(normalize_operator_email);
+        let next_phone = draft
+            .get("no_hp")
+            .and_then(Value::as_str)
+            .map(normalize_operator_phone);
+        if next_email.is_some() || next_phone.is_some() {
+            let stored = self
+                .query_one(
+                    "SELECT COALESCE(email, '') AS email, COALESCE(no_hp, '') AS no_hp FROM master_operator WHERE id = ? LIMIT 1;",
+                    vec![json!(id)],
+                )
+                .await?
+                .to_objects()
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let email = next_email.clone().unwrap_or_else(|| {
+                stored
+                    .get("email")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            });
+            let phone = next_phone.clone().unwrap_or_else(|| {
+                stored
+                    .get("no_hp")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            });
+            validate_operator_contact(&email, &phone)?;
+            if let Some(email) = next_email {
+                updates.push("email = ?");
+                args.push(json!(email));
+            }
+            if let Some(phone) = next_phone {
+                updates.push("no_hp = ?");
+                args.push(json!(phone));
+            }
+        }
         if let Some(password) = draft.get("password").and_then(Value::as_str) {
             if !password.trim().is_empty() {
                 updates.push("password_hash = ?");
@@ -3150,23 +3616,163 @@ impl TursoClient {
         self.query_one(&sql, args).await?;
         Ok(json!({ "sukses": true }))
     }
+}
 
-    pub async fn delete_operator(&self, id: i64) -> Result<Value, CommandError> {
-        let check_sql = "SELECT is_superadmin FROM app_role r JOIN master_operator m ON m.role_id = r.id WHERE m.id = ?;";
-        let check = self.query_one(check_sql, vec![json!(id)]).await?;
-        if let Some(row) = check.to_objects().first() {
-            if row
-                .get("is_superadmin")
-                .and_then(|v| v.as_i64())
+/// Fakta yang menentukan boleh-tidaknya sebuah operator dihapus.
+///
+/// Dikumpulkan lewat query, lalu diputuskan oleh `assert_operator_deletable`
+/// yang murni. Pemisahan ini bukan gaya-gayaan: aturannya harus sama persis
+/// dengan `removeOperator` di `src/lib/operators/operator-admin.ts`, dan
+/// satu-satunya cara membuktikannya tanpa database hidup adalah menguji
+/// keputusannya sebagai fungsi biasa.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OperatorDeleteFacts {
+    pub actor_id: i64,
+    pub target_id: i64,
+    pub target_exists: bool,
+    pub target_is_superadmin: bool,
+    pub target_is_active: bool,
+    pub active_superadmin_count: i64,
+    /// Jumlah baris log scan, koreksi admin, penugasan backup, dan audit role
+    /// yang menunjuk kode operator ini.
+    pub transaction_references: i64,
+    /// Jumlah pengajuan "Lupa Password" milik operator ini.
+    pub reset_history: i64,
+}
+
+/// Urutan pemeriksaan sengaja mengikuti jalur Web supaya pesan yang muncul
+/// untuk satu keadaan selalu sama di Web, Desktop, dan Mobile.
+pub fn assert_operator_deletable(facts: &OperatorDeleteFacts) -> Result<(), CommandError> {
+    if facts.actor_id != 0 && facts.actor_id == facts.target_id {
+        return Err(CommandError::new(
+            "FORBIDDEN",
+            "Akun yang sedang digunakan tidak dapat dihapus.",
+        ));
+    }
+    if !facts.target_exists {
+        return Err(CommandError::new(
+            "VALIDATION_ERROR",
+            "Operator tidak ditemukan.",
+        ));
+    }
+    // Yang dilarang adalah menghabiskan Superadmin aktif TERAKHIR, bukan
+    // menghapus Superadmin mana pun. Superadmin kedua yang terlanjur dibuat
+    // tetap harus bisa dirapikan.
+    if facts.target_is_superadmin && facts.target_is_active && facts.active_superadmin_count <= 1 {
+        return Err(CommandError::new(
+            "FORBIDDEN",
+            "Superadmin aktif terakhir tidak dapat dihapus.",
+        ));
+    }
+    if facts.transaction_references > 0 {
+        return Err(CommandError::new(
+            "FORBIDDEN",
+            "Operator memiliki histori transaksi. Nonaktifkan akun agar audit tetap utuh.",
+        ));
+    }
+    // `password_reset_request` ber-CASCADE ke `master_operator`, jadi DELETE di
+    // sini ikut memusnahkan riwayat pengajuan reset beserta foto wajah
+    // pemohonnya — bukti audit yang justru paling perlu bertahan.
+    if facts.reset_history > 0 {
+        return Err(CommandError::new(
+            "FORBIDDEN",
+            "Operator memiliki riwayat pengajuan reset password beserta foto verifikasinya. Hapus riwayat itu lebih dulu di halaman Riwayat Reset Password, atau nonaktifkan akun agar bukti audit tetap utuh.",
+        ));
+    }
+    Ok(())
+}
+
+impl TursoClient {
+    /// Mengumpulkan fakta penghapusan operator dari database.
+    async fn operator_delete_facts(
+        &self,
+        actor_id: i64,
+        id: i64,
+    ) -> Result<OperatorDeleteFacts, CommandError> {
+        let mut facts = OperatorDeleteFacts {
+            actor_id,
+            target_id: id,
+            ..Default::default()
+        };
+
+        let target = self
+            .query_one(
+                r#"SELECT m.kode_operator, COALESCE(m.status, 'Aktif') AS status,
+                          COALESCE(r.is_superadmin, 0) AS is_superadmin
+                   FROM master_operator m
+                   JOIN app_role r ON r.id = m.role_id
+                   WHERE m.id = ? LIMIT 1;"#,
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next();
+        let Some(target) = target else {
+            return Ok(facts);
+        };
+        facts.target_exists = true;
+        facts.target_is_superadmin =
+            target.get("is_superadmin").and_then(Value::as_i64) == Some(1);
+        facts.target_is_active = target.get("status").and_then(Value::as_str) == Some("Aktif");
+        let kode = target
+            .get("kode_operator")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        let count_of = |result: QueryResult| {
+            result
+                .to_objects()
+                .into_iter()
+                .next()
+                .and_then(|row| row.get("total").and_then(Value::as_i64))
                 .unwrap_or(0)
-                == 1
-            {
-                return Err(CommandError::new(
-                    "FORBIDDEN",
-                    "Akun Superadmin utama tidak dapat dihapus.",
-                ));
-            }
-        }
+        };
+
+        facts.active_superadmin_count = count_of(
+            self.query_one(
+                r#"SELECT COUNT(*) AS total
+                   FROM master_operator m JOIN app_role r ON r.id = m.role_id
+                   WHERE m.status = 'Aktif' AND r.is_superadmin = 1;"#,
+                vec![],
+            )
+            .await?,
+        );
+
+        facts.transaction_references = count_of(
+            self.query_one(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM log_scan WHERE kode_operator = ?)
+                   + (SELECT COUNT(*) FROM koreksi_admin WHERE kode_operator = ?)
+                   + (SELECT COUNT(*) FROM backup_karyawan WHERE kode_operator = ? OR operator_pembatalan = ?)
+                   + (SELECT COUNT(*) FROM role_permission_audit WHERE changed_by = ?) AS total;"#,
+                vec![
+                    json!(kode),
+                    json!(kode),
+                    json!(kode),
+                    json!(kode),
+                    json!(kode),
+                ],
+            )
+            .await?,
+        );
+
+        facts.reset_history = count_of(
+            self.query_one(
+                "SELECT COUNT(*) AS total FROM password_reset_request WHERE operator_id = ?;",
+                vec![json!(id)],
+            )
+            .await?,
+        );
+
+        Ok(facts)
+    }
+
+    pub async fn delete_operator(&self, actor_id: i64, id: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let facts = self.operator_delete_facts(actor_id, id).await?;
+        assert_operator_deletable(&facts)?;
 
         self.query_one("DELETE FROM master_operator WHERE id = ?;", vec![json!(id)])
             .await?;
@@ -3175,7 +3781,7 @@ impl TursoClient {
 
     pub async fn get_roles(&self) -> Result<Value, CommandError> {
         self.ensure_schema_current().await?;
-        let roles_sql = "SELECT id, role_key, nama_role, deskripsi, is_superadmin, status FROM app_role ORDER BY id ASC;";
+        let roles_sql = "SELECT id, role_key, nama_role, deskripsi, is_superadmin, status, COALESCE(require_totp, 0) AS require_totp FROM app_role ORDER BY id ASC;";
         let perms_sql = "SELECT role_id, permission_key, is_allowed FROM role_permission;";
 
         let mut results = self
@@ -3304,6 +3910,12 @@ impl TursoClient {
         let mut updates = Vec::new();
         let mut args = Vec::new();
 
+        // Sakelar wajib-2FA per role. Dikirim eksplisit oleh formulir, jadi
+        // ketiadaannya berarti "jangan ubah", bukan "matikan".
+        if let Some(require_totp) = draft.get("require_totp").and_then(Value::as_bool) {
+            updates.push("require_totp = ?");
+            args.push(json!(if require_totp { 1 } else { 0 }));
+        }
         if let Some(nama) = draft.get("nama_role").and_then(Value::as_str) {
             updates.push("nama_role = ?");
             args.push(json!(nama.trim()));
@@ -3735,6 +4347,9 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
 struct AttendanceGuardRow {
     sumber: String,
     update_terakhir: String,
+    jam_masuk: String,
+    jam_pulang: String,
+    status_kehadiran: String,
 }
 
 /// `id_sesi` absensi yang disentuh sebuah event, bila event-nya memang menulis absensi.
@@ -3773,12 +4388,49 @@ fn assert_attendance_precondition(
     }
     if let Some(row) = current {
         if row.sumber == "Koreksi Admin" && domain != "correction" {
-            return Err(CommandError::new(
-                "TURSO_SYNC_ATTENDANCE_PROTECTED",
-                "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain.",
-            ));
+            // Perlindungan berlaku pada KOLOM yang benar-benar diisi admin,
+            // bukan seluruh baris. Scan pulang yang hanya mengisi jam_pulang
+            // kosong tidak menimpa keputusan admin apa pun; dulu ia ikut
+            // ditolak sehingga karyawan yang jam masuknya dikoreksi tidak
+            // pernah bisa menyelesaikan absensinya lewat scanner.
+            let attendance = payload.get("attendance");
+            let masuk_baru = attendance
+                .and_then(|value| value.get("jam_masuk"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let pulang_baru = attendance
+                .and_then(|value| value.get("jam_pulang"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let menimpa = |tersimpan: &str, baru: &str| !tersimpan.is_empty() && tersimpan != baru;
+            // Koreksi Sakit/Izin/Dispen/Alfa sengaja MENGOSONGKAN kedua jam.
+            // Aturan "boleh mengisi kolom kosong" saja akan membuat scan
+            // menghidupkan kembali baris itu menjadi Hadir dan menghapus
+            // keputusan ketidakhadiran dari admin.
+            let keputusan_ketidakhadiran = row.status_kehadiran != "Hadir";
+            if keputusan_ketidakhadiran
+                || menimpa(&row.jam_masuk, masuk_baru)
+                || menimpa(&row.jam_pulang, pulang_baru)
+            {
+                return Err(CommandError::new(
+                    "TURSO_SYNC_ATTENDANCE_PROTECTED",
+                    "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain.",
+                ));
+            }
         }
     }
+    // Operator sudah menyatakan "Gunakan Versi Lokal" untuk konflik ini.
+    // Tanpa jalan keluar ini konfliknya abadi: payload tetap membawa
+    // `attendanceBaseUpdatedAt` lama, jadi setiap percobaan ulang ditolak lagi
+    // dengan pesan yang sama dan operator tidak punya cara menyelesaikannya.
+    if payload
+        .get("forceLocalOverride")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
     let base = payload
         .get("attendanceBaseUpdatedAt")
         .and_then(Value::as_str)
@@ -4125,8 +4777,9 @@ async fn apply_event_to_turso(
                     id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, awal_absen_menit,
                     batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
                     istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
-                    offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi
-                ) VALUES ((SELECT id_shift FROM tbl_shift WHERE kode_shift = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi,
+                    shift_lanjutan_id
+                ) VALUES ((SELECT id_shift FROM tbl_shift WHERE kode_shift = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id_shift) DO UPDATE SET
                     nama_shift = excluded.nama_shift,
                     jam_masuk = excluded.jam_masuk,
@@ -4140,7 +4793,8 @@ async fn apply_event_to_turso(
                     offset_istirahat_mulai = excluded.offset_istirahat_mulai,
                     offset_generate_alfa = excluded.offset_generate_alfa,
                     buffer_shift_malam_menit = excluded.buffer_shift_malam_menit,
-                    izinkan_multi_sesi = excluded.izinkan_multi_sesi;
+                    izinkan_multi_sesi = excluded.izinkan_multi_sesi,
+                    shift_lanjutan_id = excluded.shift_lanjutan_id;
             "#;
             turso
                 .query_one(
@@ -4190,6 +4844,10 @@ async fn apply_event_to_turso(
                         json!(row
                             .get("izinkan_multi_sesi")
                             .map(|v| if v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1 { 1 } else { 0 })
+                            .unwrap_or(0)),
+                        json!(row
+                            .get("shift_lanjutan_id")
+                            .and_then(Value::as_i64)
                             .unwrap_or(0)),
                     ],
                 )
@@ -5278,7 +5936,1494 @@ async fn apply_event_to_turso(
     Ok(())
 }
 
+
+/// Umur satu permintaan sebelum verifikasi wajah selesai (menit).
+/// Penggantian tantangan yang boleh diminta satu permintaan reset.
+/// WAJIB sama dengan MAX_CHALLENGE_SWAPS di
+/// src/lib/server/auth/password-reset.ts.
+/// Kegagalan pengiriman email: pesan aman untuk pemohon, dan penjelasan apa
+/// adanya dari penyedia untuk pemegang izin.
+struct MailFailure {
+    message: String,
+    detail: String,
+}
+
+const RESET_MAX_CHALLENGE_SWAPS: i64 = 2;
+const RESET_CHALLENGE_TTL_MINUTES: i64 = 15;
+/// Umur token reset setelah email terkirim (menit).
+const RESET_TOKEN_TTL_MINUTES: i64 = 30;
+/// Ambang skor liveness. WAJIB sama dengan LIVENESS_MIN_SCORE di
+/// src/lib/security/face-liveness.ts.
+const RESET_LIVENESS_MIN_SCORE: f64 = 0.7;
+/// Batas ukuran foto bukti dalam base64.
+const RESET_PHOTO_MAX_LEN: usize = 900_000;
+
+/// Token acak 32 byte, base64url tanpa padding. Yang disimpan hanya hash
+/// SHA-256-nya, sama seperti `hashSessionToken` di sisi TypeScript.
+fn random_reset_token() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    BASE64_URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn random_request_id() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn sha256_hex(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))
+}
+
+/// Memilih urutan tantangan liveness secara acak di sisi server.
+///
+/// Urutan ini disimpan di database dan tidak pernah bisa ditebak klien, jadi
+/// rekaman verifikasi lama tidak bisa dipakai ulang untuk permintaan baru.
+fn pick_reset_challenges() -> Vec<String> {
+    use rand_core::{OsRng, RngCore};
+    let mut pool = vec![
+        "KEDIP".to_string(),
+        "TENGOK_KIRI".to_string(),
+        "TENGOK_KANAN".to_string(),
+        "DEKATKAN_WAJAH".to_string(),
+        "JAUHKAN_WAJAH".to_string(),
+    ];
+    let mut picked = Vec::with_capacity(3);
+    for _ in 0..3 {
+        if pool.is_empty() {
+            break;
+        }
+        let index = (OsRng.next_u32() as usize) % pool.len();
+        picked.push(pool.remove(index));
+    }
+    picked
+}
+
+/// Membaca `liveness_report` menjadi alasan + daftar tantangan.
+///
+/// Kolom itu ditulis dua penulis berbeda — TypeScript menyimpan vonis lengkap,
+/// Rust menyimpan vonis yang dikirim aplikasi — jadi pembacanya harus
+/// memaafkan bentuk yang tidak dikenal. Riwayat tetap berguna walau satu baris
+/// lamanya tidak bisa diurai.
+fn parse_liveness_report(raw: &str) -> (String, Vec<String>) {
+    let Ok(parsed) = serde_json::from_str::<Value>(raw) else {
+        return (String::new(), Vec::new());
+    };
+    let reason = parsed
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let challenges = parsed
+        .get("challenges")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .or_else(|| {
+                            item.get("challenge")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (reason, challenges)
+}
+
+fn reset_error(message: impl Into<String>) -> CommandError {
+    CommandError::new("PASSWORD_RESET_REJECTED", message)
+}
+
+/// Kekuatan password baru. Cerminan `validatePasswordStrength` di
+/// `src/lib/auth/password.ts` supaya aturan yang sama berlaku di kedua jalur.
+fn validate_new_password(password: &str) -> Result<(), CommandError> {
+    if password.chars().count() < 12 {
+        return Err(reset_error("Password minimal 12 karakter."));
+    }
+    if !password.chars().any(char::is_lowercase) || !password.chars().any(char::is_uppercase) {
+        return Err(reset_error(
+            "Password harus memiliki huruf kecil dan huruf besar.",
+        ));
+    }
+    if !password.chars().any(|item| item.is_ascii_digit()) {
+        return Err(reset_error("Password harus memiliki angka."));
+    }
+    Ok(())
+}
+
+impl TursoClient {
+    /// Mencari akun yang boleh dipulihkan dari username, kode operator, atau email.
+    async fn find_reset_operator(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<HashMap<String, Value>>, CommandError> {
+        let clean = identifier.trim();
+        if clean.len() < 3 || clean.len() > 120 {
+            return Ok(None);
+        }
+        let email = normalize_operator_email(clean);
+        let sql = r#"
+            SELECT m.id, m.nama_operator, m.kode_operator, m.username,
+                   COALESCE(m.email, '') AS email, COALESCE(m.no_hp, '') AS no_hp
+            FROM master_operator m
+            JOIN app_role r ON r.id = m.role_id
+            WHERE (
+                m.username = ? COLLATE NOCASE
+                OR m.kode_operator = ? COLLATE NOCASE
+                OR LOWER(COALESCE(m.email, '')) = ?
+            )
+            AND m.status = 'Aktif' AND r.status = 'Aktif'
+            LIMIT 1;
+        "#;
+        Ok(self
+            .query_one(sql, vec![json!(clean), json!(clean), json!(email)])
+            .await?
+            .to_objects()
+            .into_iter()
+            .next())
+    }
+
+    fn require_recoverable(
+        operator: Option<HashMap<String, Value>>,
+    ) -> Result<HashMap<String, Value>, CommandError> {
+        let row = operator.ok_or_else(|| {
+            reset_error("Akun dengan username atau email tersebut tidak ditemukan.")
+        })?;
+        let email = row
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if email.is_empty() {
+            return Err(reset_error(
+                "Akun ini belum memiliki email terdaftar sehingga link reset tidak dapat dikirim. Hubungi Admin untuk melengkapi data akun.",
+            ));
+        }
+        Ok(row)
+    }
+
+    /// Riwayat pengajuan "Lupa Password" untuk peninjauan manusia.
+    ///
+    /// `photo_base64` sengaja TIDAK ikut di-select: satu foto sekitar 40 KB dan
+    /// seratus baris akan mengirim puluhan megabyte lewat IPC setiap kali
+    /// halaman dibuka. Foto diambil per baris lewat `get_password_reset_photo`
+    /// hanya ketika benar-benar dibuka.
+    pub async fn list_password_reset_history(
+        &self,
+        status: &str,
+        search: &str,
+        limit: i64,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let mut conditions: Vec<String> = Vec::new();
+        let mut args: Vec<Value> = Vec::new();
+
+        if !status.is_empty() && status != "SEMUA" {
+            conditions.push("p.status = ?".to_string());
+            args.push(json!(status));
+        }
+        let search = search.trim();
+        if !search.is_empty() {
+            conditions.push(
+                "(m.nama_operator LIKE ? COLLATE NOCASE OR m.username LIKE ? COLLATE NOCASE \
+                 OR m.kode_operator LIKE ? COLLATE NOCASE OR p.identifier_used LIKE ? COLLATE NOCASE)"
+                    .to_string(),
+            );
+            let like = format!("%{}%", search.chars().take(60).collect::<String>());
+            for _ in 0..4 {
+                args.push(json!(like));
+            }
+        }
+        let limit = limit.clamp(1, 500);
+        args.push(json!(limit));
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            r#"SELECT
+                p.id, p.operator_id, p.identifier_used, p.contact_target, p.status,
+                p.liveness_score, p.liveness_report, p.delivery_status, p.delivery_error,
+                p.requested_at, p.verified_at, p.sent_at, p.used_at, p.expires_at,
+                CASE WHEN p.photo_base64 IS NOT NULL AND TRIM(p.photo_base64) <> '' THEN 1 ELSE 0 END AS has_photo,
+                m.nama_operator, m.username, m.kode_operator
+               FROM password_reset_request p
+               JOIN master_operator m ON m.id = p.operator_id
+               {where_clause}
+               ORDER BY p.requested_at DESC
+               LIMIT ?;"#
+        );
+
+        let rows = self.query_one(sql, args).await?.to_objects();
+        let entries: Vec<Value> = rows
+            .into_iter()
+            .map(|row| {
+                let text = |key: &str| {
+                    row.get(key)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let (reason, challenges) = parse_liveness_report(&text("liveness_report"));
+                json!({
+                    "id": text("id"),
+                    "operatorId": row.get("operator_id").and_then(Value::as_i64).unwrap_or(0),
+                    "operatorName": text("nama_operator"),
+                    "username": text("username"),
+                    "kodeOperator": text("kode_operator"),
+                    "identifierUsed": text("identifier_used"),
+                    "maskedEmail": mask_operator_email(&text("contact_target")),
+                    "status": text("status"),
+                    "livenessScore": row.get("liveness_score").and_then(Value::as_f64),
+                    "livenessReason": reason,
+                    "livenessChallenges": challenges,
+                    "deliveryStatus": text("delivery_status"),
+                    "deliveryError": text("delivery_error"),
+                    "hasPhoto": row.get("has_photo").and_then(Value::as_i64).unwrap_or(0) == 1,
+                    "requestedAt": text("requested_at"),
+                    "verifiedAt": text("verified_at"),
+                    "sentAt": text("sent_at"),
+                    "usedAt": text("used_at"),
+                    "expiresAt": text("expires_at"),
+                })
+            })
+            .collect();
+        Ok(json!({ "entries": entries }))
+    }
+
+    pub async fn get_password_reset_photo(&self, request_id: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = request_id.trim();
+        if id.is_empty() || id.len() > 64 {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ID permintaan tidak valid.",
+            ));
+        }
+        let row = self
+            .query_one(
+                "SELECT COALESCE(photo_mime, '') AS photo_mime, COALESCE(photo_base64, '') AS photo_base64 FROM password_reset_request WHERE id = ? LIMIT 1;",
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError::new("NOT_FOUND", "Permintaan tidak ditemukan."))?;
+        let base64 = row
+            .get("photo_base64")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if base64.is_empty() {
+            return Err(CommandError::new(
+                "NOT_FOUND",
+                "Permintaan ini tidak menyimpan foto verifikasi.",
+            ));
+        }
+        let mime = row
+            .get("photo_mime")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(json!({
+            "photo": {
+                "mime": if mime.is_empty() { "image/jpeg".to_string() } else { mime },
+                "base64": base64,
+            }
+        }))
+    }
+
+    pub async fn delete_password_reset_history(
+        &self,
+        request_id: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = request_id.trim();
+        if id.is_empty() || id.len() > 64 {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ID permintaan tidak valid.",
+            ));
+        }
+        let result = self
+            .query_one(
+                "DELETE FROM password_reset_request WHERE id = ?;",
+                vec![json!(id)],
+            )
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(CommandError::new(
+                "NOT_FOUND",
+                "Riwayat tidak ditemukan atau sudah dihapus.",
+            ));
+        }
+        Ok(json!({ "sukses": true, "deleted": 1 }))
+    }
+
+    /// Membersihkan riwayat yang sudah selesai dan lebih tua dari `days` hari.
+    ///
+    /// Baris `Terkirim` dan `Menunggu Verifikasi` sengaja dilewati: membersihkan
+    /// arsip tidak boleh memutus pemulihan yang sedang berjalan.
+    pub async fn purge_password_reset_history(&self, days: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        if !(1..=3650).contains(&days) {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Rentang hari pembersihan tidak valid.",
+            ));
+        }
+        let result = self
+            .query_one(
+                "DELETE FROM password_reset_request WHERE status IN ('Terpakai', 'Kedaluwarsa', 'Dibatalkan') AND requested_at <= datetime('now', ?);",
+                vec![json!(format!("-{days} days"))],
+            )
+            .await?;
+        Ok(json!({ "sukses": true, "deleted": result.rows_affected }))
+    }
+
+    /// Langkah 1: identitas tersamar untuk dikonfirmasi pemohon.
+
+    pub async fn password_reset_lookup(&self, identifier: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = Self::require_recoverable(self.find_reset_operator(identifier).await?)?;
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        Ok(json!({
+            "account": {
+                "name": text("nama_operator"),
+                "kode_operator": text("kode_operator"),
+                "username": text("username"),
+                "masked_email": mask_operator_email(&text("email")),
+                "masked_phone": mask_operator_phone(&text("no_hp")),
+            }
+        }))
+    }
+
+    /// Langkah 2: identitas diketik ulang, lalu tantangan liveness diterbitkan.
+    pub async fn password_reset_confirm(
+        &self,
+        identifier: &str,
+        confirmation: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = Self::require_recoverable(self.find_reset_operator(identifier).await?)?;
+        let operator_id = row.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let confirmed = self.find_reset_operator(confirmation).await?;
+        let matches = confirmed
+            .as_ref()
+            .and_then(|item| item.get("id"))
+            .and_then(Value::as_i64)
+            == Some(operator_id);
+        if !matches {
+            return Err(reset_error(
+                "Konfirmasi username atau email tidak cocok dengan akun yang dipilih.",
+            ));
+        }
+        let email = row
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        // Satu akun hanya boleh punya satu permintaan hidup, supaya token lama
+        // tidak ikut berlaku setelah permintaan baru dibuat.
+        self.query_one(
+            "UPDATE password_reset_request SET status = 'Dibatalkan' WHERE operator_id = ? AND status IN ('Menunggu Verifikasi', 'Terkirim');",
+            vec![json!(operator_id)],
+        )
+        .await?;
+
+        let challenges = pick_reset_challenges();
+        let challenge_token = random_reset_token();
+        let request_id = random_request_id();
+        let sql = format!(
+            r#"INSERT INTO password_reset_request (
+                id, operator_id, identifier_used, contact_channel, contact_target,
+                challenge_hash, challenge_sequence, status, requested_at, expires_at
+            ) VALUES (?, ?, ?, 'email', ?, ?, ?, 'Menunggu Verifikasi', datetime('now'), datetime('now', '+{RESET_CHALLENGE_TTL_MINUTES} minutes'));"#
+        );
+        self.query_one(
+            sql,
+            vec![
+                json!(request_id),
+                json!(operator_id),
+                json!(identifier.trim().chars().take(120).collect::<String>()),
+                json!(email),
+                json!(sha256_hex(&challenge_token)),
+                json!(serde_json::to_string(&challenges).unwrap_or_else(|_| "[]".to_string())),
+            ],
+        )
+        .await?;
+
+        let expires_at = self
+            .query_one(
+                "SELECT expires_at FROM password_reset_request WHERE id = ? LIMIT 1;",
+                vec![json!(request_id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|item| item.get("expires_at").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+
+        Ok(json!({
+            "challenge": {
+                "request_id": request_id,
+                "challenge_token": challenge_token,
+                "challenges": challenges,
+                "masked_email": mask_operator_email(&email),
+                "expires_at": expires_at,
+            }
+        }))
+    }
+
+    /// Mengganti satu tantangan yang tidak pernah terbaca kamera pemohon.
+    ///
+    /// Deteksi kedipan bergantung pada beberapa piksel pita mata; pada kamera
+    /// kelas bawah, ruang redup, atau wajah berkacamata, tantangan itu bisa
+    /// memang tidak pernah terbaca — dan tanpa jalan keluar, pemiliknya
+    /// terkunci selamanya dari akunnya sendiri. Penggantinya tetap dipilih
+    /// server, tetap acak, dan jumlahnya dibatasi supaya ini bukan cara memilih
+    /// tantangan termudah.
+    pub async fn password_reset_swap_challenge(
+        &self,
+        request_id: &str,
+        challenge_token: &str,
+        step_index: i64,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self
+            .query_one(
+                r#"SELECT p.id, p.challenge_sequence, p.status, p.liveness_report,
+                          CASE WHEN p.expires_at <= datetime('now') THEN 1 ELSE 0 END AS is_expired
+                   FROM password_reset_request p
+                   WHERE p.id = ? AND p.challenge_hash = ? LIMIT 1;"#,
+                vec![json!(request_id), json!(sha256_hex(challenge_token))],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| reset_error("Sesi verifikasi tidak ditemukan."))?;
+
+        if row.get("status").and_then(Value::as_str) != Some("Menunggu Verifikasi") {
+            return Err(reset_error(
+                "Sesi verifikasi ini sudah tidak berlaku. Ulangi dari awal.",
+            ));
+        }
+        if row.get("is_expired").and_then(Value::as_i64) == Some(1) {
+            return Err(reset_error(
+                "Waktu verifikasi habis. Ulangi permintaan dari awal.",
+            ));
+        }
+
+        let mut challenges: Vec<String> = serde_json::from_str(
+            row.get("challenge_sequence")
+                .and_then(Value::as_str)
+                .unwrap_or("[]"),
+        )
+        .unwrap_or_default();
+        if step_index < 0 || step_index as usize >= challenges.len() {
+            return Err(reset_error("Langkah tantangan tidak dikenal."));
+        }
+
+        let report: Value = serde_json::from_str(
+            row.get("liveness_report")
+                .and_then(Value::as_str)
+                .unwrap_or("{}"),
+        )
+        .unwrap_or_else(|_| json!({}));
+        let attempts = report.get("attempts").and_then(Value::as_i64).unwrap_or(0);
+        let swaps = report.get("swaps").and_then(Value::as_i64).unwrap_or(0);
+        if swaps >= RESET_MAX_CHALLENGE_SWAPS {
+            return Err(reset_error(format!(
+                "Penggantian tantangan sudah mencapai batas ({RESET_MAX_CHALLENGE_SWAPS}). Ulangi permintaan dari awal di tempat yang lebih terang."
+            )));
+        }
+
+        let alternatives: Vec<String> = [
+            "KEDIP",
+            "TENGOK_KIRI",
+            "TENGOK_KANAN",
+            "DEKATKAN_WAJAH",
+            "JAUHKAN_WAJAH",
+        ]
+        .into_iter()
+        .filter(|item| !challenges.iter().any(|used| used == item))
+        .map(str::to_string)
+        .collect();
+        if alternatives.is_empty() {
+            return Err(reset_error("Tidak ada tantangan pengganti yang tersisa."));
+        }
+        let pick = {
+            use rand_core::{OsRng, RngCore};
+            (OsRng.next_u32() as usize) % alternatives.len()
+        };
+        challenges[step_index as usize] = alternatives[pick].clone();
+
+        self.query_one(
+            "UPDATE password_reset_request SET challenge_sequence = ?, liveness_report = ? WHERE id = ? AND status = 'Menunggu Verifikasi';",
+            vec![
+                json!(serde_json::to_string(&challenges).unwrap_or_else(|_| "[]".to_string())),
+                json!(json!({ "attempts": attempts, "swaps": swaps + 1 }).to_string()),
+                json!(request_id),
+            ],
+        )
+        .await?;
+
+        Ok(json!({ "challenges": challenges }))
+    }
+
+    /// Langkah 3: menerima vonis liveness, lalu mengirim link reset.
+
+    ///
+    /// Yang diperiksa di sini bukan piksel — analisisnya berjalan di aplikasi
+    /// memakai modul TypeScript yang sama dengan Web — melainkan hal yang hanya
+    /// diketahui database: urutan tantangan acak yang diterbitkan pada langkah
+    /// sebelumnya, umur permintaan, dan status barisnya. Rekaman lama atau
+    /// vonis untuk urutan tantangan yang berbeda ditolak di sini.
+    pub async fn password_reset_verify(
+        &self,
+        request_id: &str,
+        challenge_token: &str,
+        verdict: &Value,
+        photo_base64: &str,
+        photo_mime: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let photo = photo_base64.trim();
+        if photo.is_empty() || photo.len() > RESET_PHOTO_MAX_LEN {
+            return Err(reset_error(
+                "Foto verifikasi tidak valid atau terlalu besar.",
+            ));
+        }
+
+        let row = self
+            .query_one(
+                r#"SELECT p.id, p.operator_id, p.contact_target, p.challenge_sequence, p.status,
+                          m.nama_operator,
+                          CASE WHEN p.expires_at <= datetime('now') THEN 1 ELSE 0 END AS is_expired
+                   FROM password_reset_request p
+                   JOIN master_operator m ON m.id = p.operator_id
+                   WHERE p.id = ? AND p.challenge_hash = ? LIMIT 1;"#,
+                vec![json!(request_id), json!(sha256_hex(challenge_token))],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| reset_error("Sesi verifikasi tidak ditemukan."))?;
+
+        if row.get("status").and_then(Value::as_str) != Some("Menunggu Verifikasi") {
+            return Err(reset_error(
+                "Sesi verifikasi ini sudah tidak berlaku. Ulangi dari awal.",
+            ));
+        }
+        if row.get("is_expired").and_then(Value::as_i64) == Some(1) {
+            self.query_one(
+                "UPDATE password_reset_request SET status = 'Kedaluwarsa' WHERE id = ?;",
+                vec![json!(request_id)],
+            )
+            .await?;
+            return Err(reset_error(
+                "Waktu verifikasi habis. Ulangi permintaan dari awal.",
+            ));
+        }
+
+        let expected: Vec<String> = serde_json::from_str(
+            row.get("challenge_sequence")
+                .and_then(Value::as_str)
+                .unwrap_or("[]"),
+        )
+        .unwrap_or_default();
+        let reported: Vec<String> = verdict
+            .get("challenges")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if expected.is_empty() || expected != reported {
+            return Err(reset_error(
+                "Urutan tantangan tidak sesuai. Ulangi verifikasi.",
+            ));
+        }
+
+        let score = verdict.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+        let passed = verdict.get("passed").and_then(Value::as_bool) == Some(true);
+        if !passed || score < RESET_LIVENESS_MIN_SCORE {
+            let reason = verdict
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("Verifikasi wajah gagal.");
+            self.query_one(
+                "UPDATE password_reset_request SET liveness_score = ?, liveness_report = ?, photo_mime = ?, photo_base64 = ?, status = 'Dibatalkan' WHERE id = ?;",
+                vec![
+                    json!(score),
+                    json!(verdict.to_string()),
+                    json!(photo_mime.chars().take(40).collect::<String>()),
+                    json!(photo),
+                    json!(request_id),
+                ],
+            )
+            .await?;
+            return Err(reset_error(reason));
+        }
+
+        let reset_token = random_reset_token();
+        let update_sql = format!(
+            r#"UPDATE password_reset_request
+               SET token_hash = ?, status = 'Terkirim', liveness_score = ?, liveness_report = ?,
+                   photo_mime = ?, photo_base64 = ?, verified_at = datetime('now'),
+                   expires_at = datetime('now', '+{RESET_TOKEN_TTL_MINUTES} minutes')
+               WHERE id = ? AND status = 'Menunggu Verifikasi';"#
+        );
+        self.query_one(
+            update_sql,
+            vec![
+                json!(sha256_hex(&reset_token)),
+                json!(score),
+                json!(verdict.to_string()),
+                json!(photo_mime.chars().take(40).collect::<String>()),
+                json!(photo),
+                json!(request_id),
+            ],
+        )
+        .await?;
+
+        let contact = row
+            .get("contact_target")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let operator_name = row
+            .get("nama_operator")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let delivery = self
+            .send_reset_email(&contact, &operator_name, &reset_token)
+            .await;
+
+        match delivery {
+            Ok(()) => {
+                self.query_one(
+                    "UPDATE password_reset_request SET delivery_status = 'Terkirim', delivery_error = NULL, sent_at = datetime('now') WHERE id = ?;",
+                    vec![json!(request_id)],
+                )
+                .await?;
+                Ok(json!({
+                    "delivery": {
+                        "delivered": true,
+                        "masked_email": mask_operator_email(&contact),
+                        "message": format!(
+                            "Link reset password sudah dikirim ke {}. Berlaku {} menit.",
+                            mask_operator_email(&contact),
+                            RESET_TOKEN_TTL_MINUTES
+                        ),
+                        "score": score,
+                    }
+                }))
+            }
+            Err(failure) => {
+                // Permintaan dibatalkan ketika email gagal terkirim: token yang
+                // tidak pernah sampai ke pemiliknya tidak boleh tetap hidup.
+                // Yang disimpan adalah penjelasan penyedia, bukan pesan generik —
+                // itulah satu-satunya petunjuk yang bisa dibaca Admin nanti di
+                // halaman Riwayat Reset Password.
+                self.query_one(
+                    "UPDATE password_reset_request SET delivery_status = 'Gagal', delivery_error = ?, status = 'Dibatalkan' WHERE id = ?;",
+                    vec![
+                        json!(if failure.detail.is_empty() {
+                            failure.message.clone()
+                        } else {
+                            failure.detail.clone()
+                        }),
+                        json!(request_id),
+                    ],
+                )
+                .await?;
+                Err(reset_error(failure.message))
+            }
+        }
+    }
+
+    /// Langkah 4: memvalidasi token sebelum form password baru ditampilkan.
+    pub async fn password_reset_inspect(&self, token: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.load_reset_token(token).await?;
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        Ok(json!({
+            "token": {
+                "operator_name": text("nama_operator"),
+                "username": text("username"),
+                "masked_email": mask_operator_email(&text("contact_target")),
+                "expires_at": text("expires_at"),
+            }
+        }))
+    }
+
+    async fn load_reset_token(&self, token: &str) -> Result<HashMap<String, Value>, CommandError> {
+        let clean = token.trim();
+        if clean.len() < 16 || clean.len() > 256 {
+            return Err(reset_error("Token reset tidak valid."));
+        }
+        let row = self
+            .query_one(
+                r#"SELECT p.id, p.operator_id, p.contact_target, p.status, p.expires_at,
+                          m.nama_operator, m.username,
+                          CASE WHEN p.expires_at <= datetime('now') THEN 1 ELSE 0 END AS is_expired
+                   FROM password_reset_request p
+                   JOIN master_operator m ON m.id = p.operator_id
+                   WHERE p.token_hash = ? LIMIT 1;"#,
+                vec![json!(sha256_hex(clean))],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| reset_error("Token reset tidak dikenal atau sudah dipakai."))?;
+
+        match row.get("status").and_then(Value::as_str) {
+            Some("Terpakai") => {
+                return Err(reset_error("Token reset ini sudah pernah dipakai."));
+            }
+            Some("Terkirim") => {}
+            _ => return Err(reset_error("Token reset sudah tidak berlaku.")),
+        }
+        if row.get("is_expired").and_then(Value::as_i64) == Some(1) {
+            let id = row.get("id").cloned().unwrap_or(Value::Null);
+            self.query_one(
+                "UPDATE password_reset_request SET status = 'Kedaluwarsa' WHERE id = ?;",
+                vec![id],
+            )
+            .await?;
+            return Err(reset_error(
+                "Token reset sudah kedaluwarsa. Ulangi permintaan dari awal.",
+            ));
+        }
+        Ok(row)
+    }
+
+    /// Langkah 5: password lama benar-benar digantikan yang baru.
+    pub async fn password_reset_complete(
+        &self,
+        token: &str,
+        password: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self.load_reset_token(token).await?;
+        validate_new_password(password)?;
+        let request_id = row.get("id").cloned().unwrap_or(Value::Null);
+        let operator_id = row.get("operator_id").and_then(Value::as_i64).unwrap_or(0);
+
+        // Token dikonsumsi lebih dulu: dua permintaan paralel dengan token yang
+        // sama tidak boleh sama-sama sempat menulis password.
+        let consumed = self
+            .query_one(
+                "UPDATE password_reset_request SET status = 'Terpakai', used_at = datetime('now') WHERE id = ? AND status = 'Terkirim';",
+                vec![request_id.clone()],
+            )
+            .await?;
+        if consumed.rows_affected == 0 {
+            return Err(reset_error("Token reset ini sudah pernah dipakai."));
+        }
+
+        let password_hash = hash_password_pbkdf2(password);
+        self.query_one(
+            "UPDATE master_operator SET password_hash = ?, updated_at = datetime('now') WHERE id = ?;",
+            vec![json!(password_hash), json!(operator_id)],
+        )
+        .await?;
+        // Sesi Web yang masih hidup ikut dicabut; kalau tidak, penyerang yang
+        // terlanjur masuk tetap memegang sesi walau passwordnya sudah diganti.
+        self.query_one(
+            "UPDATE app_session SET revoked_at = datetime('now'), revoked_reason = 'password-reset' WHERE operator_id = ? AND revoked_at IS NULL;",
+            vec![json!(operator_id)],
+        )
+        .await?;
+
+        Ok(json!({
+            "sukses": true,
+            "username": row.get("username").cloned().unwrap_or(Value::Null),
+        }))
+    }
+
+    /// Konfigurasi email tanpa kunci API — aman dikirim ke lapisan UI.
+    pub async fn get_mail_config(&self) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self
+            .query_one(
+                "SELECT provider, COALESCE(api_key, '') AS api_key, COALESCE(sender_email, '') AS sender_email, COALESCE(sender_name, '') AS sender_name, COALESCE(reset_base_url, '') AS reset_base_url, is_active, updated_at, COALESCE(updated_by, '') AS updated_by FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+                vec![],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        Ok(json!({
+            "config": {
+                "provider": if text("provider").is_empty() { "resend".to_string() } else { text("provider") },
+                "hasApiKey": !text("api_key").trim().is_empty(),
+                "senderEmail": text("sender_email"),
+                "senderName": text("sender_name"),
+                "resetBaseUrl": text("reset_base_url"),
+                "isActive": row.get("is_active").and_then(Value::as_i64).unwrap_or(0) == 1,
+                "updatedAt": text("updated_at"),
+                "updatedBy": text("updated_by"),
+            }
+        }))
+    }
+
+    pub async fn save_mail_config(
+        &self,
+        draft: &Value,
+        actor: &str,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let field = |key: &str| {
+            draft
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let provider = match field("provider").as_str() {
+            "brevo" => "brevo".to_string(),
+            _ => "resend".to_string(),
+        };
+        let is_active = draft.get("is_active").and_then(Value::as_bool) == Some(true);
+        let sender_email = field("sender_email").to_lowercase();
+        let sender_name = field("sender_name");
+        let api_key = field("api_key");
+
+        let stored = self
+            .query_one(
+                "SELECT COALESCE(api_key, '') AS api_key FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+                vec![],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|row| row.get("api_key").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+
+        if is_active {
+            if api_key.is_empty() && stored.trim().is_empty() {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Kunci API penyedia email wajib diisi.",
+                ));
+            }
+            if !is_valid_operator_email(&sender_email) {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Email pengirim wajib diisi dengan format yang valid.",
+                ));
+            }
+            if sender_name.chars().count() < 2 {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Nama pengirim minimal 2 karakter.",
+                ));
+            }
+        }
+
+        // Kunci hanya ditimpa ketika formulir mengirim kunci baru: UI tidak
+        // pernah menerima kunci tersimpan sehingga selalu mengirim string kosong.
+        let next_key = if api_key.is_empty() { stored } else { api_key };
+        let base_url = field("reset_base_url")
+            .trim_end_matches('/')
+            .to_string();
+
+        self.query_one(
+            r#"INSERT INTO app_mail_config (
+                    id, provider, api_key, sender_email, sender_name,
+                    reset_base_url, is_active, updated_at, updated_by
+               ) VALUES ('default', ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+               ON CONFLICT(id) DO UPDATE SET
+                    provider = excluded.provider,
+                    api_key = excluded.api_key,
+                    sender_email = excluded.sender_email,
+                    sender_name = excluded.sender_name,
+                    reset_base_url = excluded.reset_base_url,
+                    is_active = excluded.is_active,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by;"#,
+            vec![
+                json!(provider),
+                json!(next_key),
+                json!(sender_email),
+                json!(sender_name),
+                json!(base_url),
+                json!(if is_active { 1 } else { 0 }),
+                json!(actor),
+            ],
+        )
+        .await?;
+        self.get_mail_config().await
+    }
+
+    /// Mengirim email percobaan ke alamat Admin yang sedang login.
+    ///
+    /// Balasannya memuat penjelasan apa adanya dari penyedia — aman karena
+    /// command pemanggilnya menuntut izin `settings.manage`. Tanpa ini, satu-
+    /// satunya cara menguji konfigurasi adalah menjalankan seluruh alur
+    /// "Lupa Password" sampai verifikasi wajah.
+    pub async fn send_test_mail(&self, operator_id: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let row = self
+            .query_one(
+                "SELECT COALESCE(email, '') AS email, nama_operator FROM master_operator WHERE id = ? LIMIT 1;",
+                vec![json!(operator_id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let to = row
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if to.is_empty() {
+            return Ok(json!({
+                "test": {
+                    "delivered": false,
+                    "message": "Akun Anda belum punya email terdaftar. Lengkapi email akun Anda di Master Operator lebih dulu.",
+                    "detail": "",
+                    "to": "",
+                }
+            }));
+        }
+        let name = row
+            .get("nama_operator")
+            .and_then(Value::as_str)
+            .unwrap_or("Admin")
+            .to_string();
+        let body = format!(
+            "Halo {name},\n\nEmail ini dikirim dari menu Pengaturan > Email Sistem untuk menguji konfigurasi pengirim.\nBila email ini sampai, fitur Lupa Password sudah siap dipakai.\n\nAbsensi SPPG"
+        );
+        match self
+            .deliver_mail(&to, "Uji Kirim Email Sistem Absensi SPPG", &body)
+            .await
+        {
+            Ok(()) => Ok(json!({
+                "test": {
+                    "delivered": true,
+                    "message": format!("Email uji terkirim ke {to}."),
+                    "detail": "",
+                    "to": to,
+                }
+            })),
+            Err(error) => Ok(json!({
+                "test": {
+                    "delivered": false,
+                    "message": error.message,
+                    "detail": error.detail,
+                    "to": to,
+                }
+            })),
+        }
+    }
+
+    /// Mengirim email lewat HTTP API penyedia.
+    async fn deliver_mail(
+        &self,
+        to: &str,
+        subject: &str,
+        body_text: &str,
+    ) -> Result<(), MailFailure> {
+        let row = self
+            .query_one(
+                "SELECT provider, COALESCE(api_key, '') AS api_key, COALESCE(sender_email, '') AS sender_email, COALESCE(sender_name, '') AS sender_name, is_active FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+                vec![],
+            )
+            .await
+            .map_err(|error| MailFailure {
+                message: "Konfigurasi email tidak dapat dibaca dari database.".to_string(),
+                detail: error.message,
+            })?
+            .to_objects()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let text = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let api_key = text("api_key");
+        let sender_email = text("sender_email");
+        if row.get("is_active").and_then(Value::as_i64) != Some(1)
+            || api_key.trim().is_empty()
+            || sender_email.is_empty()
+        {
+            return Err(MailFailure {
+                message: "Pengiriman email belum dikonfigurasi. Minta Admin mengisi Pengaturan > Email Sistem.".to_string(),
+                detail: "Konfigurasi email nonaktif, kunci API kosong, atau email pengirim belum diisi.".to_string(),
+            });
+        }
+        let sender_name = if text("sender_name").is_empty() {
+            "Absensi SPPG".to_string()
+        } else {
+            text("sender_name")
+        };
+        let provider = text("provider");
+
+        let request = if provider == "brevo" {
+            self.http
+                .post("https://api.brevo.com/v3/smtp/email")
+                .header("api-key", api_key.trim())
+                .json(&json!({
+                    "sender": { "name": sender_name, "email": sender_email },
+                    "to": [{ "email": to }],
+                    "subject": subject,
+                    "textContent": body_text,
+                }))
+        } else {
+            self.http
+                .post("https://api.resend.com/emails")
+                .bearer_auth(api_key.trim())
+                .json(&json!({
+                    "from": format!("{sender_name} <{sender_email}>"),
+                    "to": [to],
+                    "subject": subject,
+                    "text": body_text,
+                }))
+        };
+
+        let response = request.send().await.map_err(|error| MailFailure {
+            message: "Email gagal dikirim karena jaringan tidak tersedia. Coba lagi setelah perangkat terhubung internet.".to_string(),
+            // Penyebab teknisnya disimpan terpisah: "tidak ada internet" yang
+            // muncul padahal internet menyala hampir selalu berarti DNS, TLS,
+            // atau proxy — bukan kabel terputus.
+            detail: format!("Permintaan ke {provider} gagal: {error}"),
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(MailFailure {
+                message: format!("Penyedia email menolak pengiriman (HTTP {}).", status.as_u16()),
+                detail: format!(
+                    "HTTP {} dari {provider}: {}",
+                    status.as_u16(),
+                    body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(400).collect::<String>()
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Mengirim email lewat HTTP API penyedia.
+    ///
+    /// Bukan SMTP: WebView Tauri di Android maupun runtime Vercel tidak
+    /// menjamin soket keluar port 587, sementara HTTPS keluar sudah pasti
+    /// tersedia — jalur yang sama yang dipakai klien Turso ini.
+    async fn send_reset_email(
+        &self,
+        to: &str,
+        operator_name: &str,
+        reset_token: &str,
+    ) -> Result<(), MailFailure> {
+        let base_url = self
+            .query_one(
+                "SELECT COALESCE(reset_base_url, '') AS reset_base_url FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+                vec![],
+            )
+            .await
+            .ok()
+            .and_then(|result| result.to_objects().into_iter().next())
+            .and_then(|row| row.get("reset_base_url").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        let action = if base_url.is_empty() {
+            format!(
+                "Masukkan kode berikut pada halaman \"Lupa Password\" di aplikasi:
+{reset_token}"
+            )
+        } else {
+            format!(
+                "Buka tautan berikut untuk membuat password baru:
+{base_url}/lupa-password/reset?token={reset_token}"
+            )
+        };
+        let body_text = format!(
+            "Halo {operator_name},
+
+\
+             Kami menerima permintaan pemulihan password untuk akun Absensi SPPG Anda.
+\
+             Permintaan ini sudah melewati verifikasi wajah pada perangkat pemohon.
+
+\
+             {action}
+
+\
+             Tautan/kode ini berlaku {RESET_TOKEN_TTL_MINUTES} menit dan hanya dapat dipakai satu kali.
+\
+             Jika Anda tidak merasa mengajukan permintaan ini, abaikan email ini dan segera
+\
+             laporkan ke Admin — foto pemohon sudah tersimpan sebagai bukti.
+
+\
+             Absensi SPPG"
+        );
+        self.deliver_mail(to, "Pemulihan Password Absensi SPPG", &body_text)
+            .await
+    }
+}
+
+/// Normalisasi email operator: disimpan lowercase karena index unik
+/// `idx_master_operator_email` memakai `LOWER(email)`.
+///
+/// Cerminan Rust dari `src/lib/operators/contact.ts`. Kedua sisi menulis ke
+/// kolom yang sama, jadi aturan yang berbeda akan membuat satu operator
+/// tersimpan dalam dua bentuk dan pencarian "Lupa Password" gagal menemukannya.
+pub fn normalize_operator_email(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// Normalisasi nomor HP Indonesia ke bentuk kanonik `+62…`.
+pub fn normalize_operator_phone(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter(|character| character.is_ascii_digit() || *character == '+')
+        .collect();
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    let had_plus = cleaned.starts_with('+');
+    let bare: String = cleaned.chars().filter(char::is_ascii_digit).collect();
+    if bare.is_empty() {
+        return String::new();
+    }
+    if let Some(rest) = bare.strip_prefix("62") {
+        return format!("+62{rest}");
+    }
+    if let Some(rest) = bare.strip_prefix('0') {
+        return format!("+62{rest}");
+    }
+    if bare.starts_with('8') {
+        return format!("+62{bare}");
+    }
+    if had_plus {
+        return format!("+{bare}");
+    }
+    String::new()
+}
+
+pub fn is_valid_operator_email(value: &str) -> bool {
+    let email = normalize_operator_email(value);
+    if email.is_empty() || email.len() > 120 || email.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !domain.contains("..")
+}
+
+pub fn is_valid_operator_phone(value: &str) -> bool {
+    let phone = normalize_operator_phone(value);
+    let digits = phone.trim_start_matches('+');
+    phone.starts_with('+') && (9..=15).contains(&digits.len())
+}
+
+/// Email dan nomor HP wajib pada setiap akun operator: email adalah satu-satunya
+/// jalur pengiriman link "Lupa Password".
+pub fn validate_operator_contact(email: &str, phone: &str) -> Result<(), CommandError> {
+    if !is_valid_operator_email(email) {
+        return Err(CommandError::new(
+            "VALIDATION_ERROR",
+            "Email operator wajib diisi dengan format yang valid.",
+        ));
+    }
+    if !is_valid_operator_phone(phone) {
+        return Err(CommandError::new(
+            "VALIDATION_ERROR",
+            "Nomor HP operator wajib diisi. Gunakan format 08xxxxxxxxxx atau +62xxxxxxxxxx.",
+        ));
+    }
+    Ok(())
+}
+
+/// Menyamarkan email untuk layar "Lupa Password" yang terbuka tanpa login.
+pub fn mask_operator_email(value: &str) -> String {
+    let email = normalize_operator_email(value);
+    let Some(at) = email.rfind('@') else {
+        return String::new();
+    };
+    if at == 0 {
+        return String::new();
+    }
+    let local = &email[..at];
+    let domain = &email[at + 1..];
+    let head: String = local.chars().take(1).collect();
+    let tail: String = if local.chars().count() > 2 {
+        local.chars().rev().take(1).collect()
+    } else {
+        String::new()
+    };
+    let hidden = local
+        .chars()
+        .count()
+        .saturating_sub(head.chars().count() + tail.chars().count())
+        .max(2);
+    let masked_domain = match domain.find('.') {
+        Some(dot) if dot > 1 => format!(
+            "{}{}{}",
+            &domain[..1],
+            "*".repeat(dot - 1),
+            &domain[dot..]
+        ),
+        _ => domain.to_string(),
+    };
+    format!("{head}{}{tail}@{masked_domain}", "*".repeat(hidden))
+}
+
+/// Menyamarkan nomor HP: hanya awalan negara dan empat digit terakhir.
+pub fn mask_operator_phone(value: &str) -> String {
+    let phone = normalize_operator_phone(value);
+    if phone.is_empty() {
+        return String::new();
+    }
+    let digits = &phone[1..];
+    if digits.len() <= 4 {
+        return format!("+{}", "*".repeat(digits.len()));
+    }
+    format!(
+        "+{}{}{}",
+        &digits[..2],
+        "*".repeat(digits.len() - 6),
+        &digits[digits.len() - 4..]
+    )
+}
+
+/// Langkah waktu TOTP (RFC 6238). WAJIB sama dengan TOTP_STEP_SECONDS di
+/// src/lib/security/totp.ts.
+/// Data 2FA satu operator, dibaca sekali lalu dipakai beberapa pemeriksaan.
+struct OperatorTotp {
+    secret: String,
+    enabled: bool,
+    confirmed_at: String,
+    recovery_codes: Vec<String>,
+    username: String,
+    require_totp: bool,
+}
+
+/// Meng-escape label otpauth seperlunya. Label hanya berisi nama aplikasi dan
+/// username operator, jadi cukup menangani karakter yang merusak URI.
+fn urlencoding_minimal(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            ' ' => "%20".to_string(),
+            ':' => "%3A".to_string(),
+            '/' => "%2F".to_string(),
+            '?' => "%3F".to_string(),
+            '#' => "%23".to_string(),
+            '&' => "%26".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+const TOTP_STEP_SECONDS: i64 = 30;
+const TOTP_DIGITS: u32 = 6;
+/// Toleransi langkah waktu saat verifikasi. Sempit ketika waktunya diambil dari
+/// jam server database; lebar ketika terpaksa memakai jam perangkat.
+pub const TOTP_WINDOW_ONLINE: i64 = 1;
+
+const BASE32_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// Membaca base32 dengan memaafkan bentuk yang biasa diketik manusia: spasi,
+/// tanda hubung, huruf kecil, dan padding `=`.
+pub fn decode_base32(value: &str) -> Option<Vec<u8>> {
+    let mut bits: u32 = 0;
+    let mut accumulator: u32 = 0;
+    let mut output = Vec::new();
+    for character in value.chars() {
+        if character == ' ' || character == '-' || character == '=' {
+            continue;
+        }
+        let upper = character.to_ascii_uppercase() as u8;
+        let index = BASE32_ALPHABET.iter().position(|item| *item == upper)?;
+        accumulator = (accumulator << 5) | index as u32;
+        bits += 5;
+        if bits >= 8 {
+            output.push(((accumulator >> (bits - 8)) & 0xff) as u8);
+            bits -= 8;
+        }
+    }
+    Some(output)
+}
+
+pub fn encode_base32(bytes: &[u8]) -> String {
+    let mut bits: u32 = 0;
+    let mut value: u32 = 0;
+    let mut output = String::new();
+    for byte in bytes {
+        value = (value << 8) | u32::from(*byte);
+        bits += 8;
+        while bits >= 5 {
+            output.push(BASE32_ALPHABET[((value >> (bits - 5)) & 31) as usize] as char);
+            bits -= 5;
+        }
+    }
+    if bits > 0 {
+        output.push(BASE32_ALPHABET[((value << (5 - bits)) & 31) as usize] as char);
+    }
+    output
+}
+
+/// HOTP (RFC 4226): HMAC-SHA1 dari pencacah, lalu pemotongan dinamis 6 digit.
+pub fn generate_hotp(secret_base32: &str, counter: u64) -> Option<String> {
+    use hmac::{Hmac, Mac};
+    use sha1::Sha1;
+
+    let key = decode_base32(secret_base32)?;
+    if key.is_empty() {
+        return None;
+    }
+    let mut mac = Hmac::<Sha1>::new_from_slice(&key).ok()?;
+    mac.update(&counter.to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let offset = (digest[digest.len() - 1] & 0x0f) as usize;
+    let binary = (u32::from(digest[offset] & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+    let modulo = 10u32.pow(TOTP_DIGITS);
+    Some(format!(
+        "{:0width$}",
+        binary % modulo,
+        width = TOTP_DIGITS as usize
+    ))
+}
+
+/// Pasangan penghasil kode untuk `verify_totp`. Produksi hanya memverifikasi,
+/// tetapi vektor uji RFC 6238 menuntut sisi penghasilnya juga dibuktikan benar.
+#[allow(dead_code)]
+pub fn generate_totp(secret_base32: &str, unix_seconds: i64) -> Option<String> {
+    let counter = unix_seconds.div_euclid(TOTP_STEP_SECONDS);
+    if counter < 0 {
+        return None;
+    }
+    generate_hotp(secret_base32, counter as u64)
+}
+
+/// Memverifikasi kode terhadap jendela langkah waktu di sekitar `unix_seconds`.
+///
+/// Seluruh jendela selalu ditelusuri sampai habis, tanpa keluar lebih awal saat
+/// menemukan kecocokan, supaya lama pemrosesan tidak membocorkan posisi
+/// langkah waktu yang cocok.
+pub fn verify_totp(secret_base32: &str, code: &str, unix_seconds: i64, window: i64) -> bool {
+    let clean: String = code.chars().filter(char::is_ascii_digit).collect();
+    if clean.len() != TOTP_DIGITS as usize {
+        return false;
+    }
+    let center = unix_seconds.div_euclid(TOTP_STEP_SECONDS);
+    let mut matched = false;
+    for offset in -window..=window {
+        let counter = center + offset;
+        if counter < 0 {
+            continue;
+        }
+        if let Some(expected) = generate_hotp(secret_base32, counter as u64) {
+            // Perbandingan waktu-tetap: panjangnya selalu sama enam digit.
+            let mut difference: u8 = 0;
+            for (left, right) in expected.bytes().zip(clean.bytes()) {
+                difference |= left ^ right;
+            }
+            if difference == 0 {
+                matched = true;
+            }
+        }
+    }
+    matched
+}
+
+/// Rahasia TOTP acak 20 byte, dikembalikan dalam base32.
+pub fn generate_totp_secret() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 20];
+    OsRng.fill_bytes(&mut bytes);
+    encode_base32(&bytes)
+}
+
+/// Kode cadangan sekali pakai untuk operator yang kehilangan ponselnya.
+///
+/// Alfabetnya membuang karakter yang mudah tertukar saat disalin tangan
+/// (O, I, 0, 1), karena kode ini memang dimaksudkan untuk dicatat di kertas.
+pub fn generate_recovery_codes(count: usize) -> Vec<String> {
+    use rand_core::{OsRng, RngCore};
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    (0..count)
+        .map(|_| {
+            let mut bytes = [0u8; 8];
+            OsRng.fill_bytes(&mut bytes);
+            let raw: String = bytes
+                .iter()
+                .map(|byte| ALPHABET[(*byte as usize) % ALPHABET.len()] as char)
+                .collect();
+            format!("{}-{}", &raw[0..4], &raw[4..8])
+        })
+        .collect()
+}
+
+pub fn normalize_recovery_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
 fn validate_bootstrap_draft(draft: &BootstrapSuperadminDraft) -> Result<(), CommandError> {
+
     let code = draft.kode_operator.trim().to_ascii_uppercase();
     let name = draft.nama_operator.trim();
     let username = draft.username.trim();
@@ -5305,6 +7450,7 @@ fn validate_bootstrap_draft(draft: &BootstrapSuperadminDraft) -> Result<(), Comm
             "Username harus terdiri dari 3-64 karakter huruf, angka, titik, garis bawah, atau tanda minus.",
         ));
     }
+    validate_operator_contact(&draft.email, &draft.no_hp)?;
     let has_upper = password.chars().any(char::is_uppercase);
     let has_lower = password.chars().any(char::is_lowercase);
     let has_digit = password.chars().any(|character| character.is_ascii_digit());
@@ -5399,6 +7545,332 @@ fn chrono_like_now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nomor HP harus dinormalisasi sama persis dengan
+    /// `src/lib/operators/contact.ts`. Bila kedua sisi berbeda, satu operator
+    /// bisa tersimpan dalam dua bentuk dan pencarian "Lupa Password" gagal
+    /// menemukan akunnya sendiri.
+    /// Paritas penghapusan operator antara Rust dan `removeOperator` di
+    /// `src/lib/operators/operator-admin.ts`.
+    ///
+    /// Sebelum ini jalur Desktop hanya menolak Superadmin dan tidak memeriksa
+    /// histori transaksi sama sekali, sehingga operator yang di Web ditolak
+    /// tetap bisa dihapus dari Desktop.
+    /// Vektor uji resmi RFC 4226 dan RFC 6238, sama persis dengan yang diuji
+    /// `src/lib/security/totp.test.ts`.
+    ///
+    /// Dua implementasi menguji vektor yang sama adalah cara paritas TOTP
+    /// dijaga: kode yang diterima Web wajib diterima Desktop/Mobile juga,
+    /// karena keduanya memverifikasi rahasia yang sama dari database yang sama.
+    #[test]
+    fn totp_matches_the_official_rfc_vectors() {
+        let secret = encode_base32(b"12345678901234567890");
+        assert_eq!(secret, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+
+        // RFC 4226 Appendix D: delapan pencacah pertama.
+        let hotp = [
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+        ];
+        for (counter, expected) in hotp.iter().enumerate() {
+            assert_eq!(
+                generate_hotp(&secret, counter as u64).as_deref(),
+                Some(*expected),
+                "HOTP pencacah {counter}"
+            );
+        }
+
+        // RFC 6238 Appendix B, baris SHA-1. Delapan digit dipotong jadi enam.
+        for (seconds, eight_digits) in [
+            (59i64, "94287082"),
+            (1_111_111_109, "07081804"),
+            (1_111_111_111, "14050471"),
+            (1_234_567_890, "89005924"),
+            (2_000_000_000, "69279037"),
+        ] {
+            assert_eq!(
+                generate_totp(&secret, seconds).as_deref(),
+                Some(&eight_digits[2..]),
+                "TOTP detik {seconds}"
+            );
+        }
+    }
+
+    #[test]
+    fn base32_decoding_forgives_human_typing() {
+        let rapi = decode_base32("GEZDGNBVGY3TQOJQ").expect("base32");
+        assert_eq!(decode_base32("gezd gnbv gy3t qojq").as_deref(), Some(&rapi[..]));
+        assert_eq!(decode_base32("GEZD-GNBV-GY3T-QOJQ").as_deref(), Some(&rapi[..]));
+        assert_eq!(decode_base32("GEZDGNBVGY3TQOJQ====").as_deref(), Some(&rapi[..]));
+        // Karakter di luar alfabet base32 ditolak, bukan diam-diam dilewati.
+        assert!(decode_base32("GEZD0189").is_none());
+    }
+
+    #[test]
+    fn totp_verification_window_behaves_like_typescript() {
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let now = 1_700_000_000i64;
+        let code = generate_totp(secret, now).expect("kode");
+
+        assert!(verify_totp(secret, &code, now, TOTP_WINDOW_ONLINE));
+        // Kode yang berganti tepat saat tombol ditekan tetap diterima.
+        let sebelum = generate_totp(secret, now - 30).expect("kode");
+        let sesudah = generate_totp(secret, now + 30).expect("kode");
+        assert!(verify_totp(secret, &sebelum, now, TOTP_WINDOW_ONLINE));
+        assert!(verify_totp(secret, &sesudah, now, TOTP_WINDOW_ONLINE));
+
+        // Di luar toleransi sempit ditolak, tetapi jendela offline yang lebih
+        // lebar menerimanya — itulah gunanya membedakan keduanya.
+        let meleset = generate_totp(secret, now + 90).expect("kode");
+        assert!(!verify_totp(secret, &meleset, now, TOTP_WINDOW_ONLINE));
+        // Jendela lebar yang dipakai sisi TypeScript untuk jam perangkat.
+        assert!(verify_totp(secret, &meleset, now, 4));
+
+        // Panjang salah dan spasi yang ikut tersalin.
+        assert!(!verify_totp(secret, "12345", now, TOTP_WINDOW_ONLINE));
+        assert!(!verify_totp(secret, "", now, TOTP_WINDOW_ONLINE));
+        let berspasi = format!("{} {}", &code[0..3], &code[3..]);
+        assert!(verify_totp(secret, &berspasi, now, TOTP_WINDOW_ONLINE));
+    }
+
+    #[test]
+    fn generated_secrets_and_recovery_codes_are_usable() {
+        let first = generate_totp_secret();
+        let second = generate_totp_secret();
+        assert_eq!(first.len(), 32);
+        assert_ne!(first, second);
+        assert_eq!(decode_base32(&first).map(|bytes| bytes.len()), Some(20));
+
+        let codes = generate_recovery_codes(8);
+        assert_eq!(codes.len(), 8);
+        for code in &codes {
+            assert_eq!(code.len(), 9);
+            assert_eq!(code.as_bytes()[4], b'-');
+            // Karakter yang mudah tertukar saat disalin tangan tidak dipakai.
+            assert!(!code.contains(['O', 'I', '0', '1']));
+        }
+        assert_eq!(normalize_recovery_code("abcd-efgh"), "ABCDEFGH");
+    }
+
+    #[test]
+    fn operator_deletion_guards_match_the_web_path() {
+        let bersih = OperatorDeleteFacts {
+            actor_id: 1,
+            target_id: 2,
+            target_exists: true,
+            target_is_superadmin: false,
+            target_is_active: true,
+            active_superadmin_count: 1,
+            transaction_references: 0,
+            reset_history: 0,
+        };
+        assert!(assert_operator_deletable(&bersih).is_ok());
+
+        let diri_sendiri = OperatorDeleteFacts {
+            target_id: 1,
+            ..bersih
+        };
+        assert_eq!(
+            assert_operator_deletable(&diri_sendiri)
+                .expect_err("akun sendiri")
+                .message,
+            "Akun yang sedang digunakan tidak dapat dihapus."
+        );
+
+        let tidak_ada = OperatorDeleteFacts {
+            target_exists: false,
+            ..bersih
+        };
+        assert_eq!(
+            assert_operator_deletable(&tidak_ada)
+                .expect_err("tidak ada")
+                .message,
+            "Operator tidak ditemukan."
+        );
+
+        let superadmin_terakhir = OperatorDeleteFacts {
+            target_is_superadmin: true,
+            active_superadmin_count: 1,
+            ..bersih
+        };
+        assert_eq!(
+            assert_operator_deletable(&superadmin_terakhir)
+                .expect_err("superadmin terakhir")
+                .message,
+            "Superadmin aktif terakhir tidak dapat dihapus."
+        );
+
+        // Superadmin kedua boleh dihapus — persis seperti jalur Web. Aturan
+        // lama Rust menolak semua Superadmin tanpa kecuali.
+        let superadmin_cadangan = OperatorDeleteFacts {
+            target_is_superadmin: true,
+            active_superadmin_count: 2,
+            ..bersih
+        };
+        assert!(assert_operator_deletable(&superadmin_cadangan).is_ok());
+
+        // Superadmin yang sudah nonaktif tidak menahan siapa pun.
+        let superadmin_nonaktif = OperatorDeleteFacts {
+            target_is_superadmin: true,
+            target_is_active: false,
+            active_superadmin_count: 1,
+            ..bersih
+        };
+        assert!(assert_operator_deletable(&superadmin_nonaktif).is_ok());
+
+        let punya_transaksi = OperatorDeleteFacts {
+            transaction_references: 1,
+            ..bersih
+        };
+        assert_eq!(
+            assert_operator_deletable(&punya_transaksi)
+                .expect_err("histori transaksi")
+                .message,
+            "Operator memiliki histori transaksi. Nonaktifkan akun agar audit tetap utuh."
+        );
+
+        let punya_riwayat_reset = OperatorDeleteFacts {
+            reset_history: 1,
+            ..bersih
+        };
+        assert!(
+            assert_operator_deletable(&punya_riwayat_reset)
+                .expect_err("riwayat reset")
+                .message
+                .contains("riwayat pengajuan reset password")
+        );
+
+        // Histori transaksi diperiksa lebih dulu daripada riwayat reset, sama
+        // seperti urutan di jalur Web.
+        let keduanya = OperatorDeleteFacts {
+            transaction_references: 1,
+            reset_history: 1,
+            ..bersih
+        };
+        assert_eq!(
+            assert_operator_deletable(&keduanya)
+                .expect_err("keduanya")
+                .message,
+            "Operator memiliki histori transaksi. Nonaktifkan akun agar audit tetap utuh."
+        );
+    }
+
+    #[test]
+    fn test_normalize_operator_phone_matches_typescript() {
+        for input in [
+            "081234567890",
+            "+62 812-3456-7890",
+            "6281234567890",
+            "(0812) 3456 7890",
+        ] {
+            assert_eq!(normalize_operator_phone(input), "+6281234567890");
+        }
+        assert_eq!(normalize_operator_phone("+15551234567"), "+15551234567");
+        assert_eq!(normalize_operator_phone("12345"), "");
+        assert_eq!(normalize_operator_phone("bukan nomor"), "");
+        assert_eq!(normalize_operator_phone(""), "");
+    }
+
+    #[test]
+    fn test_normalize_operator_email_is_lowercased() {
+        assert_eq!(
+            normalize_operator_email("  Operator@SPPG.ID "),
+            "operator@sppg.id"
+        );
+    }
+
+    #[test]
+    fn test_operator_email_validation() {
+        assert!(is_valid_operator_email("operator.satu@sppg.id"));
+        assert!(is_valid_operator_email("a@b.co"));
+        for invalid in [
+            "",
+            "operator",
+            "operator@",
+            "@sppg.id",
+            "operator@sppg",
+            "operator @sppg.id",
+            "a@b@c.id",
+        ] {
+            assert!(!is_valid_operator_email(invalid), "harus ditolak: {invalid}");
+        }
+    }
+
+    #[test]
+    fn test_operator_phone_validation() {
+        assert!(is_valid_operator_phone("081234567890"));
+        assert!(!is_valid_operator_phone("0812"));
+        assert!(!is_valid_operator_phone(""));
+    }
+
+    #[test]
+    fn test_validate_operator_contact_rejects_incomplete_data() {
+        assert!(validate_operator_contact("operator@sppg.id", "081234567890").is_ok());
+        assert!(validate_operator_contact("", "081234567890").is_err());
+        assert!(validate_operator_contact("operator@sppg.id", "").is_err());
+        assert!(validate_operator_contact("bukan-email", "081234567890").is_err());
+    }
+
+    /// Layar "Lupa Password" terbuka tanpa login, jadi kontak lengkap tidak
+    /// boleh ditampilkan di sana.
+    #[test]
+    fn test_contact_masking_hides_identity() {
+        let masked = mask_operator_email("operator01@sppg.id");
+        assert!(!masked.contains("operator01"));
+        assert!(masked.starts_with('o'));
+        assert!(masked.ends_with(".id"));
+        assert_eq!(mask_operator_email(""), "");
+        assert_eq!(mask_operator_email("@sppg.id"), "");
+
+        let phone = mask_operator_phone("081234567890");
+        assert!(phone.starts_with("+62"));
+        assert!(phone.ends_with("7890"));
+        assert!(phone.contains('*'));
+        assert!(!phone.contains("123456"));
+        assert_eq!(mask_operator_phone("bukan nomor"), "");
+    }
+
+    /// Tantangan liveness harus acak dan tidak berulang dalam satu sesi.
+    #[test]
+    fn test_pick_reset_challenges_returns_unique_triplet() {
+        let picked = pick_reset_challenges();
+        assert_eq!(picked.len(), 3);
+        let unique: std::collections::HashSet<&String> = picked.iter().collect();
+        assert_eq!(unique.len(), 3);
+        for challenge in &picked {
+            assert!([
+                "KEDIP",
+                "TENGOK_KIRI",
+                "TENGOK_KANAN",
+                "DEKATKAN_WAJAH",
+                "JAUHKAN_WAJAH"
+            ]
+            .contains(&challenge.as_str()));
+        }
+    }
+
+    /// Aturan kekuatan password baru harus sama dengan
+    /// `validatePasswordStrength` di `src/lib/auth/password.ts`.
+    #[test]
+    fn test_validate_new_password_mirrors_typescript_rules() {
+        assert!(validate_new_password("PasswordBaruKuat1").is_ok());
+        assert!(validate_new_password("pendek").is_err());
+        assert!(validate_new_password("semuahurufkecil1").is_err());
+        assert!(validate_new_password("SEMUAHURUFBESAR1").is_err());
+        assert!(validate_new_password("TanpaAngkaSamaSekali").is_err());
+    }
+
+    /// Token reset tidak pernah disimpan apa adanya — hanya hash SHA-256-nya,
+    /// sama seperti `hashSessionToken` di sisi TypeScript.
+    #[test]
+    fn test_random_reset_token_is_unique_and_hashed() {
+        let first = random_reset_token();
+        let second = random_reset_token();
+        assert_ne!(first, second);
+        assert!(first.len() >= 40);
+        assert_eq!(sha256_hex(&first).len(), 64);
+        assert_ne!(sha256_hex(&first), sha256_hex(&second));
+        assert_eq!(sha256_hex(&first), sha256_hex(&first));
+    }
 
     #[test]
     fn test_normalize_turso_url() {
@@ -5555,18 +8027,32 @@ mod tests {
             kode_operator: "SPD001".into(),
             nama_operator: "Pemilik SPPG".into(),
             username: "pemilik.sppg".into(),
+            email: "pemilik@sppg.id".into(),
+            no_hp: "081234567890".into(),
             password: "Aman-Sekali-2026!".into(),
         };
         assert!(validate_bootstrap_draft(&strong).is_ok());
         let weak = BootstrapSuperadminDraft {
             password: "admin123".into(),
-            ..strong
+            ..strong.clone()
         };
         assert_eq!(
             validate_bootstrap_draft(&weak)
                 .expect_err("weak password")
                 .code,
             "TURSO_BOOTSTRAP_PASSWORD_WEAK"
+        );
+        // Superadmin adalah satu-satunya akun yang tidak punya Admin lain untuk
+        // memulihkannya, jadi kontaknya wajib sejak awal.
+        let tanpa_kontak = BootstrapSuperadminDraft {
+            email: String::new(),
+            ..strong
+        };
+        assert_eq!(
+            validate_bootstrap_draft(&tanpa_kontak)
+                .expect_err("kontak wajib")
+                .code,
+            "VALIDATION_ERROR"
         );
     }
 
@@ -5638,14 +8124,42 @@ mod tests {
     }
 
     #[test]
+    fn error_skema_dikenali_untuk_penyembuhan() {
+        // Bentuk pesan yang benar-benar dikembalikan libSQL saat kolom atau
+        // tabel belum ada di cloud.
+        assert!(is_recoverable_schema_error(
+            "SQLite error: table tbl_shift has no column named shift_lanjutan_id"
+        ));
+        assert!(is_recoverable_schema_error("no such column: shift_lanjutan_id"));
+        assert!(is_recoverable_schema_error("SQLite error: no such table: tbl_shift"));
+
+        // Konflik data yang sebenarnya tidak boleh memicu migrasi ulang.
+        assert!(!is_recoverable_schema_error(
+            "Data server berubah setelah snapshot lokal dibuat."
+        ));
+        assert!(!is_recoverable_schema_error(
+            "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain."
+        ));
+        assert!(!is_recoverable_schema_error("UNIQUE constraint failed: tbl_shift.kode_shift"));
+    }
+
+    #[test]
     fn scan_tidak_boleh_menimpa_koreksi_admin_di_jalur_turso() {
+        // Scan mencoba MENGUBAH jam masuk yang sudah diisi admin.
         let payload = json!({
-            "attendance": { "id_sesi": "SESI-1" },
+            "attendance": {
+                "id_sesi": "SESI-1",
+                "jam_masuk": "2026-08-10 08:15:00",
+                "jam_pulang": ""
+            },
             "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
         });
         let dikoreksi = AttendanceGuardRow {
             sumber: "Koreksi Admin".into(),
             update_terakhir: "2026-08-10 07:30:00".into(),
+            jam_masuk: "2026-08-10 07:00:00".into(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
         };
 
         // Scanner terminal berada di bawah Koreksi Admin pada hierarki prioritas.
@@ -5670,6 +8184,122 @@ mod tests {
     }
 
     #[test]
+    fn scan_pulang_boleh_melengkapi_baris_koreksi_admin() {
+        // Admin mengoreksi jam masuk; jam pulang masih kosong. Scan pulang
+        // hanya MENGISI kolom kosong itu, tidak menimpa keputusan admin.
+        let dikoreksi = AttendanceGuardRow {
+            sumber: "Koreksi Admin".into(),
+            update_terakhir: "2026-08-10 07:30:00".into(),
+            jam_masuk: "2026-08-10 07:00:00".into(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
+        };
+        let payload = json!({
+            "attendance": {
+                "id_sesi": "SESI-1",
+                "jam_masuk": "2026-08-10 07:00:00",
+                "jam_pulang": "2026-08-10 15:10:00"
+            },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
+        });
+
+        assert!(
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&dikoreksi)).is_ok()
+        );
+
+        // Menghapus jam masuk yang diisi admin tetap terlarang.
+        let menghapus = json!({
+            "attendance": {
+                "id_sesi": "SESI-1",
+                "jam_masuk": "",
+                "jam_pulang": "2026-08-10 15:10:00"
+            },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
+        });
+        assert_eq!(
+            assert_attendance_precondition("attendance", "scan", &menghapus, Some(&dikoreksi))
+                .unwrap_err()
+                .code,
+            "TURSO_SYNC_ATTENDANCE_PROTECTED"
+        );
+
+        // Koreksi Sakit/Izin/Dispen/Alfa mengosongkan kedua jam. Scan tidak
+        // boleh menghidupkannya kembali menjadi Hadir walaupun secara teknis
+        // hanya "mengisi kolom kosong".
+        let sakit = AttendanceGuardRow {
+            sumber: "Koreksi Admin".into(),
+            update_terakhir: "2026-08-10 07:30:00".into(),
+            jam_masuk: String::new(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Sakit".into(),
+        };
+        assert_eq!(
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&sakit))
+                .unwrap_err()
+                .code,
+            "TURSO_SYNC_ATTENDANCE_PROTECTED"
+        );
+    }
+
+    #[test]
+    fn force_local_override_menyelesaikan_konflik_basi() {
+        // Basis optimistis di payload tidak cocok dengan server. Tanpa jalan
+        // keluar, operator menekan "Gunakan Versi Lokal" berkali-kali dan
+        // konfliknya muncul terus dengan pesan yang sama.
+        let basi = AttendanceGuardRow {
+            sumber: "Scanner".into(),
+            update_terakhir: "2026-08-10 09:00:00".into(),
+            jam_masuk: String::new(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
+        };
+        let payload = json!({
+            "attendance": { "id_sesi": "SESI-1" },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00"
+        });
+        assert_eq!(
+            assert_attendance_precondition("attendance", "scan", &payload, Some(&basi))
+                .unwrap_err()
+                .code,
+            "TURSO_SYNC_ATTENDANCE_STALE"
+        );
+
+        let dipaksa = json!({
+            "attendance": { "id_sesi": "SESI-1" },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00",
+            "forceLocalOverride": true
+        });
+        assert!(
+            assert_attendance_precondition("attendance", "scan", &dipaksa, Some(&basi)).is_ok()
+        );
+
+        // Prioritas Koreksi Admin TETAP menang: "gunakan lokal" tidak boleh
+        // menjadi pintu belakang untuk menimpa keputusan admin.
+        let dikoreksi = AttendanceGuardRow {
+            sumber: "Koreksi Admin".into(),
+            update_terakhir: "2026-08-10 07:30:00".into(),
+            jam_masuk: "2026-08-10 07:00:00".into(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
+        };
+        let menimpa = json!({
+            "attendance": {
+                "id_sesi": "SESI-1",
+                "jam_masuk": "2026-08-10 09:99:00",
+                "jam_pulang": ""
+            },
+            "attendanceBaseUpdatedAt": "2026-08-10 07:30:00",
+            "forceLocalOverride": true
+        });
+        assert_eq!(
+            assert_attendance_precondition("attendance", "scan", &menimpa, Some(&dikoreksi))
+                .unwrap_err()
+                .code,
+            "TURSO_SYNC_ATTENDANCE_PROTECTED"
+        );
+    }
+
+    #[test]
     fn event_absensi_basi_ditolak_sebagai_konflik() {
         let payload = json!({
             "attendance": { "id_sesi": "SESI-1" },
@@ -5678,6 +8308,9 @@ mod tests {
         let berubah = AttendanceGuardRow {
             sumber: "Scanner".into(),
             update_terakhir: "2026-08-10 09:00:00".into(),
+            jam_masuk: String::new(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
         };
         assert_eq!(
             assert_attendance_precondition("attendance", "scan", &payload, Some(&berubah))
@@ -5690,6 +8323,9 @@ mod tests {
         let sama = AttendanceGuardRow {
             sumber: "Scanner".into(),
             update_terakhir: "2026-08-10 07:30:00".into(),
+            jam_masuk: String::new(),
+            jam_pulang: String::new(),
+            status_kehadiran: "Hadir".into(),
         };
         assert!(
             assert_attendance_precondition("attendance", "scan", &payload, Some(&sama)).is_ok()

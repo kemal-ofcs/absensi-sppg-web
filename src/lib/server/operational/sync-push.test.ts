@@ -396,9 +396,15 @@ describe("operational sync idempotency", () => {
     expect(Number(attendance.rows[0]?.jam_kerja)).toBe(420);
   });
 
-  test("scan lokal tidak menimpa data hadir hasil Koreksi Admin", async () => {
-    const client = await fixture();
-    await client.execute(`
+  /** Seed satu baris absensi hasil Koreksi Admin dengan kondisi tertentu. */
+  async function seedBarisKoreksiAdmin(
+    client: Awaited<ReturnType<typeof fixture>>,
+    jamMasuk: string,
+    jamPulang: string,
+    statusKehadiran: string,
+  ) {
+    await client.execute({
+      sql: `
       INSERT INTO absensi_harian (
         tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
         status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
@@ -406,13 +412,17 @@ describe("operational sync idempotency", () => {
         jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
         id_backup, id_karyawan_asal, tanggal_tugas
       ) VALUES (
-        '2026-08-10', 'K001', 'Karyawan Test', 'Dapur', '', '',
-        'Hadir', 'Lengkap', 'Jam dikoreksi admin', 'Koreksi Admin',
+        '2026-08-10', 'K001', 'Karyawan Test', 'Dapur', ?, ?,
+        ?, 'Lengkap', 'Jam dikoreksi admin', 'Koreksi Admin',
         '2026-08-10 07:30:00', 0, 0, 0, 0, 0, 1, 'Agustus', 2026,
         'NORMAL-20260810-K001-1', 'NORMAL', '', '', '2026-08-10'
-      );
-    `);
-    const input = scanEvent({
+      );`,
+      args: [jamMasuk, jamPulang, statusKehadiran],
+    });
+  }
+
+  function scanKe(jamMasuk: string, jamPulang: string) {
+    return scanEvent({
       eventId: `evt-${"e".repeat(64)}`,
       entityKey: "scan:-101",
       payload: {
@@ -423,12 +433,12 @@ describe("operational sync idempotency", () => {
           id_karyawan: "K001",
           nama: "Karyawan Test",
           kelas_divisi: "Dapur",
-          jam_masuk: "2026-08-10 08:00:00",
-          jam_pulang: "",
+          jam_masuk: jamMasuk,
+          jam_pulang: jamPulang,
           status_kehadiran: "Hadir",
-          status_absen: "Belum Pulang",
+          status_absen: "Lengkap",
           keterangan: "Tepat Waktu",
-          update_terakhir: "2026-08-10 08:00:00",
+          update_terakhir: "2026-08-10 15:10:00",
           id_shift: 1,
           bulan: "Agustus",
           tahun: 2026,
@@ -437,18 +447,63 @@ describe("operational sync idempotency", () => {
         },
       },
     });
+  }
 
-    const result = await processOperationalSyncEvent(client, actor, input);
+  test("scan lokal tidak boleh mengubah jam yang sudah diisi Koreksi Admin", async () => {
+    const client = await fixture();
+    await seedBarisKoreksiAdmin(client, "2026-08-10 07:00:00", "", "Hadir");
+
+    const result = await processOperationalSyncEvent(
+      client,
+      actor,
+      scanKe("2026-08-10 08:00:00", ""),
+    );
+
     expect(result.status).toBe("conflict");
     const attendance = await client.execute(
-      "SELECT status_kehadiran, sumber FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
+      "SELECT jam_masuk, sumber FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
     );
-    const logs = await client.execute(
-      "SELECT COUNT(*) AS total FROM log_scan WHERE id_karyawan = 'K001';",
-    );
-    expect(attendance.rows[0]?.status_kehadiran).toBe("Hadir");
+    expect(attendance.rows[0]?.jam_masuk).toBe("2026-08-10 07:00:00");
     expect(attendance.rows[0]?.sumber).toBe("Koreksi Admin");
-    expect(Number(logs.rows[0]?.total)).toBe(0);
+  });
+
+  test("scan pulang boleh melengkapi baris hasil Koreksi Admin jam masuk", async () => {
+    const client = await fixture();
+    await seedBarisKoreksiAdmin(client, "2026-08-10 07:00:00", "", "Hadir");
+
+    // Jam masuk dikirim apa adanya; hanya jam pulang yang baru terisi.
+    const result = await processOperationalSyncEvent(
+      client,
+      actor,
+      scanKe("2026-08-10 07:00:00", "2026-08-10 15:10:00"),
+    );
+
+    expect(result.status).toBe("applied");
+    const attendance = await client.execute(
+      "SELECT jam_masuk, jam_pulang FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
+    );
+    expect(attendance.rows[0]?.jam_masuk).toBe("2026-08-10 07:00:00");
+    expect(attendance.rows[0]?.jam_pulang).toBe("2026-08-10 15:10:00");
+  });
+
+  test("scan tidak boleh menghidupkan kembali koreksi Sakit menjadi Hadir", async () => {
+    const client = await fixture();
+    // Koreksi Sakit/Izin/Dispen/Alfa mengosongkan kedua jam. Kedua kolom kosong
+    // bukan berarti bebas diisi scanner.
+    await seedBarisKoreksiAdmin(client, "", "", "Sakit");
+
+    const result = await processOperationalSyncEvent(
+      client,
+      actor,
+      scanKe("2026-08-10 07:00:00", ""),
+    );
+
+    expect(result.status).toBe("conflict");
+    const attendance = await client.execute(
+      "SELECT status_kehadiran, jam_masuk FROM absensi_harian WHERE id_sesi = 'NORMAL-20260810-K001-1';",
+    );
+    expect(attendance.rows[0]?.status_kehadiran).toBe("Sakit");
+    expect(attendance.rows[0]?.jam_masuk).toBe("");
   });
 
   test("event correction create dengan tahun integer diterapkan dan receipt dibuat", async () => {

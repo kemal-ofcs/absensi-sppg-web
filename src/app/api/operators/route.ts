@@ -29,6 +29,8 @@ function parseDraft(value: unknown): OperatorDraft {
       typeof draft.kodeOperator === "string" ? draft.kodeOperator : "",
     name: typeof draft.name === "string" ? draft.name : "",
     username: typeof draft.username === "string" ? draft.username : "",
+    email: typeof draft.email === "string" ? draft.email : "",
+    noHp: typeof draft.noHp === "string" ? draft.noHp : "",
     password: typeof draft.password === "string" ? draft.password : undefined,
     roleId: Number(draft.roleId),
     status: String(draft.status) as OperatorDraft["status"],

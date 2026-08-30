@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Transaction } from "@libsql/client";
+import { isShiftFleksibel } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface KoreksiInput {
@@ -259,8 +260,24 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   });
   let shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
 
+  // Shift fleksibel (00:00-23:59) tidak punya rentang jadwal, jadi jam koreksi
+  // apa pun sah. Tanpa pengecualian ini Smart Shift Detection menganggap shift
+  // karyawan "tidak cocok" lalu diam-diam memindahkannya ke shift reguler, dan
+  // validasi di bawah menolak setiap jam selain 00:00.
+  const adalahShiftFleksibel = (s: Record<string, unknown> | undefined) =>
+    !!s &&
+    isShiftFleksibel(
+      String(s.jam_masuk || ""),
+      String(s.jam_pulang || ""),
+      Number(s.jam_kerja_normal_menit ?? 0),
+    );
+
   // Smart Shift Detection: jika jam yang diinput tidak cocok dengan shift saat ini dan user tidak eksplisit memilih shift, cari shift yang cocok di tbl_shift
-  if (input.jam_koreksi && !input.id_shift) {
+  if (
+    input.jam_koreksi &&
+    !input.id_shift &&
+    !adalahShiftFleksibel(shiftData)
+  ) {
     const isCheckIn = [
       "Lupa Absen Masuk",
       "Kendala Sistem - Jam Masuk",
@@ -293,8 +310,10 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
         const allShiftsRes = await db.execute(
           "SELECT id_shift, jam_masuk, jam_pulang, nama_shift, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift ORDER BY id_shift ASC;",
         );
-        const matchingShift = allShiftsRes.rows.find((r) =>
-          isShiftFit(r as Record<string, unknown>),
+        const matchingShift = allShiftsRes.rows.find(
+          (r) =>
+            !adalahShiftFleksibel(r as Record<string, unknown>) &&
+            isShiftFit(r as Record<string, unknown>),
         );
         if (matchingShift) {
           shiftData = matchingShift as Record<string, unknown>;
@@ -314,8 +333,11 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
   const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
   const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
 
+  const koreksiPadaShiftFleksibel = adalahShiftFleksibel(shiftData);
+
   // Validasi Rentang Shift untuk Koreksi Waktu
   if (
+    !koreksiPadaShiftFleksibel &&
     ["Lupa Absen Masuk", "Kendala Sistem - Jam Masuk", "Terlambat"].includes(
       input.jenis_koreksi,
     )
@@ -339,6 +361,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       }
     }
   } else if (
+    !koreksiPadaShiftFleksibel &&
     ["Lupa Absen Pulang", "Kendala Sistem - Jam Pulang"].includes(
       input.jenis_koreksi,
     )
@@ -448,6 +471,11 @@ async function _prosesKoreksiMutasi(
   const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
   const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
   const isOvernightShift = shiftOutMin < shiftInMin;
+  const mutasiPadaShiftFleksibel = isShiftFleksibel(
+    shiftJamMasukStr,
+    shiftJamPulangStr,
+    normalShiftMin,
+  );
 
   const nextDate = (() => {
     const d = new Date(targetDate);
@@ -586,7 +614,13 @@ async function _prosesKoreksiMutasi(
         userInTimeline += 1440;
       }
       const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-      if (userInTimeline < shiftInMin) {
+      if (mutasiPadaShiftFleksibel) {
+        // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+        // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+        // dihitung hanyalah jam kerjanya.
+        calculatedLate = 0;
+        calculatedEarly = 0;
+      } else if (userInTimeline < shiftInMin) {
         calculatedEarly = shiftInMin - userInTimeline;
       } else if (userInTimeline <= batasNormalMasuk) {
         calculatedLate = 0;
@@ -776,7 +810,7 @@ export async function hapusKoreksiAdmin(
 
   // 3. Cek remaining scan logs untuk karyawan di tanggal tersebut
   const remainRes = await db.execute({
-    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY timestamp_scan ASC;",
+    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
     args: [idKaryawan, tanggal],
   });
 
@@ -827,6 +861,11 @@ export async function hapusKoreksiAdmin(
       const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
       const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
       const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
+      const shiftKeduaFleksibel = isShiftFleksibel(
+        shiftJamMasukStr,
+        shiftJamPulangStr,
+        normalShiftMin,
+      );
       const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
       const isOvernightShift = shiftOutMin < shiftInMin;
 
@@ -845,7 +884,13 @@ export async function hapusKoreksiAdmin(
           userInTimeline += 1440;
         }
         const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-        if (userInTimeline < shiftInMin) {
+        if (shiftKeduaFleksibel) {
+          // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
+          // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
+          // dihitung hanyalah jam kerjanya.
+          calculatedLate = 0;
+          calculatedEarly = 0;
+        } else if (userInTimeline < shiftInMin) {
           calculatedEarly = shiftInMin - userInTimeline;
         } else if (userInTimeline <= batasNormalMasuk) {
           calculatedLate = 0;

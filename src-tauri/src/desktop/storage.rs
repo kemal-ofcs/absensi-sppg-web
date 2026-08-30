@@ -217,7 +217,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         offset_istirahat_mulai INTEGER DEFAULT 240,
         offset_generate_alfa INTEGER DEFAULT 180,
         buffer_shift_malam_menit INTEGER DEFAULT 120,
-        izinkan_multi_sesi INTEGER DEFAULT 0
+        izinkan_multi_sesi INTEGER DEFAULT 0,
+        shift_lanjutan_id INTEGER DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS setting_gex_system (
@@ -560,6 +561,16 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "tbl_shift",
         "izinkan_multi_sesi",
         "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+    )?;
+
+    // Shift tujuan sesi lanjutan. 0 = belum ditentukan, sehingga pemasangan
+    // lama yang hanya menyalakan izinkan_multi_sesi tetap memakai pencocokan
+    // jendela otomatis seperti sebelumnya.
+    ensure_column(
+        &connection,
+        "tbl_shift",
+        "shift_lanjutan_id",
+        "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER DEFAULT 0;",
     )?;
 
     let has_holiday_table: bool = connection

@@ -13,7 +13,8 @@ export async function listRoles(client: Client): Promise<RoleRecord[]> {
     client.execute(`
       SELECT
         r.id, r.role_key, r.nama_role, r.deskripsi, r.is_system,
-        r.is_superadmin, r.status, COUNT(m.id) AS operator_count
+        r.is_superadmin, r.status, COALESCE(r.require_totp, 0) AS require_totp,
+        COUNT(m.id) AS operator_count
       FROM app_role r
       LEFT JOIN master_operator m ON m.role_id = r.id
       GROUP BY r.id
@@ -45,6 +46,7 @@ export async function listRoles(client: Client): Promise<RoleRecord[]> {
     isSystem: Number(row.is_system) === 1,
     isSuperadmin: Number(row.is_superadmin) === 1,
     status: String(row.status) === "Nonaktif" ? "Nonaktif" : "Aktif",
+    requireTotp: Number(row.require_totp) === 1,
     operatorCount: Number(row.operator_count),
     permissions: permissionsByRole.get(Number(row.id)) ?? [],
   }));
@@ -119,13 +121,14 @@ export async function editRole(
   await client.execute({
     sql: `
       UPDATE app_role
-      SET nama_role = ?, deskripsi = ?, status = ?, updated_at = ?
+      SET nama_role = ?, deskripsi = ?, status = ?, require_totp = ?, updated_at = ?
       WHERE id = ?;
     `,
     args: [
       name,
       draft.description?.trim() ?? "",
       draft.status ?? "Aktif",
+      draft.requireTotp ? 1 : 0,
       new Date().toISOString(),
       roleId,
     ],

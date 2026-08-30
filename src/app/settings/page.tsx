@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import type { ChangeEvent, FormEvent } from "react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { MailSettingsCard } from "@/components/MailSettingsCard";
+import { TwoFactorCard } from "@/components/TwoFactorCard";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -1093,6 +1095,12 @@ export default function SettingsPage() {
           </dl>
         </section>
       </div>
+
+      {/* Keamanan akun sendiri: tidak dijaga izin apa pun, karena setiap
+          operator berhak mengamankan akunnya — termasuk role paling terbatas. */}
+      <TwoFactorCard />
+
+      {hasPermission(user, "settings.manage") ? <MailSettingsCard /> : null}
 
       {hasPermission(user, "settings.manage") ? (
         <section className="app-panel rounded-3xl p-5 sm:p-7">
@@ -2381,10 +2389,24 @@ export default function SettingsPage() {
               </div>
               <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
                 <div className="text-[11px] text-slate-400">
-                  Shift Fleksibel
+                  Shift Fleksibel (dinilai)
                 </div>
                 <div className="text-xl font-black text-purple-400">
                   {alfaModalResult.jumlahFleksibel}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">Hari Libur</div>
+                <div className="text-xl font-black text-slate-300">
+                  {alfaModalResult.jumlahLibur}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Shift Tidak Valid
+                </div>
+                <div className="text-xl font-black text-rose-400">
+                  {alfaModalResult.jumlahShiftTidakValid}
                 </div>
               </div>
             </div>

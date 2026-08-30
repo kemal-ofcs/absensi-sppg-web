@@ -112,6 +112,119 @@ export function formatTimestampOperasional(value: ExplicitInstant): string {
   return `${formatTanggalOperasional(value)} ${formatJamOperasional(value)}`;
 }
 
+/**
+ * Menit terakhir sebuah hari kalender (23:59).
+ *
+ * Dipakai sebagai penutup jendela untuk shift fleksibel: shift itu berjalan
+ * 00:00-23:59 tanpa aturan, sehingga satu-satunya batas yang masuk akal
+ * adalah pergantian hari.
+ */
+export const MENIT_AKHIR_HARI = 1439;
+
+/** Selisih hari kalender antara dua tanggal `YYYY-MM-DD` (setara `days_between` di Rust). */
+export function selisihHariKalender(from: string, to: string): number {
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  if ([fy, fm, fd, ty, tm, td].some((value) => !Number.isFinite(value))) {
+    return 0;
+  }
+  const millisPerDay = 86_400_000;
+  return Math.round(
+    (Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / millisPerDay,
+  );
+}
+
+/**
+ * Shift "tanpa kewajiban jam tetap" (lihat `05-business-logic-edge-cases.md` §2).
+ *
+ * Sengaja TIDAK melihat `kode_shift`: kolom itu adalah *stable business key*
+ * untuk rekonsiliasi shift offline (`03-schema-4layer-consistency.md`), bukan
+ * penanda fleksibel. Porting lama menyamakan `kode_shift === 4` dengan
+ * fleksibel, sehingga shift reguler apa pun yang kebetulan memakai kode 4
+ * diam-diam dilewati scanner dan Generate Alfa.
+ */
+export function jenisShift(
+  jamMasuk: string,
+  jamPulang: string,
+  jamKerjaNormalMenit: number,
+): ShiftKind {
+  return isShiftFleksibel(jamMasuk, jamPulang, jamKerjaNormalMenit)
+    ? "flexible"
+    : "regular";
+}
+
+export function isShiftFleksibel(
+  jamMasuk: string,
+  jamPulang: string,
+  jamKerjaNormalMenit: number,
+): boolean {
+  if (!Number.isFinite(jamKerjaNormalMenit) || jamKerjaNormalMenit <= 0) {
+    return true;
+  }
+  try {
+    const masuk = parseClock(jamMasuk, "jamMasuk");
+    const pulang = parseClock(jamPulang, "jamPulang");
+    // Rentang yang menutupi satu hari penuh: tidak ada jam masuk/pulang efektif.
+    return masuk === pulang || (masuk === 0 && pulang === 1439);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Menit pada garis waktu tanggal kerja saat jendela scan masuk tertutup.
+ *
+ * Sama dengan `finalEntryEnd` di `putuskanScanWaktu`: jam masuk + batas masuk
+ * tepat waktu + toleransi terlambat. Setelah menit ini scanner menolak scan
+ * masuk, jadi karyawan tanpa baris absensi memang benar-benar "belum absen
+ * padahal jam absen sudah lewat".
+ */
+export function menitPenutupanScanMasuk(shift: ShiftTimePolicy): number {
+  // Karyawan shift fleksibel bebas datang jam berapa pun, jadi tidak ada menit
+  // di tengah hari yang membuatnya "belum absen padahal sudah lewat".
+  if (shift.kind === "flexible") return MENIT_AKHIR_HARI;
+  return (
+    parseClock(shift.jamMasuk, "jamMasuk") +
+    shift.batasMasukMenit +
+    shift.toleransiMasukMenit
+  );
+}
+
+/**
+ * Menit pada garis waktu tanggal kerja saat jendela scan pulang tertutup.
+ * Untuk shift malam jam pulang ada di hari berikutnya, jadi nilainya > 1440.
+ */
+export function menitPenutupanScanPulang(shift: ShiftTimePolicy): number {
+  // Shift fleksibel tidak punya jam pulang efektif: kewajibannya berakhir
+  // bersama hari kalendernya. Rumus reguler akan menambahkan batasPulangMenit
+  // ke 23:59 dan mendorong penilaian jauh ke hari berikutnya.
+  if (shift.kind === "flexible") return MENIT_AKHIR_HARI;
+  const jamMasuk = parseClock(shift.jamMasuk, "jamMasuk");
+  const jamPulangDasar = parseClock(shift.jamPulang, "jamPulang");
+  const isMalam = jamPulangDasar < jamMasuk;
+  const jamPulang = isMalam ? jamPulangDasar + 1440 : jamPulangDasar;
+  const buffer = isMalam ? shift.bufferShiftMalamMenit : 0;
+  return jamPulang + shift.batasPulangMenit + buffer;
+}
+
+/**
+ * Menit pada garis waktu tanggal kerja saat Alfa otomatis boleh dibuat.
+ *
+ * Anchor-nya adalah penutupan jendela scan pulang (jam pulang + batas pulang +
+ * buffer shift malam), lalu ditambah `offsetGenerateAlfa`. Offset DITAMBAHKAN,
+ * bukan dikurangi, supaya Alfa tidak pernah dibuat selagi karyawan masih
+ * berhak scan pulang.
+ */
+export function menitGenerateAlfa(
+  shift: ShiftTimePolicy,
+  offsetGenerateAlfaMenit: number,
+): number {
+  const offset = Number.isFinite(offsetGenerateAlfaMenit)
+    ? Math.max(0, offsetGenerateAlfaMenit)
+    : 0;
+  return menitPenutupanScanPulang(shift) + offset;
+}
+
 export function tentukanTanggalKerja(
   waktuScan: ExplicitInstant,
   shift: ShiftTimePolicy,

@@ -9,8 +9,8 @@ use super::{
     models::CommandError,
     storage, sync,
     time_policy::{
-        decide_scan, determine_work_date, is_checkout_window_expired, DecisionReason, LocalMoment,
-        ScanDecision, ScanHistory, ShiftKind, ShiftPolicy,
+        decide_scan, determine_work_date, is_checkout_window_expired, is_flexible_shift,
+        DecisionReason, LocalMoment, ScanDecision, ScanHistory, ShiftKind, ShiftPolicy,
     },
 };
 
@@ -35,6 +35,7 @@ struct AttendanceState {
     check_out: String,
     updated_at: String,
     source: String,
+    presence_status: String,
 }
 
 struct Backup {
@@ -182,6 +183,32 @@ fn enqueue_scan(
     Ok(())
 }
 
+/// Memindahkan karyawan ke shift lanjutan yang ditunjuk admin pada shift asal.
+///
+/// Perpindahan ini menyentuh `master_data`, tabel yang ikut disinkronkan, jadi
+/// wajib mendaftarkan event outbox `employee/update` supaya terminal lain
+/// melihat shift yang sama.
+fn pindahkan_shift_karyawan(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    employee_id: &str,
+    shift_id: i64,
+) -> Result<(), CommandError> {
+    let changed = transaction
+        .execute(
+            "UPDATE master_data SET id_shift = ? WHERE id_unik = ? AND COALESCE(id_shift, 0) <> ?;",
+            params![shift_id, employee_id, shift_id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    if changed == 0 {
+        return Ok(());
+    }
+
+    // Payload dan pendaftaran outbox-nya dipakai bersama dengan pemeliharaan
+    // status_backup di administration.rs, jadi satu helper untuk keduanya.
+    sync::enqueue_employee_snapshot(transaction, client_id, employee_id)
+}
+
 fn rejected_log(
     timestamp: &str,
     date: &str,
@@ -276,17 +303,18 @@ fn load_shift(transaction: &Transaction<'_>, shift_id: i64) -> Result<Option<Shi
       "#,
             params![shift_id, shift_id],
             |row| {
-                let code = row.get::<_, i64>(1)?;
                 let normal_work_minutes = row.get::<_, Option<i64>>(10)?.unwrap_or_default();
+                let start: String = row.get(2)?;
+                let end: String = row.get(3)?;
                 Ok(Shift {
                     policy: ShiftPolicy {
-                        kind: if code == 4 || normal_work_minutes == 0 {
+                        kind: if is_flexible_shift(&start, &end, normal_work_minutes) {
                             ShiftKind::Flexible
                         } else {
                             ShiftKind::Regular
                         },
-                        start: row.get(2)?,
-                        end: row.get(3)?,
+                        start,
+                        end,
                         early_window_minutes: row.get::<_, Option<i64>>(4)?.unwrap_or(60),
                         normal_entry_minutes: row.get::<_, Option<i64>>(5)?.unwrap_or(120),
                         late_tolerance_minutes: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
@@ -774,7 +802,6 @@ fn submit_internal(
                 SELECT id_sesi, id_shift, tanggal, jam_masuk, mode_tugas, id_backup, id_karyawan_asal
                 FROM absensi_harian
                 WHERE id_karyawan = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '')
-                  AND (sumber IS NULL OR sumber != 'Koreksi Admin')
                 ORDER BY tanggal DESC LIMIT 1;
                 "#,
                 params![employee.id],
@@ -893,24 +920,70 @@ fn submit_internal(
                 .unwrap_or(false);
 
             if base_completed {
-                let mut statement = transaction
-                    .prepare(
-                        "SELECT id_shift FROM tbl_shift WHERE id_shift != ? AND kode_shift != 4 AND jam_kerja_normal_menit > 0 AND (izinkan_multi_sesi = 1 OR izinkan_multi_sesi = '1' OR izinkan_multi_sesi = 'true') ORDER BY id_shift ASC;"
+                // Flag multi-sesi dibaca dari shift ASAL karyawan, sesuai label
+                // di form Shift: "karyawan yang selesai bekerja pada shift ini
+                // dapat langsung scan masuk ke shift berikutnya". Sebelumnya
+                // flag justru dibaca dari shift KANDIDAT (`izinkan_multi_sesi`
+                // pada baris `id_shift != ?`), sehingga mengaktifkannya di
+                // shift karyawan sendiri tidak berefek apa pun dan satu-satunya
+                // cara scan lagi adalah memindahkan karyawan ke shift lain.
+                let base_multi_session_raw: Option<String> = transaction
+                    .query_row(
+                        "SELECT CAST(COALESCE(izinkan_multi_sesi, 0) AS TEXT) FROM tbl_shift WHERE id_shift = ?;",
+                        params![employee.shift_id],
+                        |row| row.get(0),
                     )
+                    .optional()
                     .map_err(|_| CommandError::internal())?;
+                let base_allows_multi_session = matches!(
+                    base_multi_session_raw.as_deref(),
+                    Some("1") | Some("true") | Some("TRUE") | Some("True")
+                );
 
-                let candidate_shift_ids = statement
-                    .query_map(params![employee.shift_id], |row| row.get::<_, i64>(0))
+                // Shift tujuan yang ditunjuk admin pada shift asal. 0 berarti
+                // belum ditentukan, sehingga scanner kembali mencocokkan jendela
+                // seluruh shift seperti perilaku sebelumnya.
+                let continuation_shift_id: i64 = transaction
+                    .query_row(
+                        "SELECT COALESCE(shift_lanjutan_id, 0) FROM tbl_shift WHERE id_shift = ?;",
+                        params![employee.shift_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
                     .map_err(|_| CommandError::internal())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| CommandError::internal())?;
-                drop(statement);
+                    .unwrap_or(0);
+
+                let candidate_shift_ids: Vec<i64> = if !base_allows_multi_session {
+                    Vec::new()
+                } else if continuation_shift_id > 0 && continuation_shift_id != employee.shift_id {
+                    vec![continuation_shift_id]
+                } else {
+                    let mut statement = transaction
+                        .prepare(
+                            "SELECT id_shift FROM tbl_shift WHERE id_shift != ? ORDER BY id_shift ASC;",
+                        )
+                        .map_err(|_| CommandError::internal())?;
+                    let ids = statement
+                        .query_map(params![employee.shift_id], |row| row.get::<_, i64>(0))
+                        .map_err(|_| CommandError::internal())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| CommandError::internal())?;
+                    drop(statement);
+                    ids
+                };
 
                 let mut matched_shift = None;
                 let mut matched_shift_id = employee.shift_id;
 
                 for c_id in candidate_shift_ids {
                     if let Ok(Some(cand_shift)) = load_shift(&transaction, c_id) {
+                        // Shift fleksibel menerima jam berapa pun sehingga akan
+                        // selalu "cocok" dan menelan setiap sesi lanjutan.
+                        // Dulu ini dijaga `kode_shift != 4`, sebuah angka ajaib
+                        // yang menghukum shift reguler mana pun berkode 4.
+                        if cand_shift.policy.kind == ShiftKind::Flexible {
+                            continue;
+                        }
                         if is_check_in_window_matched(&moment.time, &cand_shift) {
                             matched_shift = Some(cand_shift);
                             matched_shift_id = c_id;
@@ -920,6 +993,14 @@ fn submit_internal(
                 }
 
                 if let Some(cand_shift) = matched_shift {
+                    // Karyawan resmi berpindah ke shift lanjutan, sehingga
+                    // hari-hari berikutnya memakai jadwal shift itu.
+                    pindahkan_shift_karyawan(
+                        &transaction,
+                        &client_id,
+                        &employee.id,
+                        matched_shift_id,
+                    )?;
                     (
                         Session {
                             mode: "NORMAL",
@@ -1072,7 +1153,7 @@ fn submit_internal(
         .query_row(
             r#"
       SELECT COALESCE(jam_masuk, ''), COALESCE(jam_pulang, ''),
-             update_terakhir, sumber
+             update_terakhir, sumber, COALESCE(status_kehadiran, '')
       FROM absensi_harian WHERE id_sesi = ? LIMIT 1;
       "#,
             [&session_id],
@@ -1082,16 +1163,25 @@ fn submit_internal(
                     check_out: row.get(1)?,
                     updated_at: row.get(2)?,
                     source: row.get(3)?,
+                    presence_status: row.get(4)?,
                 })
             },
         )
         .optional()
         .map_err(|_| CommandError::internal())?;
-    if attendance_before
-        .as_ref()
-        .is_some_and(|item| item.source == "Koreksi Admin")
-    {
-        let note = "Data absensi sudah dikoreksi admin";
+    // Perlindungan Koreksi Admin berlaku per KOLOM, bukan per baris. Scan baru
+    // ditolak kalau tidak ada lagi kolom waktu yang kosong untuk diisi.
+    // Sebelumnya seluruh baris terkunci, sehingga karyawan yang jam masuknya
+    // dikoreksi admin tidak pernah bisa scan pulang dan admin terpaksa
+    // mengoreksi jam pulang secara manual juga.
+    if attendance_before.as_ref().is_some_and(|item| {
+        item.source == "Koreksi Admin"
+            // Koreksi Sakit/Izin/Dispen/Alfa mengosongkan kedua jam; scan tidak
+            // boleh menghidupkan baris itu kembali menjadi Hadir.
+            && (item.presence_status != "Hadir"
+                || (!item.check_in.is_empty() && !item.check_out.is_empty()))
+    }) {
+        let note = "Absensi sudah lengkap dan dikoreksi admin";
         let mut log = rejected_log(
             &moment.timestamp,
             &work_date,
@@ -1105,7 +1195,7 @@ fn submit_internal(
         persist_rejection(&transaction, &client_id, &log)?;
         transaction.commit().map_err(|_| CommandError::internal())?;
         return Ok(failure_with_context(
-            "Scan ditolak: Data absensi sudah dikoreksi Admin dan tidak boleh ditimpa scanner.",
+            "Scan ditolak: Absensi hari ini sudah lengkap dan dikoreksi Admin, jadi tidak boleh ditimpa scanner.",
             &employee,
             note,
             "",
@@ -1261,10 +1351,14 @@ fn submit_internal(
             .execute(
                 r#"
         UPDATE absensi_harian SET jam_masuk = ?, status_kehadiran = 'Hadir',
-          status_absen = ?, keterangan = ?, sumber = 'Scanner', update_terakhir = ?,
+          status_absen = ?, keterangan = ?,
+          sumber = CASE WHEN sumber = 'Koreksi Admin' THEN 'Koreksi Admin' ELSE 'Scanner' END,
+          update_terakhir = ?,
           menit_terlambat = ?, menit_datang_awal = ?, id_shift = ?, mode_tugas = ?,
           id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
-        WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';
+        WHERE id_sesi = ?
+          AND (sumber <> 'Koreksi Admin'
+               OR (status_kehadiran = 'Hadir' AND COALESCE(jam_masuk, '') = ''));
         "#,
                 params![
                     moment.timestamp,
@@ -1290,10 +1384,14 @@ fn submit_internal(
             .execute(
                 r#"
         UPDATE absensi_harian SET jam_pulang = ?, status_kehadiran = 'Hadir',
-          status_absen = ?, keterangan = ?, sumber = 'Scanner', update_terakhir = ?,
+          status_absen = ?, keterangan = ?,
+          sumber = CASE WHEN sumber = 'Koreksi Admin' THEN 'Koreksi Admin' ELSE 'Scanner' END,
+          update_terakhir = ?,
           jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?, id_shift = ?,
           mode_tugas = ?, id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
-        WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';
+        WHERE id_sesi = ?
+          AND (sumber <> 'Koreksi Admin'
+               OR (status_kehadiran = 'Hadir' AND COALESCE(jam_pulang, '') = ''));
         "#,
                 params![
                     moment.timestamp,
@@ -1679,15 +1777,164 @@ mod tests {
         );
     }
 
+    fn seed_shift_sore(state: &DesktopState, flag_shift_asal: i64) {
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(&format!(
+                r#"
+        UPDATE tbl_shift SET izinkan_multi_sesi = {flag_shift_asal} WHERE id_shift = 1;
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+          jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+          offset_istirahat_mulai, buffer_shift_malam_menit, izinkan_multi_sesi
+        ) VALUES (2, 2, 'Shift Sore', '16:00', '22:00', 60, 15, 30,
+                  360, 0, 120, 240, 120, 0);
+        "#
+            ))
+            .expect("seed shift sore");
+    }
+
     #[test]
-    fn admin_correction_cannot_be_overwritten_by_scanner() {
+    fn multi_sesi_dibaca_dari_shift_asal_karyawan() {
         let (_directory, state) = fixture();
-        scan(
-            &state,
-            "K001",
-            "TOKEN-TEST",
-            moment("2026-08-12", "07:00:00"),
+        // Flag hanya ada di shift 1 (shift asal karyawan); shift 2 sengaja 0.
+        seed_shift_sore(&state, 1);
+
+        let masuk = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        assert_eq!(masuk["jenisScan"], "Masuk");
+        let pulang = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:05:00"));
+        assert_eq!(pulang["jenisScan"], "Pulang");
+
+        // Sesi shift 1 tuntas, jam 16:05 masuk jendela scan masuk shift 2.
+        let sesi_kedua = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "16:05:00"));
+        assert_eq!(
+            sesi_kedua["sukses"], true,
+            "scan lanjutan seharusnya diterima: {sesi_kedua}"
         );
+        assert_eq!(sesi_kedua["idSesi"], "NORMAL-20260812-K001-2");
+    }
+
+    #[test]
+    fn tanpa_flag_di_shift_asal_sesi_lanjutan_ditolak() {
+        let (_directory, state) = fixture();
+        // Flag dimatikan di shift asal. Dulu flag dibaca dari shift KANDIDAT,
+        // sehingga mengaktifkannya di shift karyawan sendiri tidak berpengaruh.
+        seed_shift_sore(&state, 0);
+
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:05:00"));
+
+        let sesi_kedua = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "16:05:00"));
+        assert_eq!(sesi_kedua["sukses"], false);
+        assert_ne!(sesi_kedua["idSesi"], "NORMAL-20260812-K001-2");
+    }
+
+    #[test]
+    fn shift_lanjutan_eksplisit_memindahkan_shift_karyawan() {
+        let (_directory, state) = fixture();
+        seed_shift_sore(&state, 1);
+        {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .execute(
+                    "UPDATE tbl_shift SET shift_lanjutan_id = 2 WHERE id_shift = 1;",
+                    [],
+                )
+                .expect("set shift lanjutan");
+        }
+
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:05:00"));
+
+        let sesi_kedua = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "16:05:00"));
+        assert_eq!(sesi_kedua["idSesi"], "NORMAL-20260812-K001-2");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        // Kolom shift karyawan ikut berpindah ke shift lanjutan.
+        let shift_karyawan: i64 = connection
+            .query_row(
+                "SELECT id_shift FROM master_data WHERE id_unik = 'K001';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("shift karyawan");
+        assert_eq!(shift_karyawan, 2);
+
+        // master_data ikut disinkronkan, jadi perpindahan wajib punya event outbox.
+        let event_karyawan: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM desktop_sync_outbox WHERE domain = 'employee' AND operation = 'update';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("outbox employee");
+        assert_eq!(event_karyawan, 1);
+    }
+
+    #[test]
+    fn shift_lanjutan_tidak_diterapkan_saat_multi_sesi_mati() {
+        let (_directory, state) = fixture();
+        // Shift lanjutan diisi, tetapi togglenya mati: tidak boleh berpindah.
+        seed_shift_sore(&state, 0);
+        {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .execute(
+                    "UPDATE tbl_shift SET shift_lanjutan_id = 2 WHERE id_shift = 1;",
+                    [],
+                )
+                .expect("set shift lanjutan");
+        }
+
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:05:00"));
+        let sesi_kedua = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "16:05:00"));
+        assert_eq!(sesi_kedua["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let shift_karyawan: i64 = connection
+            .query_row(
+                "SELECT id_shift FROM master_data WHERE id_unik = 'K001';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("shift karyawan");
+        assert_eq!(shift_karyawan, 1);
+    }
+
+    #[test]
+    fn shift_fleksibel_tidak_menelan_sesi_lanjutan() {
+        let (_directory, state) = fixture();
+        seed_shift_sore(&state, 1);
+        {
+            // Shift fleksibel ber-id lebih kecil dari shift sore. Jendela masuknya
+            // sepanjang hari sehingga ia selalu cocok lebih dulu dan merebut setiap
+            // sesi lanjutan. Dulu ini hanya disaring angka ajaib `kode_shift != 4`.
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .execute_batch(
+                    r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+          jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+          offset_istirahat_mulai, buffer_shift_malam_menit, izinkan_multi_sesi
+        ) VALUES (0, 9, 'Shift Fleksibel', '00:00', '23:59', 0, 0, 0,
+                  0, 0, 0, 0, 0, 1);
+        "#,
+                )
+                .expect("seed shift fleksibel");
+        }
+
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:05:00"));
+
+        let sesi_kedua = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "16:05:00"));
+        assert_eq!(sesi_kedua["idSesi"], "NORMAL-20260812-K001-2");
+    }
+
+    fn kunci_sebagai_koreksi_admin(state: &DesktopState) {
         let connection = storage::database(&state.data_dir).expect("local database");
         connection
             .execute(
@@ -1695,25 +1942,66 @@ mod tests {
                 [],
             )
             .expect("admin correction");
-        drop(connection);
+    }
 
-        let result = scan(
-            &state,
-            "K001",
-            "TOKEN-TEST",
-            moment("2026-08-12", "15:00:00"),
-        );
-        assert_eq!(result["sukses"], false);
+    #[test]
+    fn koreksi_admin_jam_masuk_masih_bisa_diselesaikan_scan_pulang() {
+        // Admin mengoreksi jam masuk; jam pulang masih kosong. Scan pulang
+        // hanya MENGISI kolom kosong itu, jadi harus diterima. Dulu seluruh
+        // baris terkunci sehingga karyawan tidak pernah bisa scan pulang.
+        let (_directory, state) = fixture();
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        kunci_sebagai_koreksi_admin(&state);
+
+        let hasil = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:00:00"));
+        assert_eq!(hasil["sukses"], true, "scan pulang ditolak: {hasil}");
 
         let connection = storage::database(&state.data_dir).expect("local database");
-        let stored: (String, String, i64) = connection
+        let (sumber, jam_masuk, jam_pulang): (String, String, String) = connection
             .query_row(
-                "SELECT sumber, COALESCE(jam_pulang, ''), (SELECT COUNT(*) FROM desktop_sync_outbox) FROM absensi_harian WHERE id_karyawan = 'K001';",
+                "SELECT sumber, COALESCE(jam_masuk, ''), COALESCE(jam_pulang, '') FROM absensi_harian WHERE id_karyawan = 'K001';",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .expect("protected attendance");
-        assert_eq!(stored, ("Koreksi Admin".into(), "".into(), 2));
+            .expect("attendance row");
+        // Jam masuk hasil koreksi tidak boleh berubah, dan prioritas baris
+        // tetap Koreksi Admin agar tidak turun kasta menjadi Scanner.
+        assert_eq!(sumber, "Koreksi Admin");
+        assert_eq!(jam_masuk, "2026-08-12 07:00:00");
+        assert!(!jam_pulang.is_empty(), "jam pulang seharusnya terisi");
+    }
+
+    #[test]
+    fn koreksi_admin_yang_sudah_lengkap_tidak_bisa_ditimpa_scanner() {
+        let (_directory, state) = fixture();
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "07:00:00"));
+        scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:00:00"));
+        kunci_sebagai_koreksi_admin(&state);
+
+        let sebelum: (String, String) = {
+            let connection = storage::database(&state.data_dir).expect("local database");
+            connection
+                .query_row(
+                    "SELECT COALESCE(jam_masuk, ''), COALESCE(jam_pulang, '') FROM absensi_harian WHERE id_karyawan = 'K001';",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("attendance row")
+        };
+
+        let hasil = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "15:30:00"));
+        assert_eq!(hasil["sukses"], false);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let sesudah: (String, String, String) = connection
+            .query_row(
+                "SELECT sumber, COALESCE(jam_masuk, ''), COALESCE(jam_pulang, '') FROM absensi_harian WHERE id_karyawan = 'K001';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("attendance row");
+        assert_eq!(sesudah.0, "Koreksi Admin");
+        assert_eq!((sesudah.1, sesudah.2), sebelum);
     }
 
     #[test]

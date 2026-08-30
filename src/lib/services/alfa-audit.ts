@@ -5,6 +5,11 @@ import {
   formatJamOperasional,
   formatTanggalOperasional,
   formatTimestampOperasional,
+  jenisShift,
+  MENIT_AKHIR_HARI,
+  menitGenerateAlfa,
+  type ShiftTimePolicy,
+  selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
@@ -14,6 +19,10 @@ export interface RingkasanAlfa {
   jumlahBelumWaktunya: number;
   jumlahFleksibel: number;
   jumlahNonaktif: number;
+  /** Karyawan yang dilewati karena tanggal kerjanya hari libur aktif. */
+  jumlahLibur: number;
+  /** Karyawan yang dilewati karena shift-nya hilang / jam shift tidak terurai. */
+  jumlahShiftTidakValid: number;
   status: string;
   pesan: string;
 }
@@ -60,6 +69,8 @@ export async function generateAlfaHarian(
       jumlahBelumWaktunya: 0,
       jumlahFleksibel: 0,
       jumlahNonaktif: 0,
+      jumlahLibur: 0,
+      jumlahShiftTidakValid: 0,
       status: "NONAKTIF",
       pesan: "Generate Alfa dimatikan melalui Pengaturan",
     };
@@ -98,7 +109,9 @@ export async function generateAlfaHarian(
 
   // ── Pre-load semua shift ke Map (eliminasi N+1 per karyawan) ────────────
   const allShiftsRes = await targetDb.execute(
-    "SELECT id_shift, jam_masuk, jam_pulang, offset_generate_alfa, jam_kerja_normal_menit FROM tbl_shift;",
+    `SELECT id_shift, jam_masuk, jam_pulang, offset_generate_alfa,
+            jam_kerja_normal_menit, batas_pulang_menit, buffer_shift_malam_menit
+     FROM tbl_shift;`,
   );
   const shiftMap = new Map<number, Record<string, unknown>>();
   for (const s of allShiftsRes.rows) {
@@ -117,6 +130,10 @@ export async function generateAlfaHarian(
   let jumlahSudahAda = 0;
   let jumlahBelumWaktunya = 0;
   let jumlahFleksibel = 0;
+  // Dulu dua kondisi ini keluar lewat "continue" tanpa jejak, sehingga
+  // ringkasan hanya menampilkan nol tanpa alasan.
+  let jumlahLibur = 0;
+  let jumlahShiftTidakValid = 0;
 
   for (const row of empRes.rows) {
     const emp = row as Record<string, unknown>;
@@ -125,26 +142,44 @@ export async function generateAlfaHarian(
     const divisi = String(emp.divisi);
     const idShift = Number(emp.id_shift || 1);
 
-    // Ambil Aturan Shift dari Map (bukan query ke DB)
-    const shift: Record<string, unknown> = shiftMap.get(idShift) ?? {
-      jam_masuk: "07:00",
-      jam_pulang: "15:00",
-      offset_generate_alfa: 180,
-      jam_kerja_normal_menit: 480,
-    };
-
-    const jamMasukStr = String(shift.jam_masuk || "07:00");
-    const jamPulangStr = String(shift.jam_pulang || "15:00");
-    const offsetAlfaMenit = Number(shift.offset_generate_alfa || 180);
-
-    // Shift Fleksibel (contoh id_shift 4 atau jam_masuk == '00:00' && jam_pulang == '23:59')
-    if (
-      idShift === 4 ||
-      (jamMasukStr === "00:00" && jamPulangStr === "23:59") ||
-      Number(shift.jam_kerja_normal_menit) === 0
-    ) {
-      jumlahFleksibel++;
+    // Ambil Aturan Shift dari Map (bukan query ke DB). Shift yang tidak ada
+    // TIDAK boleh diganti default karangan — jalur Desktop melewatinya, dan
+    // menebak "07:00-15:00" di web membuat kedua jalur menghasilkan Alfa yang
+    // berbeda untuk karyawan yang sama.
+    const shift = shiftMap.get(idShift);
+    if (!shift) {
+      jumlahShiftTidakValid++;
+      await targetDb.execute({
+        sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
+              VALUES (?, 'Skip Generate Alfa', ?, ?, ?, '', ?, 'Gagal');`,
+        args: [
+          nowStr,
+          tanggalOperasionalStr,
+          idUnik,
+          nama,
+          `Shift id ${idShift} tidak ditemukan di tbl_shift.`,
+        ],
+      });
       continue;
+    }
+
+    const jamMasukStr = String(shift.jam_masuk ?? "");
+    const jamPulangStr = String(shift.jam_pulang ?? "");
+    const offsetAlfaMenit = Number(shift.offset_generate_alfa ?? 180);
+    const jamKerjaNormalMenit = Number(shift.jam_kerja_normal_menit ?? 0);
+
+    // Shift fleksibel tidak lagi dilewati. Karyawannya bebas absen jam berapa
+    // saja, jadi ketidakhadiran baru boleh dinilai setelah hari kalendernya
+    // habis — yang di-generate adalah hari kemarin, sama seperti shift malam
+    // yang diselesaikan pagi harinya.
+    const kindShift = jenisShift(
+      jamMasukStr,
+      jamPulangStr,
+      jamKerjaNormalMenit,
+    );
+    const isFleksibel = kindShift === "flexible";
+    if (isFleksibel) {
+      jumlahFleksibel++;
     }
 
     // Tentukan Tanggal Kerja berdasarkan Shift
@@ -152,12 +187,25 @@ export async function generateAlfaHarian(
     const [hPulang, mPulang] = jamPulangStr.split(":").map(Number);
     const menitMasuk = hMasuk * 60 + mMasuk;
     const menitPulang = hPulang * 60 + mPulang;
+    if (
+      !isFleksibel &&
+      (!Number.isFinite(menitMasuk) || !Number.isFinite(menitPulang))
+    ) {
+      jumlahShiftTidakValid++;
+      continue;
+    }
 
     let tanggalStr = tanggalOperasionalStr;
-    const isOvernight = menitPulang < menitMasuk;
+    const isOvernight = !isFleksibel && menitPulang < menitMasuk;
 
-    // Untuk shift malam (jam_pulang < jam_masuk), sebelum jam masuk berikutnya berkaitan dengan tanggal kerja H-1
-    if (isOvernight && menitSekarang < menitMasuk) {
+    // Hari kerja yang dinilai mundur satu hari selama kita masih berada di
+    // dalam shift yang belum selesai: shift malam sebelum jam masuk berikutnya,
+    // shift fleksibel sepanjang harinya belum berganti tanggal.
+    const masihDiHariSebelumnya = isFleksibel
+      ? menitSekarang < MENIT_AKHIR_HARI
+      : isOvernight && menitSekarang < menitMasuk;
+
+    if (masihDiHariSebelumnya) {
       const [y, m, d] = tanggalOperasionalStr.split("-").map(Number);
       const prevDate = new Date(y, m - 1, d - 1);
       tanggalStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-${String(prevDate.getDate()).padStart(2, "0")}`;
@@ -165,18 +213,39 @@ export async function generateAlfaHarian(
 
     // Cek apakah tanggal kerja ini adalah Hari Libur Aktif (dari Set, bukan query)
     if (liburSet.has(tanggalStr)) {
+      jumlahLibur++;
       continue;
     }
 
-    // Hitung Cutoff Threshold Menit
-    const cutoffTimelineMinute = isOvernight
-      ? menitPulang + 1440 - offsetAlfaMenit
-      : menitPulang - offsetAlfaMenit;
+    // Alfa baru boleh dibuat setelah jendela scan pulang benar-benar tertutup
+    // (jam pulang + batas pulang + buffer shift malam), lalu ditambah
+    // offset_generate_alfa. Rumus lama "jam_pulang - offset" mengabaikan
+    // batas_pulang_menit dan membuat Alfa selagi karyawan masih berhak scan pulang.
+    const shiftPolicy: ShiftTimePolicy = {
+      kind: kindShift,
+      jamMasuk: jamMasukStr,
+      jamPulang: jamPulangStr,
+      awalAbsenMenit: 0,
+      batasMasukMenit: 0,
+      toleransiMasukMenit: 0,
+      batasPulangMenit: Number(shift.batas_pulang_menit ?? 240),
+      bufferShiftMalamMenit: Number(shift.buffer_shift_malam_menit ?? 120),
+      offsetIstirahatMulai: 0,
+      jamKerjaNormalMenit,
+      istirahatMenit: 0,
+    };
+
+    let cutoffTimelineMinute: number;
+    try {
+      cutoffTimelineMinute = menitGenerateAlfa(shiftPolicy, offsetAlfaMenit);
+    } catch {
+      jumlahShiftTidakValid++;
+      continue;
+    }
 
     const currentTimelineMinute =
-      isOvernight && tanggalOperasionalStr > tanggalStr
-        ? 1440 + menitSekarang
-        : menitSekarang;
+      selisihHariKalender(tanggalStr, tanggalOperasionalStr) * 1440 +
+      menitSekarang;
 
     if (currentTimelineMinute < cutoffTimelineMinute) {
       jumlahBelumWaktunya++;
@@ -244,7 +313,7 @@ export async function generateAlfaHarian(
       : "IDLE";
   const pesan = todayHoliday
     ? `Hari ini Hari Libur (${String(todayHoliday.nama_libur || "")}). Generate Alfa dilewati untuk hari ini.`
-    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}`;
+    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}, Fleksibel: ${jumlahFleksibel}, Libur: ${jumlahLibur}, Shift Tidak Valid: ${jumlahShiftTidakValid}`;
 
   return {
     jumlahAlfaDibuat,
@@ -252,6 +321,8 @@ export async function generateAlfaHarian(
     jumlahBelumWaktunya,
     jumlahFleksibel,
     jumlahNonaktif,
+    jumlahLibur,
+    jumlahShiftTidakValid,
     status: statusSummary,
     pesan,
   };

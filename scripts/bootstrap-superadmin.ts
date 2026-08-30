@@ -6,10 +6,13 @@ import { resolveServerDatabaseConfig } from "../src/lib/server/database-config";
 const name = process.env.SPPG_SUPERADMIN_NAME?.trim();
 const username = process.env.SPPG_SUPERADMIN_USERNAME?.trim();
 const password = process.env.SPPG_SUPERADMIN_PASSWORD;
+const email = process.env.SPPG_SUPERADMIN_EMAIL?.trim();
+const noHp = process.env.SPPG_SUPERADMIN_PHONE?.trim();
 
-if (!name || !username || !password) {
+if (!name || !username || !password || !email || !noHp) {
   throw new Error(
-    "Lengkapi SPPG_SUPERADMIN_NAME, SPPG_SUPERADMIN_USERNAME, dan SPPG_SUPERADMIN_PASSWORD sebelum menjalankan bootstrap.",
+    "Lengkapi SPPG_SUPERADMIN_NAME, SPPG_SUPERADMIN_USERNAME, SPPG_SUPERADMIN_PASSWORD, " +
+      "SPPG_SUPERADMIN_EMAIL, dan SPPG_SUPERADMIN_PHONE sebelum menjalankan bootstrap.",
   );
 }
 
@@ -21,6 +24,8 @@ try {
     kodeOperator: "SPD001",
     name,
     username,
+    email,
+    noHp,
     password,
     status: "Aktif",
   });

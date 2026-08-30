@@ -4,6 +4,7 @@ import {
   formatJamOperasional,
   formatTanggalOperasional,
   formatTimestampOperasional,
+  isShiftFleksibel,
   OPERATIONAL_TIME_ZONE,
   putuskanScanWaktu,
   type ScanHistory,
@@ -958,9 +959,12 @@ async function getShiftRow(
 }
 
 function mapShiftPolicy(row: Row): ShiftTimePolicy {
-  const kodeShift = Number(row.kode_shift);
   const normalMinutes = Number(row.jam_kerja_normal_menit ?? 0);
-  const flexible = kodeShift === 4 || normalMinutes === 0;
+  const flexible = isShiftFleksibel(
+    String(row.jam_masuk ?? ""),
+    String(row.jam_pulang ?? ""),
+    normalMinutes,
+  );
   return {
     kind: flexible ? "flexible" : "regular",
     jamMasuk: String(row.jam_masuk ?? ""),

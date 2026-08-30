@@ -78,6 +78,7 @@ const shiftFields = {
   offset_generate_alfa: optionalNumber,
   buffer_shift_malam_menit: optionalNumber,
   izinkan_multi_sesi: optionalNumber,
+  shift_lanjutan_id: optionalNumber,
 };
 
 const shiftCreatePayload = z
@@ -139,6 +140,12 @@ const attendanceScanPayload = z
     log: scanLogSchema,
     attendance: attendanceSchema.nullable().optional(),
     attendanceBaseUpdatedAt: optionalShortText,
+    /**
+     * Operator memilih "Gunakan Versi Lokal" pada konflik ini, jadi pemeriksaan
+     * konkurensi optimistis (`attendanceBaseUpdatedAt`) sengaja dilewati.
+     * Perlindungan prioritas Koreksi Admin TETAP berlaku.
+     */
+    forceLocalOverride: z.boolean().optional(),
   })
   .strict();
 
@@ -164,6 +171,7 @@ const correctionCreatePayload = z
     attendance: attendanceSchema,
     log: scanLogSchema,
     attendanceBaseUpdatedAt: optionalShortText,
+    forceLocalOverride: z.boolean().optional(),
   })
   .strict();
 

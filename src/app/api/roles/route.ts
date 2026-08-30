@@ -31,6 +31,7 @@ function parseDraft(value: unknown): RoleDraft {
     name: typeof draft.name === "string" ? draft.name : "",
     description: typeof draft.description === "string" ? draft.description : "",
     status: String(draft.status) as RoleDraft["status"],
+    requireTotp: draft.requireTotp === true,
   };
 }
 

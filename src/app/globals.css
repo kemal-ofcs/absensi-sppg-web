@@ -153,11 +153,25 @@ html.light .app-panel {
    ========================================================================== */
 
 /* 1. Header Navigation */
-html[data-theme="light"] header,
-html.light header {
+html[data-theme="light"] header.sticky,
+html.light header.sticky {
   background-color: rgba(255, 255, 255, 0.96) !important;
   border-bottom: 1px solid #e2e8f0 !important;
   box-shadow: 0 4px 20px rgb(15 23 42 / 4%) !important;
+}
+
+/* Page Header Seamless Typography in Light Mode */
+html[data-theme="light"] .page-header-title,
+html.light .page-header-title {
+  color: #0f172a !important;
+}
+html[data-theme="light"] .page-header-eyebrow,
+html.light .page-header-eyebrow {
+  color: #b45309 !important;
+}
+html[data-theme="light"] .page-header-description,
+html.light .page-header-description {
+  color: #475569 !important;
 }
 
 /* Inactive navigation links in light mode */

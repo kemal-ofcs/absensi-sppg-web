@@ -25,6 +25,8 @@ export type BootstrapDraft = {
   kodeOperator: string;
   namaOperator: string;
   username: string;
+  email: string;
+  noHp: string;
   password: string;
   databaseUrl?: string;
   authToken?: string;
@@ -48,6 +50,8 @@ export async function bootstrapSuperadmin(
       kode_operator: draft.kodeOperator,
       nama_operator: draft.namaOperator,
       username: draft.username,
+      email: draft.email,
+      no_hp: draft.noHp,
       password: draft.password,
     },
     databaseUrl: draft.databaseUrl?.trim() || null,

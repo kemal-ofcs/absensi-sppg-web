@@ -564,22 +564,52 @@ fn civil_from_days(mut days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-pub fn is_checkout_window_expired(
-    session_date: &str,
-    moment: &LocalMoment,
-    shift: &ShiftPolicy,
-) -> bool {
-    if shift.kind == ShiftKind::Flexible {
-        return false;
+/// Menit terakhir sebuah hari kalender (23:59).
+///
+/// Dipakai sebagai penutup jendela untuk shift fleksibel: shift itu berjalan
+/// 00:00-23:59 tanpa aturan, sehingga satu-satunya batas yang masuk akal
+/// adalah pergantian hari.
+pub const END_OF_DAY_MINUTE: i64 = 1439;
+
+/// Shift "tanpa kewajiban jam tetap" (lihat `05-business-logic-edge-cases.md` §2).
+///
+/// Sengaja TIDAK melihat `kode_shift`: kolom itu adalah *stable business key*
+/// untuk rekonsiliasi shift offline (`03-schema-4layer-consistency.md`), bukan
+/// penanda fleksibel. Porting lama menyamakan `kode_shift == 4` dengan
+/// fleksibel, sehingga shift reguler apa pun yang kebetulan memakai kode 4
+/// diam-diam dilewati scanner dan Generate Alfa.
+pub fn shift_kind_of(start: &str, end: &str, normal_work_minutes: i64) -> ShiftKind {
+    if is_flexible_shift(start, end, normal_work_minutes) {
+        ShiftKind::Flexible
+    } else {
+        ShiftKind::Regular
     }
-    let shift_in = match clock_minutes(&shift.start) {
-        Ok(v) => v,
-        Err(_) => return true,
+}
+
+pub fn is_flexible_shift(start: &str, end: &str, normal_work_minutes: i64) -> bool {
+    if normal_work_minutes <= 0 {
+        return true;
+    }
+    let (Ok(start_minute), Ok(end_minute)) = (clock_minutes(start), clock_minutes(end)) else {
+        return false;
     };
-    let shift_out_base = match clock_minutes(&shift.end) {
-        Ok(v) => v,
-        Err(_) => return true,
-    };
+    // Rentang yang menutupi satu hari penuh: tidak ada jam masuk/pulang efektif.
+    start_minute == end_minute || (start_minute == 0 && end_minute == 1439)
+}
+
+/// Menit pada garis waktu tanggal kerja saat jendela scan pulang tertutup.
+///
+/// Untuk shift malam jam pulang berada di hari berikutnya, sehingga nilainya
+/// melewati 1440. `None` berarti jam shift tidak dapat diurai.
+pub fn latest_checkout_minute(shift: &ShiftPolicy) -> Option<i64> {
+    // Shift fleksibel tidak punya jam pulang efektif: kewajibannya berakhir
+    // bersama hari kalendernya. Memakai rumus reguler di sini akan menambahkan
+    // batas_pulang ke 23:59 dan mendorong penilaian jauh ke hari berikutnya.
+    if shift.kind == ShiftKind::Flexible {
+        return Some(END_OF_DAY_MINUTE);
+    }
+    let shift_in = clock_minutes(&shift.start).ok()?;
+    let shift_out_base = clock_minutes(&shift.end).ok()?;
     let is_night = shift_out_base < shift_in;
     let shift_out = if is_night {
         shift_out_base + 1440
@@ -591,7 +621,47 @@ pub fn is_checkout_window_expired(
     } else {
         0
     };
-    let latest_checkout = shift_out + shift.checkout_limit_minutes + buffer;
+    Some(shift_out + shift.checkout_limit_minutes + buffer)
+}
+
+/// Menit pada garis waktu tanggal kerja saat Alfa otomatis boleh dibuat.
+///
+/// Anchor-nya adalah penutupan jendela scan pulang (jam pulang + batas pulang
+/// + buffer shift malam), lalu ditambah `offset_generate_alfa`. Offset
+/// DITAMBAHKAN, bukan dikurangi, supaya Alfa tidak pernah dibuat selagi
+/// karyawan masih berhak scan pulang.
+pub fn alfa_generation_minute(shift: &ShiftPolicy, alfa_offset_minutes: i64) -> Option<i64> {
+    Some(latest_checkout_minute(shift)? + alfa_offset_minutes.max(0))
+}
+
+/// Menit pada garis waktu tanggal kerja saat jendela scan masuk tertutup.
+///
+/// Sama dengan `final_entry_end` di `decide_scan`: jam masuk + batas masuk
+/// tepat waktu + toleransi terlambat. Setelah menit ini scanner menolak scan
+/// masuk, jadi karyawan yang belum punya baris absensi memang benar-benar
+/// "belum absen padahal jam absen sudah lewat".
+pub fn entry_window_close_minute(shift: &ShiftPolicy) -> Option<i64> {
+    // Karyawan shift fleksibel bebas datang jam berapa pun, jadi tidak ada
+    // menit di tengah hari yang membuatnya "belum absen padahal sudah lewat".
+    // Baru setelah harinya habis ketidakhadiran itu bisa dinilai.
+    if shift.kind == ShiftKind::Flexible {
+        return Some(END_OF_DAY_MINUTE);
+    }
+    let start = clock_minutes(&shift.start).ok()?;
+    Some(start + shift.normal_entry_minutes + shift.late_tolerance_minutes)
+}
+
+pub fn is_checkout_window_expired(
+    session_date: &str,
+    moment: &LocalMoment,
+    shift: &ShiftPolicy,
+) -> bool {
+    if shift.kind == ShiftKind::Flexible {
+        return false;
+    }
+    let Some(latest_checkout) = latest_checkout_minute(shift) else {
+        return true;
+    };
 
     let diff_days = days_between(session_date, &moment.date).unwrap_or(0);
     let moment_min = clock_minutes(&moment.time).unwrap_or(0);
@@ -617,6 +687,135 @@ mod tests {
             normal_work_minutes: 420,
             break_minutes: 60,
         }
+    }
+
+    #[test]
+    fn jendela_masuk_tutup_setelah_batas_dan_toleransi() {
+        let mut shift = regular();
+        shift.start = "07:00".into();
+        shift.normal_entry_minutes = 15;
+        shift.late_tolerance_minutes = 30;
+
+        // 07:00 (420) + 15 + 30 = 07:45 (465) — persis `final_entry_end`
+        // yang dipakai decide_scan untuk menolak scan masuk.
+        assert_eq!(entry_window_close_minute(&shift), Some(465));
+
+        let tolak = decide_scan(
+            &moment("2026-08-19", "07:46"),
+            &shift,
+            &ScanHistory::default(),
+            0,
+        )
+        .expect("keputusan scan");
+        assert_eq!(tolak.reason, DecisionReason::EntryWindowClosed);
+    }
+
+    fn fleksibel() -> ShiftPolicy {
+        ShiftPolicy {
+            kind: ShiftKind::Flexible,
+            start: "00:00".into(),
+            end: "23:59".into(),
+            early_window_minutes: 0,
+            normal_entry_minutes: 0,
+            late_tolerance_minutes: 0,
+            checkout_limit_minutes: 0,
+            night_buffer_minutes: 0,
+            break_offset_minutes: 0,
+            normal_work_minutes: 0,
+            break_minutes: 0,
+        }
+    }
+
+    #[test]
+    fn jendela_shift_fleksibel_tutup_di_akhir_hari() {
+        let shift = fleksibel();
+        // Bebas datang dan pulang jam berapa pun sepanjang harinya, jadi tidak
+        // ada menit di tengah hari yang bisa dipakai menyalahkan karyawan.
+        assert_eq!(entry_window_close_minute(&shift), Some(END_OF_DAY_MINUTE));
+        assert_eq!(latest_checkout_minute(&shift), Some(END_OF_DAY_MINUTE));
+    }
+
+    #[test]
+    fn batas_pulang_tidak_memperpanjang_hari_shift_fleksibel() {
+        // Shift fleksibel warisan kerap menyimpan batas_pulang besar (mis. 1440).
+        // Rumus reguler akan mendorong penutupan ke 23:59 + 1440, sehingga
+        // ketidakhadiran sehari penuh tidak pernah dinilai.
+        let mut shift = fleksibel();
+        shift.checkout_limit_minutes = 1440;
+        shift.night_buffer_minutes = 120;
+        assert_eq!(latest_checkout_minute(&shift), Some(END_OF_DAY_MINUTE));
+    }
+
+    #[test]
+    fn cutoff_alfa_shift_fleksibel_jatuh_setelah_tengah_malam() {
+        let shift = fleksibel();
+        // 23:59 + 0 = akhir hari itu sendiri.
+        assert_eq!(alfa_generation_minute(&shift, 0), Some(END_OF_DAY_MINUTE));
+        // Offset menjadi jeda setelah pergantian hari: 23:59 + 61 = 01:00 H+1.
+        assert_eq!(alfa_generation_minute(&shift, 61), Some(1500));
+    }
+
+    #[test]
+    fn shift_kind_of_mengikuti_deteksi_fleksibel() {
+        assert_eq!(shift_kind_of("00:00", "23:59", 1439), ShiftKind::Flexible);
+        assert_eq!(shift_kind_of("08:00", "17:00", 0), ShiftKind::Flexible);
+        assert_eq!(shift_kind_of("07:00", "15:00", 420), ShiftKind::Regular);
+        // Jam rusak tetap diperlakukan reguler agar tidak diam-diam dilewati.
+        assert_eq!(shift_kind_of("bukan-jam", "15:00", 420), ShiftKind::Regular);
+    }
+
+    #[test]
+    fn kode_shift_bukan_penanda_fleksibel() {
+        // Shift reguler pendek: dulu shift apa pun dengan kode 4 dianggap
+        // fleksibel dan diam-diam dilewati Generate Alfa.
+        assert!(!is_flexible_shift("07:00", "09:40", 160));
+        assert!(!is_flexible_shift("07:00", "15:00", 420));
+        assert!(!is_flexible_shift("22:00", "06:00", 480));
+    }
+
+    #[test]
+    fn shift_tanpa_jam_tetap_dianggap_fleksibel() {
+        assert!(is_flexible_shift("08:00", "17:00", 0));
+        assert!(is_flexible_shift("00:00", "23:59", 540));
+        assert!(is_flexible_shift("09:00", "09:00", 540));
+    }
+
+    #[test]
+    fn jam_shift_rusak_tidak_dianggap_fleksibel() {
+        // Fail-closed: jam tak terurai bukan alasan melewatkan Generate Alfa
+        // secara diam-diam; `alfa_generation_minute` yang akan melaporkannya.
+        assert!(!is_flexible_shift("bukan-jam", "17:00", 540));
+    }
+
+    #[test]
+    fn cutoff_alfa_menambahkan_batas_pulang_dan_offset() {
+        let mut shift = regular();
+        shift.end = "09:40".into();
+        shift.checkout_limit_minutes = 5;
+
+        // 09:40 (580) + batas pulang 5 + offset 5 = 09:50 (590).
+        assert_eq!(alfa_generation_minute(&shift, 5), Some(590));
+        // Anchor-nya adalah penutupan jendela scan pulang, bukan jam pulang.
+        assert_eq!(latest_checkout_minute(&shift), Some(585));
+    }
+
+    #[test]
+    fn cutoff_alfa_shift_malam_melewati_tengah_malam() {
+        let mut shift = regular();
+        shift.start = "22:00".into();
+        shift.end = "06:00".into();
+        shift.checkout_limit_minutes = 60;
+        shift.night_buffer_minutes = 120;
+
+        // 06:00 hari berikutnya (360 + 1440) + 60 + 120 + offset 30.
+        assert_eq!(alfa_generation_minute(&shift, 30), Some(1800 + 60 + 120 + 30));
+    }
+
+    #[test]
+    fn cutoff_alfa_menolak_jam_shift_rusak() {
+        let mut shift = regular();
+        shift.end = "25:99".into();
+        assert_eq!(alfa_generation_minute(&shift, 30), None);
     }
 
     fn moment(date: &str, time: &str) -> LocalMoment {

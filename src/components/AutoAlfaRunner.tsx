@@ -20,8 +20,11 @@ export function AutoAlfaRunner() {
       isRunningRef.current = true;
       try {
         await triggerGenerateAlfa();
-      } catch {
-        // Silently catch background errors so user UX is never interrupted
+      } catch (error) {
+        // UX tidak boleh terganggu, tetapi kegagalan diam-diam membuat
+        // "Alfa tidak pernah ter-generate" mustahil didiagnosis. Izin yang
+        // hilang (`alfa.trigger`) muncul di sini, bukan di layar.
+        console.warn("[AutoAlfaRunner] Generate Alfa otomatis gagal:", error);
       } finally {
         isRunningRef.current = false;
       }
