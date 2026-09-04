@@ -50,6 +50,18 @@ export function resolveServerDatabaseConfig(
   const provider = normalizeProvider(
     environment.SPPG_DATABASE_PROVIDER?.trim(),
   );
+
+  // Sisi Web SELALU memakai database remote — Turso Cloud atau libSQL
+  // self-hosted. Kebutuhan offline tanpa internet dilayani aplikasi Desktop
+  // dan Mobile, yang memang menyimpan berkasnya sendiri. Menolaknya di sini
+  // penting karena `local_file` melewati pemeriksaan transport: membiarkannya
+  // lolos berarti satu variabel lingkungan yang salah bisa mematikan seluruh
+  // aturan keamanan alamat.
+  if (provider === "local_file") {
+    throw new Error(
+      "SPPG_DATABASE_PROVIDER=local_file hanya berlaku untuk aplikasi Desktop/Mobile. Sisi Web memerlukan database remote (Turso atau libSQL self-hosted).",
+    );
+  }
   const allowInsecure = isTruthyFlag(environment.SPPG_ALLOW_INSECURE_DATABASE);
   const isProduction = environment.NODE_ENV === "production";
 

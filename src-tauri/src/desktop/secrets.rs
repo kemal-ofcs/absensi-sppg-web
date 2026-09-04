@@ -462,6 +462,7 @@ mod tests {
             permission_revision: 4,
             require_scan_photo: false,
             require_scan_ip_allowlist: false,
+            totp_enabled: false,
             login_at: None,
         }
     }

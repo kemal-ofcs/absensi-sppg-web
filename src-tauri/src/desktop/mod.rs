@@ -7,6 +7,7 @@ mod payroll_seed;
 pub mod remote;
 mod scanner;
 pub mod secrets;
+pub mod sql_backend;
 pub mod storage;
 pub mod sync;
 mod time_policy;

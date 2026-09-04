@@ -4,6 +4,7 @@ import {
   describeProvider,
   isPrivateNetworkHost,
   normalizeProvider,
+  providerNeedsEndpoint,
   reviewDatabaseEndpoint,
 } from "@/lib/validations/database-endpoint";
 
@@ -117,6 +118,7 @@ describe("normalizeProvider", () => {
   test("nilai asing jatuh ke provider dengan aturan paling ketat", () => {
     expect(normalizeProvider("self_hosted")).toBe("self_hosted");
     expect(normalizeProvider("turso")).toBe("turso");
+    expect(normalizeProvider("local_file")).toBe("local_file");
     expect(normalizeProvider(undefined)).toBe("turso");
     expect(normalizeProvider("postgres")).toBe("turso");
   });
@@ -124,5 +126,35 @@ describe("normalizeProvider", () => {
   test("deskripsi provider selalu tersedia", () => {
     expect(describeProvider("self_hosted").tokenAlwaysRequired).toBe(false);
     expect(describeProvider("turso").tokenAlwaysRequired).toBe(true);
+    expect(describeProvider("local_file").tokenAlwaysRequired).toBe(false);
+  });
+});
+
+/**
+ * Cermin sisi TypeScript dari tes Rust `mode_lokal_tidak_pernah_menuntut_token`
+ * dan `origin_mode_lokal_stabil_dan_tidak_bergantung_isi_path` di `turso.rs`.
+ * Aturannya dieja dua kali, jadi keduanya wajib diuji dengan maksud yang sama.
+ */
+describe("mode Database Lokal", () => {
+  test("tidak memerlukan endpoint sama sekali", () => {
+    expect(providerNeedsEndpoint("local_file")).toBe(false);
+    expect(providerNeedsEndpoint("turso")).toBe(true);
+    expect(providerNeedsEndpoint("self_hosted")).toBe(true);
+  });
+
+  test("validator endpoint MENOLAK mode lokal, bukan meloloskannya", () => {
+    // Kalau mode lokal diloloskan begitu saja, alamat publik ber-HTTP yang
+    // dipasangkan dengannya akan melewati seluruh aturan transport tanpa satu
+    // pun pemeriksaan.
+    const review = reviewDatabaseEndpoint(
+      "http://203.0.113.10:8080",
+      "local_file",
+    );
+    expect(review.valid).toBe(false);
+    expect(review.issue?.code).toBe("SCHEME");
+  });
+
+  test("alamat kosong pun tetap ditolak untuk mode lokal", () => {
+    expect(reviewDatabaseEndpoint("", "local_file").valid).toBe(false);
   });
 });

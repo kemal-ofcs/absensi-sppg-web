@@ -25,6 +25,18 @@ pub struct OperatorUser {
     /// lapangan terkunci di luar aplikasinya sendiri setelah update.
     #[serde(default)]
     pub require_scan_photo: bool,
+    /// Akun ini memakai verifikasi dua langkah.
+    ///
+    /// Ikut ke dalam snapshot vault offline supaya perangkat tahu bahwa akun
+    /// tersebut TIDAK boleh masuk lewat jalur offline: jalur itu hanya memeriksa
+    /// username + password, sehingga tanpa penanda ini sebuah perangkat yang
+    /// punya cache offline menjadi jalan pintas melewati 2FA sepenuhnya.
+    ///
+    /// `serde(default)` wajib: snapshot vault yang dibuat versi lama tidak
+    /// memiliki field ini, dan tanpa default seluruh vault gagal dibaca —
+    /// pengguna lapangan terkunci di luar aplikasinya sendiri setelah update.
+    #[serde(default)]
+    pub totp_enabled: bool,
     /// Role ini hanya boleh melakukan scan dari alamat IP yang terdaftar.
     #[serde(default)]
     pub require_scan_ip_allowlist: bool,

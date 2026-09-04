@@ -23,6 +23,7 @@ import {
   DATABASE_PROVIDER_OPTIONS,
   type DatabaseProvider,
   describeProvider,
+  providerNeedsEndpoint,
   reviewDatabaseEndpoint,
 } from "@/lib/validations/database-endpoint";
 
@@ -94,8 +95,11 @@ export function BootstrapPanel({
     [databaseUrl, provider, allowInsecure],
   );
 
+  const needsEndpoint = providerNeedsEndpoint(provider);
+
   const credentialsReady =
     !needsCredentials ||
+    !needsEndpoint ||
     (endpoint.valid &&
       (!endpoint.tokenRequired || authToken.trim().length > 0));
 
@@ -106,13 +110,21 @@ export function BootstrapPanel({
 
   const credentials = useCallback((): DatabaseCredentials => {
     if (!needsCredentials) return {};
+    if (!needsEndpoint) return { provider };
     return {
       databaseUrl,
       authToken,
       provider,
       allowInsecureTransport: allowInsecure,
     };
-  }, [needsCredentials, databaseUrl, authToken, provider, allowInsecure]);
+  }, [
+    needsCredentials,
+    needsEndpoint,
+    databaseUrl,
+    authToken,
+    provider,
+    allowInsecure,
+  ]);
 
   const runCheck = useCallback(async (payload: DatabaseCredentials) => {
     setChecking(true);
@@ -286,43 +298,53 @@ export function BootstrapPanel({
                   ))}
                 </div>
               </fieldset>
-              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
-                {provider === "turso"
-                  ? "URL database Turso"
-                  : "Alamat server database"}
-                <input
-                  type="text"
-                  inputMode="url"
-                  value={databaseUrl}
-                  onChange={(event) => {
-                    setDatabaseUrl(event.target.value);
-                    resetCheck();
-                  }}
-                  placeholder={providerInfo.urlPlaceholder}
-                  className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
-                />
-                {databaseUrl.trim().length > 0 && endpoint.issue ? (
-                  <span className="font-normal leading-5 text-amber-300">
-                    {endpoint.issue.message}
-                  </span>
-                ) : null}
-              </label>
-              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
-                {endpoint.tokenRequired
-                  ? "Auth Token"
-                  : "Auth Token (opsional)"}
-                <input
-                  type="password"
-                  value={authToken}
-                  onChange={(event) => {
-                    setAuthToken(event.target.value);
-                    resetCheck();
-                  }}
-                  placeholder={providerInfo.tokenPlaceholder}
-                  autoComplete="off"
-                  className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
-                />
-              </label>
+              {needsEndpoint ? (
+                <>
+                  <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                    {provider === "turso"
+                      ? "URL database Turso"
+                      : "Alamat server database"}
+                    <input
+                      type="text"
+                      inputMode="url"
+                      value={databaseUrl}
+                      onChange={(event) => {
+                        setDatabaseUrl(event.target.value);
+                        resetCheck();
+                      }}
+                      placeholder={providerInfo.urlPlaceholder}
+                      className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
+                    />
+                    {databaseUrl.trim().length > 0 && endpoint.issue ? (
+                      <span className="font-normal leading-5 text-amber-300">
+                        {endpoint.issue.message}
+                      </span>
+                    ) : null}
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                    {endpoint.tokenRequired
+                      ? "Auth Token"
+                      : "Auth Token (opsional)"}
+                    <input
+                      type="password"
+                      value={authToken}
+                      onChange={(event) => {
+                        setAuthToken(event.target.value);
+                        resetCheck();
+                      }}
+                      placeholder={providerInfo.tokenPlaceholder}
+                      autoComplete="off"
+                      className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
+                    />
+                  </label>
+                </>
+              ) : (
+                <p className="rounded-xl border border-sky-400/30 bg-sky-400/5 p-3 text-[11px] font-bold leading-4 text-sky-100">
+                  Data disimpan pada berkas SQLite di perangkat ini. Tidak ada
+                  alamat server maupun Auth Token yang perlu diisi, dan aplikasi
+                  berjalan penuh tanpa internet.
+                </p>
+              )}
               {provider === "self_hosted" &&
               endpoint.issue?.code === "INSECURE_PUBLIC" ? (
                 <label className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-[11px] font-bold leading-4 text-rose-100">

@@ -14,6 +14,9 @@ use zeroize::Zeroizing;
 
 use super::{
     models::{CommandError, OperatorUser},
+    // Seam transport: dekoder sel Hrana dan jalur SQLite lokal. SQL-nya sama,
+    // yang berbeda hanya ke mana ia dikirim.
+    sql_backend::{decode_hrana_cell, LocalTransport},
     // Normalisasi cakupan whitelist hari libur hidup di `scanner` bersama
     // penilaiannya, supaya jalur cloud dan jalur scan tidak pernah bisa drift.
     scanner, sync,
@@ -43,6 +46,13 @@ pub enum DatabaseProvider {
         alias = "libsql"
     )]
     SelfHosted,
+    /// Berkas SQLite di perangkat ini, tanpa server sama sekali.
+    ///
+    /// Alias `"local"` SENGAJA TIDAK dipakai di sini: nilai itu sudah lebih
+    /// dulu berarti `SelfHosted` pada instalasi yang ada, dan memakainya ulang
+    /// akan mengubah arti data yang sudah tersimpan di perangkat pelanggan.
+    #[serde(alias = "localFile", alias = "local-file", alias = "file")]
+    LocalFile,
 }
 
 impl DatabaseProvider {
@@ -50,10 +60,16 @@ impl DatabaseProvider {
         matches!(self, Self::SelfHosted)
     }
 
+    /// Apakah seluruh SQL dijalankan ke berkas lokal, tanpa jaringan.
+    pub fn is_local_file(self) -> bool {
+        matches!(self, Self::LocalFile)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Turso => "turso",
             Self::SelfHosted => "self_hosted",
+            Self::LocalFile => "local_file",
         }
     }
 
@@ -61,6 +77,7 @@ impl DatabaseProvider {
         match self {
             Self::Turso => "Turso Cloud",
             Self::SelfHosted => "Server Database Sendiri",
+            Self::LocalFile => "Database Lokal (Tanpa Server)",
         }
     }
 }
@@ -97,11 +114,29 @@ pub fn is_private_network_host(host: &str) -> bool {
 /// pemanggil menambahkan `/v2/pipeline` sendiri. Kredensial di dalam URL
 /// (`https://user:pass@host`) ditolak: token wajib lewat vault, bukan lewat URL
 /// yang ikut tersimpan di tabel setting dan ikut tampil di UI.
+/// Origin sintetis untuk mode Database Lokal.
+///
+/// Mode lokal tidak punya alamat jaringan, tetapi `server_origin` tetap
+/// dibutuhkan: vault perangkat mengikat snapshot kredensial pada kombinasi
+/// origin + username + device_id. Nilainya harus stabil (kalau berubah, seluruh
+/// akses offline yang sudah tersimpan menjadi tidak sah) dan tidak boleh pernah
+/// bisa di-resolve — `.invalid` dicadangkan RFC 2606 justru untuk itu, sehingga
+/// tidak ada kemungkinan permintaan nyasar ke host milik orang lain.
+pub const LOCAL_FILE_ORIGIN: &str = "https://local-file.sppg.invalid";
+
 pub fn normalize_database_url(
     raw: &str,
     provider: DatabaseProvider,
     allow_insecure_transport: bool,
 ) -> Result<Url, CommandError> {
+    // Mode lokal tidak pernah menyentuh jaringan, sehingga seluruh aturan
+    // transport di bawah tidak berlaku — dan `raw` di sini adalah lokasi
+    // berkas, bukan URL. Dikembalikan lebih dulu supaya lokasi berkas tidak
+    // pernah salah diuji sebagai alamat host.
+    if provider.is_local_file() {
+        return Url::parse(LOCAL_FILE_ORIGIN).map_err(|_| CommandError::internal());
+    }
+
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(CommandError::new(
@@ -129,6 +164,8 @@ pub fn normalize_database_url(
             match provider {
                 DatabaseProvider::Turso => "Format URL database Turso tidak valid (contoh: libsql://db-name.turso.io atau https://db-name.turso.io).",
                 DatabaseProvider::SelfHosted => "Format URL server database tidak valid (contoh: http://192.168.1.10:8080 atau https://db.kantor-anda.com).",
+                // Tidak terjangkau: mode lokal sudah kembali di awal fungsi.
+                DatabaseProvider::LocalFile => "Mode Database Lokal tidak memakai URL.",
             },
         )
     })?;
@@ -158,6 +195,7 @@ pub fn normalize_database_url(
             // LAN, jadi HTTP polos diizinkan pada build rilis sekalipun. Di luar
             // jaringan privat, pengguna harus menyatakan risikonya secara sadar.
             DatabaseProvider::SelfHosted => is_private || allow_insecure_transport,
+            DatabaseProvider::LocalFile => true,
         };
         if !allowed {
             let message = match provider {
@@ -167,6 +205,7 @@ pub fn normalize_database_url(
                 DatabaseProvider::SelfHosted => {
                     "Alamat server ini berada di luar jaringan privat, sehingga HTTP polos akan mengirim Auth Token dan data absensi tanpa enkripsi. Pasang HTTPS di server (misalnya lewat Caddy/Nginx), pakai alamat LAN/VPN, atau centang \"Izinkan koneksi tanpa enkripsi\" bila Anda menerima risikonya."
                 }
+                DatabaseProvider::LocalFile => "Mode Database Lokal tidak memakai URL.",
             };
             return Err(CommandError::new("TURSO_URL_INSECURE", message));
         }
@@ -240,6 +279,22 @@ impl TursoConfig {
         }
     }
 
+    /// Lokasi berkas hub untuk mode Database Lokal.
+    ///
+    /// `database_url` menyimpan lokasi berkas apa adanya pada mode ini — bukan
+    /// URL — supaya yang tersimpan di tabel setting dan yang tampil di layar
+    /// adalah sesuatu yang bisa dibuka pengguna di file explorer.
+    pub fn local_file_path(&self) -> Result<std::path::PathBuf, CommandError> {
+        let trimmed = self.database_url.trim();
+        if trimmed.is_empty() {
+            return Err(CommandError::new(
+                "LOCAL_DB_PATH_MISSING",
+                "Lokasi berkas database lokal belum ditentukan.",
+            ));
+        }
+        Ok(std::path::PathBuf::from(trimmed))
+    }
+
     /// Auth Token wajib ada sebelum koneksi boleh dicoba.
     ///
     /// Turso terkelola selalu wajib. Server sendiri boleh tanpa token — `sqld`
@@ -249,6 +304,8 @@ impl TursoConfig {
     pub fn requires_auth_token(&self) -> bool {
         match self.provider {
             DatabaseProvider::Turso => true,
+            // Tidak ada jaringan, tidak ada pihak yang perlu diyakinkan.
+            DatabaseProvider::LocalFile => false,
             DatabaseProvider::SelfHosted => self.normalized_url().ok().is_some_and(|url| {
                 url.scheme() == "https"
                     && !is_private_network_host(url.host_str().unwrap_or_default())
@@ -672,6 +729,9 @@ pub struct TursoClient {
     base_url: Url,
     auth_token: Zeroizing<String>,
     http: Client,
+    /// Berkas SQLite lokal, bila perangkat ini berjalan tanpa server sama
+    /// sekali. `None` berarti seluruh SQL dikirim lewat HTTP seperti biasa.
+    local: Option<LocalTransport>,
 }
 
 impl TursoClient {
@@ -680,7 +740,35 @@ impl TursoClient {
             base_url,
             auth_token: Zeroizing::new(auth_token),
             http,
+            local: None,
         }
+    }
+
+    /// Klien yang berbicara ke berkas SQLite lokal, tanpa jaringan sama sekali.
+    ///
+    /// SQL yang dijalankannya sama persis dengan jalur cloud — yang berbeda
+    /// hanya tujuannya. Itulah yang membuat tabel lokal dan tabel cloud tidak
+    /// bisa berbeda bentuk: keduanya lahir dari `ensure_schema` yang sama.
+    ///
+    /// `base_url` tetap diminta karena dipakai sebagai identitas asal
+    /// (`server_origin`) yang mengikat snapshot kredensial di vault perangkat.
+    pub fn local_file(
+        base_url: Url,
+        path: impl Into<std::path::PathBuf>,
+        http: Client,
+    ) -> Self {
+        Self {
+            base_url,
+            auth_token: Zeroizing::new(String::new()),
+            http,
+            local: Some(LocalTransport::new(path)),
+        }
+    }
+
+    /// Apakah klien ini berjalan sepenuhnya lokal.
+    #[allow(dead_code)]
+    pub fn is_local(&self) -> bool {
+        self.local.is_some()
     }
 
     pub fn from_config(config: &TursoConfig, http: Client) -> Result<Self, CommandError> {
@@ -688,6 +776,13 @@ impl TursoClient {
         // Memakai aturan Turso untuk server sendiri akan menolak alamat LAN
         // ber-HTTP yang justru menjadi tujuan mode itu.
         let base_url = config.normalized_url()?;
+
+        // Mode lokal: SQL yang sama, tujuan yang berbeda. Tidak ada token yang
+        // perlu diperiksa karena tidak ada yang dikirim ke mana pun.
+        if config.provider.is_local_file() {
+            return Ok(Self::local_file(base_url, config.local_file_path()?, http));
+        }
+
         if config.auth_token.trim().is_empty() && config.requires_auth_token() {
             return Err(CommandError::new(
                 "TURSO_TOKEN_REQUIRED",
@@ -698,6 +793,8 @@ impl TursoClient {
                     DatabaseProvider::SelfHosted => {
                         "Server database ini dapat dijangkau dari internet, jadi Auth Token wajib diisi."
                     }
+                    // Tidak terjangkau: mode lokal sudah kembali di atas.
+                    DatabaseProvider::LocalFile => "Mode Database Lokal tidak memakai Auth Token.",
                 },
             ));
         }
@@ -713,7 +810,28 @@ impl TursoClient {
         &self.auth_token
     }
 
+    /// Titik tunggal yang memilih transport.
+    ///
+    /// Seluruh `Statement` di berkas ini melewati sini, sehingga menukar
+    /// tujuan tidak menuntut satu baris SQL pun ditulis ulang.
     pub async fn execute_pipeline(
+        &self,
+        statements: Vec<Statement>,
+    ) -> Result<Vec<QueryResult>, CommandError> {
+        match &self.local {
+            Some(local) => local.execute_pipeline(statements),
+            None => self.execute_pipeline_remote(statements).await,
+        }
+    }
+
+    pub async fn execute_atomic(&self, statements: Vec<Statement>) -> Result<(), CommandError> {
+        match &self.local {
+            Some(local) => local.execute_atomic(statements),
+            None => self.execute_atomic_remote(statements).await,
+        }
+    }
+
+    async fn execute_pipeline_remote(
         &self,
         statements: Vec<Statement>,
     ) -> Result<Vec<QueryResult>, CommandError> {
@@ -834,31 +952,8 @@ impl TursoClient {
             if let Some(rows) = rows_arr {
                 for row_val in rows {
                     if let Some(cells) = row_val.as_array() {
-                        let parsed_cells: Vec<Value> = cells
-                            .iter()
-                            .map(|cell| {
-                                let ctype = cell.get("type").and_then(Value::as_str).unwrap_or("");
-                                match ctype {
-                                    "null" => Value::Null,
-                                    "integer" => {
-                                        let v = cell.get("value");
-                                        if let Some(s) = v.and_then(Value::as_str) {
-                                            s.parse::<i64>()
-                                                .map(|num| json!(num))
-                                                .unwrap_or_else(|_| json!(s))
-                                        } else if let Some(n) = v.and_then(Value::as_i64) {
-                                            json!(n)
-                                        } else {
-                                            Value::Null
-                                        }
-                                    }
-                                    "float" => cell.get("value").cloned().unwrap_or(Value::Null),
-                                    "text" => cell.get("value").cloned().unwrap_or(Value::Null),
-                                    "blob" => cell.get("base64").cloned().unwrap_or(Value::Null),
-                                    _ => cell.clone(),
-                                }
-                            })
-                            .collect();
+                        let parsed_cells: Vec<Value> =
+                            cells.iter().map(decode_hrana_cell).collect();
                         parsed_rows.push(parsed_cells);
                     }
                 }
@@ -887,7 +982,7 @@ impl TursoClient {
         Ok(query_results)
     }
 
-    pub async fn execute_atomic(&self, statements: Vec<Statement>) -> Result<(), CommandError> {
+    async fn execute_atomic_remote(&self, statements: Vec<Statement>) -> Result<(), CommandError> {
         if statements.is_empty() {
             return Ok(());
         }
@@ -2685,6 +2780,7 @@ impl TursoClient {
             SELECT
                 m.id, m.kode_operator, m.nama_operator, m.username, m.password_hash,
                 m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+                COALESCE(m.totp_enabled, 0) AS totp_enabled,
                 COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
                 COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
             FROM master_operator m
@@ -2862,6 +2958,9 @@ impl TursoClient {
             permission_revision,
             require_scan_photo: role_flag("require_scan_photo"),
             require_scan_ip_allowlist: role_flag("require_scan_ip_allowlist"),
+            // Penanda akun, bukan penanda role — dibaca dengan closure yang sama
+            // karena keduanya sama-sama kolom integer 0/1 pada baris ini.
+            totp_enabled: role_flag("totp_enabled"),
             login_at: Some(chrono_like_now_iso()),
         })
     }
@@ -2881,6 +2980,7 @@ impl TursoClient {
             SELECT
                 m.id, m.kode_operator, m.nama_operator, m.username,
                 m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+                COALESCE(m.totp_enabled, 0) AS totp_enabled,
                 COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
                 COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
             FROM master_operator m
@@ -8484,6 +8584,64 @@ mod tests {
         let turso = TursoConfig::turso("libsql://my-db.turso.io".into(), String::new());
         assert!(turso.requires_auth_token());
         assert!(TursoClient::from_config(&turso, Client::new()).is_err());
+    }
+
+    /// Mode lokal tidak menyentuh jaringan, jadi seluruh aturan transport dan
+    /// kewajiban token tidak berlaku. Yang justru wajib dijaga adalah origin
+    /// sintetisnya tetap stabil — vault perangkat mengikat snapshot kredensial
+    /// padanya, sehingga origin yang berubah membatalkan seluruh akses offline.
+    #[test]
+    fn mode_lokal_tidak_pernah_menuntut_token() {
+        let local = TursoConfig::new(
+            "C:/data/sppg-hub.db".into(),
+            String::new(),
+            DatabaseProvider::LocalFile,
+            false,
+        );
+        assert!(!local.requires_auth_token());
+
+        let client = TursoClient::from_config(&local, Client::new()).expect("klien lokal");
+        assert!(client.is_local());
+    }
+
+    #[test]
+    fn origin_mode_lokal_stabil_dan_tidak_bergantung_isi_path() {
+        let a = normalize_database_url("C:/data/sppg-hub.db", DatabaseProvider::LocalFile, false)
+            .expect("origin lokal");
+        let b = normalize_database_url(
+            "/home/pengguna/lain.db",
+            DatabaseProvider::LocalFile,
+            false,
+        )
+        .expect("origin lokal");
+
+        assert_eq!(a, b);
+        assert_eq!(a.as_str().trim_end_matches('/'), LOCAL_FILE_ORIGIN);
+    }
+
+    /// Lokasi berkas yang kosong adalah kesalahan yang harus terlihat, bukan
+    /// berkas kosong yang diam-diam dibuat di direktori kerja.
+    #[test]
+    fn lokasi_berkas_lokal_wajib_terisi() {
+        let kosong = TursoConfig::new(
+            "   ".into(),
+            String::new(),
+            DatabaseProvider::LocalFile,
+            false,
+        );
+        let error = kosong.local_file_path().expect_err("harus gagal");
+        assert_eq!(error.code, "LOCAL_DB_PATH_MISSING");
+        assert!(TursoClient::from_config(&kosong, Client::new()).is_err());
+    }
+
+    #[test]
+    fn nama_setting_provider_lokal_bukan_local() {
+        // `"local"` sudah lebih dulu berarti server sendiri pada instalasi yang
+        // ada; memakainya ulang akan mengubah arti data pelanggan.
+        assert_eq!(DatabaseProvider::LocalFile.as_str(), "local_file");
+        assert_eq!(DatabaseProvider::SelfHosted.as_str(), "self_hosted");
+        assert!(DatabaseProvider::LocalFile.is_local_file());
+        assert!(!DatabaseProvider::LocalFile.is_self_hosted());
     }
 
     #[test]

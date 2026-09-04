@@ -82,6 +82,7 @@ import {
   DATABASE_PROVIDER_OPTIONS,
   type DatabaseProvider,
   describeProvider,
+  providerNeedsEndpoint,
   reviewDatabaseEndpoint,
 } from "@/lib/validations/database-endpoint";
 import { validateGeofenceSettings } from "@/lib/validations/geofence";
@@ -559,7 +560,13 @@ export default function SettingsPage() {
     e.preventDefault();
     // Tahan input yang jelas salah di sini supaya pengguna melihat alasannya di
     // sebelah field, bukan sebagai kegagalan IPC generik setelah penyimpanan.
-    if (!tursoEndpoint.valid) {
+    // Mode Database Lokal tidak punya alamat maupun token, dan validator
+    // endpoint memang MENOLAKNYA secara sengaja — kalau ia diloloskan, alamat
+    // remote yang dipasangkan dengan mode lokal akan melewati seluruh aturan
+    // transport. Karena itu kedua pemeriksaan di bawah hanya berlaku untuk
+    // provider yang benar-benar memakai endpoint.
+    const needsEndpoint = providerNeedsEndpoint(tursoProvider);
+    if (needsEndpoint && !tursoEndpoint.valid) {
       setFeedback({
         type: "error",
         message:
@@ -567,7 +574,12 @@ export default function SettingsPage() {
       });
       return;
     }
-    if (tursoEndpoint.tokenRequired && !tursoToken.trim() && !tursoTokenSaved) {
+    if (
+      needsEndpoint &&
+      tursoEndpoint.tokenRequired &&
+      !tursoToken.trim() &&
+      !tursoTokenSaved
+    ) {
       setFeedback({
         type: "error",
         message: "Auth Token wajib diisi untuk alamat database ini.",
@@ -576,10 +588,14 @@ export default function SettingsPage() {
     }
     setTursoBusy(true);
     try {
-      await saveTursoConfig(tursoUrl.trim(), tursoToken.trim(), {
-        provider: tursoProvider,
-        allowInsecureTransport: tursoAllowInsecure,
-      });
+      await saveTursoConfig(
+        needsEndpoint ? tursoUrl.trim() : "",
+        needsEndpoint ? tursoToken.trim() : "",
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
+      );
       setTursoTokenSaved(tursoToken.trim().length > 0 ? true : tursoTokenSaved);
       setFeedback({
         type: "success",
@@ -1655,99 +1671,109 @@ export default function SettingsPage() {
               </div>
             </fieldset>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
-                {tursoProvider === "turso"
-                  ? "URL Database Cloud Turso"
-                  : "Alamat Server Database Anda"}
-                <div className="relative">
-                  <input
-                    type="text"
-                    inputMode="url"
-                    value={tursoUrl}
-                    onChange={(e) => {
-                      setTursoUrl(e.target.value);
-                      setTursoTestStatus(null);
-                    }}
-                    placeholder={tursoProviderInfo.urlPlaceholder}
-                    className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-cyan-400"
-                  />
-                </div>
-                {tursoUrl.trim().length > 0 && tursoEndpoint.issue ? (
-                  <span className="block text-[11px] font-normal text-amber-300">
-                    {tursoEndpoint.issue.message}
-                  </span>
-                ) : (
+            {providerNeedsEndpoint(tursoProvider) ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                  {tursoProvider === "turso"
+                    ? "URL Database Cloud Turso"
+                    : "Alamat Server Database Anda"}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="url"
+                      value={tursoUrl}
+                      onChange={(e) => {
+                        setTursoUrl(e.target.value);
+                        setTursoTestStatus(null);
+                      }}
+                      placeholder={tursoProviderInfo.urlPlaceholder}
+                      className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                  {tursoUrl.trim().length > 0 && tursoEndpoint.issue ? (
+                    <span className="block text-[11px] font-normal text-amber-300">
+                      {tursoEndpoint.issue.message}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-normal text-slate-500">
+                      {tursoProvider === "turso" ? (
+                        <>
+                          Contoh format:{" "}
+                          <code className="text-slate-400">
+                            libsql://nama-db-org.turso.io
+                          </code>{" "}
+                          atau{" "}
+                          <code className="text-slate-400">
+                            https://nama-db-org.turso.io
+                          </code>
+                        </>
+                      ) : (
+                        <>
+                          Contoh format:{" "}
+                          <code className="text-slate-400">
+                            http://192.168.1.10:8080
+                          </code>{" "}
+                          (LAN) atau{" "}
+                          <code className="text-slate-400">
+                            https://db.kantor-anda.com
+                          </code>{" "}
+                          (VPS ber-TLS)
+                        </>
+                      )}
+                    </span>
+                  )}
+                </label>
+
+                <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                  {tursoEndpoint.tokenRequired
+                    ? "Auth Token Database (Bearer Token)"
+                    : "Auth Token Database (opsional untuk server tanpa autentikasi)"}
+                  <div className="relative">
+                    <input
+                      type={showTursoToken ? "text" : "password"}
+                      value={tursoToken}
+                      onChange={(e) => setTursoToken(e.target.value)}
+                      placeholder={
+                        tursoUrl
+                          ? "•••••••••••••••• (Tersimpan aman di vault - kosongkan jika tidak ingin diubah)"
+                          : "eyJhbGciOiJFZERTQ..."
+                      }
+                      className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 pr-24 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowTursoToken((prev) => !prev)}
+                      className="absolute right-2 top-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:text-white"
+                    >
+                      {showTursoToken ? "Sembunyikan" : "Tampilkan"}
+                    </button>
+                  </div>
                   <span className="text-[11px] font-normal text-slate-500">
-                    {tursoProvider === "turso" ? (
-                      <>
-                        Contoh format:{" "}
-                        <code className="text-slate-400">
-                          libsql://nama-db-org.turso.io
-                        </code>{" "}
-                        atau{" "}
-                        <code className="text-slate-400">
-                          https://nama-db-org.turso.io
-                        </code>
-                      </>
+                    {tursoUrl ? (
+                      <span className="text-cyan-400">
+                        Token otentikasi tersimpan aman di vault lokal. Biarkan
+                        kosong jika tidak ingin mengganti token.
+                      </span>
                     ) : (
                       <>
-                        Contoh format:{" "}
+                        Token otentikasi Turso dari command CLI{" "}
                         <code className="text-slate-400">
-                          http://192.168.1.10:8080
-                        </code>{" "}
-                        (LAN) atau{" "}
-                        <code className="text-slate-400">
-                          https://db.kantor-anda.com
-                        </code>{" "}
-                        (VPS ber-TLS)
+                          turso db tokens create &lt;db-name&gt;
+                        </code>
                       </>
                     )}
                   </span>
-                )}
-              </label>
-
-              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
-                {tursoEndpoint.tokenRequired
-                  ? "Auth Token Database (Bearer Token)"
-                  : "Auth Token Database (opsional untuk server tanpa autentikasi)"}
-                <div className="relative">
-                  <input
-                    type={showTursoToken ? "text" : "password"}
-                    value={tursoToken}
-                    onChange={(e) => setTursoToken(e.target.value)}
-                    placeholder={
-                      tursoUrl
-                        ? "•••••••••••••••• (Tersimpan aman di vault - kosongkan jika tidak ingin diubah)"
-                        : "eyJhbGciOiJFZERTQ..."
-                    }
-                    className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 pr-24 font-mono text-xs text-white outline-none focus:border-cyan-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowTursoToken((prev) => !prev)}
-                    className="absolute right-2 top-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:text-white"
-                  >
-                    {showTursoToken ? "Sembunyikan" : "Tampilkan"}
-                  </button>
-                </div>
-                <span className="text-[11px] font-normal text-slate-500">
-                  {tursoUrl ? (
-                    <span className="text-cyan-400">
-                      Token otentikasi tersimpan aman di vault lokal. Biarkan
-                      kosong jika tidak ingin mengganti token.
-                    </span>
-                  ) : (
-                    <>
-                      Token otentikasi Turso dari command CLI{" "}
-                      <code className="text-slate-400">
-                        turso db tokens create &lt;db-name&gt;
-                      </code>
-                    </>
-                  )}
-                </span>
-              </label>
-            </div>
+                </label>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-cyan-400/30 bg-cyan-400/5 p-4 text-[11px] font-bold leading-4 text-cyan-100">
+                Seluruh data disimpan pada berkas SQLite di perangkat ini. Tidak
+                ada alamat server maupun Auth Token yang perlu diisi, dan
+                aplikasi tetap berjalan penuh tanpa internet. Lokasi berkasnya
+                ditentukan otomatis di folder data aplikasi — gunakan menu
+                Cadangan untuk menyalinnya keluar.
+              </div>
+            )}
 
             {tursoProvider === "self_hosted" &&
             (tursoEndpoint.issue?.code === "INSECURE_PUBLIC" ||

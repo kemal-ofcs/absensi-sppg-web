@@ -39,8 +39,14 @@ pub struct DesktopState {
 /// — aturan validasi yang paling ketat, sehingga default-nya aman.
 fn parse_provider_setting(raw: Option<&str>) -> DatabaseProvider {
     match raw.map(str::trim) {
+        // `"local"` SENGAJA tetap berarti server sendiri. Nilai itu sudah
+        // tersimpan di perangkat yang memakai `sqld` sejak sebelum mode lokal
+        // ada, dan memakainya ulang akan mengubah arti data mereka diam-diam.
         Some("self_hosted") | Some("self-hosted") | Some("selfHosted") | Some("custom")
         | Some("local") | Some("libsql") => DatabaseProvider::SelfHosted,
+        Some("local_file") | Some("local-file") | Some("localFile") | Some("file") => {
+            DatabaseProvider::LocalFile
+        }
         _ => DatabaseProvider::Turso,
     }
 }
@@ -261,12 +267,39 @@ impl DesktopState {
             .clone()
     }
 
+    /// Lokasi bawaan berkas hub untuk mode Database Lokal.
+    ///
+    /// Berdampingan dengan database perangkat, bukan menggantikannya:
+    /// `desktop-security.db` tetap memegang vault, outbox, dan cermin
+    /// operasional, sementara berkas ini memegang skema cloud apa adanya.
+    /// Menggabungkan keduanya berarti mendamaikan DDL `storage.rs` dengan DDL
+    /// `turso.rs` — justru kelas drift yang ingin dihindari mode lokal.
+    pub fn local_hub_path(&self) -> PathBuf {
+        self.data_dir.join("sppg-hub.db")
+    }
+
     /// Simpan konfigurasi database aktif — provider, URL, dan token — sekaligus.
     ///
     /// Ini satu-satunya pintu penulisan konfigurasi database. Provider ikut
     /// disimpan karena aturan validasi transport bergantung padanya; menebaknya
     /// ulang dari bentuk URL akan salah untuk server sendiri yang sudah ber-HTTPS.
     pub fn set_database_config(&self, requested: &TursoConfig) -> Result<String, CommandError> {
+        // Mode lokal: formulir tidak menampilkan kolom alamat sama sekali, jadi
+        // lokasi berkas diisi di sini. Nilai yang dikirim eksplisit tetap
+        // dihormati supaya pengguna bisa menaruh hub di drive lain.
+        let requested = &if requested.provider.is_local_file()
+            && requested.database_url.trim().is_empty()
+        {
+            TursoConfig::new(
+                self.local_hub_path().to_string_lossy().into_owned(),
+                String::new(),
+                requested.provider,
+                false,
+            )
+        } else {
+            requested.clone()
+        };
+
         let normalized = requested.normalized_url()?;
         let origin = normalized.origin().ascii_serialization();
         let previous = self.turso_config();
@@ -304,10 +337,21 @@ impl DesktopState {
         // Perbandingan wajib memakai URL ternormalisasi: `libsql://x` dan
         // `https://x` menunjuk database yang sama, dan menyimpan ulang URL yang
         // sama dalam ejaan berbeda tidak boleh dianggap pindah database.
-        let url_changed = !previous
-            .as_ref()
-            .and_then(|config| config.normalized_url().ok())
-            .is_some_and(|previous_url| previous_url == normalized);
+        // Mode lokal selalu menghasilkan origin sintetis yang sama, sehingga
+        // perbandingan URL tidak akan pernah melihat perpindahan berkas. Yang
+        // menentukan di sana adalah lokasi berkasnya — dan pindah berkas berarti
+        // pindah database, persis seperti pindah URL.
+        let url_changed = if config.provider.is_local_file() {
+            !previous.as_ref().is_some_and(|previous_config| {
+                previous_config.provider.is_local_file()
+                    && previous_config.database_url.trim() == config.database_url.trim()
+            })
+        } else {
+            !previous
+                .as_ref()
+                .and_then(|config| config.normalized_url().ok())
+                .is_some_and(|previous_url| previous_url == normalized)
+        };
 
         // Simpan ke vault terenkripsi
         secrets::save_turso_config(self, &config)?;
@@ -396,6 +440,20 @@ mod tests {
         // aturan yang paling ketat, bukan yang paling longgar.
         assert_eq!(parse_provider_setting(None), DatabaseProvider::Turso);
         assert_eq!(parse_provider_setting(Some("")), DatabaseProvider::Turso);
+        assert_eq!(
+            parse_provider_setting(Some("local_file")),
+            DatabaseProvider::LocalFile
+        );
+        assert_eq!(
+            parse_provider_setting(Some("local-file")),
+            DatabaseProvider::LocalFile
+        );
+        // Nilai lama `"local"` WAJIB tetap berarti server sendiri: perangkat
+        // yang memakai sqld sudah menyimpannya sejak sebelum mode lokal ada.
+        assert_eq!(
+            parse_provider_setting(Some("local")),
+            DatabaseProvider::SelfHosted
+        );
         assert_eq!(
             parse_provider_setting(Some("postgres")),
             DatabaseProvider::Turso

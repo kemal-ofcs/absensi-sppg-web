@@ -398,6 +398,31 @@ pub async fn desktop_link_bootstrap_database(
     Ok(check)
 }
 
+/// Bolehkah akun ini masuk lewat jalur offline?
+///
+/// Jalur offline hanya memeriksa username + password terhadap snapshot vault.
+/// Untuk akun ber-2FA itu berarti faktor kedua hilang seluruhnya, sehingga
+/// perangkat yang punya cache offline justru menjadi cara termudah melewatinya.
+///
+/// Rahasia TOTP SENGAJA tidak ikut disimpan di vault supaya bisa diverifikasi
+/// offline: vault dibuka dengan password akun itu sendiri, jadi penyerang yang
+/// berhasil membukanya sudah melewati faktor pertama — menyimpan rahasianya di
+/// sana membuat faktor kedua tidak menambah perlindungan apa pun. Yang benar
+/// adalah menolak, lalu meminta satu kali koneksi.
+///
+/// Catatan: pada Mode Database Lokal batasan ini tidak pernah terasa, karena
+/// `authenticate_operator` berjalan penuh terhadap berkas lokal — termasuk
+/// verifikasi TOTP-nya.
+fn assert_offline_login_allowed(operator: &OperatorUser) -> Result<(), CommandError> {
+    if operator.totp_enabled {
+        return Err(CommandError::new(
+            "TOTP_REQUIRED_ONLINE",
+            "Akun ini memakai verifikasi dua langkah, sehingga kodenya tidak dapat diperiksa saat perangkat sedang offline. Sambungkan perangkat ke database sekali untuk masuk.",
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn desktop_login(
     state: State<'_, DesktopState>,
@@ -424,6 +449,11 @@ pub async fn desktop_login(
 
     // 1. Coba login online via Turso jika Turso Client tersedia
     if let Ok(turso) = state.get_turso_client() {
+        // Mode Database Lokal tidak punya jaringan yang bisa gagal. Kegagalan di
+        // sana berarti berkasnya bermasalah, dan menyamarkannya sebagai "cloud
+        // tidak terjangkau" akan meneruskan login ke fallback offline — jalur
+        // yang hanya memeriksa username + password.
+        let backend_is_local = turso.is_local();
         match turso
             .authenticate_operator(&identifier, &password, totp_code.as_deref())
             .await
@@ -517,13 +547,19 @@ pub async fn desktop_login(
                 return Err(err);
             }
             Err(err) => {
-                // Koneksi network Turso gagal, lanjut ke fallback di bawah
                 storage::audit(
                     &state.data_dir,
                     None,
                     "login-online-turso-unavailable",
                     Some(&err.code),
                 );
+                // Tidak ada "offline" yang masuk akal pada berkas lokal:
+                // laporkan kerusakannya apa adanya, jangan diam-diam turun ke
+                // jalur yang lebih lemah.
+                if backend_is_local {
+                    return Err(err);
+                }
+                // Koneksi network Turso gagal, lanjut ke fallback di bawah
                 cloud_failure = Some(err.message);
             }
         }
@@ -638,6 +674,20 @@ pub async fn desktop_login(
             return Err(error);
         }
     };
+    // Gerbang 2FA untuk jalur offline. Sampai di sini password sudah terbukti
+    // benar terhadap vault — sama seperti pada jalur online, gerbang 2FA berdiri
+    // SETELAH password, supaya layar login tidak bisa dipakai memetakan akun
+    // mana yang memakai verifikasi dua langkah.
+    if let Err(error) = assert_offline_login_allowed(&credential.operator) {
+        storage::audit(
+            &state.data_dir,
+            Some(credential.operator.id),
+            "login-offline-blocked-totp",
+            Some(&error.code),
+        );
+        return Err(error);
+    }
+
     storage::clear_login_failures(&state.data_dir, &identifier)?;
     storage::audit(
         &state.data_dir,
@@ -2001,4 +2051,72 @@ pub fn desktop_clear_turso_config(state: State<'_, DesktopState>) -> Result<(), 
         .write()
         .map_err(|_| CommandError::internal())? = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests_offline_login {
+    use super::*;
+
+    fn operator(totp_enabled: bool) -> OperatorUser {
+        OperatorUser {
+            id: 7,
+            kode_operator: "OP-007".into(),
+            nama_operator: "Operator Uji".into(),
+            username: "operator.uji".into(),
+            role: "Operator".into(),
+            role_id: 2,
+            role_key: "operator".into(),
+            is_superadmin: false,
+            permissions: vec!["sync.view".into()],
+            permission_revision: 1,
+            require_scan_photo: false,
+            require_scan_ip_allowlist: false,
+            totp_enabled,
+            login_at: None,
+        }
+    }
+
+    /// Jalur offline hanya memeriksa username + password. Tanpa gerbang ini,
+    /// perangkat yang punya cache offline menjadi cara termudah melewati 2FA.
+    #[test]
+    fn akun_ber_2fa_ditolak_pada_jalur_offline() {
+        let error =
+            assert_offline_login_allowed(&operator(true)).expect_err("harus ditolak");
+        assert_eq!(error.code, "TOTP_REQUIRED_ONLINE");
+    }
+
+    #[test]
+    fn akun_tanpa_2fa_tetap_boleh_masuk_offline() {
+        assert!(assert_offline_login_allowed(&operator(false)).is_ok());
+    }
+
+    /// Kode penolakannya WAJIB berbeda dari ketiga kode 2FA jalur online.
+    /// Ketiganya sudah punya penanganan khusus di frontend — memakai kode yang
+    /// sama akan memunculkan layar "masukkan kode" yang tidak akan pernah bisa
+    /// diselesaikan pengguna selama perangkatnya offline.
+    /// Frontend menyalakan layar "masukkan kode" dengan MENCOCOKKAN TEKS pesan
+    /// (`desktop-session-store.ts`), bukan kode error. Pesan penolakan offline
+    /// karena itu tidak boleh memuat frasa pemicunya: kalau memuat, pengguna
+    /// akan disodori kolom kode yang tidak akan pernah bisa diselesaikan selama
+    /// perangkatnya offline.
+    #[test]
+    fn pesan_offline_tidak_memuat_frasa_pemicu_layar_kode() {
+        let error =
+            assert_offline_login_allowed(&operator(true)).expect_err("harus ditolak");
+        for frasa in ["aplikasi autentikator", "kode 6 digit"] {
+            assert!(
+                !error.message.contains(frasa),
+                "pesan offline tidak boleh memuat frasa pemicu: {frasa}"
+            );
+        }
+    }
+
+    #[test]
+    fn kode_penolakan_offline_tidak_bentrok_dengan_kode_2fa_online() {
+        let error =
+            assert_offline_login_allowed(&operator(true)).expect_err("harus ditolak");
+        for online_code in ["TOTP_REQUIRED", "TOTP_INVALID", "TOTP_ENROLLMENT_REQUIRED"] {
+            assert_ne!(error.code, online_code);
+        }
+    }
 }

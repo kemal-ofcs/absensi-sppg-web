@@ -512,7 +512,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         calc_type TEXT NOT NULL CHECK (calc_type IN ('FIXED', 'PERCENTAGE')),
         default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
         applies_to TEXT NOT NULL DEFAULT 'ALL',
-        is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS tax_rules (
         id TEXT PRIMARY KEY,
@@ -520,7 +521,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         bracket_min INTEGER NOT NULL,
         bracket_max INTEGER,
         rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
-        effective_date TEXT NOT NULL
+        effective_date TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS bpjs_rules (
         id TEXT PRIMARY KEY,
@@ -528,7 +530,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         component_name TEXT NOT NULL,
         rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
         wage_cap INTEGER,
-        effective_date TEXT NOT NULL
+        effective_date TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS payroll_runs (
         id TEXT PRIMARY KEY,
@@ -622,6 +625,31 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "total_holiday_overtime_index",
         "ALTER TABLE payroll_items ADD COLUMN total_holiday_overtime_index REAL NOT NULL DEFAULT 0;",
     )?;
+
+    // Stempel waktu pembuatan tarif payroll. `turso.rs` sudah memilikinya di
+    // CREATE TABLE maupun di daftar ensure_column-nya, sehingga tanpa blok ini
+    // tabel yang sama punya bentuk berbeda di perangkat dan di cloud. Nullable
+    // karena SQLite menolak ADD COLUMN dengan default non-konstan seperti
+    // `datetime('now')` — hanya CREATE TABLE yang mengizinkannya.
+    for (table, column, sql) in [
+        (
+            "tax_rules",
+            "created_at",
+            "ALTER TABLE tax_rules ADD COLUMN created_at TEXT;",
+        ),
+        (
+            "bpjs_rules",
+            "created_at",
+            "ALTER TABLE bpjs_rules ADD COLUMN created_at TEXT;",
+        ),
+        (
+            "payroll_components",
+            "created_at",
+            "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;",
+        ),
+    ] {
+        ensure_column(&connection, table, column, sql)?;
+    }
 
     // Shift tujuan sesi lanjutan. 0 = belum ditentukan, sehingga pemasangan
     // lama yang hanya menyalakan izinkan_multi_sesi tetap memakai pencocokan

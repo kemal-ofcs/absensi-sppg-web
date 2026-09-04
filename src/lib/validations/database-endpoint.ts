@@ -9,7 +9,7 @@
  * harus setuju, perubahan aturan di satu sisi wajib diikuti sisi lainnya.
  */
 
-export type DatabaseProvider = "turso" | "self_hosted";
+export type DatabaseProvider = "turso" | "self_hosted" | "local_file";
 
 export interface DatabaseProviderOption {
   readonly value: DatabaseProvider;
@@ -40,10 +40,30 @@ export const DATABASE_PROVIDER_OPTIONS: readonly DatabaseProviderOption[] = [
     tokenPlaceholder: "Kosongkan bila server tanpa autentikasi",
     tokenAlwaysRequired: false,
   },
+  {
+    value: "local_file",
+    label: "Database Lokal (Tanpa Server)",
+    description:
+      "Berkas SQLite di perangkat ini. Tidak butuh internet, server, maupun Auth Token — cocok untuk satu perangkat yang berdiri sendiri.",
+    urlPlaceholder: "",
+    tokenPlaceholder: "",
+    tokenAlwaysRequired: false,
+  },
 ] as const;
 
 export function isDatabaseProvider(value: unknown): value is DatabaseProvider {
-  return value === "turso" || value === "self_hosted";
+  return value === "turso" || value === "self_hosted" || value === "local_file";
+}
+
+/**
+ * Apakah provider ini membutuhkan alamat endpoint.
+ *
+ * Mode Database Lokal tidak punya alamat jaringan sama sekali, sehingga
+ * formulir tidak boleh menampilkan — apalagi memvalidasi — kolom URL dan token
+ * untuknya.
+ */
+export function providerNeedsEndpoint(provider: DatabaseProvider): boolean {
+  return provider !== "local_file";
 }
 
 export function normalizeProvider(value: unknown): DatabaseProvider {
@@ -161,6 +181,18 @@ export function reviewDatabaseEndpoint(
   provider: DatabaseProvider,
   allowInsecureTransport = false,
 ): DatabaseEndpointReview {
+  // Mode lokal DITOLAK di sini, bukan diloloskan. Kalau ia diloloskan begitu
+  // saja, sebuah alamat remote yang kebetulan dipasangkan dengan provider
+  // `local_file` akan melewati seluruh aturan transport di bawah tanpa satu
+  // pun pemeriksaan. Pemanggil memakai `providerNeedsEndpoint` untuk tahu
+  // bahwa fungsi ini memang tidak berlaku.
+  if (provider === "local_file") {
+    return rejected(
+      "SCHEME",
+      "Mode Database Lokal tidak memakai URL database.",
+    );
+  }
+
   const trimmed = rawUrl.trim();
   if (!trimmed) {
     return rejected("EMPTY", "URL database tidak boleh kosong.");
@@ -232,5 +264,6 @@ export function reviewDatabaseEndpoint(
     privateNetwork,
     plaintext,
     tokenRequired: provider === "turso" || (!plaintext && !privateNetwork),
+    // `local_file` tidak pernah sampai ke sini.
   };
 }
