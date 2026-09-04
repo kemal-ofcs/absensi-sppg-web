@@ -684,7 +684,8 @@ export async function runDatabaseMigrations(client: Client) {
       component_name TEXT NOT NULL,
       rate_percentage REAL NOT NULL CHECK (rate_percentage >= 0),
       wage_cap INTEGER,
-      effective_date TEXT NOT NULL
+      effective_date TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 
