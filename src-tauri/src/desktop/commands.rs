@@ -1181,8 +1181,130 @@ pub fn desktop_submit_qr_scan(
     input: Value,
 ) -> Result<Value, CommandError> {
     let operator = require_permission(&state, "scanner.use")?;
-    scanner::submit(&state, &input, &operator.kode_operator)
+    // Kebijakan diambil dari sesi, bukan dari payload: terminal yang dikuasai
+    // penyerang tidak boleh bisa mematikan kewajiban fotonya sendiri hanya
+    // dengan tidak mengirimkan sakelarnya.
+    let policy = scanner::ScanSecurityPolicy {
+        require_photo: operator.require_scan_photo,
+        require_ip_allowlist: operator.require_scan_ip_allowlist,
+    };
+    scanner::submit(&state, &input, &operator.kode_operator, policy)
 }
+
+/// Foto bukti absensi.
+///
+/// Dibaca langsung dari cloud, bukan dari SQLite lokal: foto sengaja TIDAK ikut
+/// snapshot sync, jadi perangkat ini hanya menyimpan foto hasil scannya sendiri.
+/// Meninjau bukti hanya berguna kalau yang terlihat adalah foto dari SEMUA
+/// terminal.
+#[tauri::command]
+pub async fn desktop_list_attendance_photos(
+    state: State<'_, DesktopState>,
+    tanggal_mulai: Option<String>,
+    tanggal_selesai: Option<String>,
+    search: Option<String>,
+    limit: Option<i64>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "attendance_photo.view")?;
+    state
+        .get_turso_client()?
+        .list_attendance_photos(
+            tanggal_mulai.as_deref().unwrap_or(""),
+            tanggal_selesai.as_deref().unwrap_or(""),
+            search.as_deref().unwrap_or(""),
+            limit.unwrap_or(100),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_get_attendance_photo(
+    state: State<'_, DesktopState>,
+    photo_id: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "attendance_photo.view")?;
+    state
+        .get_turso_client()?
+        .get_attendance_photo(&photo_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_delete_attendance_photo(
+    state: State<'_, DesktopState>,
+    photo_id: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "attendance_photo.delete")?;
+    let result = state
+        .get_turso_client()?
+        .delete_attendance_photo(&photo_id)
+        .await?;
+    // Salinan lokal ikut dihapus supaya perangkat yang mengambil fotonya tidak
+    // tetap menyimpan bukti yang sudah dinyatakan dihapus.
+    let connection = storage::database(&state.data_dir)?;
+    let _ = connection.execute(
+        "DELETE FROM absensi_foto WHERE id_foto = ?;",
+        rusqlite::params![photo_id],
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn desktop_purge_attendance_photos(
+    state: State<'_, DesktopState>,
+    older_than_days: i64,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "attendance_photo.delete")?;
+    let result = state
+        .get_turso_client()?
+        .purge_attendance_photos(older_than_days)
+        .await?;
+    let connection = storage::database(&state.data_dir)?;
+    let _ = connection.execute(
+        "DELETE FROM absensi_foto WHERE tanggal_kerja < date('now', ?);",
+        rusqlite::params![format!("-{} day", older_than_days.max(0))],
+    );
+    Ok(result)
+}
+
+/// Pengaturan keamanan absensi: sakelar induk fitur + daftar IP.
+///
+/// Membacanya hanya butuh sesi yang sah, bukan Superadmin: halaman scanner
+/// perlu tahu apakah fitur fotonya hidup supaya bisa menahan scan pada saat
+/// yang tepat. Daftar alamat IP-nya sendiri hanya dikembalikan untuk
+/// Superadmin — itu bagian yang layak dirahasiakan dari operator biasa.
+#[tauri::command]
+pub fn desktop_get_scan_security(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    let operator = require_session(&state)?;
+    operational::get_scan_security(
+        &state,
+        operator.is_superadmin,
+        operator.require_scan_photo,
+        operator.require_scan_ip_allowlist,
+    )
+}
+
+/// Mengubahnya sama ketatnya dengan pengaturan geofencing di sebelahnya: salah
+/// satu dari keduanya bisa mengunci seluruh terminal di luar, jadi Superadmin.
+#[tauri::command]
+pub async fn desktop_update_scan_security(
+    state: State<'_, DesktopState>,
+    payload: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "settings.manage")?;
+    if !operator.is_superadmin {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Pengaturan keamanan absensi hanya dapat diubah Superadmin.",
+        ));
+    }
+    let data = payload.get("data").cloned().unwrap_or(payload);
+    let result = operational::save_scan_security(&state, &data)?;
+    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    Ok(result)
+}
+
+
 
 #[tauri::command]
 pub fn desktop_get_corrections(
@@ -1388,6 +1510,22 @@ pub async fn desktop_update_scanner_settings(
 }
 
 #[tauri::command]
+pub fn desktop_get_app_display_name(state: State<'_, DesktopState>) -> Result<String, CommandError> {
+    operational::get_app_display_name(&state)
+}
+
+#[tauri::command]
+pub async fn desktop_update_app_display_name(
+    state: State<'_, DesktopState>,
+    name: String,
+) -> Result<String, CommandError> {
+    require_permission(&state, "settings.manage")?;
+    let saved = operational::save_app_display_name(&state, &name)?;
+    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    Ok(saved)
+}
+
+#[tauri::command]
 pub fn desktop_get_sync_status(
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSyncStatus, CommandError> {
@@ -1513,6 +1651,47 @@ pub fn desktop_delete_holiday(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "holidays.manage")?;
     operational::delete_holiday(&state, holiday_id)
+}
+
+/// Whitelist Shift/Divisi hari libur.
+///
+/// Membacanya memakai izin `holidays.view` dan mengubahnya `holidays.manage`,
+/// sama persis dengan hari liburnya sendiri: daftar ini adalah bagian dari
+/// kebijakan hari libur, bukan kewenangan terpisah.
+#[tauri::command]
+pub fn desktop_get_holiday_whitelist(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.view")?;
+    operational::list_holiday_whitelist(&state)
+}
+
+#[tauri::command]
+pub fn desktop_create_holiday_whitelist(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::create_holiday_whitelist(&state, &draft)
+}
+
+#[tauri::command]
+pub fn desktop_update_holiday_whitelist(
+    state: State<'_, DesktopState>,
+    whitelist_id: String,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::update_holiday_whitelist(&state, &whitelist_id, &draft)
+}
+
+#[tauri::command]
+pub fn desktop_delete_holiday_whitelist(
+    state: State<'_, DesktopState>,
+    whitelist_id: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::delete_holiday_whitelist(&state, &whitelist_id)
 }
 
 #[tauri::command]

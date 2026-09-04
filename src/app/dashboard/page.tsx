@@ -23,11 +23,13 @@ import {
   getTopKaryawanTerajin,
   type RekapBulananItem,
 } from "@/lib/gateways/report";
+import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
 export default function DashboardPage() {
   const isHydrated = useHydrated();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const companyName = useCompanyName();
 
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [activeTab, setActiveTab] = useState<
@@ -518,7 +520,7 @@ export default function DashboardPage() {
               Executive Analytics & Reports
             </span>
             <h1 className="text-xl sm:text-2xl font-bold text-white mt-1">
-              Dashboard Rekapitulasi Absensi SPPG
+              Dashboard Rekapitulasi Absensi {companyName}
             </h1>
           </div>
 

@@ -14,7 +14,9 @@ use zeroize::Zeroizing;
 
 use super::{
     models::{CommandError, OperatorUser},
-    sync,
+    // Normalisasi cakupan whitelist hari libur hidup di `scanner` bersama
+    // penilaiannya, supaya jalur cloud dan jalur scan tidak pernah bisa drift.
+    scanner, sync,
 };
 
 /// Provider database cloud yang dipakai perangkat.
@@ -1286,6 +1288,31 @@ impl TursoClient {
                 vec![],
             ),
             Statement::new(
+                // Foto bukti absensi. SENGAJA di luar SNAPSHOT_TABLES: satu foto
+                // ~40 KB, dan menariknya lewat snapshot akan membuat tiap siklus
+                // pull berukuran puluhan megabyte di setiap perangkat. Foto ikut
+                // event 'attendance/scan' saat push, lalu dibaca satu per satu
+                // dari cloud oleh halaman peninjauan.
+                r#"CREATE TABLE IF NOT EXISTS absensi_foto (
+                    id_foto TEXT PRIMARY KEY,
+                    id_sesi TEXT,
+                    tanggal_kerja TEXT NOT NULL,
+                    id_karyawan TEXT NOT NULL,
+                    nama TEXT NOT NULL,
+                    divisi TEXT,
+                    jenis_scan TEXT NOT NULL,
+                    timestamp_scan TEXT NOT NULL,
+                    sumber_data TEXT NOT NULL DEFAULT 'Scanner',
+                    kode_operator TEXT,
+                    ip_perangkat TEXT,
+                    client_id TEXT,
+                    foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
+                    foto_base64 TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );"#,
+                vec![],
+            ),
+            Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS backup_karyawan (
                     id_backup TEXT PRIMARY KEY,
                     tanggal_tugas TEXT NOT NULL,
@@ -1350,10 +1377,34 @@ impl TursoClient {
                 );"#,
                 vec![],
             ),
+            // Whitelist Shift/Divisi yang tetap boleh scan saat hari libur.
+            // Definisinya WAJIB identik dengan `db-migrations.ts`: keduanya
+            // membangun database cloud yang sama, dan CREATE TABLE IF NOT EXISTS
+            // tidak pernah memperbaiki tabel yang terlanjur dibuat sisi lain.
+            //
+            // Cakupan memakai `kode_shift` dan NAMA divisi, bukan `id_shift`:
+            // id itu AUTOINCREMENT yang berbeda tiap perangkat. Tidak ada UNIQUE
+            // pada (scope_type, scope_value) — dua perangkat offline boleh
+            // mendaftarkan cakupan sama tanpa membuat push sync gagal permanen.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hari_libur_whitelist (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL CHECK (scope_type IN ('SHIFT', 'DIVISI')),
+                    scope_value TEXT NOT NULL,
+                    tanggal_libur TEXT,
+                    keterangan TEXT,
+                    status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_hari_libur_whitelist_scope ON hari_libur_whitelist(scope_type, scope_value, status_aktif);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_hari_libur_whitelist_tanggal ON hari_libur_whitelist(tanggal_libur, status_aktif);", vec![]),
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS company_profile (
                     id TEXT PRIMARY KEY DEFAULT 'default_company',
-                    company_name TEXT NOT NULL DEFAULT 'SPPG',
+                    company_name TEXT NOT NULL DEFAULT 'YOUR COMPANY',
                     branch_name TEXT,
                     logo_url TEXT,
                     signature_url TEXT,
@@ -1373,7 +1424,7 @@ impl TursoClient {
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS id_card_template (
                     id TEXT PRIMARY KEY DEFAULT 'default_template',
-                    name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+                    name TEXT NOT NULL DEFAULT 'Default ID Card Template',
                     orientation TEXT NOT NULL DEFAULT 'landscape',
                     front_bg_url TEXT,
                     back_bg_url TEXT,
@@ -1525,6 +1576,9 @@ impl TursoClient {
             Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_operator ON password_reset_request(operator_id, status, requested_at DESC);", vec![]),
             Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_request(token_hash);", vec![]),
             Statement::new("CREATE INDEX IF NOT EXISTS idx_password_reset_challenge ON password_reset_request(challenge_hash);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_absensi_foto_tanggal ON absensi_foto(tanggal_kerja, timestamp_scan DESC);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_absensi_foto_karyawan ON absensi_foto(id_karyawan, tanggal_kerja);", vec![]),
+            Statement::new("CREATE INDEX IF NOT EXISTS idx_absensi_foto_sesi ON absensi_foto(id_sesi);", vec![]),
             // Seed Roles
             Statement::new(
                 r#"INSERT OR IGNORE INTO app_role (id, role_key, nama_role, deskripsi, is_system, is_superadmin, status, created_at, updated_at) VALUES
@@ -1557,6 +1611,11 @@ impl TursoClient {
                 ('operational.delete', 'Hapus Log Operasional', 'Operasional', 'Menghapus riwayat absensi atau log scan yang keliru.', 1, 180),
                 ('history.edit', 'Edit Riwayat Presensi', 'Riwayat', 'Mengubah data presensi lampau.', 1, 190),
                 ('history.delete', 'Hapus Riwayat Presensi', 'Riwayat', 'Menghapus data presensi lampau.', 1, 200),
+                ('password_reset.view', 'Lihat Riwayat Reset Password', 'Sistem', 'Melihat riwayat pengajuan pemulihan password beserta bukti fotonya.', 1, 201),
+                ('password_reset.delete', 'Hapus Riwayat Reset Password', 'Sistem', 'Menghapus jejak pengajuan pemulihan password.', 1, 202),
+                ('two_factor.reset', 'Reset 2FA Operator Lain', 'Sistem', 'Mematikan verifikasi dua langkah milik operator lain.', 1, 203),
+                ('attendance_photo.view', 'Lihat Foto Bukti Absensi', 'Sistem', 'Melihat foto bukti yang diambil saat scan absensi.', 1, 204),
+                ('attendance_photo.delete', 'Hapus Foto Bukti Absensi', 'Sistem', 'Menghapus foto bukti absensi dari database cloud.', 1, 205),
                 ('operators.view', 'Lihat Daftar Operator', 'Operator', 'Melihat data operator dan akun pengguna.', 1, 210),
                 ('operators.manage', 'Kelola Operator', 'Operator', 'Menambah dan mengubah data operator aplikasi.', 1, 220),
                 ('roles.manage', 'Kelola Hak Akses & Role', 'Role', 'Mengatur permission matriks untuk setiap role.', 1, 230),
@@ -1603,13 +1662,13 @@ impl TursoClient {
             // Seed Company Profile
             Statement::new(
                 r#"INSERT OR IGNORE INTO company_profile (id, company_name, branch_name, address, timezone, updated_at) VALUES
-                ('default_company', 'SPPG', 'Kantor Pusat', 'Jl. Jenderal Sudirman No. 1', 'Asia/Jakarta', datetime('now'));"#,
+                ('default_company', 'YOUR COMPANY', 'Operations Center', 'Your Company Address', 'Asia/Jakarta', datetime('now'));"#,
                 vec![],
             ),
             // Seed ID Card Template
             Statement::new(
                 r#"INSERT OR IGNORE INTO id_card_template (id, name, orientation, elements_json, is_active, created_at, updated_at) VALUES
-                ('default_template', 'Template Default SPPG', 'landscape', ?, 1, datetime('now'), datetime('now'));"#,
+                ('default_template', 'Default ID Card Template', 'landscape', ?, 1, datetime('now'), datetime('now'));"#,
                 vec![json!(serde_json::to_string(&crate::desktop::operational::default_id_card_elements()).unwrap_or_else(|_| "[]".to_string()))],
             ),
             // Payroll DDL
@@ -1706,6 +1765,8 @@ impl TursoClient {
                     total_regular_hours REAL NOT NULL,
                     total_overtime_hours REAL NOT NULL,
                     total_overtime_index REAL NOT NULL,
+                    total_holiday_hours REAL NOT NULL DEFAULT 0,
+                    total_holiday_overtime_index REAL NOT NULL DEFAULT 0,
                     rate_per_hour INTEGER NOT NULL,
                     basic_salary INTEGER NOT NULL CHECK (basic_salary >= 0),
                     overtime_salary INTEGER NOT NULL CHECK (overtime_salary >= 0),
@@ -1751,7 +1812,8 @@ impl TursoClient {
                 r#"INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES
                 (10, 'payroll-engine-v1', datetime('now')),
                 (11, 'operator-contact-and-password-reset', datetime('now')),
-                (12, 'two-factor-totp', datetime('now'));"#,
+                (12, 'two-factor-totp', datetime('now')),
+                (14, 'holiday-whitelist-and-holiday-overtime', datetime('now'));"#,
                 vec![],
             ),
         ];
@@ -1825,6 +1887,11 @@ impl TursoClient {
             ("master_operator", "totp_confirmed_at", "ALTER TABLE master_operator ADD COLUMN totp_confirmed_at TEXT;"),
             ("master_operator", "totp_recovery_codes", "ALTER TABLE master_operator ADD COLUMN totp_recovery_codes TEXT;"),
             ("app_role", "require_totp", "ALTER TABLE app_role ADD COLUMN require_totp INTEGER NOT NULL DEFAULT 0;"),
+            // Keamanan absensi per role (schema versi 13): foto bukti wajib dan
+            // pembatasan alamat IP. Keduanya nonaktif secara bawaan supaya
+            // database lama tetap bisa dipakai scan tanpa perubahan apa pun.
+            ("app_role", "require_scan_photo", "ALTER TABLE app_role ADD COLUMN require_scan_photo INTEGER NOT NULL DEFAULT 0;"),
+            ("app_role", "require_scan_ip_allowlist", "ALTER TABLE app_role ADD COLUMN require_scan_ip_allowlist INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "izinkan_multi_sesi", "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "shift_lanjutan_id", "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER NOT NULL DEFAULT 0;"),
             ("import_offline", "timestamp_input", "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;"),
@@ -1847,6 +1914,11 @@ impl TursoClient {
             ("tax_rules", "created_at", "ALTER TABLE tax_rules ADD COLUMN created_at TEXT;"),
             ("bpjs_rules", "created_at", "ALTER TABLE bpjs_rules ADD COLUMN created_at TEXT;"),
             ("payroll_components", "created_at", "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;"),
+            // Pemisahan jam kerja hari libur (schema versi 14). Database cloud
+            // yang sudah ada sudah memiliki payroll_items, sehingga CREATE TABLE
+            // IF NOT EXISTS di pipeline tidak akan menambahkan kolomnya.
+            ("payroll_items", "total_holiday_hours", "ALTER TABLE payroll_items ADD COLUMN total_holiday_hours REAL NOT NULL DEFAULT 0;"),
+            ("payroll_items", "total_holiday_overtime_index", "ALTER TABLE payroll_items ADD COLUMN total_holiday_overtime_index REAL NOT NULL DEFAULT 0;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
@@ -1931,6 +2003,11 @@ impl TursoClient {
         .await?;
         self.query_one(
             "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2009, 'two-factor-totp-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2010, 'holiday-whitelist-and-holiday-overtime-v1', datetime('now'));",
             vec![],
         )
         .await?;
@@ -2145,7 +2222,7 @@ impl TursoClient {
                 // tabel atau kolom. Tanpa itu database cloud yang sudah ada
                 // dianggap mutakhir dan seluruh ensure_column dilewati, sehingga
                 // push gagal dengan "has no column named ...".
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2009;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2010;",
                 vec![],
             )
             .await
@@ -2607,7 +2684,9 @@ impl TursoClient {
         let sql = r#"
             SELECT
                 m.id, m.kode_operator, m.nama_operator, m.username, m.password_hash,
-                m.role_id, r.role_key, r.nama_role, r.is_superadmin
+                m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+                COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
+                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
             FROM master_operator m
             JOIN app_role r ON r.id = m.role_id
             WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
@@ -2760,6 +2839,16 @@ impl TursoClient {
             })
             .unwrap_or(1);
 
+        // Kebijakan keamanan absensi per role. Ikut ke dalam snapshot vault
+        // offline supaya perangkat yang login tanpa jaringan tetap menegakkan
+        // aturan yang sama — tanpa ini, mode offline menjadi jalan pintas untuk
+        // melewati kewajiban foto dan pembatasan IP.
+        let role_flag = |key: &str| {
+            row.get(key)
+                .and_then(|value| value.as_i64().map(|n| n == 1).or_else(|| value.as_bool()))
+                .unwrap_or(false)
+        };
+
         Ok(OperatorUser {
             id: operator_id,
             kode_operator,
@@ -2771,6 +2860,8 @@ impl TursoClient {
             is_superadmin,
             permissions,
             permission_revision,
+            require_scan_photo: role_flag("require_scan_photo"),
+            require_scan_ip_allowlist: role_flag("require_scan_ip_allowlist"),
             login_at: Some(chrono_like_now_iso()),
         })
     }
@@ -2789,7 +2880,9 @@ impl TursoClient {
         let sql = r#"
             SELECT
                 m.id, m.kode_operator, m.nama_operator, m.username,
-                m.role_id, r.role_key, r.nama_role, r.is_superadmin
+                m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+                COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
+                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
             FROM master_operator m
             JOIN app_role r ON r.id = m.role_id
             WHERE m.id = ? AND m.status = 'Aktif' AND r.status = 'Aktif'
@@ -3045,6 +3138,21 @@ impl TursoClient {
             }
         }
 
+        // Revisi server yang dihasilkan event-event SEBELUMNYA di batch ini,
+        // per (domain kanonik, entity_key).
+        //
+        // `base_revision` sebuah event dibekukan saat event DIBUAT, bukan saat
+        // dikirim. Dua event yang menyentuh entitas sama dan lahir sebelum
+        // siklus push berikutnya — mis. hapus scan Masuk (attendance/update)
+        // lalu hapus scan Pulang (attendance/delete) pada sesi absensi yang
+        // sama — membuat event kedua tiba membawa revisi yang sudah usang
+        // begitu event pertama diterapkan. Cloud lalu menolaknya sebagai
+        // konflik yang TIDAK pernah bisa selesai: perangkat asal sudah
+        // menghapus barisnya secara lokal, sementara cloud dan setiap
+        // perangkat lain menyimpannya selamanya. Basis yang benar untuk event
+        // kedua adalah hasil event pertama, bukan angka beku saat enqueue.
+        let mut batch_revisions: HashMap<(String, String), i64> = HashMap::new();
+
         for event in events {
             let event_id = event
                 .get("event_id")
@@ -3123,6 +3231,13 @@ impl TursoClient {
                 continue;
             };
 
+            // Basis optimistic-concurrency diperbarui bila entitas yang sama
+            // sudah dimajukan oleh event sebelumnya di batch ini.
+            let base_revision = batch_revisions
+                .get(&(domain.to_owned(), entity_key.to_owned()))
+                .copied()
+                .or(base_revision);
+
             // Receipt adalah sumber idempotensi event sukses. Changelog tanpa receipt
             // hanya mungkin berasal dari versi lama yang belum atomik.
             let previous_event = previous_events.get(event_id);
@@ -3159,6 +3274,10 @@ impl TursoClient {
                         )
                     })?;
                 if applied_receipts.contains(event_id) {
+                    batch_revisions.insert(
+                        (domain.to_owned(), entity_key.to_owned()),
+                        previous_revision,
+                    );
                     push_results.push(json!({
                         "eventId": event_id,
                         "status": "applied",
@@ -3352,6 +3471,7 @@ impl TursoClient {
                         "Revision event sinkronisasi tidak dapat ditentukan.",
                     )
                 })?;
+            batch_revisions.insert((domain.to_owned(), entity_key.to_owned()), server_revision);
             push_results.push(json!({
                 "eventId": event_id,
                 "status": "applied",
@@ -3431,6 +3551,39 @@ impl TursoClient {
             ));
         }
         validate_operator_contact(&email, &no_hp)?;
+
+        let role_row = self
+            .query_one(
+                "SELECT is_superadmin, status FROM app_role WHERE id = ? LIMIT 1;",
+                vec![json!(role_id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next();
+
+        match role_row {
+            Some(row) => {
+                if row.get("status").and_then(Value::as_str) != Some("Aktif") {
+                    return Err(CommandError::new(
+                        "VALIDATION_ERROR",
+                        "Role tujuan sedang nonaktif.",
+                    ));
+                }
+                if row.get("is_superadmin").and_then(Value::as_i64) == Some(1) {
+                    return Err(CommandError::new(
+                        "FORBIDDEN",
+                        "Role Superadmin tidak dapat ditambahkan secara manual.",
+                    ));
+                }
+            }
+            None => {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Role tujuan tidak ditemukan.",
+                ));
+            }
+        }
 
         let password_hash = hash_password_pbkdf2(password);
 
@@ -3526,6 +3679,24 @@ impl TursoClient {
                         "Superadmin aktif terakhir tidak dapat diturunkan rolenya.",
                     ));
                 }
+            }
+        } else if let Some(next_role_id) = draft.get("role_id").and_then(Value::as_i64) {
+            let next_is_superadmin = self
+                .query_one(
+                    "SELECT is_superadmin FROM app_role WHERE id = ? AND status = 'Aktif' LIMIT 1;",
+                    vec![json!(next_role_id)],
+                )
+                .await?
+                .to_objects()
+                .into_iter()
+                .next()
+                .and_then(|row| row.get("is_superadmin").and_then(Value::as_i64))
+                == Some(1);
+            if next_is_superadmin {
+                return Err(CommandError::new(
+                    "FORBIDDEN",
+                    "Operator tidak dapat dinaikkan menjadi Superadmin.",
+                ));
             }
         }
         let mut updates = Vec::new();
@@ -3781,7 +3952,7 @@ impl TursoClient {
 
     pub async fn get_roles(&self) -> Result<Value, CommandError> {
         self.ensure_schema_current().await?;
-        let roles_sql = "SELECT id, role_key, nama_role, deskripsi, is_superadmin, status, COALESCE(require_totp, 0) AS require_totp FROM app_role ORDER BY id ASC;";
+        let roles_sql = "SELECT id, role_key, nama_role, deskripsi, is_superadmin, status, COALESCE(require_totp, 0) AS require_totp, COALESCE(require_scan_photo, 0) AS require_scan_photo, COALESCE(require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist FROM app_role ORDER BY id ASC;";
         let perms_sql = "SELECT role_id, permission_key, is_allowed FROM role_permission;";
 
         let mut results = self
@@ -3901,10 +4072,15 @@ impl TursoClient {
             .into_iter()
             .next()
             .ok_or_else(|| CommandError::new("VALIDATION_ERROR", "Role tidak ditemukan."))?;
-        if target.get("is_superadmin").and_then(Value::as_i64) == Some(1) {
+        let is_superadmin = target.get("is_superadmin").and_then(Value::as_i64) == Some(1);
+        if is_superadmin
+            && (draft.get("nama_role").is_some()
+                || draft.get("deskripsi").is_some()
+                || draft.get("status").is_some())
+        {
             return Err(CommandError::new(
                 "FORBIDDEN",
-                "Role Superadmin tidak dapat diubah atau dinonaktifkan.",
+                "Nama, deskripsi, dan status role Superadmin tidak dapat diubah.",
             ));
         }
         let mut updates = Vec::new();
@@ -3916,13 +4092,28 @@ impl TursoClient {
             updates.push("require_totp = ?");
             args.push(json!(if require_totp { 1 } else { 0 }));
         }
-        if let Some(nama) = draft.get("nama_role").and_then(Value::as_str) {
-            updates.push("nama_role = ?");
-            args.push(json!(nama.trim()));
+        // Sakelar keamanan absensi per role, dengan aturan "absen = jangan ubah"
+        // yang sama seperti require_totp di atas.
+        if let Some(require_photo) = draft.get("require_scan_photo").and_then(Value::as_bool) {
+            updates.push("require_scan_photo = ?");
+            args.push(json!(if require_photo { 1 } else { 0 }));
         }
-        if let Some(deskripsi) = draft.get("deskripsi").and_then(Value::as_str) {
-            updates.push("deskripsi = ?");
-            args.push(json!(deskripsi));
+        if let Some(require_ip) = draft
+            .get("require_scan_ip_allowlist")
+            .and_then(Value::as_bool)
+        {
+            updates.push("require_scan_ip_allowlist = ?");
+            args.push(json!(if require_ip { 1 } else { 0 }));
+        }
+        if !is_superadmin {
+            if let Some(nama) = draft.get("nama_role").and_then(Value::as_str) {
+                updates.push("nama_role = ?");
+                args.push(json!(nama.trim()));
+            }
+            if let Some(deskripsi) = draft.get("deskripsi").and_then(Value::as_str) {
+                updates.push("deskripsi = ?");
+                args.push(json!(deskripsi));
+            }
         }
 
         if !updates.is_empty() {
@@ -3930,6 +4121,16 @@ impl TursoClient {
             args.push(json!(role_id));
             let sql = format!("UPDATE app_role SET {} WHERE id = ?;", updates.join(", "));
             self.query_one(&sql, args).await?;
+            // Sesi yang sedang berjalan hanya dimuat ulang ketika angka ini
+            // berubah. Tanpa kenaikan di sini, sakelar keamanan absensi yang
+            // baru diatur baru berlaku setelah operatornya logout.
+            self.query_one(
+                r#"INSERT INTO setting_gex_system (key, value) VALUES ('rbac_revision', '2')
+                   ON CONFLICT(key) DO UPDATE SET
+                     value = CAST(CAST(setting_gex_system.value AS INTEGER) + 1 AS TEXT);"#,
+                vec![],
+            )
+            .await?;
         }
 
         Ok(json!({ "sukses": true }))
@@ -4294,6 +4495,9 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("holiday", "create") => ("holiday", "create"),
         ("holiday", "update") => ("holiday", "update"),
         ("holiday", "delete") => ("holiday", "delete"),
+        ("holiday-whitelist" | "holiday_whitelist", "create") => ("holiday-whitelist", "create"),
+        ("holiday-whitelist" | "holiday_whitelist", "update") => ("holiday-whitelist", "update"),
+        ("holiday-whitelist" | "holiday_whitelist", "delete") => ("holiday-whitelist", "delete"),
         ("attendance", "scan") => ("attendance", "scan"),
         ("attendance", "create") => ("attendance", "create"),
         ("attendance", "update") => ("attendance", "update"),
@@ -4900,6 +5104,79 @@ async fn apply_event_to_turso(
                     .await?;
             }
         }
+        ("holiday-whitelist", "create" | "update") => {
+            let row = payload.get("whitelist").unwrap_or(payload);
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(entity_key);
+            let scope_type = row
+                .get("scope_type")
+                .and_then(Value::as_str)
+                .and_then(scanner::normalize_whitelist_scope_type);
+            let scope_value = scope_type.and_then(|scope| {
+                row.get("scope_value")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| scanner::normalize_whitelist_scope_value(scope, raw))
+            });
+
+            // Baris yang cakupannya tidak sah DIABAIKAN, bukan ditulis apa
+            // adanya: whitelist yang berisi entri sampah tidak pernah cocok
+            // dengan siapa pun, jadi menyimpannya hanya menyisakan baris mati
+            // yang membingungkan admin.
+            if let (Some(scope), Some(value)) = (scope_type, scope_value) {
+                if !id.trim().is_empty() {
+                    let tanggal_libur = scanner::normalize_holiday_date(
+                        row.get("tanggal_libur").and_then(Value::as_str),
+                    );
+                    let status_aktif = match row.get("status_aktif").and_then(Value::as_i64) {
+                        Some(0) => 0,
+                        _ => 1,
+                    };
+                    turso
+                        .query_one(
+                            r#"INSERT INTO hari_libur_whitelist (
+                                id, scope_type, scope_value, tanggal_libur, keterangan,
+                                status_aktif, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+                            ON CONFLICT(id) DO UPDATE SET
+                                scope_type = excluded.scope_type,
+                                scope_value = excluded.scope_value,
+                                tanggal_libur = excluded.tanggal_libur,
+                                keterangan = excluded.keterangan,
+                                status_aktif = excluded.status_aktif,
+                                updated_at = excluded.updated_at;"#,
+                            vec![
+                                json!(id),
+                                json!(scope),
+                                json!(value),
+                                json!(tanggal_libur),
+                                json!(row.get("keterangan").and_then(Value::as_str)),
+                                json!(status_aktif),
+                                json!(row.get("created_at").and_then(Value::as_str)),
+                                json!(row.get("updated_at").and_then(Value::as_str)),
+                            ],
+                        )
+                        .await?;
+                }
+            }
+        }
+        ("holiday-whitelist", "delete") => {
+            let id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(entity_key);
+            if !id.trim().is_empty() {
+                turso
+                    .query_one(
+                        "DELETE FROM hari_libur_whitelist WHERE id = ?;",
+                        vec![json!(id)],
+                    )
+                    .await?;
+            }
+        }
         ("holiday", "delete") => {
             let tanggal = payload
                 .get("tanggal")
@@ -4921,7 +5198,55 @@ async fn apply_event_to_turso(
                 insert_log_if_missing(turso, log).await?;
             }
 
-            // 2. Terapkan absensi_harian jika ada
+            // 2. Foto bukti absensi, bila terminal mengirimkannya. Idempoten:
+            // event yang sama di-push ulang tidak menggandakan barisnya.
+            if let Some(photo) = payload.get("photo").filter(|value| !value.is_null()) {
+                let id_foto = photo.get("id_foto").and_then(Value::as_str).unwrap_or("");
+                let foto_base64 = photo
+                    .get("foto_base64")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !id_foto.is_empty() && !foto_base64.is_empty() {
+                    let text = |key: &str| {
+                        json!(photo.get(key).and_then(Value::as_str).unwrap_or(""))
+                    };
+                    turso
+                        .query_one(
+                            r#"INSERT INTO absensi_foto (
+                                id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi,
+                                jenis_scan, timestamp_scan, sumber_data, kode_operator,
+                                ip_perangkat, client_id, foto_mime, foto_base64, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(id_foto) DO NOTHING;"#,
+                            vec![
+                                json!(id_foto),
+                                text("id_sesi"),
+                                text("tanggal_kerja"),
+                                text("id_karyawan"),
+                                text("nama"),
+                                text("divisi"),
+                                text("jenis_scan"),
+                                text("timestamp_scan"),
+                                json!(photo
+                                    .get("sumber_data")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Scanner")),
+                                text("kode_operator"),
+                                text("ip_perangkat"),
+                                text("client_id"),
+                                json!(photo
+                                    .get("foto_mime")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("image/jpeg")),
+                                json!(foto_base64),
+                                text("created_at"),
+                            ],
+                        )
+                        .await?;
+                }
+            }
+
+            // 3. Terapkan absensi_harian jika ada
             if let Some(att) = payload.get("attendance") {
                 if !att.is_null() {
                     let id_sesi = att.get("id_sesi").and_then(Value::as_str).unwrap_or("");
@@ -6200,6 +6525,193 @@ impl TursoClient {
             })
             .collect();
         Ok(json!({ "entries": entries }))
+    }
+
+    /// Daftar foto bukti absensi — TANPA isi fotonya.
+    ///
+    /// `foto_base64` sengaja tidak ikut: satu foto sekitar 40 KB, sehingga 200
+    /// baris akan menjadi balasan 8 MB yang harus melewati jaringan seluler.
+    /// Fotonya diambil satu per satu lewat `get_attendance_photo`.
+    pub async fn list_attendance_photos(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        search: &str,
+        limit: i64,
+    ) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let mut conditions: Vec<String> = Vec::new();
+        let mut args: Vec<Value> = Vec::new();
+
+        let start = start_date.trim();
+        if !start.is_empty() {
+            conditions.push("tanggal_kerja >= ?".to_string());
+            args.push(json!(start));
+        }
+        let end = end_date.trim();
+        if !end.is_empty() {
+            conditions.push("tanggal_kerja <= ?".to_string());
+            args.push(json!(end));
+        }
+        let search = search.trim();
+        if !search.is_empty() {
+            conditions.push(
+                "(nama LIKE ? COLLATE NOCASE OR id_karyawan LIKE ? COLLATE NOCASE \
+                 OR divisi LIKE ? COLLATE NOCASE OR kode_operator LIKE ? COLLATE NOCASE)"
+                    .to_string(),
+            );
+            let like = format!("%{}%", search.chars().take(60).collect::<String>());
+            for _ in 0..4 {
+                args.push(json!(like));
+            }
+        }
+        let limit = limit.clamp(1, 500);
+        args.push(json!(limit));
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            r#"SELECT
+                id_foto, COALESCE(id_sesi, '') AS id_sesi, tanggal_kerja, id_karyawan,
+                nama, COALESCE(divisi, '') AS divisi, jenis_scan, timestamp_scan,
+                COALESCE(sumber_data, '') AS sumber_data,
+                COALESCE(kode_operator, '') AS kode_operator,
+                COALESCE(ip_perangkat, '') AS ip_perangkat,
+                COALESCE(client_id, '') AS client_id,
+                COALESCE(foto_mime, 'image/jpeg') AS foto_mime,
+                LENGTH(COALESCE(foto_base64, '')) AS ukuran_base64,
+                created_at
+               FROM absensi_foto
+               {where_clause}
+               ORDER BY timestamp_scan DESC
+               LIMIT ?;"#
+        );
+
+        let rows = self.query_one(sql, args).await?.to_objects();
+        let entries: Vec<Value> = rows
+            .into_iter()
+            .map(|row| {
+                let text = |key: &str| {
+                    row.get(key)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                json!({
+                    "idFoto": text("id_foto"),
+                    "idSesi": text("id_sesi"),
+                    "tanggalKerja": text("tanggal_kerja"),
+                    "idKaryawan": text("id_karyawan"),
+                    "nama": text("nama"),
+                    "divisi": text("divisi"),
+                    "jenisScan": text("jenis_scan"),
+                    "timestampScan": text("timestamp_scan"),
+                    "sumberData": text("sumber_data"),
+                    "kodeOperator": text("kode_operator"),
+                    "ipPerangkat": text("ip_perangkat"),
+                    "clientId": text("client_id"),
+                    "fotoMime": text("foto_mime"),
+                    "ukuranBase64": row
+                        .get("ukuran_base64")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
+                    "createdAt": text("created_at"),
+                })
+            })
+            .collect();
+        Ok(json!({ "entries": entries }))
+    }
+
+    pub async fn get_attendance_photo(&self, photo_id: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = photo_id.trim();
+        if id.is_empty() || id.len() > 200 {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ID foto absensi tidak valid.",
+            ));
+        }
+        let row = self
+            .query_one(
+                "SELECT COALESCE(foto_mime, 'image/jpeg') AS foto_mime, COALESCE(foto_base64, '') AS foto_base64 FROM absensi_foto WHERE id_foto = ? LIMIT 1;",
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError::new("NOT_FOUND", "Foto absensi tidak ditemukan."))?;
+        let base64 = row
+            .get("foto_base64")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if base64.is_empty() {
+            return Err(CommandError::new(
+                "NOT_FOUND",
+                "Baris ini tidak menyimpan foto.",
+            ));
+        }
+        let mime = row
+            .get("foto_mime")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(json!({
+            "photo": {
+                "mime": if mime.is_empty() { "image/jpeg".to_string() } else { mime },
+                "base64": base64,
+            }
+        }))
+    }
+
+    pub async fn delete_attendance_photo(&self, photo_id: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = photo_id.trim();
+        if id.is_empty() || id.len() > 200 {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ID foto absensi tidak valid.",
+            ));
+        }
+        let result = self
+            .query_one(
+                "DELETE FROM absensi_foto WHERE id_foto = ?;",
+                vec![json!(id)],
+            )
+            .await?;
+        if result.rows_affected == 0 {
+            return Err(CommandError::new(
+                "NOT_FOUND",
+                "Foto tidak ditemukan atau sudah dihapus.",
+            ));
+        }
+        Ok(json!({ "sukses": true, "deleted": 1 }))
+    }
+
+    /// Membersihkan foto bukti yang lebih tua dari `days` hari.
+    ///
+    /// Hanya fotonya yang hilang; baris `log_scan` dan `absensi_harian` tetap
+    /// utuh, jadi rekap kehadiran tidak pernah ikut terhapus oleh retensi ini.
+    pub async fn purge_attendance_photos(&self, days: i64) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        if !(1..=3650).contains(&days) {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Rentang hari pembersihan tidak valid.",
+            ));
+        }
+        let result = self
+            .query_one(
+                "DELETE FROM absensi_foto WHERE tanggal_kerja <= date('now', ?);",
+                vec![json!(format!("-{days} days"))],
+            )
+            .await?;
+        Ok(json!({ "sukses": true, "deleted": result.rows_affected }))
     }
 
     pub async fn get_password_reset_photo(&self, request_id: &str) -> Result<Value, CommandError> {

@@ -10,6 +10,10 @@ export interface RoleRecord {
   status: "Aktif" | "Nonaktif";
   /** Operator dengan role ini wajib mengaktifkan verifikasi dua langkah. */
   requireTotp: boolean;
+  /** Setiap scan absensi oleh role ini wajib menyertakan foto bukti. */
+  requireScanPhoto: boolean;
+  /** Role ini hanya boleh melakukan scan dari alamat IP yang terdaftar. */
+  requireScanIpAllowlist: boolean;
   operatorCount: number;
   permissions: PermissionKey[];
 }
@@ -19,4 +23,6 @@ export interface RoleDraft {
   description?: string;
   status?: "Aktif" | "Nonaktif";
   requireTotp?: boolean;
+  requireScanPhoto?: boolean;
+  requireScanIpAllowlist?: boolean;
 }

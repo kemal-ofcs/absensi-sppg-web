@@ -16,6 +16,8 @@ const TWO_TIER_SECURITY_MIGRATION_VERSION = 9;
 const PAYROLL_MIGRATION_VERSION = 10;
 const OPERATOR_CONTACT_AND_RESET_MIGRATION_VERSION = 11;
 const TWO_FACTOR_MIGRATION_VERSION = 12;
+const SCAN_SECURITY_MIGRATION_VERSION = 13;
+const HOLIDAY_WHITELIST_MIGRATION_VERSION = 14;
 
 const SYSTEM_ROLES = [
   {
@@ -77,6 +79,8 @@ export async function runDatabaseMigrations(client: Client) {
       is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK(is_superadmin IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'Aktif' CHECK(status IN ('Aktif', 'Nonaktif')),
       require_totp INTEGER NOT NULL DEFAULT 0,
+      require_scan_photo INTEGER NOT NULL DEFAULT 0,
+      require_scan_ip_allowlist INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       created_by TEXT
@@ -325,6 +329,20 @@ export async function runDatabaseMigrations(client: Client) {
       "app_role",
       "require_totp",
       "ALTER TABLE app_role ADD COLUMN require_totp INTEGER NOT NULL DEFAULT 0;",
+    ],
+    // Keamanan absensi per role (schema versi 13). Sengaja tanpa CHECK, sama
+    // seperti `require_totp`: SQLite membatasi bentuk constraint pada
+    // ALTER TABLE ADD COLUMN, dan menaruh CHECK hanya di CREATE TABLE membuat
+    // database hasil migrasi berbeda dari database baru.
+    [
+      "app_role",
+      "require_scan_photo",
+      "ALTER TABLE app_role ADD COLUMN require_scan_photo INTEGER NOT NULL DEFAULT 0;",
+    ],
+    [
+      "app_role",
+      "require_scan_ip_allowlist",
+      "ALTER TABLE app_role ADD COLUMN require_scan_ip_allowlist INTEGER NOT NULL DEFAULT 0;",
     ],
     [
       "master_operator",
@@ -789,6 +807,83 @@ export async function runDatabaseMigrations(client: Client) {
     args: [TWO_FACTOR_MIGRATION_VERSION, now],
   });
 
+  // Foto bukti absensi. SENGAJA di luar SNAPSHOT_TABLES: satu foto ~40 KB dan
+  // ratusan baris per hari akan membuat setiap pull snapshot berukuran puluhan
+  // megabyte di tiap perangkat. Foto didorong bersama event 'attendance/scan'
+  // lalu dibaca satu per satu dari cloud saat ada yang meninjaunya.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS absensi_foto (
+      id_foto TEXT PRIMARY KEY,
+      id_sesi TEXT,
+      tanggal_kerja TEXT NOT NULL,
+      id_karyawan TEXT NOT NULL,
+      nama TEXT NOT NULL,
+      divisi TEXT,
+      jenis_scan TEXT NOT NULL,
+      timestamp_scan TEXT NOT NULL,
+      sumber_data TEXT NOT NULL DEFAULT 'Scanner',
+      kode_operator TEXT,
+      ip_perangkat TEXT,
+      client_id TEXT,
+      foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
+      foto_base64 TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'attendance-scan-security', ?);`,
+    args: [SCAN_SECURITY_MIGRATION_VERSION, now],
+  });
+
+  // ── v14: Whitelist Shift/Divisi hari libur + pemisahan upah jam hari libur ──
+  //
+  // Cakupan disimpan sebagai `kode_shift` (bukan `id_shift`) dan NAMA divisi,
+  // karena `id_shift` adalah AUTOINCREMENT lokal yang berbeda antar perangkat.
+  // PK-nya TEXT yang dibuat klien, bukan AUTOINCREMENT, supaya dua perangkat
+  // yang offline tidak pernah menghasilkan id yang sama lalu saling menimpa.
+  //
+  // SENGAJA TANPA UNIQUE INDEX pada (scope_type, scope_value): dua perangkat
+  // offline bisa mendaftarkan cakupan yang sama, dan sebuah unique constraint
+  // akan membuat push sync-nya gagal PERMANEN. Duplikat tidak berbahaya di sini
+  // (penilaiannya OR), dan pencegahannya dilakukan di lapisan aplikasi yang
+  // bisa memberi pesan ramah.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hari_libur_whitelist (
+      id TEXT PRIMARY KEY,
+      scope_type TEXT NOT NULL CHECK (scope_type IN ('SHIFT', 'DIVISI')),
+      scope_value TEXT NOT NULL,
+      tanggal_libur DATE,
+      keterangan TEXT,
+      status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Jam kerja pada tanggal libur dihitung dengan jenjang HARI_LIBUR, terpisah
+  // dari lembur hari kerja yang memakai jenjang HARI_KERJA. Dua kolom ini
+  // membekukan hasil pemisahan itu pada setiap slip yang sudah dibuat.
+  if (!(await hasColumn(client, "payroll_items", "total_holiday_hours"))) {
+    await client.execute(
+      "ALTER TABLE payroll_items ADD COLUMN total_holiday_hours REAL NOT NULL DEFAULT 0;",
+    );
+  }
+  if (
+    !(await hasColumn(client, "payroll_items", "total_holiday_overtime_index"))
+  ) {
+    await client.execute(
+      "ALTER TABLE payroll_items ADD COLUMN total_holiday_overtime_index REAL NOT NULL DEFAULT 0;",
+    );
+  }
+
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'holiday-whitelist-and-holiday-overtime', ?);`,
+    args: [HOLIDAY_WHITELIST_MIGRATION_VERSION, now],
+  });
+
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_master_operator_role_id ON master_operator(role_id);",
   );
@@ -810,6 +905,16 @@ export async function runDatabaseMigrations(client: Client) {
   );
 
   await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_absensi_foto_tanggal ON absensi_foto(tanggal_kerja, timestamp_scan DESC);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_absensi_foto_karyawan ON absensi_foto(id_karyawan, tanggal_kerja);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_absensi_foto_sesi ON absensi_foto(id_sesi);",
+  );
+
+  await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_role_permission_role ON role_permission(role_id, is_allowed);",
   );
   await client.execute(
@@ -826,6 +931,12 @@ export async function runDatabaseMigrations(client: Client) {
   );
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_import_offline_status ON import_offline(status_proses, timestamp_input);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hari_libur_whitelist_scope ON hari_libur_whitelist(scope_type, scope_value, status_aktif);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hari_libur_whitelist_tanggal ON hari_libur_whitelist(tanggal_libur, status_aktif);",
   );
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_payroll_items_run ON payroll_items(payroll_run_id);",

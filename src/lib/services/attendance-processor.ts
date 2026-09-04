@@ -13,6 +13,17 @@ import {
   tentukanTanggalKerja,
 } from "@/lib/attendance/time-policy";
 import type { AttendanceSource, ScanResult } from "@/lib/contracts/scanner";
+import { evaluateHolidayScan } from "@/lib/validations/holiday-whitelist";
+import {
+  IP_ALLOWLIST_SETTING_KEY,
+  ipMatchesAllowlist,
+  parseIpAllowlist,
+} from "@/lib/validations/ip-allowlist";
+import {
+  SCAN_IP_RESTRICTION_ENABLED_KEY,
+  SCAN_PHOTO_ENABLED_KEY,
+  settingEnabled,
+} from "@/lib/validations/scan-security";
 import { hitungJarakHaversine, parseQrToken } from "@/lib/validations/scanner";
 
 export interface ScanPayload {
@@ -21,12 +32,40 @@ export interface ScanPayload {
   lng?: number | null;
   sumberScan?: AttendanceSource;
   kodeOperator?: string;
+  /**
+   * Alamat IP pemanggil, dibaca route handler dari header proxy.
+   *
+   * Sengaja TIDAK dibaca dari body: nilai yang dikirim klien bisa dikarang.
+   */
+  ipAddress?: string | null;
+  /** Foto bukti absensi (base64 murni, tanpa awalan data URL). */
+  fotoBase64?: string | null;
+  fotoMime?: string | null;
+}
+
+/**
+ * Sakelar keamanan absensi milik role operator yang sedang login.
+ *
+ * Dibaca dari sesi server, bukan dari body permintaan — sama seperti jalur
+ * Desktop yang mengambilnya dari sesi vault, bukan dari payload scan.
+ */
+export interface ScanSecurityPolicy {
+  requirePhoto?: boolean;
+  requireIpAllowlist?: boolean;
 }
 
 export interface WebScanContext {
   waktuScan: ExplicitInstant;
   actorOperatorId?: number;
+  policy?: ScanSecurityPolicy;
 }
+
+/**
+ * Batas panjang foto bukti (karakter base64) — angka yang sama dieja di
+ * `scanner.rs` (`MAX_SCAN_PHOTO_BASE64`) dan validator Zod `sync-schema.ts`.
+ */
+const MAX_SCAN_PHOTO_BASE64 = 2_000_000;
+const ALLOWED_PHOTO_MIME = ["image/jpeg", "image/png", "image/webp"];
 
 type SourceData = NonNullable<ScanPayload["sumberScan"]>;
 type Row = Record<string, unknown>;
@@ -77,7 +116,12 @@ export async function processWebAttendanceScan(
   const transaction = await client.transaction("write");
 
   try {
-    const result = await processInTransaction(transaction, payload, waktuScan);
+    const result = await processInTransaction(
+      transaction,
+      payload,
+      waktuScan,
+      context.policy ?? {},
+    );
     const revision = context.actorOperatorId
       ? await recordScanChange(
           transaction,
@@ -100,6 +144,7 @@ async function processInTransaction(
   transaction: Transaction,
   payload: ScanPayload,
   waktuScan: Date,
+  policy: ScanSecurityPolicy,
 ): Promise<ScanResult> {
   const sumberData: SourceData = payload.sumberScan ?? "Scanner";
   const kodeOperator = payload.kodeOperator?.trim() ?? "";
@@ -138,6 +183,11 @@ async function processInTransaction(
   };
   const baseShiftRow = await getShiftRow(transaction, employee.idShift);
   const tanggalLogAwal = safeWorkDate(waktuScan, baseShiftRow);
+
+  // Terisi ketika scan jatuh pada hari libur DAN karyawan lolos whitelist.
+  // Dipakai untuk menandai jejak scan-nya, supaya laporan bisa menjelaskan
+  // kenapa ada absensi pada tanggal yang terdaftar sebagai hari libur.
+  let holidayClearance: string | null = null;
 
   if (String(master.status_aktif ?? "").toLowerCase() !== "aktif") {
     return logKnownRejection(transaction, {
@@ -205,6 +255,84 @@ async function processInTransaction(
         pesan: `Scan ditolak: Posisi Anda di luar area kantor (${jarak}m dari kantor, batas max: ${radiusMax}m).`,
       });
     }
+  }
+
+  // Fitur berlaku hanya bila perusahaan menghidupkannya DAN role-nya
+  // menyalakannya. Sakelar induk dieja sama persis di `scanner.rs`; kalau
+  // keduanya berbeda, Web akan menuntut foto untuk sesuatu yang tidak pernah
+  // diminta terminal Desktop.
+  const ipRestrictionRequired =
+    policy.requireIpAllowlist === true &&
+    settingEnabled(settings[SCAN_IP_RESTRICTION_ENABLED_KEY]);
+  const photoRequired =
+    policy.requirePhoto === true &&
+    settingEnabled(settings[SCAN_PHOTO_ENABLED_KEY]);
+
+  // ── Pembatasan alamat IP (sakelar induk + sakelar role) ─────────────────
+  // Daftar kosong berarti BELUM DIATUR, bukan "tidak ada IP yang boleh":
+  // pembatasan baru berlaku setelah daftarnya diisi. Aturan ini dieja sama
+  // persis di `scanner.rs` — kalau keduanya berbeda, satu scan yang sama akan
+  // diterima Web tetapi ditolak terminal Desktop tanpa penjelasan apa pun.
+  // Setelah daftarnya ada, kedua cabang sisanya tetap fail-closed.
+  if (ipRestrictionRequired) {
+    const allowlist = parseIpAllowlist(settings[IP_ALLOWLIST_SETTING_KEY]);
+    const clientIp = (payload.ipAddress ?? "").trim();
+    const penolakan =
+      allowlist.length === 0
+        ? null
+        : !clientIp || clientIp === "unknown"
+          ? {
+              catatanSistem: "Alamat IP perangkat tidak terdeteksi",
+              pesan:
+                "Scan ditolak: Alamat IP perangkat tidak terdeteksi. Pastikan perangkat terhubung ke jaringan kantor.",
+            }
+          : !ipMatchesAllowlist([clientIp], allowlist)
+            ? {
+                catatanSistem: `IP perangkat di luar daftar (${clientIp})`,
+                pesan: `Scan ditolak: Alamat IP perangkat (${clientIp}) tidak terdaftar sebagai jaringan absensi yang diizinkan.`,
+              }
+            : null;
+    if (penolakan) {
+      return logKnownRejection(transaction, {
+        waktuScan,
+        tanggalKerja: tanggalLogAwal,
+        employee,
+        sumberData,
+        kodeOperator,
+        ...penolakan,
+      });
+    }
+  }
+
+  // ── Foto bukti absensi (sakelar per role) ───────────────────────────────
+  const fotoBase64 = (payload.fotoBase64 ?? "").trim();
+  if (
+    fotoBase64.startsWith("data:") ||
+    fotoBase64.length > MAX_SCAN_PHOTO_BASE64
+  ) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Foto bukti absensi tidak valid",
+      pesan: fotoBase64.startsWith("data:")
+        ? "Scan ditolak: Foto bukti absensi harus base64 murni tanpa awalan data URL."
+        : "Scan ditolak: Foto bukti absensi terlalu besar.",
+    });
+  }
+  if (photoRequired && !fotoBase64) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Foto bukti absensi wajib",
+      pesan:
+        "Scan ditolak: Role Anda mewajibkan foto bukti absensi. Aktifkan kamera terminal lalu ulangi scan.",
+    });
   }
 
   const backup = await findEffectiveBackup(transaction, employee.id, waktuScan);
@@ -295,15 +423,71 @@ async function processInTransaction(
         const holiday = holidayRes.rows[0];
         const namaLibur = String(holiday.nama_libur || "Hari Libur");
         const jenisLibur = String(holiday.jenis_libur || "Libur Nasional");
-        return logKnownRejection(transaction, {
-          waktuScan,
-          tanggalKerja: tanggalLogAwal,
-          employee,
-          sumberData,
-          kodeOperator,
-          catatanSistem: `Hari Libur: ${namaLibur} (${jenisLibur})`,
-          pesan: `Scan ditolak: Hari ini Hari Libur (${namaLibur} - ${jenisLibur}). Scanner dinonaktifkan. Silakan hubungi Admin jika terdapat penugasan khusus.`,
+
+        // Hari libur TIDAK lagi mematikan scanner untuk semua orang. Sebagian
+        // peran memang tetap masuk saat libur — Satpam, Keamanan, Maintenance,
+        // Teknisi — dan mereka didaftarkan lewat whitelist Shift/Divisi.
+        //
+        // Cakupan dinilai dari SHIFT DAN DIVISI milik karyawan menurut
+        // `master_data`/`tbl_shift`, tidak pernah dari body request: klien
+        // tidak boleh bisa memasukkan dirinya sendiri ke whitelist.
+        //
+        // Aturannya dieja dua kali dan WAJIB tetap identik — di sini dan pada
+        // `evaluate_holiday_scan` di `scanner.rs`.
+        const whitelistRes = await transaction.execute({
+          sql: `SELECT id, scope_type, scope_value, tanggal_libur, keterangan, status_aktif
+                FROM hari_libur_whitelist
+                WHERE status_aktif = 1
+                  AND (tanggal_libur IS NULL OR TRIM(tanggal_libur) = '' OR tanggal_libur LIKE ?);`,
+          args: [`${tanggalLogAwal}%`],
         });
+        const kodeShiftRes = await transaction.execute({
+          sql: "SELECT kode_shift FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+          args: [employee.idShift],
+        });
+        const kodeShift =
+          kodeShiftRes.rows.length > 0
+            ? Number(kodeShiftRes.rows[0].kode_shift)
+            : null;
+
+        const keputusanLibur = evaluateHolidayScan(
+          (whitelistRes.rows as Row[]).map((row) => ({
+            id: String(row.id ?? ""),
+            scope_type: String(row.scope_type ?? ""),
+            scope_value: String(row.scope_value ?? ""),
+            tanggal_libur:
+              row.tanggal_libur === null || row.tanggal_libur === undefined
+                ? null
+                : String(row.tanggal_libur),
+            keterangan:
+              row.keterangan === null || row.keterangan === undefined
+                ? null
+                : String(row.keterangan),
+            status_aktif: Number(row.status_aktif ?? 0),
+          })),
+          {
+            tanggal: tanggalLogAwal,
+            divisi: employee.divisi,
+            kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
+          },
+        );
+
+        if (!keputusanLibur.allowed) {
+          return logKnownRejection(transaction, {
+            waktuScan,
+            tanggalKerja: tanggalLogAwal,
+            employee,
+            sumberData,
+            kodeOperator,
+            catatanSistem: `Hari Libur: ${namaLibur} (${jenisLibur})`,
+            pesan: `Hari ini Hari Libur (${namaLibur} - ${jenisLibur}), jadi Anda tidak perlu absen. Selamat beristirahat! Bila Anda memang bertugas hari ini, minta Admin mendaftarkan Shift atau Divisi Anda pada Whitelist Hari Libur.`,
+          });
+        }
+
+        // Lolos whitelist: scan diteruskan seperti hari biasa, dengan jejak
+        // izinnya dicatat supaya laporan bisa menjelaskan kenapa ada absensi
+        // pada tanggal yang terdaftar sebagai hari libur.
+        holidayClearance = `Hari Libur: ${namaLibur} (${jenisLibur}) - Whitelist ${keputusanLibur.reason}`;
       }
 
       const baseDate = safeWorkDate(waktuScan, baseShiftRow);
@@ -519,10 +703,12 @@ async function processInTransaction(
     jenisScan: keputusan.jenisScan,
     statusProses: keputusan.statusProses,
     sumberData,
-    catatanSistem:
+    catatanSistem: withHolidayClearance(
       session.modeTugas === "PENGGANTI"
         ? `${keputusan.catatanSistem}. ID Backup: ${session.idBackup}`
         : keputusan.catatanSistem,
+      holidayClearance,
+    ),
     keterangan: keputusan.keterangan,
     menitTerlambat: keputusan.menitTerlambat,
     menitDatangAwal: keputusan.menitDatangAwal,
@@ -530,7 +716,45 @@ async function processInTransaction(
     kodeOperator,
   });
 
+  // Foto bukti disimpan setelah absensi tercatat, di dalam transaksi yang sama:
+  // baris foto tanpa absensi yang berhasil hanya akan menjadi bukti palsu.
+  if (fotoBase64) {
+    await transaction.execute({
+      sql: `INSERT INTO absensi_foto (
+              id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi,
+              jenis_scan, timestamp_scan, sumber_data, kode_operator,
+              ip_perangkat, client_id, foto_mime, foto_base64, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id_foto) DO NOTHING;`,
+      args: [
+        `web:${idSesi}:${formatTimestampOperasional(waktuScan)}`,
+        idSesi,
+        tanggalKerja,
+        employee.id,
+        employee.nama,
+        employee.divisi,
+        keputusan.jenisScan,
+        formatTimestampOperasional(waktuScan),
+        sumberData,
+        kodeOperator,
+        (payload.ipAddress ?? "").trim(),
+        "web",
+        ALLOWED_PHOTO_MIME.includes(payload.fotoMime ?? "")
+          ? (payload.fotoMime as string)
+          : "image/jpeg",
+        fotoBase64,
+        formatTimestampOperasional(waktuScan),
+      ],
+    });
+  }
+
   return resultFromDecision(keputusan, employee, session, idSesi);
+}
+
+/** Menambahkan jejak izin hari libur ke catatan sistem, bila ada. */
+function withHolidayClearance(note: string, clearance: string | null): string {
+  if (!clearance) return note;
+  return note.trim() === "" ? clearance : `${note}. ${clearance}`;
 }
 
 function isCheckInWindowMatch(waktuScan: Date, shiftRow: Row | null): boolean {

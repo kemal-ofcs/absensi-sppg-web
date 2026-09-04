@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-create-holiday-whitelist"
+description = "Enables the desktop_create_holiday_whitelist command without any pre-configured scope."
+commands.allow = ["desktop_create_holiday_whitelist"]
+
+[[permission]]
+identifier = "deny-desktop-create-holiday-whitelist"
+description = "Denies the desktop_create_holiday_whitelist command without any pre-configured scope."
+commands.deny = ["desktop_create_holiday_whitelist"]

@@ -153,6 +153,15 @@ pub struct PayrollItem {
     pub total_regular_hours: f64,
     pub total_overtime_hours: f64,
     pub total_overtime_index: f64,
+    /// Seluruh jam kerja yang jatuh pada tanggal hari libur aktif.
+    ///
+    /// Menurut PP 35/2021 tidak ada "jam kerja biasa" pada hari libur resmi:
+    /// SETIAP jam yang dikerjakan hari itu dihitung sebagai lembur. Karena itu
+    /// nilainya adalah jam_kerja + lembur pada tanggal tersebut, dan ia sengaja
+    /// TIDAK ikut `total_regular_hours`/`total_overtime_hours`.
+    pub total_holiday_hours: f64,
+    /// Indeks hasil `total_holiday_hours` melewati jenjang HARI_LIBUR.
+    pub total_holiday_overtime_index: f64,
     pub rate_per_hour: i64,
     pub basic_salary: i64,
     pub overtime_salary: i64,
@@ -191,6 +200,10 @@ pub struct PayrollRecapRow {
     pub total_regular_hours: f64,
     pub total_overtime_hours: f64,
     pub total_overtime_index: f64,
+    /// Jam kerja pada tanggal hari libur (jam_kerja + lembur hari itu).
+    pub total_holiday_hours: f64,
+    /// Indeks jenjang HARI_LIBUR untuk jam di atas.
+    pub total_holiday_overtime_index: f64,
     pub est_basic_salary: i64,
     pub est_overtime_salary: i64,
     pub est_gross_salary: i64,

@@ -24,6 +24,17 @@ export interface PayrollRecapRow {
   total_regular_hours: number;
   total_overtime_hours: number;
   total_overtime_index: number;
+  /**
+   * Seluruh jam kerja yang jatuh pada tanggal hari libur aktif.
+   *
+   * Menurut PP 35/2021 tidak ada "jam kerja biasa" pada hari libur resmi: SETIAP
+   * jam yang dikerjakan hari itu dihitung lembur. Karena itu nilainya adalah
+   * jam_kerja + lembur pada tanggal tersebut, dan ia sengaja TIDAK ikut
+   * `total_regular_hours`/`total_overtime_hours`.
+   */
+  total_holiday_hours: number;
+  /** Indeks hasil `total_holiday_hours` melewati jenjang HARI_LIBUR. */
+  total_holiday_overtime_index: number;
   est_basic_salary: number;
   est_overtime_salary: number;
   est_gross_salary: number;
@@ -117,14 +128,24 @@ export async function computePayrollRecap(
   periodStart: string,
   periodEnd: string,
 ): Promise<PayrollRecapRow[]> {
-  const [overtimeTiers, components, taxRules, bpjsRules, aggResult] =
-    await Promise.all([
-      loadOvertimeTiers(client, "HARI_KERJA"),
-      loadPayrollComponents(client),
-      loadTaxRules(client),
-      loadBpjsRules(client),
-      client.execute({
-        sql: `
+  const [
+    overtimeTiers,
+    holidayTiers,
+    components,
+    taxRules,
+    bpjsRules,
+    aggResult,
+  ] = await Promise.all([
+    loadOvertimeTiers(client, "HARI_KERJA"),
+    // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
+    // "Aturan Jenjang Lembur" (rule_type = 'HARI_LIBUR'). Sebelum ini jenjang
+    // itu tersimpan dan bisa disunting, tetapi tidak pernah dibaca siapa pun.
+    loadOvertimeTiers(client, "HARI_LIBUR"),
+    loadPayrollComponents(client),
+    loadTaxRules(client),
+    loadBpjsRules(client),
+    client.execute({
+      sql: `
           SELECT
             md.id_unik,
             md.nama,
@@ -133,8 +154,10 @@ export async function computePayrollRecap(
             COALESCE(sc.ptkp_status, 'TK/0') AS ptkp_status,
             COUNT(CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN 1 END) AS total_hadir,
             COALESCE(SUM(ah.menit_terlambat), 0) AS total_terlambat_menit,
-            COALESCE(SUM(ah.jam_kerja), 0) AS total_jam_kerja_menit,
-            COALESCE(SUM(ah.lembur), 0) AS total_lembur_menit
+            COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.jam_kerja ELSE 0 END), 0) AS total_jam_kerja_menit,
+            COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.lembur ELSE 0 END), 0) AS total_lembur_menit,
+            COALESCE(SUM(CASE WHEN hl.tanggal IS NOT NULL
+              THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit
           FROM master_data md
           LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
             AND sc.effective_date = (
@@ -143,13 +166,18 @@ export async function computePayrollRecap(
             )
           LEFT JOIN absensi_harian ah ON ah.id_karyawan = md.id_unik
             AND ah.tanggal >= ? AND ah.tanggal <= ?
+          -- Penanda hari libur diambil dari tanggal kerja barisnya, BUKAN dari
+          -- kolom pada absensi_harian. Kolom tbl_hari_libur.tanggal UNIQUE sehingga
+          -- join ini tidak pernah menggandakan baris, dan absensi lama otomatis
+          -- ikut terhitung benar begitu admin melengkapi daftar hari liburnya.
+          LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1
           WHERE md.status_aktif = 'Aktif'
           GROUP BY md.id_unik
           ORDER BY md.nama ASC;
         `,
-        args: [periodEnd, periodStart, periodEnd],
-      }),
-    ]);
+      args: [periodEnd, periodStart, periodEnd],
+    }),
+  ]);
 
   return aggResult.rows.map((row) => {
     const idKaryawan = String(row.id_unik);
@@ -158,12 +186,20 @@ export async function computePayrollRecap(
     const ratePerHour = Number(row.rate_per_hour || 0);
     const ptkpStatus = String(row.ptkp_status || "TK/0");
 
+    const liburMenit = Number(row.total_libur_menit || 0);
+
     const regHours = jamKerjaMenit / 60;
     const otHours = lemburMenit / 60;
+    const holidayHours = liburMenit / 60;
 
+    // Dua indeks, dua jenjang: jam lembur hari biasa memakai HARI_KERJA,
+    // seluruh jam pada tanggal libur memakai HARI_LIBUR. Keduanya dijumlahkan
+    // lalu dikalikan rate per jam SEKALI, supaya pembulatannya identik dengan
+    // `desktop_get_payroll_recap` di payroll/commands.rs.
     const otIndex = calculateOvertimeIndex(otHours, overtimeTiers);
+    const holidayIndex = calculateOvertimeIndex(holidayHours, holidayTiers);
     const basicSalary = roundMoney(regHours * ratePerHour);
-    const overtimeSalary = roundMoney(otIndex * ratePerHour);
+    const overtimeSalary = roundMoney((otIndex + holidayIndex) * ratePerHour);
 
     const {
       allowance,
@@ -190,6 +226,8 @@ export async function computePayrollRecap(
       regular_hours: regHours,
       overtime_hours: otHours,
       overtime_index: otIndex,
+      holiday_hours: holidayHours,
+      holiday_overtime_index: holidayIndex,
       basic_salary: basicSalary,
       overtime_salary: overtimeSalary,
       components: compBreakdown,
@@ -209,6 +247,8 @@ export async function computePayrollRecap(
       total_regular_hours: regHours,
       total_overtime_hours: otHours,
       total_overtime_index: otIndex,
+      total_holiday_hours: holidayHours,
+      total_holiday_overtime_index: holidayIndex,
       est_basic_salary: basicSalary,
       est_overtime_salary: overtimeSalary,
       est_gross_salary: gross,

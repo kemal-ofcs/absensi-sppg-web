@@ -526,7 +526,7 @@ export function downloadEmployeeTemplate() {
         id_unik: "EMP_0001",
         kode_karyawan: "K0001",
         nama: "Nama Karyawan",
-        divisi: "SPPG Operational",
+        divisi: "Operational",
         jabatan_status: "Staff",
         no_hp: "08123456789",
         lp: "L",

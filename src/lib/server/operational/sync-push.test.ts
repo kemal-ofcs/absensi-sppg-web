@@ -8,6 +8,7 @@ import { initDatabaseSchema } from "@/lib/db-schema";
 import {
   type OperationalSyncEvent,
   processOperationalSyncEvent,
+  type SyncBatchRevisions,
 } from "@/lib/server/operational/sync-push";
 
 const actor: OperatorUser = {
@@ -394,6 +395,104 @@ describe("operational sync idempotency", () => {
     expect(Number(attendance.rows[0]?.total)).toBe(1);
     expect(attendance.rows[0]?.status_absen).toBe("Lengkap");
     expect(Number(attendance.rows[0]?.jam_kerja)).toBe(420);
+  });
+
+  /**
+   * Regresi: dua event untuk SATU sesi absensi lahir sebelum siklus push
+   * berikutnya — persis yang terjadi saat operator menghapus jam scan Masuk
+   * lalu jam scan Pulang berturut-turut. Event kedua membawa `baseRevision`
+   * dari sebelum event pertama diterapkan, sehingga tanpa rantai revisi
+   * per-batch ia ditolak sebagai konflik yang tidak pernah bisa selesai:
+   * perangkat asal sudah menghapus barisnya secara lokal sementara server —
+   * dan setiap perangkat lain yang menariknya — menyimpannya selamanya.
+   */
+  test("event kedua untuk entitas sama memakai revisi hasil event pertama", async () => {
+    const client = await fixture();
+    const seeded = await processOperationalSyncEvent(
+      client,
+      actor,
+      successfulScanEvent(),
+    );
+    expect(seeded.status).toBe("applied");
+
+    const idSesi = "NORMAL-20260810-K001-1";
+    const clientId = `desktop-${"b".repeat(64)}`;
+    // Hapus jam scan Masuk: baris absensi hanya diperbarui.
+    const hapusMasuk = {
+      eventId: `evt-${"5".repeat(64)}`,
+      clientId,
+      domain: "attendance",
+      operation: "update",
+      entityKey: idSesi,
+      baseRevision: 0,
+      createdAt: 1_786_000_000,
+      payload: { id_sesi: idSesi, jam_masuk: "" },
+    };
+    // Hapus jam scan Pulang: log terakhir habis, barisnya ikut terhapus.
+    // `baseRevision` masih 0 karena event ini dibuat sebelum event di atas
+    // sempat terkirim.
+    const hapusPulang = {
+      eventId: `evt-${"6".repeat(64)}`,
+      clientId,
+      domain: "attendance",
+      operation: "delete",
+      entityKey: idSesi,
+      baseRevision: 0,
+      createdAt: 1_786_000_000,
+      payload: { id_sesi: idSesi },
+    };
+
+    const batchRevisions: SyncBatchRevisions = new Map();
+    const pertama = await processOperationalSyncEvent(
+      client,
+      actor,
+      hapusMasuk,
+      batchRevisions,
+    );
+    const kedua = await processOperationalSyncEvent(
+      client,
+      actor,
+      hapusPulang,
+      batchRevisions,
+    );
+
+    expect(pertama.status).toBe("applied");
+    expect(kedua.status).toBe("applied");
+    const rows = await client.execute({
+      sql: "SELECT COUNT(*) AS total FROM absensi_harian WHERE id_sesi = ?;",
+      args: [idSesi],
+    });
+    expect(Number(rows.rows[0]?.total)).toBe(0);
+  });
+
+  test("tanpa rantai revisi batch, event kedua tertahan sebagai konflik", async () => {
+    const client = await fixture();
+    await processOperationalSyncEvent(client, actor, successfulScanEvent());
+
+    const idSesi = "NORMAL-20260810-K001-1";
+    const clientId = `desktop-${"b".repeat(64)}`;
+    await processOperationalSyncEvent(client, actor, {
+      eventId: `evt-${"7".repeat(64)}`,
+      clientId,
+      domain: "attendance",
+      operation: "update",
+      entityKey: idSesi,
+      baseRevision: 0,
+      createdAt: 1_786_000_000,
+      payload: { id_sesi: idSesi, jam_masuk: "" },
+    });
+    const kedua = await processOperationalSyncEvent(client, actor, {
+      eventId: `evt-${"8".repeat(64)}`,
+      clientId,
+      domain: "attendance",
+      operation: "delete",
+      entityKey: idSesi,
+      baseRevision: 0,
+      createdAt: 1_786_000_000,
+      payload: { id_sesi: idSesi },
+    });
+
+    expect(kedua.status).toBe("conflict");
   });
 
   /** Seed satu baris absensi hasil Koreksi Admin dengan kondisi tertentu. */

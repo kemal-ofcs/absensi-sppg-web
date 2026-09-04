@@ -913,6 +913,11 @@ pub async fn desktop_get_payroll_recap(
     let conn = storage::database(&state.data_dir)?;
 
     let overtime_tiers = load_overtime_tiers(&conn, "HARI_KERJA")?;
+    // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
+    // "Aturan Jenjang Lembur" (rule_type = 'HARI_LIBUR'). Sebelum ini kedua
+    // jenjang itu tersimpan dan bisa disunting, tetapi tidak pernah dibaca
+    // siapa pun — seluruh lembur selalu dihitung dengan tarif HARI_KERJA.
+    let holiday_tiers = load_overtime_tiers(&conn, "HARI_LIBUR")?;
     let components = load_payroll_components(&conn)?;
     let tax_rules = load_tax_rules(&conn)?;
     let bpjs_rules = load_bpjs_rules(&conn)?;
@@ -928,8 +933,10 @@ pub async fn desktop_get_payroll_recap(
                 COALESCE(sc.ptkp_status, 'TK/0') AS ptkp_status,
                 COUNT(CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN 1 END) AS total_hadir,
                 COALESCE(SUM(ah.menit_terlambat), 0) AS total_terlambat_menit,
-                COALESCE(SUM(ah.jam_kerja), 0) AS total_jam_kerja_menit,
-                COALESCE(SUM(ah.lembur), 0) AS total_lembur_menit
+                COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.jam_kerja ELSE 0 END), 0) AS total_jam_kerja_menit,
+                COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.lembur ELSE 0 END), 0) AS total_lembur_menit,
+                COALESCE(SUM(CASE WHEN hl.tanggal IS NOT NULL
+                    THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit
             FROM master_data md
             LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
                 AND sc.effective_date = (
@@ -938,6 +945,11 @@ pub async fn desktop_get_payroll_recap(
                 )
             LEFT JOIN absensi_harian ah ON ah.id_karyawan = md.id_unik
                 AND ah.tanggal >= ?1 AND ah.tanggal <= ?2
+            -- Penanda hari libur diambil dari tanggal kerja barisnya, BUKAN dari
+            -- kolom pada absensi_harian. `tbl_hari_libur.tanggal` UNIQUE sehingga
+            -- join ini tidak pernah menggandakan baris, dan absensi lama otomatis
+            -- ikut terhitung benar begitu admin melengkapi daftar hari liburnya.
+            LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1
             WHERE md.status_aktif = 'Aktif'
             GROUP BY md.id_unik
             ORDER BY md.nama ASC;
@@ -955,6 +967,7 @@ pub async fn desktop_get_payroll_recap(
         total_terlambat: i64,
         jam_kerja_menit: i64,
         lembur_menit: i64,
+        libur_menit: i64,
     }
 
     let rows = stmt
@@ -969,6 +982,7 @@ pub async fn desktop_get_payroll_recap(
                 total_terlambat: row.get(6)?,
                 jam_kerja_menit: row.get(7)?,
                 lembur_menit: row.get(8)?,
+                libur_menit: row.get(9)?,
             })
         })
         .map_err(|_| CommandError::internal())?;
@@ -979,12 +993,19 @@ pub async fn desktop_get_payroll_recap(
         if let Ok(agg) = item {
             let reg_hours = Decimal::from(agg.jam_kerja_menit) / Decimal::from(60);
             let ot_hours = Decimal::from(agg.lembur_menit) / Decimal::from(60);
+            let holiday_hours = Decimal::from(agg.libur_menit) / Decimal::from(60);
             let rate_dec = Decimal::from(agg.rate_per_hour);
 
+            // Dua indeks, dua jenjang: jam lembur hari biasa memakai HARI_KERJA,
+            // seluruh jam pada tanggal libur memakai HARI_LIBUR. Keduanya
+            // dijumlahkan lalu dikalikan rate per jam karyawan SEKALI, supaya
+            // pembulatannya sama dengan versi satu-indeks sebelumnya.
             let ot_index = PayrollCalculator::calculate_overtime_index(ot_hours, &overtime_tiers);
+            let holiday_index =
+                PayrollCalculator::calculate_overtime_index(holiday_hours, &holiday_tiers);
             let basic_salary = (reg_hours * rate_dec)
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
-            let overtime_salary = (ot_index * rate_dec)
+            let overtime_salary = ((ot_index + holiday_index) * rate_dec)
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
             let (allowance, deduction, _) =
@@ -1008,6 +1029,8 @@ pub async fn desktop_get_payroll_recap(
                 total_regular_hours: reg_hours.to_f64().unwrap_or(0.0),
                 total_overtime_hours: ot_hours.to_f64().unwrap_or(0.0),
                 total_overtime_index: ot_index.to_f64().unwrap_or(0.0),
+                total_holiday_hours: holiday_hours.to_f64().unwrap_or(0.0),
+                total_holiday_overtime_index: holiday_index.to_f64().unwrap_or(0.0),
                 est_basic_salary: basic_salary.to_i64().unwrap_or(0),
                 est_overtime_salary: overtime_salary.to_i64().unwrap_or(0),
                 est_gross_salary: gross.to_i64().unwrap_or(0),
@@ -1070,6 +1093,7 @@ pub async fn desktop_create_payroll_run(
     let recap = desktop_get_payroll_recap(state.clone(), period_start.clone(), period_end.clone()).await?;
 
     let overtime_tiers = load_overtime_tiers(&conn, "HARI_KERJA")?;
+    let holiday_tiers = load_overtime_tiers(&conn, "HARI_LIBUR")?;
     let components = load_payroll_components(&conn)?;
     let tax_rules = load_tax_rules(&conn)?;
     let bpjs_rules = load_bpjs_rules(&conn)?;
@@ -1088,12 +1112,16 @@ pub async fn desktop_create_payroll_run(
         let item_id = format!("{}-{}", run_id, row.id_karyawan);
         let reg_hours = Decimal::from_f64_retain(row.total_regular_hours).unwrap_or(Decimal::ZERO);
         let ot_hours = Decimal::from_f64_retain(row.total_overtime_hours).unwrap_or(Decimal::ZERO);
+        let holiday_hours =
+            Decimal::from_f64_retain(row.total_holiday_hours).unwrap_or(Decimal::ZERO);
         let rate_dec = Decimal::from(row.rate_per_hour);
 
         let ot_index = PayrollCalculator::calculate_overtime_index(ot_hours, &overtime_tiers);
+        let holiday_index =
+            PayrollCalculator::calculate_overtime_index(holiday_hours, &holiday_tiers);
         let basic_salary = (reg_hours * rate_dec)
             .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
-        let overtime_salary = (ot_index * rate_dec)
+        let overtime_salary = ((ot_index + holiday_index) * rate_dec)
             .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
         let (allowance, deduction, comp_breakdown) =
@@ -1111,6 +1139,8 @@ pub async fn desktop_create_payroll_run(
             "regular_hours": row.total_regular_hours,
             "overtime_hours": row.total_overtime_hours,
             "overtime_index": ot_index.to_f64().unwrap_or(0.0),
+            "holiday_hours": row.total_holiday_hours,
+            "holiday_overtime_index": holiday_index.to_f64().unwrap_or(0.0),
             "basic_salary": basic_salary.to_i64().unwrap_or(0),
             "overtime_salary": overtime_salary.to_i64().unwrap_or(0),
             "components": comp_breakdown,
@@ -1141,6 +1171,8 @@ pub async fn desktop_create_payroll_run(
             row.total_regular_hours,
             row.total_overtime_hours,
             ot_index.to_f64().unwrap_or(0.0),
+            row.total_holiday_hours,
+            holiday_index.to_f64().unwrap_or(0.0),
             row.rate_per_hour,
             basic_i64,
             ot_i64,
@@ -1168,17 +1200,19 @@ pub async fn desktop_create_payroll_run(
                 "total_regular_hours": it.5,
                 "total_overtime_hours": it.6,
                 "total_overtime_index": it.7,
-                "rate_per_hour": it.8,
-                "basic_salary": it.9,
-                "overtime_salary": it.10,
-                "gross_salary": it.11,
-                "total_allowances": it.12,
-                "total_deductions": it.13,
-                "bpjs_employee_total": it.14,
-                "bpjs_company_total": it.15,
-                "pph21_amount": it.16,
-                "net_salary": it.17,
-                "breakdown_snapshot": it.18.clone(),
+                "total_holiday_hours": it.8,
+                "total_holiday_overtime_index": it.9,
+                "rate_per_hour": it.10,
+                "basic_salary": it.11,
+                "overtime_salary": it.12,
+                "gross_salary": it.13,
+                "total_allowances": it.14,
+                "total_deductions": it.15,
+                "bpjs_employee_total": it.16,
+                "bpjs_company_total": it.17,
+                "pph21_amount": it.18,
+                "net_salary": it.19,
+                "breakdown_snapshot": it.20.clone(),
                 "created_at": now.clone(),
             })
         })
@@ -1215,10 +1249,11 @@ pub async fn desktop_create_payroll_run(
             INSERT INTO payroll_items (
                 id, payroll_run_id, id_karyawan, nama_karyawan, divisi, ptkp_status,
                 total_regular_hours, total_overtime_hours, total_overtime_index,
+                total_holiday_hours, total_holiday_overtime_index,
                 rate_per_hour, basic_salary, overtime_salary, gross_salary,
                 total_allowances, total_deductions, bpjs_employee_total, bpjs_company_total,
                 pph21_amount, net_salary, breakdown_snapshot, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21);
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23);
             "#,
             params![
                 it.0,
@@ -1241,6 +1276,8 @@ pub async fn desktop_create_payroll_run(
                 it.16,
                 it.17,
                 it.18,
+                it.19,
+                it.20,
                 now
             ],
         )
@@ -1406,6 +1443,7 @@ pub async fn desktop_get_payroll_run_detail(
             r#"
             SELECT id, payroll_run_id, id_karyawan, nama_karyawan, divisi, ptkp_status,
                    total_regular_hours, total_overtime_hours, total_overtime_index,
+                   COALESCE(total_holiday_hours, 0), COALESCE(total_holiday_overtime_index, 0),
                    rate_per_hour, basic_salary, overtime_salary, gross_salary,
                    total_allowances, total_deductions, bpjs_employee_total, bpjs_company_total,
                    pph21_amount, net_salary, breakdown_snapshot, created_at
@@ -1428,18 +1466,20 @@ pub async fn desktop_get_payroll_run_detail(
                 total_regular_hours: row.get(6)?,
                 total_overtime_hours: row.get(7)?,
                 total_overtime_index: row.get(8)?,
-                rate_per_hour: row.get(9)?,
-                basic_salary: row.get(10)?,
-                overtime_salary: row.get(11)?,
-                gross_salary: row.get(12)?,
-                total_allowances: row.get(13)?,
-                total_deductions: row.get(14)?,
-                bpjs_employee_total: row.get(15)?,
-                bpjs_company_total: row.get(16)?,
-                pph21_amount: row.get(17)?,
-                net_salary: row.get(18)?,
-                breakdown_snapshot: row.get(19)?,
-                created_at: row.get(20)?,
+                total_holiday_hours: row.get(9)?,
+                total_holiday_overtime_index: row.get(10)?,
+                rate_per_hour: row.get(11)?,
+                basic_salary: row.get(12)?,
+                overtime_salary: row.get(13)?,
+                gross_salary: row.get(14)?,
+                total_allowances: row.get(15)?,
+                total_deductions: row.get(16)?,
+                bpjs_employee_total: row.get(17)?,
+                bpjs_company_total: row.get(18)?,
+                pph21_amount: row.get(19)?,
+                net_salary: row.get(20)?,
+                breakdown_snapshot: row.get(21)?,
+                created_at: row.get(22)?,
             })
         })
         .map_err(|_| CommandError::internal())?

@@ -20,6 +20,7 @@ import {
   getCurrentCoordinates,
 } from "@/lib/client/geolocation";
 import { formatBytes, optimizeImageFile } from "@/lib/client/image-optimizer";
+import { BRANDING } from "@/lib/constants/branding";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   getAutoAlfaSetting,
@@ -27,6 +28,10 @@ import {
   saveAutoAlfaSetting,
   triggerGenerateAlfa,
 } from "@/lib/gateways/alfa";
+import {
+  getAppDisplayName,
+  saveAppDisplayName,
+} from "@/lib/gateways/app-setting";
 import {
   type CompanyProfile,
   getCompanyProfile,
@@ -37,6 +42,10 @@ import {
   getGeofenceSettings,
   saveGeofenceSettings,
 } from "@/lib/gateways/geofence";
+import {
+  getScanSecurity,
+  saveScanSecurity,
+} from "@/lib/gateways/scan-security";
 import {
   getScannerSafetySettings,
   type ScannerSafetySettings,
@@ -65,6 +74,8 @@ import {
   testTursoConnection,
 } from "@/lib/gateways/turso-config";
 import { syncAppLogoCache, useAppLogo } from "@/lib/hooks/useAppLogo";
+import { syncAppNameCache } from "@/lib/hooks/useAppName";
+import { syncCompanyNameCache } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 import {
@@ -74,6 +85,7 @@ import {
   reviewDatabaseEndpoint,
 } from "@/lib/validations/database-endpoint";
 import { validateGeofenceSettings } from "@/lib/validations/geofence";
+import { validateIpAllowlistEntries } from "@/lib/validations/ip-allowlist";
 import { validateScannerSafetySettings } from "@/lib/validations/scanner-settings";
 
 const MAX_LOGO_SIZE = 1024 * 1024;
@@ -138,6 +150,17 @@ export default function SettingsPage() {
     radiusMeter: 100,
   });
   const [geofenceBusy, setGeofenceBusy] = useState(false);
+  // Daftar IP absensi. Disimpan sebagai teks per baris di form supaya
+  // Superadmin bisa menempel banyak alamat sekaligus; normalisasi dan
+  // pembuangan entri tidak valid dilakukan saat disimpan.
+  const [ipAllowlist, setIpAllowlist] = useState<string[]>([]);
+  const [ipAllowlistDraft, setIpAllowlistDraft] = useState("");
+  const [ipDeviceAddresses, setIpDeviceAddresses] = useState<string[]>([]);
+  const [ipAllowlistBusy, setIpAllowlistBusy] = useState(false);
+  // Sakelar induk tingkat perusahaan. Sakelar per role di Master Operator hanya
+  // berlaku ketika fiturnya dihidupkan di sini.
+  const [scanPhotoEnabled, setScanPhotoEnabled] = useState(false);
+  const [scanIpEnabled, setScanIpEnabled] = useState(false);
   const [currentDeviceCoords, setCurrentDeviceCoords] = useState<{
     lat: number;
     lng: number;
@@ -155,8 +178,8 @@ export default function SettingsPage() {
   );
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile>({
     id: "default_company",
-    company_name: "SPPG",
-    branch_name: "Pusat Operasional",
+    company_name: BRANDING.defaultCompanyName,
+    branch_name: BRANDING.defaultBranchName,
     logo_url: null,
     signature_url: null,
     address: null,
@@ -170,6 +193,9 @@ export default function SettingsPage() {
     timezone: "Asia/Jakarta",
     updated_at: "",
   });
+  const [appDisplayName, setAppDisplayName] = useState<string>(
+    BRANDING.appDisplayName,
+  );
   const [companyProfileBusy, setCompanyProfileBusy] = useState(false);
 
   useEffect(() => {
@@ -179,6 +205,12 @@ export default function SettingsPage() {
     getCompanyProfile()
       .then((profile) => {
         if (!cancelled) setCompanyProfile(profile);
+      })
+      .catch(() => undefined);
+
+    getAppDisplayName()
+      .then((name) => {
+        if (!cancelled) setAppDisplayName(name);
       })
       .catch(() => undefined);
 
@@ -213,6 +245,7 @@ export default function SettingsPage() {
 
     setGeofenceBusy(true);
     setScannerSafetyBusy(true);
+    setIpAllowlistBusy(true);
     getGeofenceSettings()
       .then((settings) => {
         if (!cancelled) setGeofence(settings);
@@ -249,6 +282,39 @@ export default function SettingsPage() {
       })
       .finally(() => {
         if (!cancelled) setScannerSafetyBusy(false);
+      });
+
+    // Hanya Superadmin yang boleh membaca daftar ini (sama seperti geofencing),
+    // jadi jangan memicu pesan "akses ditolak" untuk operator biasa.
+    if (!user?.isSuperadmin) {
+      setIpAllowlistBusy(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    getScanSecurity()
+      .then((settings) => {
+        if (cancelled) return;
+        setScanPhotoEnabled(settings.photoEnabled);
+        setScanIpEnabled(settings.ipRestrictionEnabled);
+        setIpAllowlist(settings.entries);
+        setIpAllowlistDraft(settings.entries.join("\n"));
+        setIpDeviceAddresses(settings.deviceAddresses);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeedback({
+            type: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Pengaturan keamanan absensi tidak dapat dibaca.",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIpAllowlistBusy(false);
       });
 
     return () => {
@@ -681,7 +747,7 @@ export default function SettingsPage() {
       setFeedback({
         type: "success",
         message:
-          "Logo dikembalikan ke identitas default SPPG untuk semua perangkat.",
+          "Logo dikembalikan ke identitas default untuk semua perangkat.",
       });
     } catch (error) {
       setFeedback({
@@ -707,8 +773,15 @@ export default function SettingsPage() {
     }
     setCompanyProfileBusy(true);
     try {
-      const updated = await updateCompanyProfile(companyProfile);
+      const [updated, updatedAppName] = await Promise.all([
+        updateCompanyProfile(companyProfile),
+        saveAppDisplayName(appDisplayName),
+      ]);
       setCompanyProfile(updated);
+      setAppDisplayName(updatedAppName);
+      syncAppLogoCache(updated.logo_url);
+      syncCompanyNameCache(updated.company_name);
+      syncAppNameCache(updatedAppName);
       setFeedback({
         type: "success",
         message: "Profil instansi & identitas ID Card berhasil disimpan.",
@@ -835,6 +908,55 @@ export default function SettingsPage() {
       type: "success",
       message: "Koordinat perangkat berhasil dimasukkan ke form.",
     });
+  };
+
+  const handleScanSecuritySubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const entries = ipAllowlistDraft
+      .split(/[\n,;]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const validationMessage = Object.values(
+      validateIpAllowlistEntries(entries),
+    )[0];
+    if (validationMessage) {
+      setFeedback({ type: "error", message: validationMessage });
+      return;
+    }
+    setIpAllowlistBusy(true);
+    try {
+      const saved = await saveScanSecurity({
+        photoEnabled: scanPhotoEnabled,
+        ipRestrictionEnabled: scanIpEnabled,
+        entries,
+      });
+      setScanPhotoEnabled(saved.photoEnabled);
+      setScanIpEnabled(saved.ipRestrictionEnabled);
+      setIpAllowlist(saved.entries);
+      setIpAllowlistDraft(saved.entries.join("\n"));
+      setIpDeviceAddresses(saved.deviceAddresses);
+      setFeedback({
+        type: "success",
+        message:
+          !saved.photoEnabled && !saved.ipRestrictionEnabled
+            ? "Kedua fitur keamanan absensi dimatikan. Absensi berjalan seperti biasa."
+            : saved.ipRestrictionEnabled && saved.entries.length === 0
+              ? "Tersimpan. Pembatasan IP aktif tetapi daftarnya masih kosong, jadi belum ada yang dibatasi."
+              : "Pengaturan keamanan absensi tersimpan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Pengaturan keamanan absensi gagal disimpan.",
+      });
+    } finally {
+      setIpAllowlistBusy(false);
+    }
   };
 
   const handleGeofenceSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -974,7 +1096,7 @@ export default function SettingsPage() {
               <BrandLogo size={96} />
               <div>
                 <p className="text-sm font-bold text-white">
-                  {logoUrl ? "Logo khusus terpasang" : "Logo default SPPG"}
+                  {logoUrl ? "Logo khusus terpasang" : "Logo default"}
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
                   PNG, JPG, atau WebP · Maksimal 1 MB
@@ -1070,7 +1192,9 @@ export default function SettingsPage() {
           <dl className="mt-6 divide-y divide-white/10 rounded-2xl border border-white/10 bg-slate-950/50 px-4">
             <div className="flex items-center justify-between gap-4 py-3 text-xs">
               <dt className="text-slate-400">Aplikasi</dt>
-              <dd className="font-bold text-white">Absensi SPPG v0.1.0</dd>
+              <dd className="font-bold text-white">
+                {BRANDING.appDisplayName} v0.1.0
+              </dd>
             </div>
             <div className="flex items-center justify-between gap-4 py-3 text-xs">
               <dt className="text-slate-400">Frontend</dt>
@@ -1111,7 +1235,7 @@ export default function SettingsPage() {
               </span>
               <div>
                 <h2 className="text-base font-black text-white">
-                  Profil Instansi & Identitas ID Card (SPPG)
+                  Profil Instansi & Identitas ID Card
                 </h2>
                 <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
                   Data resmi organisasi, kontak instansi, tanda tangan pimpinan,
@@ -1131,6 +1255,20 @@ export default function SettingsPage() {
           >
             {/* 1. Informasi Utama */}
             <div className="grid gap-4 sm:grid-cols-3">
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-3">
+                Nama Tampilan Aplikasi / Sistem
+                <input
+                  type="text"
+                  value={appDisplayName}
+                  onChange={(e) => setAppDisplayName(e.target.value)}
+                  placeholder={`Contoh: ${BRANDING.appDisplayName}`}
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+                <span className="text-[11px] font-normal text-slate-400 block">
+                  Nama sistem aplikasi yang ditampilkan pada judul aplikasi,
+                  form login, dan header.
+                </span>
+              </label>
               <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
                 Nama Resmi Instansi / Organisasi *
                 <input
@@ -1143,7 +1281,7 @@ export default function SettingsPage() {
                       company_name: e.target.value,
                     }))
                   }
-                  placeholder="Contoh: SPPG (Sistem Presensi & Penggajian)"
+                  placeholder="Contoh: PT Maju Bersama / Nama Instansi"
                   className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
                 />
               </label>
@@ -1381,7 +1519,7 @@ export default function SettingsPage() {
                       leader_title: e.target.value,
                     }))
                   }
-                  placeholder="Contoh: Kepala SPPG / Direktur Utama"
+                  placeholder="Contoh: Direktur Utama / Kepala Kantor"
                   className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
                 />
               </label>
@@ -1696,6 +1834,149 @@ export default function SettingsPage() {
                   <span>Reset Konfigurasi</span>
                 </button>
               ) : null}
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+                <Icon name="scanner" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Keamanan absensi
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Dua fitur opsional: memaksa setiap scan menyertakan foto
+                  wajah, dan membatasi absensi ke jaringan tertentu. Matikan
+                  keduanya bila perusahaan tidak memerlukannya — selama mati,
+                  sakelar per role di halaman Master Operator tidak berpengaruh
+                  apa pun.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={handleScanSecuritySubmit} className="mt-6 space-y-4">
+            <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <input
+                type="checkbox"
+                checked={scanPhotoEnabled}
+                onChange={(event) => setScanPhotoEnabled(event.target.checked)}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="text-xs leading-5 text-slate-300">
+                <strong className="text-white">
+                  Aktifkan foto bukti absensi
+                </strong>
+                <br />
+                Terminal menahan scan sesaat setelah QR terbaca, membuka kamera
+                hadap-depan, lalu memotret wajah dan latar orang yang absen
+                sebelum data dikirim. Role mana yang diwajibkan diatur di
+                halaman Master Operator.
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <input
+                type="checkbox"
+                checked={scanIpEnabled}
+                onChange={(event) => setScanIpEnabled(event.target.checked)}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="text-xs leading-5 text-slate-300">
+                <strong className="text-white">
+                  Aktifkan pembatasan alamat IP
+                </strong>
+                <br />
+                Absensi hanya diterima dari alamat yang terdaftar di bawah. Role
+                mana yang dibatasi diatur di halaman Master Operator.
+              </span>
+            </label>
+
+            {scanIpEnabled ? (
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-black text-white">
+                    Alamat IP yang diizinkan
+                  </p>
+                  <StatusBadge
+                    tone={ipAllowlist.length > 0 ? "info" : "warning"}
+                  >
+                    {ipAllowlist.length > 0
+                      ? `${ipAllowlist.length} entri aktif`
+                      : "Kosong — belum membatasi"}
+                  </StatusBadge>
+                </div>
+                <textarea
+                  value={ipAllowlistDraft}
+                  onChange={(event) => setIpAllowlistDraft(event.target.value)}
+                  rows={5}
+                  spellCheck={false}
+                  placeholder={"192.168.1.0/24\n10.10.0.7"}
+                  className="w-full rounded-xl border border-white/10 bg-slate-950 p-3 font-mono text-sm text-white outline-none focus:border-sky-400"
+                />
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Satu baris satu alamat, boleh berupa blok CIDR seperti
+                  <span className="font-mono"> 192.168.1.0/24</span>. Selama
+                  daftar ini kosong, pembatasan belum berlaku dan role tersebut
+                  masih bisa absen dari jaringan mana pun.
+                </p>
+
+                {ipDeviceAddresses.length > 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Alamat perangkat ini
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {ipDeviceAddresses.map((address) => (
+                        <button
+                          key={address}
+                          type="button"
+                          onClick={() =>
+                            setIpAllowlistDraft((current) =>
+                              current
+                                .split(/[\n,;]/)
+                                .map((item) => item.trim())
+                                .filter(Boolean)
+                                .includes(address)
+                                ? current
+                                : `${current.trim()}${current.trim() ? "\n" : ""}${address}`,
+                            )
+                          }
+                          className="min-h-9 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 font-mono text-xs font-bold text-sky-200"
+                        >
+                          + {address}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                      Ini alamat yang benar-benar terlihat oleh aplikasi saat
+                      ini. Menebak alamat sendiri adalah cara tercepat mengunci
+                      seluruh terminal di luar.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                disabled={ipAllowlistBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-5 text-sm font-black text-slate-950 disabled:opacity-60"
+              >
+                {ipAllowlistBusy ? "Menyimpan..." : "Simpan keamanan absensi"}
+              </button>
+              <p className="text-xs text-slate-400">
+                {scanPhotoEnabled || scanIpEnabled
+                  ? "Berlaku untuk role yang menyalakannya di Master Operator."
+                  : "Kedua fitur mati — absensi berjalan seperti biasa."}
+              </p>
             </div>
           </form>
         </section>

@@ -66,6 +66,8 @@ export async function readSessionRecord(
       SELECT
         s.session_id, m.id, m.kode_operator, m.nama_operator, m.username,
         m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+        COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
+        COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist,
         s.created_at
       FROM app_session s
       JOIN master_operator m ON m.id = s.operator_id
@@ -114,6 +116,11 @@ export async function readSessionRecord(
           String(permission.permission_key),
         ) as PermissionKey[]),
     permissionRevision: Number(revisionResult.rows[0]?.value ?? 1),
+    // Kebijakan keamanan absensi dibaca ulang dari sesi setiap permintaan, jadi
+    // sakelar yang baru dimatikan Superadmin langsung berlaku tanpa perlu
+    // memaksa operator login ulang.
+    requireScanPhoto: Number(row.require_scan_photo ?? 0) === 1,
+    requireScanIpAllowlist: Number(row.require_scan_ip_allowlist ?? 0) === 1,
     loginAt: String(row.created_at),
   };
 }

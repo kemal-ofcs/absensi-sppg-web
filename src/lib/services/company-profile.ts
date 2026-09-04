@@ -1,5 +1,6 @@
 import "server-only";
 
+import { BRANDING } from "@/lib/constants/branding";
 import { db, ensureDbInitialized } from "@/lib/db";
 import type {
   CompanyProfile,
@@ -15,10 +16,6 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
 
   if (res.rows.length === 0) {
     const now = new Date().toISOString();
-    const defaultTerms = `1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.
-2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.
-3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.
-4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.`;
 
     await db.execute({
       sql: `
@@ -28,13 +25,25 @@ export async function getCompanyProfile(): Promise<CompanyProfile> {
           leader_name, leader_title, leader_nip,
           card_terms, timezone, updated_at
         ) VALUES (
-          'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
-          'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
-          'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+          'default_company', ?, ?, NULL, NULL,
+          ?, ?, ?, ?,
+          ?, ?, ?,
           ?, 'Asia/Jakarta', ?
         );
       `,
-      args: [defaultTerms, now],
+      args: [
+        BRANDING.defaultCompanyName,
+        BRANDING.defaultBranchName,
+        BRANDING.defaultAddress,
+        BRANDING.defaultPhone,
+        BRANDING.defaultEmail,
+        BRANDING.defaultWebsite,
+        BRANDING.defaultLeaderName,
+        BRANDING.defaultLeaderTitle,
+        BRANDING.defaultLeaderNip,
+        BRANDING.defaultCardTerms,
+        now,
+      ],
     });
 
     const fallbackRes = await db.execute(
@@ -80,7 +89,7 @@ export async function updateCompanyProfile(
         updated_at = excluded.updated_at;
     `,
     args: [
-      input.company_name || "SPPG",
+      input.company_name || BRANDING.defaultCompanyName,
       input.branch_name ?? null,
       input.logo_url ?? null,
       input.signature_url ?? null,

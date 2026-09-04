@@ -78,9 +78,28 @@ async function getLegacyRole(client: Client, roleId: number) {
     : "Operator";
 }
 
-export async function insertOperator(client: Client, draft: OperatorDraft) {
+export async function insertOperator(
+  client: Client,
+  draft: OperatorDraft,
+  allowSuperadmin = false,
+) {
   validateOperatorDraft(draft);
   if (!draft.password) throw new Error("Password operator wajib diisi.");
+
+  const roleCheck = await client.execute({
+    sql: "SELECT is_superadmin, status FROM app_role WHERE id = ? LIMIT 1;",
+    args: [draft.roleId],
+  });
+  if (
+    roleCheck.rows.length === 0 ||
+    String(roleCheck.rows[0]?.status) !== "Aktif"
+  ) {
+    throw new Error("Role tujuan tidak ditemukan atau sedang nonaktif.");
+  }
+  if (!allowSuperadmin && Number(roleCheck.rows[0]?.is_superadmin) === 1) {
+    throw new Error("Role Superadmin tidak dapat ditambahkan secara manual.");
+  }
+
   const result = await client.execute({
     sql: `
       INSERT INTO master_operator (
@@ -132,7 +151,7 @@ export async function bootstrapSuperadmin(
   if (!Number.isSafeInteger(roleId)) {
     throw new Error("Role Superadmin aktif belum tersedia.");
   }
-  return insertOperator(client, { ...draft, roleId });
+  return insertOperator(client, { ...draft, roleId }, true);
 }
 
 export async function editOperator(
@@ -174,6 +193,13 @@ export async function editOperator(
     if (Number(count.rows[0]?.total) <= 1) {
       throw new Error("Superadmin aktif terakhir tidak dapat dinonaktifkan.");
     }
+  }
+
+  if (
+    Number(target.rows[0]?.is_superadmin) !== 1 &&
+    Number(nextRole.rows[0]?.is_superadmin) === 1
+  ) {
+    throw new Error("Operator tidak dapat dinaikkan menjadi Superadmin.");
   }
 
   const updates = [

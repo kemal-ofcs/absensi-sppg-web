@@ -135,11 +135,40 @@ const attendanceSchema = z
   })
   .strict();
 
+/**
+ * Foto bukti absensi yang ikut event `attendance/scan`.
+ *
+ * Batas 2 juta karakter base64 (kira-kira 1,5 MB gambar) dieja sama persis di
+ * `scanner.rs` (`MAX_SCAN_PHOTO_BASE64`). Foto yang lolos di perangkat tetapi
+ * ditolak di sini akan macet selamanya di outbox tanpa pernah bisa berhasil.
+ */
+const scanPhotoSchema = z
+  .object({
+    id_foto: shortText.min(1),
+    id_sesi: optionalShortText,
+    tanggal_kerja: shortText.min(1),
+    id_karyawan: shortText.min(1),
+    nama: optionalShortText,
+    divisi: optionalShortText,
+    jenis_scan: shortText.min(1),
+    timestamp_scan: shortText.min(1),
+    sumber_data: optionalAttendanceSource,
+    kode_operator: optionalShortText,
+    ip_perangkat: optionalShortText,
+    client_id: optionalShortText,
+    foto_mime: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
+    foto_base64: z.string().min(1).max(2_000_000),
+    created_at: optionalShortText,
+  })
+  .strict();
+
 const attendanceScanPayload = z
   .object({
     log: scanLogSchema,
     attendance: attendanceSchema.nullable().optional(),
     attendanceBaseUpdatedAt: optionalShortText,
+    /** Bukti foto, bila role operator terminal mewajibkannya. */
+    photo: scanPhotoSchema.nullable().optional(),
     /**
      * Operator memilih "Gunakan Versi Lokal" pada konflik ini, jadi pemeriksaan
      * konkurensi optimistis (`attendanceBaseUpdatedAt`) sengaja dilewati.
@@ -271,6 +300,34 @@ const holidayDeletePayload = z
   })
   .strict();
 
+/**
+ * Whitelist Shift/Divisi hari libur.
+ *
+ * `scope_value` sengaja `shortText` apa adanya — normalisasinya (kode shift
+ * desimal / nama divisi yang dirapikan) dilakukan modul
+ * `@/lib/validations/holiday-whitelist` di sisi produsen, dan penilaiannya
+ * di sisi konsumen juga menormalkan ulang, sehingga baris yang belum kanonik
+ * dari klien versi lama tetap dinilai benar.
+ */
+const holidayWhitelistUpsertPayload = z
+  .object({
+    id: shortText.min(1),
+    scope_type: z.enum(["SHIFT", "DIVISI"]),
+    scope_value: shortText.min(1),
+    tanggal_libur: optionalShortText,
+    keterangan: optionalLongText,
+    status_aktif: optionalNumber,
+    created_at: optionalShortText,
+    updated_at: optionalShortText,
+  })
+  .strict();
+
+const holidayWhitelistDeletePayload = z
+  .object({
+    id: shortText.min(1),
+  })
+  .strict();
+
 const settingUpsertPayload = z
   .object({
     key: shortText.min(1),
@@ -337,6 +394,9 @@ export const operationalSyncEventSchema = z.union([
   eventSchema("holiday", "create", holidayCreatePayload),
   eventSchema("holiday", "update", holidayUpdatePayload),
   eventSchema("holiday", "delete", holidayDeletePayload),
+  eventSchema("holiday-whitelist", "create", holidayWhitelistUpsertPayload),
+  eventSchema("holiday-whitelist", "update", holidayWhitelistUpsertPayload),
+  eventSchema("holiday-whitelist", "delete", holidayWhitelistDeletePayload),
   eventSchema("setting", "upsert", settingUpsertPayload),
   eventSchema("setting", "update", settingUpsertPayload),
   eventSchema("company-profile", "update", companyProfileUpdatePayload),

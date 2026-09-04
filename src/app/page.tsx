@@ -13,9 +13,11 @@ import { SpotlightCard } from "@/components/visual/SpotlightCard";
 import { SyncPulse } from "@/components/visual/SyncPulse";
 import { TiltCard } from "@/components/visual/TiltCard";
 import { type AppArea, canAccessArea, hasPermission } from "@/lib/auth/access";
+import { BRANDING } from "@/lib/constants/branding";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDashboardMetrics } from "@/lib/gateways/report";
 import { requestSyncNow } from "@/lib/gateways/sync-status";
+import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 import { useVisualTier } from "@/lib/stores/visual-store";
@@ -247,6 +249,7 @@ export default function Home() {
   const isOnline = useOnlineStatus();
   const visualTier = useVisualTier();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const companyName = useCompanyName();
   const canViewDashboard = hasPermission(user, "dashboard.view");
 
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
@@ -315,7 +318,7 @@ export default function Home() {
         <output className="flex flex-col items-center gap-3">
           <div className="size-10 animate-spin rounded-full border-4 border-sky-400 border-t-transparent" />
           <p className="text-xs font-medium text-slate-400">
-            Memuat Command Center Absensi SPPG...
+            Memuat Command Center {BRANDING.appDisplayName}...
           </p>
         </output>
       </div>
@@ -694,7 +697,7 @@ export default function Home() {
                           />
                         </span>
                         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                          SPPG Module
+                          {companyName} Module
                         </span>
                       </div>
                     </Link>

@@ -40,6 +40,8 @@ export async function POST(request: NextRequest) {
       total_regular_hours: row.total_regular_hours,
       total_overtime_hours: row.total_overtime_hours,
       total_overtime_index: row.total_overtime_index,
+      total_holiday_hours: row.total_holiday_hours,
+      total_holiday_overtime_index: row.total_holiday_overtime_index,
       est_basic_salary: row.est_basic_salary,
       est_overtime_salary: row.est_overtime_salary,
       est_gross_salary: row.est_gross_salary,

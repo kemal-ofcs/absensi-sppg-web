@@ -21,6 +21,9 @@ describe("readOperationalSnapshot", () => {
           result(),
           result(),
           result([{ id_libur: 1, nama_libur: "Libur Nasional" }]),
+          result([
+            { id: "hlw-1", scope_type: "DIVISI", scope_value: "Keamanan" },
+          ]),
           result(),
           result([{ id: "default_company", company_name: "SPPG" }]),
           result([{ id: "default_template", name: "Default" }]),
@@ -47,13 +50,16 @@ describe("readOperationalSnapshot", () => {
     const snapshot = await readOperationalSnapshot(client);
 
     expect(receivedMode).toBe("read");
-    expect(receivedStatementCount).toBe(21);
+    expect(receivedStatementCount).toBe(22);
     expect(snapshot.revision).toBe(12);
     expect(snapshot.employees).toEqual([
       { id_unik: "employee-1", nama: "Operator Uji" },
     ]);
     expect(snapshot.holidays).toEqual([
       { id_libur: 1, nama_libur: "Libur Nasional" },
+    ]);
+    expect(snapshot.holidayWhitelists).toEqual([
+      { id: "hlw-1", scope_type: "DIVISI", scope_value: "Keamanan" },
     ]);
     expect(snapshot.companyProfiles).toEqual([
       { id: "default_company", company_name: "SPPG" },

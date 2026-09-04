@@ -6,6 +6,8 @@
  * `src/lib/server/mail/mail-store.ts`.
  */
 
+import { BRANDING } from "@/lib/constants/branding";
+
 export const MAIL_PROVIDERS = ["resend", "brevo"] as const;
 export type MailProvider = (typeof MAIL_PROVIDERS)[number];
 
@@ -113,7 +115,7 @@ export function buildResetEmail(input: {
   const text = [
     `Halo ${operatorName},`,
     "",
-    "Kami menerima permintaan pemulihan password untuk akun Absensi SPPG Anda.",
+    `Kami menerima permintaan pemulihan password untuk akun ${BRANDING.appDisplayName} Anda.`,
     "Permintaan ini sudah melewati verifikasi wajah pada perangkat pemohon.",
     "",
     action,
@@ -122,7 +124,7 @@ export function buildResetEmail(input: {
     "Jika Anda tidak merasa mengajukan permintaan ini, abaikan email ini dan segera",
     "laporkan ke Admin — foto pemohon sudah tersimpan sebagai bukti.",
     "",
-    "Absensi SPPG",
+    BRANDING.appDisplayName,
   ].join("\n");
 
   const safeName = escapeHtml(operatorName);
@@ -132,16 +134,16 @@ export function buildResetEmail(input: {
   const html = [
     '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#0f172a;line-height:1.6">',
     `<p>Halo <strong>${safeName}</strong>,</p>`,
-    "<p>Kami menerima permintaan pemulihan password untuk akun Absensi SPPG Anda. Permintaan ini sudah melewati verifikasi wajah pada perangkat pemohon.</p>",
+    `<p>Kami menerima permintaan pemulihan password untuk akun ${escapeHtml(BRANDING.appDisplayName)} Anda. Permintaan ini sudah melewati verifikasi wajah pada perangkat pemohon.</p>`,
     htmlAction,
     `<p>Tautan/kode ini berlaku <strong>${expiresInMinutes} menit</strong> dan hanya dapat dipakai satu kali.</p>`,
     "<p>Jika Anda tidak merasa mengajukan permintaan ini, abaikan email ini dan segera laporkan ke Admin — foto pemohon sudah tersimpan sebagai bukti.</p>",
-    "<p>Absensi SPPG</p>",
+    `<p>${escapeHtml(BRANDING.appDisplayName)}</p>`,
     "</div>",
   ].join("");
 
   return {
-    subject: "Pemulihan Password Absensi SPPG",
+    subject: `Pemulihan Password ${BRANDING.appDisplayName}`,
     text,
     html,
   };

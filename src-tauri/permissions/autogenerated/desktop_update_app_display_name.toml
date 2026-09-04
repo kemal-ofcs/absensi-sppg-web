@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-update-app-display-name"
+description = "Enables the desktop_update_app_display_name command without any pre-configured scope."
+commands.allow = ["desktop_update_app_display_name"]
+
+[[permission]]
+identifier = "deny-desktop-update-app-display-name"
+description = "Denies the desktop_update_app_display_name command without any pre-configured scope."
+commands.deny = ["desktop_update_app_display_name"]

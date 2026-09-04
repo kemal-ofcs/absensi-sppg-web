@@ -1365,3 +1365,219 @@ html.light .bg-slate-950\/80 {
   background-color: #f1f5f9 !important;
   border-color: #cbd5e1 !important;
 }
+
+/* Modal & Dialog in Light Mode (Harmonisasi Tema Terang Sesuai Rule 29) */
+html[data-theme="light"] .visual-modal-backdrop,
+html.light .visual-modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+html[data-theme="light"] .app-modal-panel,
+html.light .app-modal-panel {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  box-shadow:
+    0 25px 50px -12px rgba(15, 23, 42, 0.25),
+    0 0 0 1px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .app-modal-header,
+html.light .app-modal-header {
+  background-color: #ffffff !important;
+  border-bottom-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-title,
+html.light .app-modal-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-subtitle,
+html.light .app-modal-subtitle {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .app-modal-close,
+html.light .app-modal-close {
+  background-color: #f1f5f9 !important;
+  color: #475569 !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+html[data-theme="light"] .app-modal-close:hover,
+html.light .app-modal-close:hover {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-body,
+html.light .app-modal-body {
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+}
+
+html[data-theme="light"] .app-modal-footer,
+html.light .app-modal-footer {
+  background-color: #f8fafc !important;
+  border-top-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* Form controls inside modal in light mode */
+html[data-theme="light"] .app-modal-panel
+  input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+    [type="button"]
+  ),
+html[data-theme="light"] .app-modal-panel select,
+html[data-theme="light"] .app-modal-panel textarea,
+html.light
+  .app-modal-panel
+  input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+    [type="button"]
+  ),
+html.light .app-modal-panel select,
+html.light .app-modal-panel textarea {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-panel input:focus,
+html[data-theme="light"] .app-modal-panel select:focus,
+html[data-theme="light"] .app-modal-panel textarea:focus,
+html.light .app-modal-panel input:focus,
+html.light .app-modal-panel select:focus,
+html.light .app-modal-panel textarea:focus {
+  border-color: #0284c7 !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15) !important;
+}
+
+html[data-theme="light"] .app-modal-panel label,
+html.light .app-modal-panel label {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .app-modal-panel p.text-slate-400,
+html.light .app-modal-panel p.text-slate-400 {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .app-modal-panel select option,
+html.light .app-modal-panel select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Overtime Rules (PP 35/2021) Tier Cards in Light Mode */
+html[data-theme="light"] .overtime-tier-row,
+html.light .overtime-tier-row {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .overtime-tier-row:hover,
+html.light .overtime-tier-row:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .overtime-tier-row span.text-slate-100,
+html.light .overtime-tier-row span.text-slate-100 {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .overtime-multiplier-badge-sky,
+html.light .overtime-multiplier-badge-sky {
+  background-color: #e0f2fe !important;
+  border-color: #bae6fd !important;
+  color: #0284c7 !important;
+}
+
+html[data-theme="light"] .overtime-multiplier-badge-amber,
+html.light .overtime-multiplier-badge-amber {
+  background-color: #fef3c7 !important;
+  border-color: #fde68a !important;
+  color: #d97706 !important;
+}
+
+html[data-theme="light"] .overtime-btn-edit,
+html.light .overtime-btn-edit {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .overtime-btn-edit:hover,
+html.light .overtime-btn-edit:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .overtime-btn-delete,
+html.light .overtime-btn-delete {
+  background-color: #ffe4e6 !important;
+  border: 1px solid #fecdd3 !important;
+  color: #e11d48 !important;
+}
+
+html[data-theme="light"] .overtime-btn-delete:hover,
+html.light .overtime-btn-delete:hover {
+  background-color: #fecdd3 !important;
+  border-color: #fda4af !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .overtime-empty-state,
+html.light .overtime-empty-state {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+/* Scanner Terminal Header in Light Mode */
+html[data-theme="light"] .scanner-terminal-header,
+html.light .scanner-terminal-header {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  box-shadow: 0 4px 20px rgb(15 23 42 / 4%) !important;
+}
+
+html[data-theme="light"] .scanner-terminal-title,
+html.light .scanner-terminal-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .scanner-terminal-meta,
+html.light .scanner-terminal-meta {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .scanner-terminal-clock-time,
+html.light .scanner-terminal-clock-time {
+  color: #d97706 !important;
+}
+
+html[data-theme="light"] .scanner-terminal-clock-date,
+html.light .scanner-terminal-clock-date {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .scanner-terminal-audio.border-sky-500\/40,
+html.light .scanner-terminal-audio.border-sky-500\/40 {
+  background-color: #f0f9ff !important;
+  color: #0284c7 !important;
+  border-color: #bae6fd !important;
+}
+
+html[data-theme="light"] .scanner-terminal-audio.border-slate-700,
+html.light .scanner-terminal-audio.border-slate-700 {
+  background-color: #f8fafc !important;
+  color: #64748b !important;
+  border-color: #cbd5e1 !important;
+}

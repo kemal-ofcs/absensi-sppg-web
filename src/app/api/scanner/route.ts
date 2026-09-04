@@ -7,7 +7,10 @@ import {
   readJsonBody,
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
-import { assertSameOriginMutation } from "@/lib/server/http/request-security";
+import {
+  assertSameOriginMutation,
+  getClientAddress,
+} from "@/lib/server/http/request-security";
 import { submitTerminalScan } from "@/lib/services/scanner";
 
 export const runtime = "nodejs";
@@ -16,6 +19,18 @@ interface ScannerBody {
   qrContent?: unknown;
   lat?: unknown;
   lng?: unknown;
+  fotoBase64?: unknown;
+  fotoMime?: unknown;
+}
+
+const ALLOWED_PHOTO_MIME = ["image/jpeg", "image/png", "image/webp"] as const;
+
+type PhotoMime = (typeof ALLOWED_PHOTO_MIME)[number];
+
+function photoMime(value: unknown): PhotoMime | undefined {
+  return ALLOWED_PHOTO_MIME.includes(value as PhotoMime)
+    ? (value as PhotoMime)
+    : undefined;
 }
 
 function coordinate(value: unknown) {
@@ -45,8 +60,21 @@ export async function POST(request: NextRequest) {
         lng: coordinate(body.lng),
         kodeOperator: actor.kode_operator,
         sumberData: "Scanner",
+        fotoBase64:
+          typeof body.fotoBase64 === "string" ? body.fotoBase64 : undefined,
+        fotoMime: photoMime(body.fotoMime),
       },
-      { actorOperatorId: actor.id },
+      {
+        actorOperatorId: actor.id,
+        // Alamat IP dan kebijakan role dibaca di server. Keduanya TIDAK boleh
+        // datang dari body: terminal yang dikuasai penyerang tidak boleh bisa
+        // mematikan kewajiban fotonya sendiri atau mengaku beralamat lain.
+        ipAddress: getClientAddress(request),
+        policy: {
+          requirePhoto: actor.requireScanPhoto === true,
+          requireIpAllowlist: actor.requireScanIpAllowlist === true,
+        },
+      },
     );
     return noStoreJson(result);
   } catch (error) {

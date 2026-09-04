@@ -70,6 +70,13 @@ export function subscribeDesktopSession(listener: () => void) {
     started = true;
     localStorage.removeItem(LEGACY_SESSION_KEY);
     void refreshDesktopSession();
+    // Sesi Rust dimuat ulang saat RBAC berubah, tetapi salinan di React
+    // sebelumnya hanya diambil sekali saat aplikasi dibuka. Akibatnya perubahan
+    // role — termasuk kewajiban foto absensi — baru terlihat setelah aplikasi
+    // ditutup. Satu pendengar ini membuatnya ikut segar setiap siklus sync.
+    window.addEventListener("sppg:sync-completed", () => {
+      void refreshDesktopSession();
+    });
   }
   return () => listeners.delete(listener);
 }

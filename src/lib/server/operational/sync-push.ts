@@ -2,12 +2,18 @@ import { createHash } from "node:crypto";
 import type { Client, Transaction } from "@libsql/client";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { assertActorPermission } from "@/lib/auth/permission-assertion";
+import { BRANDING } from "@/lib/constants/branding";
 import type { PermissionKey } from "@/lib/rbac/catalog";
 import { isTransientDatabaseError } from "@/lib/server/database-retry";
 import {
   type OperationalSyncEvent,
   safeParseOperationalSyncEvent,
 } from "@/lib/server/operational/sync-schema";
+import {
+  normalizeHolidayDate,
+  normalizeScopeType,
+  normalizeScopeValue,
+} from "@/lib/validations/holiday-whitelist";
 
 export type { OperationalSyncEvent } from "@/lib/server/operational/sync-schema";
 
@@ -23,6 +29,9 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   employee: "employees.manage",
   shift: "shifts.manage",
   holiday: "holidays.manage",
+  // Whitelist libur adalah kebijakan hari libur, jadi ia memakai izin yang
+  // sama dengan pengelolaan hari liburnya sendiri.
+  "holiday-whitelist": "holidays.manage",
   attendance: "scanner.use",
   correction: "corrections.manage",
   backup: "backups.manage",
@@ -520,6 +529,72 @@ async function applyShift(
       local_id_shift: number(payload, "local_id_shift"),
     },
   };
+}
+
+/**
+ * Whitelist Shift/Divisi hari libur.
+ *
+ * Kuncinya TEXT buatan klien, bukan AUTOINCREMENT, sehingga tidak ada
+ * penerjemahan id lokal -> id server seperti pada `applyHoliday`: baris yang
+ * sama dari perangkat mana pun selalu jatuh ke id yang sama, dan
+ * `ON CONFLICT(id) DO UPDATE` membuat push ulang idempoten.
+ */
+async function applyHolidayWhitelist(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const payload = event.payload;
+  const id = text(payload, "id") || event.entityKey;
+  if (!id) {
+    throw new Error("Whitelist hari libur tanpa id tidak dapat diproses.");
+  }
+
+  if (event.operation === "delete") {
+    await transaction.execute({
+      sql: "DELETE FROM hari_libur_whitelist WHERE id = ?;",
+      args: [id],
+    });
+  } else {
+    const scopeType = normalizeScopeType(text(payload, "scope_type"));
+    const scopeValue =
+      scopeType === null
+        ? null
+        : normalizeScopeValue(scopeType, text(payload, "scope_value"));
+    if (scopeType === null || scopeValue === null) {
+      throw new Error(
+        "Cakupan whitelist hari libur tidak sah. Gunakan kode Shift berupa angka atau nama Divisi.",
+      );
+    }
+
+    const now = new Date().toISOString();
+    await transaction.execute({
+      sql: `INSERT INTO hari_libur_whitelist (
+              id, scope_type, scope_value, tanggal_libur, keterangan,
+              status_aktif, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              scope_type = excluded.scope_type,
+              scope_value = excluded.scope_value,
+              tanggal_libur = excluded.tanggal_libur,
+              keterangan = excluded.keterangan,
+              status_aktif = excluded.status_aktif,
+              updated_at = excluded.updated_at;`,
+      args: [
+        id,
+        scopeType,
+        scopeValue,
+        normalizeHolidayDate(text(payload, "tanggal_libur")),
+        text(payload, "keterangan") || null,
+        number(payload, "status_aktif", 1) === 0 ? 0 : 1,
+        text(payload, "created_at") || now,
+        text(payload, "updated_at") || now,
+      ],
+    });
+  }
+
+  const revision = await appendChange(transaction, actor, event, payload);
+  return { revision, payload: { id } };
 }
 
 async function applyHoliday(
@@ -1689,7 +1764,7 @@ async function applyCompanyProfile(
     `,
     args: [
       id,
-      text(payload, "company_name") || "SPPG",
+      text(payload, "company_name") || BRANDING.defaultCompanyName,
       text(payload, "branch_name") || null,
       text(payload, "logo_url") || null,
       text(payload, "signature_url") || null,
@@ -1740,7 +1815,7 @@ async function applyIdCardTemplate(
     `,
     args: [
       id,
-      text(payload, "name") || "Template Default SPPG",
+      text(payload, "name") || BRANDING.defaultTemplateName,
       text(payload, "orientation") || "landscape",
       text(payload, "front_bg_url") || null,
       text(payload, "back_bg_url") || null,
@@ -1951,10 +2026,11 @@ async function applyPayroll(
               INSERT INTO payroll_items (
                 id, payroll_run_id, id_karyawan, nama_karyawan, divisi, ptkp_status,
                 total_regular_hours, total_overtime_hours, total_overtime_index,
+                total_holiday_hours, total_holiday_overtime_index,
                 rate_per_hour, basic_salary, overtime_salary, gross_salary,
                 total_allowances, total_deductions, bpjs_employee_total, bpjs_company_total,
                 pph21_amount, net_salary, breakdown_snapshot, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(id) DO NOTHING;
             `,
             args: [
@@ -1967,6 +2043,11 @@ async function applyPayroll(
               number(item, "total_regular_hours"),
               number(item, "total_overtime_hours"),
               number(item, "total_overtime_index"),
+              // Klien versi lama tidak mengirim dua kunci ini; `number` sudah
+              // mengembalikan 0 untuk kunci yang hilang, dan 0 memang arti yang
+              // benar: mereka belum pernah memisahkan jam hari libur.
+              number(item, "total_holiday_hours"),
+              number(item, "total_holiday_overtime_index"),
               number(item, "rate_per_hour"),
               number(item, "basic_salary"),
               number(item, "overtime_salary"),
@@ -2062,6 +2143,9 @@ async function applyEvent(
   if (event.domain === "shift") return applyShift(transaction, actor, event);
   if (event.domain === "holiday")
     return applyHoliday(transaction, actor, event);
+  if (event.domain === "holiday-whitelist") {
+    return applyHolidayWhitelist(transaction, actor, event);
+  }
   if (event.domain === "setting")
     return applySetting(transaction, actor, event);
   if (event.domain === "company-profile") {
@@ -2094,10 +2178,36 @@ async function applyEvent(
   );
 }
 
+/**
+ * Revisi server yang dihasilkan event-event SEBELUMNYA dalam satu batch push,
+ * berkunci `domain` + `entityKey`.
+ *
+ * `baseRevision` sebuah event dibekukan saat event DIBUAT di perangkat, bukan
+ * saat dikirim. Dua event yang menyentuh entitas sama dan lahir sebelum siklus
+ * push berikutnya — misalnya hapus scan Masuk (`attendance/update`) lalu hapus
+ * scan Pulang (`attendance/delete`) pada sesi absensi yang sama — membuat event
+ * kedua tiba membawa revisi yang sudah usang begitu event pertama diterapkan,
+ * lalu ditolak sebagai konflik yang TIDAK pernah bisa selesai: perangkat asal
+ * sudah menerapkan perubahannya secara lokal, sementara server dan setiap
+ * perangkat lain menahan barisnya selamanya. Basis yang benar untuk event kedua
+ * adalah hasil event pertama, bukan angka beku saat enqueue.
+ *
+ * Aturan yang sama dieja pada jalur Turso 2-tier (`push_events` di `turso.rs`)
+ * dan WAJIB tetap sama: keduanya melayani antrean outbox yang identik.
+ */
+export type SyncBatchRevisions = Map<string, number>;
+
+function batchRevisionKey(domain: string, entityKey: string) {
+  // JSON, bukan gabungan string berpemisah: `entityKey` boleh memuat karakter
+  // apa pun, jadi dua pasangan berbeda tidak bisa menghasilkan kunci yang sama.
+  return JSON.stringify([domain, entityKey]);
+}
+
 export async function processOperationalSyncEvent(
   client: Client,
   actor: OperatorUser,
   eventInput: unknown,
+  batchRevisions?: SyncBatchRevisions,
 ): Promise<OperationalSyncResult> {
   const parsedEvent = safeParseOperationalSyncEvent(eventInput);
   if (!parsedEvent.success) {
@@ -2127,6 +2237,12 @@ export async function processOperationalSyncEvent(
     const receipt = await existingReceipt(transaction, event, hash);
     if (receipt) {
       await transaction.rollback();
+      if (receipt.status === "applied" && receipt.serverRevision) {
+        batchRevisions?.set(
+          batchRevisionKey(event.domain, event.entityKey),
+          receipt.serverRevision,
+        );
+      }
       return receipt;
     }
     const currentRevision = await currentEntityRevision(
@@ -2134,10 +2250,19 @@ export async function processOperationalSyncEvent(
       event.domain,
       event.entityKey,
     );
+    // Basis optimistic-concurrency dimajukan bila entitas yang sama sudah
+    // ditulis oleh event sebelumnya di batch ini.
+    const appliedInBatch = batchRevisions?.get(
+      batchRevisionKey(event.domain, event.entityKey),
+    );
+    const baseRevision =
+      event.baseRevision === null || event.baseRevision === undefined
+        ? event.baseRevision
+        : Math.max(event.baseRevision, appliedInBatch ?? event.baseRevision);
     if (
-      event.baseRevision !== null &&
-      event.baseRevision !== undefined &&
-      currentRevision > event.baseRevision
+      baseRevision !== null &&
+      baseRevision !== undefined &&
+      currentRevision > baseRevision
     ) {
       const result: OperationalSyncResult = {
         eventId: event.eventId,
@@ -2160,6 +2285,10 @@ export async function processOperationalSyncEvent(
       };
       await recordResult(transaction, actor, event, hash, result);
       await transaction.commit();
+      batchRevisions?.set(
+        batchRevisionKey(event.domain, event.entityKey),
+        applied.revision,
+      );
       return result;
     } catch (error) {
       if (isTransientDatabaseError(error)) throw error;

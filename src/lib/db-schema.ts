@@ -1,8 +1,9 @@
 import type { Client } from "@libsql/client";
+import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 12;
-export const REQUIRED_TABLE_COUNT = 33;
+export const CURRENT_SCHEMA_VERSION = 14;
+export const REQUIRED_TABLE_COUNT = 35;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -22,7 +23,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'company_profile', 'id_card_template',
             'salary_configs', 'overtime_tier_rules', 'payroll_components',
             'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
-            'password_reset_request', 'app_mail_config'
+            'password_reset_request', 'app_mail_config', 'absensi_foto',
+            'hari_libur_whitelist'
           )
         ) AS table_count;
     `);
@@ -259,7 +261,7 @@ export async function initDatabaseSchema(client: Client) {
     await client.execute(`
       CREATE TABLE IF NOT EXISTS company_profile (
         id TEXT PRIMARY KEY DEFAULT 'default_company',
-        company_name TEXT NOT NULL DEFAULT 'SPPG',
+        company_name TEXT NOT NULL DEFAULT 'YOUR COMPANY',
         branch_name TEXT,
         logo_url TEXT,
         signature_url TEXT,
@@ -280,7 +282,7 @@ export async function initDatabaseSchema(client: Client) {
     await client.execute(`
       CREATE TABLE IF NOT EXISTS id_card_template (
         id TEXT PRIMARY KEY DEFAULT 'default_template',
-        name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+        name TEXT NOT NULL DEFAULT 'Default ID Card Template',
         orientation TEXT NOT NULL DEFAULT 'landscape',
         front_bg_url TEXT,
         back_bg_url TEXT,
@@ -328,10 +330,7 @@ export async function initDatabaseSchema(client: Client) {
   }
 }
 
-const DEFAULT_CARD_TERMS = `1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.
-2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.
-3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.
-4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.`;
+const DEFAULT_CARD_TERMS = BRANDING.defaultCardTerms;
 
 const DEFAULT_ID_CARD_ELEMENTS_JSON = JSON.stringify([
   {
@@ -528,13 +527,25 @@ async function seedDefaultData(client: Client) {
         leader_name, leader_title, leader_nip,
         card_terms, timezone, updated_at
       ) VALUES (
-        'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
-        'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
-        'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+        'default_company', ?, ?, NULL, NULL,
+        ?, ?, ?, ?,
+        ?, ?, ?,
         ?, 'Asia/Jakarta', ?
       );
     `,
-    args: [DEFAULT_CARD_TERMS, now],
+    args: [
+      BRANDING.defaultCompanyName,
+      BRANDING.defaultBranchName,
+      BRANDING.defaultAddress,
+      BRANDING.defaultPhone,
+      BRANDING.defaultEmail,
+      BRANDING.defaultWebsite,
+      BRANDING.defaultLeaderName,
+      BRANDING.defaultLeaderTitle,
+      BRANDING.defaultLeaderNip,
+      DEFAULT_CARD_TERMS,
+      now,
+    ],
   });
 
   // Seed Default ID Card Template
@@ -543,9 +554,14 @@ async function seedDefaultData(client: Client) {
       INSERT OR IGNORE INTO id_card_template (
         id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
       ) VALUES (
-        'default_template', 'Template Default SPPG', 'landscape', NULL, NULL, ?, 1, ?, ?
+        'default_template', ?, 'landscape', NULL, NULL, ?, 1, ?, ?
       );
     `,
-    args: [DEFAULT_ID_CARD_ELEMENTS_JSON, now, now],
+    args: [
+      BRANDING.defaultTemplateName,
+      DEFAULT_ID_CARD_ELEMENTS_JSON,
+      now,
+      now,
+    ],
   });
 }

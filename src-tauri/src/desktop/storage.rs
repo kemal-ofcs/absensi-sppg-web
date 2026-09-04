@@ -325,6 +325,48 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       );
       CREATE INDEX IF NOT EXISTS idx_local_hari_libur_tanggal
         ON tbl_hari_libur(tanggal, status_aktif);
+      -- Whitelist Shift/Divisi yang tetap boleh scan pada hari libur.
+      -- Cakupan memakai `kode_shift` (UNIQUE, ikut sync) dan NAMA divisi,
+      -- BUKAN `id_shift` yang AUTOINCREMENT-nya berbeda tiap perangkat.
+      -- PK TEXT dibuat klien; tidak ada UNIQUE pada (scope_type, scope_value)
+      -- supaya dua perangkat offline yang mendaftarkan cakupan sama tidak
+      -- membuat push sync gagal permanen — duplikat harmless karena
+      -- penilaiannya OR, dan dicegah di lapisan aplikasi dengan pesan ramah.
+      CREATE TABLE IF NOT EXISTS hari_libur_whitelist (
+        id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('SHIFT', 'DIVISI')),
+        scope_value TEXT NOT NULL,
+        tanggal_libur TEXT,
+        keterangan TEXT,
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_hari_libur_whitelist_scope
+        ON hari_libur_whitelist(scope_type, scope_value, status_aktif);
+      CREATE INDEX IF NOT EXISTS idx_local_hari_libur_whitelist_tanggal
+        ON hari_libur_whitelist(tanggal_libur, status_aktif);
+      CREATE TABLE IF NOT EXISTS absensi_foto (
+        id_foto TEXT PRIMARY KEY,
+        id_sesi TEXT,
+        tanggal_kerja TEXT NOT NULL,
+        id_karyawan TEXT NOT NULL,
+        nama TEXT NOT NULL,
+        divisi TEXT,
+        jenis_scan TEXT NOT NULL,
+        timestamp_scan TEXT NOT NULL,
+        sumber_data TEXT NOT NULL DEFAULT 'Scanner',
+        kode_operator TEXT,
+        ip_perangkat TEXT,
+        client_id TEXT,
+        foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
+        foto_base64 TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_absensi_foto_tanggal
+        ON absensi_foto(tanggal_kerja, timestamp_scan DESC);
+      CREATE INDEX IF NOT EXISTS idx_local_absensi_foto_sesi
+        ON absensi_foto(id_sesi);
       CREATE TABLE IF NOT EXISTS desktop_client_identity (
         server_origin TEXT PRIMARY KEY,
         client_id TEXT UNIQUE NOT NULL,
@@ -398,7 +440,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       );
       CREATE TABLE IF NOT EXISTS company_profile (
         id TEXT PRIMARY KEY DEFAULT 'default_company',
-        company_name TEXT NOT NULL DEFAULT 'SPPG',
+        company_name TEXT NOT NULL DEFAULT 'YOUR COMPANY',
         branch_name TEXT,
         logo_url TEXT,
         signature_url TEXT,
@@ -415,7 +457,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       );
       CREATE TABLE IF NOT EXISTS id_card_template (
         id TEXT PRIMARY KEY DEFAULT 'default_template',
-        name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+        name TEXT NOT NULL DEFAULT 'Default ID Card Template',
         orientation TEXT NOT NULL DEFAULT 'landscape',
         front_bg_url TEXT,
         back_bg_url TEXT,
@@ -512,6 +554,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         total_regular_hours REAL NOT NULL,
         total_overtime_hours REAL NOT NULL,
         total_overtime_index REAL NOT NULL,
+        total_holiday_hours REAL NOT NULL DEFAULT 0,
+        total_holiday_overtime_index REAL NOT NULL DEFAULT 0,
         rate_per_hour INTEGER NOT NULL,
         basic_salary INTEGER NOT NULL CHECK (basic_salary >= 0),
         overtime_salary INTEGER NOT NULL CHECK (overtime_salary >= 0),
@@ -561,6 +605,22 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "tbl_shift",
         "izinkan_multi_sesi",
         "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER DEFAULT 0;",
+    )?;
+
+    // Pemisahan jam kerja hari libur (v14). Database lokal yang dibuat sebelum
+    // versi ini sudah memiliki payroll_items, sehingga CREATE TABLE IF NOT
+    // EXISTS di atas tidak akan menambahkan kolomnya — hanya ALTER yang bisa.
+    ensure_column(
+        &connection,
+        "payroll_items",
+        "total_holiday_hours",
+        "ALTER TABLE payroll_items ADD COLUMN total_holiday_hours REAL NOT NULL DEFAULT 0;",
+    )?;
+    ensure_column(
+        &connection,
+        "payroll_items",
+        "total_holiday_overtime_index",
+        "ALTER TABLE payroll_items ADD COLUMN total_holiday_overtime_index REAL NOT NULL DEFAULT 0;",
     )?;
 
     // Shift tujuan sesi lanjutan. 0 = belum ditentukan, sehingga pemasangan
@@ -732,6 +792,7 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "master_data",
     "tbl_shift",
     "tbl_hari_libur",
+    "hari_libur_whitelist",
     "company_profile",
     "payroll_audit_logs",
     "payroll_items",

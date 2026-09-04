@@ -7,7 +7,10 @@ import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { type AppArea, canAccessArea } from "@/lib/auth/access";
+import { BRANDING } from "@/lib/constants/branding";
 import { useAuth } from "@/lib/context/AuthContext";
+import { useAppName } from "@/lib/hooks/useAppName";
+import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 
 interface NavigationItem {
@@ -67,6 +70,12 @@ const NAVIGATION: NavigationItem[] = [
     label: "Riwayat Reset",
   },
   {
+    area: "attendance_photo",
+    href: "/foto-absensi",
+    icon: "eye",
+    label: "Foto Absensi",
+  },
+  {
     area: "settings",
     href: "/settings",
     icon: "settings",
@@ -123,6 +132,8 @@ export function HeaderBar() {
   const { user, logout } = useAuth();
   const isOnline = useOnlineStatus();
   const pathname = usePathname();
+  const appName = useAppName();
+  const companyName = useCompanyName();
   const [desktopMenuOpen, setDesktopMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -193,12 +204,15 @@ export function HeaderBar() {
                 setMobileMenuOpen(false);
               }}
               className="group flex min-w-0 shrink-0 items-center gap-2 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
-              aria-label="Buka Home Absensi SPPG"
+              aria-label={`Buka Home ${BRANDING.appDisplayName}`}
             >
               <BrandLogo size={36} />
               <span className="min-w-0 leading-tight">
-                <span className="block max-w-28 truncate text-sm font-black tracking-tight text-white xl:max-w-36">
-                  Absensi SPPG
+                <span className="block max-w-36 truncate text-sm font-black tracking-tight text-white xl:max-w-44">
+                  {appName}
+                </span>
+                <span className="block max-w-28 truncate text-[10px] font-semibold text-sky-300 xl:max-w-36">
+                  {companyName}
                 </span>
                 <span className="flex items-center gap-1.5 text-[10px] font-medium text-slate-400">
                   <span

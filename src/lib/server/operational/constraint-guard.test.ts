@@ -116,16 +116,20 @@ describe("paritas penjagaan penghapusan operator", () => {
   }
 
   async function seedSuperadmin(kode: string, username: string) {
-    const result = await insertOperator(client, {
-      kodeOperator: kode,
-      name: `Superadmin ${kode}`,
-      username,
-      email: `${username}@sppg.id`,
-      noHp: "081200000002",
-      password: "PasswordUjiKuat1",
-      roleId: await superadminRoleId(),
-      status: "Aktif",
-    });
+    const result = await insertOperator(
+      client,
+      {
+        kodeOperator: kode,
+        name: `Superadmin ${kode}`,
+        username,
+        email: `${username}@sppg.id`,
+        noHp: "081200000002",
+        password: "PasswordUjiKuat1",
+        roleId: await superadminRoleId(),
+        status: "Aktif",
+      },
+      true,
+    );
     return result.id;
   }
 

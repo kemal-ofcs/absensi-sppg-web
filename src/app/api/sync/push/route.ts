@@ -13,7 +13,10 @@ import {
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
-import { processOperationalSyncEvent } from "@/lib/server/operational/sync-push";
+import {
+  processOperationalSyncEvent,
+  type SyncBatchRevisions,
+} from "@/lib/server/operational/sync-push";
 import { parseOperationalSyncBatch } from "@/lib/server/operational/sync-schema";
 
 export const runtime = "nodejs";
@@ -66,9 +69,18 @@ export async function POST(request: NextRequest) {
     const results = await withTransientDatabaseRetry(async () => {
       await ensureServerDatabaseInitialized();
       const eventResults = [];
+      // Dibagi ke seluruh batch: event berikutnya untuk entitas yang sama harus
+      // memakai revisi hasil event sebelumnya sebagai basis, bukan angka beku
+      // dari waktu event dibuat di perangkat.
+      const batchRevisions: SyncBatchRevisions = new Map();
       for (const event of batch.events) {
         eventResults.push(
-          await processOperationalSyncEvent(getServerDatabase(), actor, event),
+          await processOperationalSyncEvent(
+            getServerDatabase(),
+            actor,
+            event,
+            batchRevisions,
+          ),
         );
       }
       return eventResults;

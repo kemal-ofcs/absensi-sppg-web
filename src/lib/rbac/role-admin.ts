@@ -14,6 +14,8 @@ export async function listRoles(client: Client): Promise<RoleRecord[]> {
       SELECT
         r.id, r.role_key, r.nama_role, r.deskripsi, r.is_system,
         r.is_superadmin, r.status, COALESCE(r.require_totp, 0) AS require_totp,
+        COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
+        COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist,
         COUNT(m.id) AS operator_count
       FROM app_role r
       LEFT JOIN master_operator m ON m.role_id = r.id
@@ -47,6 +49,8 @@ export async function listRoles(client: Client): Promise<RoleRecord[]> {
     isSuperadmin: Number(row.is_superadmin) === 1,
     status: String(row.status) === "Nonaktif" ? "Nonaktif" : "Aktif",
     requireTotp: Number(row.require_totp) === 1,
+    requireScanPhoto: Number(row.require_scan_photo) === 1,
+    requireScanIpAllowlist: Number(row.require_scan_ip_allowlist) === 1,
     operatorCount: Number(row.operator_count),
     permissions: permissionsByRole.get(Number(row.id)) ?? [],
   }));
@@ -113,26 +117,55 @@ export async function editRole(
     args: [roleId],
   });
   if (target.rows.length === 0) throw new Error("Role tidak ditemukan.");
-  if (Number(target.rows[0]?.is_superadmin) === 1) {
-    throw new Error("Role Superadmin tidak dapat diubah atau dinonaktifkan.");
-  }
+  const isSuperadmin = Number(target.rows[0]?.is_superadmin) === 1;
 
-  const { name } = validateRoleDraft(draft);
-  await client.execute({
-    sql: `
-      UPDATE app_role
-      SET nama_role = ?, deskripsi = ?, status = ?, require_totp = ?, updated_at = ?
-      WHERE id = ?;
-    `,
-    args: [
-      name,
-      draft.description?.trim() ?? "",
-      draft.status ?? "Aktif",
-      draft.requireTotp ? 1 : 0,
-      new Date().toISOString(),
-      roleId,
-    ],
-  });
+  if (isSuperadmin) {
+    // Nama, status, dan permission Superadmin tetap terkunci — itu perisai yang
+    // menjaga akun terakhir tidak bisa dimatikan. Tetapi "wajib foto" dan
+    // "batasi IP" bukan pemberian hak melainkan kewajiban; menguncinya membuat
+    // pemegang akun Superadmin otomatis lolos dari bukti foto.
+    await client.execute({
+      sql: `
+        UPDATE app_role
+        SET require_scan_photo = ?, require_scan_ip_allowlist = ?, updated_at = ?
+        WHERE id = ?;
+      `,
+      args: [
+        draft.requireScanPhoto ? 1 : 0,
+        draft.requireScanIpAllowlist ? 1 : 0,
+        new Date().toISOString(),
+        roleId,
+      ],
+    });
+  } else {
+    const { name } = validateRoleDraft(draft);
+    await client.execute({
+      sql: `
+        UPDATE app_role
+        SET nama_role = ?, deskripsi = ?, status = ?, require_totp = ?,
+            require_scan_photo = ?, require_scan_ip_allowlist = ?, updated_at = ?
+        WHERE id = ?;
+      `,
+      args: [
+        name,
+        draft.description?.trim() ?? "",
+        draft.status ?? "Aktif",
+        draft.requireTotp ? 1 : 0,
+        draft.requireScanPhoto ? 1 : 0,
+        draft.requireScanIpAllowlist ? 1 : 0,
+        new Date().toISOString(),
+        roleId,
+      ],
+    });
+  }
+  // Sesi Desktop/Mobile hanya dimuat ulang ketika `rbac_revision` berubah.
+  // Tanpa kenaikan ini, sakelar keamanan absensi yang baru diatur baru berlaku
+  // setelah operatornya logout — dan tidak ada petunjuk apa pun di layar.
+  await client.execute(
+    `INSERT INTO setting_gex_system (key, value) VALUES ('rbac_revision', '2')
+     ON CONFLICT(key) DO UPDATE SET
+       value = CAST(CAST(setting_gex_system.value AS INTEGER) + 1 AS TEXT);`,
+  );
   await revokeRoleSessions(client, roleId, "role-updated");
   return { success: true };
 }

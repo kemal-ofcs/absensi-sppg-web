@@ -1,5 +1,6 @@
 "use client";
 
+import { BRANDING } from "@/lib/constants/branding";
 import type { PayrollItemRow, PayrollRunRow } from "@/lib/gateways/payroll";
 
 interface SlipGajiPrintViewProps {
@@ -56,10 +57,10 @@ const IDR = new Intl.NumberFormat("id-ID", {
 export function SlipGajiPrintView({
   run,
   item,
-  companyName = "SPPG PUSAT OPERASIONAL",
-  branchName = "Kantor Operasional",
-  address = "Jl. Sudirman No. 123, Jakarta",
-  phone = "021-5550123",
+  companyName = BRANDING.defaultCompanyName,
+  branchName = BRANDING.defaultBranchName,
+  address = BRANDING.defaultAddress,
+  phone = BRANDING.defaultPhone,
 }: SlipGajiPrintViewProps) {
   let breakdown: BreakdownSnapshot = {};
   try {
@@ -132,7 +133,7 @@ export function SlipGajiPrintView({
           <div>
             <span className="text-slate-500">Jam Kerja:</span>{" "}
             <span className="font-mono text-slate-700">
-              {`${Number(item.total_regular_hours.toFixed(2))} Jam (Lembur: ${Number(item.total_overtime_hours.toFixed(2))} Jam)`}
+              {`${Number(item.total_regular_hours.toFixed(2))} Jam (Lembur: ${Number(item.total_overtime_hours.toFixed(2))} Jam, Hari Libur: ${Number(item.total_holiday_hours.toFixed(2))} Jam)`}
             </span>
           </div>
         </div>
@@ -158,7 +159,7 @@ export function SlipGajiPrintView({
               {item.overtime_salary > 0 && (
                 <tr>
                   <td className="py-1 text-slate-600">
-                    {`Upah Lembur (${Number(item.total_overtime_index.toFixed(2))} idx)`}
+                    {`Upah Lembur (${Number(item.total_overtime_index.toFixed(2))} idx hari kerja + ${Number(item.total_holiday_overtime_index.toFixed(2))} idx hari libur)`}
                   </td>
                   <td className="py-1 text-right font-mono font-medium">
                     {IDR.format(item.overtime_salary)}

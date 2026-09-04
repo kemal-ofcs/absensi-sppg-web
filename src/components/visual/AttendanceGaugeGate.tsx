@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useVisualTier } from "@/lib/stores/visual-store";
 import { isWebGLAvailable } from "@/lib/visual/gpu-tier";
@@ -31,8 +31,6 @@ function SvgDonutFallback({
   total,
   persentase,
 }: AttendanceGaugeProps) {
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
-
   const tepatWaktu = Math.max(0, hadir - terlambat);
   const totalSafe = Math.max(total, 1);
   const activeTotal = tepatWaktu + terlambat + sakitIzin + alfa;
@@ -90,11 +88,6 @@ function SvgDonutFallback({
     });
   }, [tepatWaktu, terlambat, sakitIzin, alfa, denominator, circumference]);
 
-  const activeSlice = useMemo(
-    () => slices.find((s) => s.key === hoveredKey) || null,
-    [slices, hoveredKey],
-  );
-
   return (
     <div className="relative flex h-[240px] w-full items-center justify-center">
       <svg
@@ -134,35 +127,18 @@ function SvgDonutFallback({
 
       {/* Central HUD info */}
       <div className="pointer-events-none absolute flex flex-col items-center justify-center text-center">
-        {activeSlice ? (
-          <div className="animate-in fade-in zoom-in-95 duration-150">
-            <span
-              className={`text-xs font-black uppercase tracking-wider ${activeSlice.textColor}`}
-            >
-              {activeSlice.label}
-            </span>
-            <div className="font-mono text-2xl font-black text-white">
-              {activeSlice.count}{" "}
-              <span className="text-xs font-normal text-slate-400">Org</span>
-            </div>
-            <span className="text-[10px] font-bold text-slate-400">
-              {activeSlice.pct}% dari total
-            </span>
+        <div>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            Tingkat Hadir
+          </span>
+          <div className="font-mono text-3xl font-black text-white">
+            {persentase}
+            <span className="text-base text-sky-400">%</span>
           </div>
-        ) : (
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              Tingkat Hadir
-            </span>
-            <div className="font-mono text-3xl font-black text-white">
-              {persentase}
-              <span className="text-base text-sky-400">%</span>
-            </div>
-            <span className="text-[10px] font-medium text-slate-400">
-              {hadir} dari {total} Karyawan
-            </span>
-          </div>
-        )}
+          <span className="text-[10px] font-medium text-slate-400">
+            {hadir} dari {total} Karyawan
+          </span>
+        </div>
       </div>
     </div>
   );

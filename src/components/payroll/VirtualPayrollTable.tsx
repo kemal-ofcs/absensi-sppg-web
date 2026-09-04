@@ -251,7 +251,7 @@ export function VirtualPayrollTable({
               </div>
             </div>
 
-            <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 grid grid-cols-3 gap-2 text-center">
+            <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 grid grid-cols-4 gap-2 text-center">
               <div>
                 <span className="text-[10px] text-slate-400 block">
                   Total Hadir
@@ -276,6 +276,14 @@ export function VirtualPayrollTable({
                   {selectedRow.total_overtime_hours.toFixed(2)}j
                 </span>
               </div>
+              <div>
+                <span className="text-[10px] text-rose-400 block">
+                  Jam Hari Libur
+                </span>
+                <span className="font-bold text-rose-300 text-sm">
+                  {selectedRow.total_holiday_hours.toFixed(2)}j
+                </span>
+              </div>
             </div>
 
             {/* Bagian I: Penghasilan */}
@@ -291,8 +299,9 @@ export function VirtualPayrollTable({
               </div>
               <div className="flex justify-between py-1 border-b border-white/5">
                 <span className="text-slate-300">
-                  Upah Lembur (Indeks{" "}
-                  {selectedRow.total_overtime_index.toFixed(2)})
+                  Upah Lembur (Indeks Hari Kerja{" "}
+                  {selectedRow.total_overtime_index.toFixed(2)} + Hari Libur{" "}
+                  {selectedRow.total_holiday_overtime_index.toFixed(2)})
                 </span>
                 <span className="font-mono font-medium text-amber-300">
                   {IDR.format(selectedRow.est_overtime_salary)}

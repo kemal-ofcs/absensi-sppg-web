@@ -25,6 +25,16 @@ export interface ScanTerminalInput {
   lng?: number;
   kodeOperator?: string;
   sumberData?: AttendanceSource;
+  /**
+   * Foto bukti absensi, base64 murni tanpa awalan data URL.
+   *
+   * Wajib ketika role operator terminal menyalakan sakelar "Wajib foto bukti"
+   * di halaman Master Operator. Alamat IP TIDAK ada di sini dengan sengaja:
+   * pada Web ia dibaca server dari header proxy, dan pada Desktop/Mobile dari
+   * perangkat itu sendiri — nilai kiriman klien bisa dikarang.
+   */
+  fotoBase64?: string;
+  fotoMime?: "image/jpeg" | "image/png" | "image/webp";
 }
 
 export interface ScanResult {

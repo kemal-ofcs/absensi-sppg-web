@@ -7,17 +7,22 @@ import { useCallback, useEffect, useState } from "react";
 import { BootstrapPanel } from "@/components/BootstrapPanel";
 import { LoginSceneGate } from "@/components/visual/LoginSceneGate";
 import { VisualProvider } from "@/components/visual/VisualProvider";
+import { BRANDING } from "@/lib/constants/branding";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   type BootstrapStatus,
   getBootstrapStatus,
 } from "@/lib/gateways/bootstrap";
+import { useAppName } from "@/lib/hooks/useAppName";
+import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 
 export default function LoginPage() {
   const isHydrated = useHydrated();
   const isOnline = useOnlineStatus();
+  const appName = useAppName();
+  const companyName = useCompanyName();
   const { user, login, isAuthenticated, isLoading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -148,7 +153,9 @@ export default function LoginPage() {
               🔑
             </div>
             <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight mt-3">
-              Absensi SPPG
+              {companyName && companyName !== BRANDING.defaultCompanyName
+                ? `${appName} — ${companyName}`
+                : appName}
             </h1>
             <p className="text-xs text-slate-400">
               Masuk ke Sistem Absensi & Manajemen Operator
@@ -291,7 +298,7 @@ export default function LoginPage() {
 
         {/* Footer info */}
         <div className="text-center text-[10px] text-slate-600 font-mono">
-          Absensi SPPG v0.1.0 • Next.js 16 + Tauri v2
+          {appName} v0.1.0 • KOS
         </div>
       </div>
     </main>

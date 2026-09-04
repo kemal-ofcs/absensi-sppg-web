@@ -243,23 +243,23 @@ export default function OvertimeRulesPage() {
 
             <div className="space-y-3">
               {loading ? (
-                <div className="p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
+                <div className="overtime-empty-state p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
                   Memuat aturan tier lembur...
                 </div>
               ) : workDayRules.length === 0 ? (
-                <div className="p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
+                <div className="overtime-empty-state p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
                   Belum ada tier lembur hari kerja.
                 </div>
               ) : (
                 workDayRules.map((r) => (
                   <div
                     key={r.id}
-                    className="p-3.5 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between gap-4"
+                    className="overtime-tier-row p-3.5 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between gap-4 transition"
                   >
                     <div>
                       <div className="text-sm font-semibold text-slate-100 flex items-center gap-2">
                         <span>Tier {r.tier_order}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-sky-950/80 text-sky-400 font-mono font-bold border border-sky-800/50">
+                        <span className="overtime-multiplier-badge-sky text-xs px-2 py-0.5 rounded bg-sky-950/80 text-sky-400 font-mono font-bold border border-sky-800/50">
                           {r.multiplier}x Upah
                         </span>
                       </div>
@@ -274,7 +274,7 @@ export default function OvertimeRulesPage() {
                       <button
                         type="button"
                         onClick={() => handleOpenEdit(r)}
-                        className="px-2.5 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition"
+                        className="overtime-btn-edit px-2.5 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition"
                       >
                         Edit
                       </button>
@@ -283,7 +283,7 @@ export default function OvertimeRulesPage() {
                         onClick={() =>
                           handleDelete(r.id, `Tier ${r.tier_order} Hari Kerja`)
                         }
-                        className="px-2.5 py-1 text-xs bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg border border-rose-800/40 transition"
+                        className="overtime-btn-delete px-2.5 py-1 text-xs bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg border border-rose-800/40 transition"
                       >
                         Hapus
                       </button>
@@ -318,23 +318,23 @@ export default function OvertimeRulesPage() {
 
             <div className="space-y-3">
               {loading ? (
-                <div className="p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
+                <div className="overtime-empty-state p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
                   Memuat aturan tier lembur...
                 </div>
               ) : holidayRules.length === 0 ? (
-                <div className="p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
+                <div className="overtime-empty-state p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/80">
                   Belum ada tier lembur hari libur.
                 </div>
               ) : (
                 holidayRules.map((r) => (
                   <div
                     key={r.id}
-                    className="p-3.5 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between gap-4"
+                    className="overtime-tier-row p-3.5 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center justify-between gap-4 transition"
                   >
                     <div>
                       <div className="text-sm font-semibold text-slate-100 flex items-center gap-2">
                         <span>Tier {r.tier_order}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-amber-950/80 text-amber-400 font-mono font-bold border border-amber-800/50">
+                        <span className="overtime-multiplier-badge-amber text-xs px-2 py-0.5 rounded bg-amber-950/80 text-amber-400 font-mono font-bold border border-amber-800/50">
                           {r.multiplier}x Upah
                         </span>
                       </div>
@@ -349,7 +349,7 @@ export default function OvertimeRulesPage() {
                       <button
                         type="button"
                         onClick={() => handleOpenEdit(r)}
-                        className="px-2.5 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition"
+                        className="overtime-btn-edit px-2.5 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition"
                       >
                         Edit
                       </button>
@@ -358,7 +358,7 @@ export default function OvertimeRulesPage() {
                         onClick={() =>
                           handleDelete(r.id, `Tier ${r.tier_order} Hari Libur`)
                         }
-                        className="px-2.5 py-1 text-xs bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg border border-rose-800/40 transition"
+                        className="overtime-btn-delete px-2.5 py-1 text-xs bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg border border-rose-800/40 transition"
                       >
                         Hapus
                       </button>

@@ -68,6 +68,15 @@ export interface PayrollRecapRow {
   total_regular_hours: number;
   total_overtime_hours: number;
   total_overtime_index: number;
+  /**
+   * Jam kerja pada tanggal hari libur (jam_kerja + lembur hari itu).
+   *
+   * Menurut PP 35/2021 tidak ada "jam kerja biasa" pada hari libur resmi, jadi
+   * angka ini SENGAJA di luar total_regular_hours/total_overtime_hours.
+   */
+  total_holiday_hours: number;
+  /** Indeks jenjang HARI_LIBUR untuk jam di atas. */
+  total_holiday_overtime_index: number;
   est_basic_salary: number;
   est_overtime_salary: number;
   est_gross_salary: number;
@@ -102,6 +111,8 @@ export interface PayrollItemRow {
   total_regular_hours: number;
   total_overtime_hours: number;
   total_overtime_index: number;
+  total_holiday_hours: number;
+  total_holiday_overtime_index: number;
   rate_per_hour: number;
   basic_salary: number;
   overtime_salary: number;
@@ -559,6 +570,8 @@ export interface MobileSlipDetail {
   total_regular_hours: number;
   total_overtime_hours: number;
   total_overtime_index: number;
+  total_holiday_hours?: number;
+  total_holiday_overtime_index?: number;
   rate_per_hour: number;
   basic_salary: number;
   overtime_salary: number;
@@ -594,6 +607,8 @@ export async function getEmployeePayrollEstimate(
       total_regular_hours: 0,
       total_overtime_hours: 0,
       total_overtime_index: 0,
+      total_holiday_hours: 0,
+      total_holiday_overtime_index: 0,
       rate_per_hour: 0,
       basic_salary: 0,
       overtime_salary: 0,
@@ -621,6 +636,8 @@ export async function getEmployeePayrollEstimate(
     total_regular_hours: row.total_regular_hours,
     total_overtime_hours: row.total_overtime_hours,
     total_overtime_index: row.total_overtime_index,
+    total_holiday_hours: row.total_holiday_hours,
+    total_holiday_overtime_index: row.total_holiday_overtime_index,
     rate_per_hour: row.rate_per_hour,
     basic_salary: row.est_basic_salary,
     overtime_salary: row.est_overtime_salary,
@@ -636,6 +653,8 @@ export async function getEmployeePayrollEstimate(
       regular_hours: row.total_regular_hours,
       overtime_hours: row.total_overtime_hours,
       overtime_index: row.total_overtime_index,
+      holiday_hours: row.total_holiday_hours,
+      holiday_overtime_index: row.total_holiday_overtime_index,
       basic_salary: row.est_basic_salary,
       overtime_salary: row.est_overtime_salary,
     }),
@@ -714,6 +733,8 @@ export async function getPayrollSlipDetail(
           total_regular_hours: item.total_regular_hours,
           total_overtime_hours: item.total_overtime_hours,
           total_overtime_index: item.total_overtime_index,
+          total_holiday_hours: item.total_holiday_hours,
+          total_holiday_overtime_index: item.total_holiday_overtime_index,
           rate_per_hour: item.rate_per_hour,
           basic_salary: item.basic_salary,
           overtime_salary: item.overtime_salary,

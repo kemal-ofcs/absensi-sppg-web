@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   getMailConfig,
   type MailTestResult,
@@ -214,7 +215,7 @@ export function MailSettingsCard() {
           <input
             value={senderName}
             onChange={(event) => setSenderName(event.target.value)}
-            placeholder="Absensi SPPG"
+            placeholder={BRANDING.appDisplayName}
             className="app-input"
           />
         </label>

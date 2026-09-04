@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 12;
+pub const CLIENT_SCHEMA_VERSION: i64 = 14;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -165,6 +165,29 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "tanggal",
         entity_column: "tanggal",
+        delete_missing: true,
+    },
+    // Whitelist Shift/Divisi yang tetap boleh scan pada hari libur.
+    // `delete_missing` menyala seperti `holidays`: daftar ini kecil dan selalu
+    // dikirim utuh, sehingga baris yang dicabut admin harus benar-benar hilang
+    // dari setiap perangkat — kalau tidak, terminal lama akan terus mengizinkan
+    // shift yang sudah dikeluarkan dari whitelist.
+    SnapshotTable {
+        payload_key: "holidayWhitelists",
+        domain: "holiday-whitelist",
+        table: "hari_libur_whitelist",
+        columns: &[
+            "id",
+            "scope_type",
+            "scope_value",
+            "tanggal_libur",
+            "keterangan",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id",
+        entity_column: "id",
         delete_missing: true,
     },
     SnapshotTable {
@@ -472,6 +495,8 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "total_regular_hours",
             "total_overtime_hours",
             "total_overtime_index",
+            "total_holiday_hours",
+            "total_holiday_overtime_index",
             "rate_per_hour",
             "basic_salary",
             "overtime_salary",
@@ -526,6 +551,9 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("holiday", "create"),
     ("holiday", "delete"),
     ("holiday", "update"),
+    ("holiday-whitelist", "create"),
+    ("holiday-whitelist", "delete"),
+    ("holiday-whitelist", "update"),
     ("id-card", "update"),
     ("id-card-template", "save"),
     ("log-scan", "delete"),
@@ -1423,9 +1451,33 @@ fn pending_events(state: &DesktopState) -> Result<(String, Vec<Value>), CommandE
     let mut statement = connection
         .prepare(
             r#"
-      SELECT event_id, client_id, domain, operation, entity_key, payload_json,
-             base_revision, created_at
-      FROM desktop_sync_outbox
+      SELECT o.event_id, o.client_id, o.domain, o.operation, o.entity_key, o.payload_json,
+             -- `base_revision` dibekukan saat event DIBUAT. Kalau event lain untuk
+             -- entitas yang sama sudah terkirim lebih dulu, angka beku itu sudah
+             -- usang dan cloud menolak event ini sebagai konflik yang tidak
+             -- pernah bisa selesai — perangkat asal sudah menerapkan perubahannya
+             -- secara lokal, sementara cloud menahannya selamanya.
+             --
+             -- Revisi server terbaru yang KITA ketahui ada di
+             -- `desktop_entity_revision`. Isinya hanya berasal dari push kita
+             -- sendiri yang berhasil dan dari pull yang benar-benar menerapkan
+             -- baris itu — dan pull SELALU melewati baris yang outbox-nya masih
+             -- menggantung (lihat `PendingGuard`). Jadi memakainya di sini tidak
+             -- melemahkan deteksi konflik antar-perangkat: perubahan perangkat
+             -- lain tidak akan pernah masuk ke sini selama event ini antre.
+             CASE
+               WHEN o.base_revision IS NULL THEN NULL
+               ELSE MAX(
+                 o.base_revision,
+                 COALESCE(
+                   (SELECT r.server_revision FROM desktop_entity_revision r
+                     WHERE r.domain = o.domain AND r.entity_key = o.entity_key),
+                   o.base_revision
+                 )
+               )
+             END AS base_revision,
+             o.created_at
+      FROM desktop_sync_outbox o
       WHERE status = 'pending'
          OR (status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= ?)
          -- Konflik UNIQUE pada shift/karyawan memang layak dicoba ulang: baris
@@ -1440,16 +1492,37 @@ fn pending_events(state: &DesktopState) -> Result<(String, Vec<Value>), CommandE
               (domain = 'shift' AND last_error LIKE '%UNIQUE constraint failed: tbl_shift.kode_shift%')
               OR (domain = 'employee' AND last_error LIKE '%UNIQUE constraint failed: master_data.id_unik%')
             ))
+         -- Konflik "revisi basi" pada entitas yang sama nyaris selalu ditimbulkan
+         -- perangkat ini sendiri: dua event lahir sebelum sempat terkirim, event
+         -- kedua membawa `base_revision` dari sebelum event pertama diterapkan.
+         -- Pengiriman ulang sekarang membawa revisi terbaru (lihat kolom
+         -- `base_revision` di atas), jadi percobaan pertama biasanya langsung
+         -- berhasil. Dibatasi `attempt_count` supaya konflik yang benar-benar
+         -- lintas perangkat berhenti dan tetap muncul sebagai konflik yang harus
+         -- diselesaikan operator, bukan berputar selamanya.
+         --
+         -- Pesan lain sengaja TIDAK ikut: "Data absensi server berubah setelah
+         -- event lokal dibuat." membandingkan `attendanceBaseUpdatedAt` yang
+         -- tertanam di payload dan tidak bisa disegarkan oleh retry, sedangkan
+         -- "Data absensi sudah dikoreksi admin..." memang harus tetap ditolak.
+         OR (status = 'conflict'
+             AND attempt_count < 5
+             AND (next_retry_at IS NULL OR next_retry_at <= ?)
+             AND last_error = 'Data server berubah setelah snapshot lokal dibuat.')
       ORDER BY
         CASE WHEN domain = 'shift' AND operation = 'create' THEN 0 ELSE 1 END,
-        created_at ASC
+        created_at ASC,
+        -- Dua event pada detik yang sama untuk entitas yang sama harus tetap
+        -- terkirim sesuai urutan pembuatannya; tanpa ini urutannya tidak
+        -- ditentukan dan rantai revisi batch bisa terbalik.
+        o.rowid ASC
       LIMIT 50;
       "#,
         )
         .map_err(|_| CommandError::internal())?;
     let now = storage::now_epoch_seconds();
     let rows = statement
-        .query_map([now, now], |row| {
+        .query_map([now, now, now], |row| {
             let payload: String = row.get(5)?;
             Ok(json!({
                 "eventId": row.get::<_, String>(0)?,
@@ -2713,6 +2786,200 @@ mod tests {
             events[1].get("eventId").and_then(Value::as_str),
             Some(attendance_id.as_str())
         );
+    }
+
+    /// Regresi: dua event untuk SATU sesi absensi dibuat berturut-turut sebelum
+    /// siklus push berikutnya — persis yang terjadi saat operator menghapus jam
+    /// scan Masuk (`attendance/update`) lalu jam scan Pulang
+    /// (`attendance/delete`). Event kedua membeku dengan `base_revision` dari
+    /// SEBELUM event pertama diterapkan, sehingga cloud menolaknya sebagai
+    /// konflik yang tidak pernah bisa selesai: perangkat asal sudah menghapus
+    /// barisnya secara lokal sementara cloud — dan setiap perangkat lain yang
+    /// menariknya — menyimpannya selamanya.
+    ///
+    /// `pending_events` karena itu WAJIB mengambil revisi server terbaru yang
+    /// diketahui perangkat ini, bukan angka beku saat enqueue.
+    #[test]
+    fn pending_events_memakai_revisi_server_terbaru_untuk_entitas_yang_sama() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        let update_id = enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "update",
+            "NORMAL-20260902-K001-1",
+            &json!({"id_sesi": "NORMAL-20260902-K001-1", "jam_masuk": ""}),
+            Some(453),
+        )
+        .expect("attendance update event");
+        let delete_id = enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "delete",
+            "NORMAL-20260902-K001-1",
+            &json!({"id_sesi": "NORMAL-20260902-K001-1"}),
+            Some(453),
+        )
+        .expect("attendance delete event");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        // Event pertama terkirim; revisi server entitas ini maju ke 458.
+        let results = json!([{
+            "eventId": update_id,
+            "status": "applied",
+            "message": "Berhasil.",
+            "serverRevision": 458
+        }]);
+        apply_push_results(
+            &state,
+            std::slice::from_ref(&update_id),
+            results.as_array().expect("results"),
+        )
+        .expect("valid result");
+
+        let (_batch_client_id, events) = pending_events(&state).expect("pending events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("eventId").and_then(Value::as_str),
+            Some(delete_id.as_str())
+        );
+        assert_eq!(
+            events[0].get("baseRevision").and_then(Value::as_i64),
+            Some(458),
+            "event kedua harus memakai revisi hasil event pertama, bukan 453"
+        );
+    }
+
+    /// Konflik "revisi basi" harus dicoba ulang — dengan revisi yang sudah
+    /// disegarkan percobaan berikutnya biasanya langsung berhasil — tetapi
+    /// TIDAK selamanya: konflik yang benar-benar lintas perangkat wajib berhenti
+    /// dan tetap terlihat sebagai konflik yang harus diselesaikan operator.
+    #[test]
+    fn konflik_revisi_basi_dicoba_ulang_sampai_batas_percobaan() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        let event_id = enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "delete",
+            "NORMAL-20260902-K001-3",
+            &json!({"id_sesi": "NORMAL-20260902-K001-3"}),
+            Some(453),
+        )
+        .expect("attendance delete event");
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'conflict', attempt_count = 1,
+                   next_retry_at = ?, last_error = 'Data server berubah setelah snapshot lokal dibuat.'
+                 WHERE event_id = ?;",
+                rusqlite::params![storage::now_epoch_seconds() - 60, event_id],
+            )
+            .expect("mark conflict");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        let (_client, events) = pending_events(&state).expect("pending events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("eventId").and_then(Value::as_str),
+            Some(event_id.as_str())
+        );
+
+        // Sudah dicoba lima kali: berhenti, jangan berputar selamanya.
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE desktop_sync_outbox SET attempt_count = 5 WHERE event_id = ?;",
+                rusqlite::params![event_id],
+            )
+            .expect("exhaust attempts");
+        drop(connection);
+        let (_client, events) = pending_events(&state).expect("pending events");
+        assert!(events.is_empty());
+    }
+
+    /// Konflik jenis lain TIDAK boleh ikut jalur retry ini: pesan prioritas
+    /// Koreksi Admin memang harus tetap ditolak, dan pemeriksaan
+    /// `attendanceBaseUpdatedAt` tertanam di payload sehingga retry tidak
+    /// pernah bisa menyegarkannya.
+    #[test]
+    fn konflik_selain_revisi_basi_tidak_dicoba_ulang() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        let event_id = enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "delete",
+            "NORMAL-20260902-K001-4",
+            &json!({"id_sesi": "NORMAL-20260902-K001-4"}),
+            Some(453),
+        )
+        .expect("attendance delete event");
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'conflict', attempt_count = 1,
+                   next_retry_at = ?,
+                   last_error = 'Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain.'
+                 WHERE event_id = ?;",
+                rusqlite::params![storage::now_epoch_seconds() - 60, event_id],
+            )
+            .expect("mark conflict");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        let (_client, events) = pending_events(&state).expect("pending events");
+        assert!(events.is_empty());
+    }
+
+    /// `base_revision` yang memang NULL berarti "tanpa pemeriksaan konkurensi"
+    /// (mis. create). Kesegaran revisi tidak boleh mengubahnya menjadi angka:
+    /// itu akan memasang pemeriksaan yang tidak pernah diminta pemanggilnya.
+    #[test]
+    fn pending_events_membiarkan_base_revision_null_apa_adanya() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        transaction
+            .execute(
+                "INSERT INTO desktop_entity_revision (domain, entity_key, server_revision, payload_hash, updated_at)
+                 VALUES ('attendance', 'NORMAL-20260902-K001-2', 501, 'tracked', 1);",
+                [],
+            )
+            .expect("seed revision");
+        let create_id = enqueue(
+            &transaction,
+            &client_id,
+            "attendance",
+            "create",
+            "NORMAL-20260902-K001-2",
+            &json!({"attendance": {"id_sesi": "NORMAL-20260902-K001-2"}}),
+            None,
+        )
+        .expect("attendance create event");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        let (_batch_client_id, events) = pending_events(&state).expect("pending events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("eventId").and_then(Value::as_str),
+            Some(create_id.as_str())
+        );
+        assert!(events[0]
+            .get("baseRevision")
+            .is_some_and(serde_json::Value::is_null));
     }
 
     #[test]

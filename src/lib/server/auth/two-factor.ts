@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Client } from "@libsql/client";
 import { hashSessionToken } from "@/lib/auth/session-token";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   buildOtpAuthUri,
   generateRecoveryCodes,
@@ -161,7 +162,7 @@ export async function beginTwoFactorSetup(
     otpauthUri: buildOtpAuthUri({
       secret,
       accountLabel: row.username,
-      issuer: "Absensi SPPG",
+      issuer: BRANDING.appDisplayName,
     }),
   };
 }

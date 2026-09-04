@@ -8,6 +8,7 @@ import {
   LivenessCapture,
   type LivenessCaptureResult,
 } from "@/components/LivenessCapture";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   confirmResetAccount,
   lookupResetAccount,
@@ -154,7 +155,7 @@ export default function LupaPasswordPage() {
       <section className="relative z-10 w-full max-w-lg space-y-5 rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-2xl backdrop-blur sm:p-8">
         <header className="space-y-1">
           <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
-            Absensi SPPG
+            {BRANDING.appDisplayName}
           </p>
           <h1 className="text-2xl font-black">Lupa Password</h1>
           <p className="text-sm text-slate-400">

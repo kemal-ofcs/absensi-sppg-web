@@ -296,6 +296,7 @@ export default function RunDetailClient() {
                   <th className="py-3 px-4">Divisi / PTKP</th>
                   <th className="py-3 px-4 text-right">Jam Reguler</th>
                   <th className="py-3 px-4 text-right">Lembur</th>
+                  <th className="py-3 px-4 text-right">Jam Hari Libur</th>
                   <th className="py-3 px-4 text-right">Gaji Pokok</th>
                   <th className="py-3 px-4 text-right">Upah Lembur</th>
                   <th className="py-3 px-4 text-right">Potongan</th>
@@ -308,7 +309,7 @@ export default function RunDetailClient() {
                 {items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={10}
+                      colSpan={11}
                       className="py-8 text-center text-slate-500"
                     >
                       Tidak ada rincian karyawan dalam batch ini.
@@ -337,6 +338,9 @@ export default function RunDetailClient() {
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-amber-400">
                         {Number(it.total_overtime_hours.toFixed(2))}j
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-rose-400">
+                        {Number(it.total_holiday_hours.toFixed(2))}j
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-300">
                         {IDR.format(it.basic_salary)}

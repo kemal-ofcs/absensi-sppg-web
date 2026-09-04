@@ -69,6 +69,12 @@ function normalizeRole(value: JsonRecord): RoleRecord {
     status: value.status === "Nonaktif" ? "Nonaktif" : "Aktif",
     requireTotp:
       value.requireTotp === true || Number(value.require_totp ?? 0) === 1,
+    requireScanPhoto:
+      value.requireScanPhoto === true ||
+      Number(value.require_scan_photo ?? 0) === 1,
+    requireScanIpAllowlist:
+      value.requireScanIpAllowlist === true ||
+      Number(value.require_scan_ip_allowlist ?? 0) === 1,
     operatorCount: Number(value.operatorCount ?? value.operator_count ?? 0),
     permissions,
   };
@@ -201,17 +207,28 @@ export async function updateRole(
   actorId: number,
   roleId: number,
   draft: RoleDraft,
+  options?: { isSuperadmin?: boolean },
 ) {
   if (isDesktopRuntime()) {
     void actorId;
+    // Role Superadmin hanya menerima dua kewajiban operasional; mengirim nama
+    // atau status untuknya akan ditolak backend.
+    const draftPayload = options?.isSuperadmin
+      ? {
+          require_scan_photo: draft.requireScanPhoto === true,
+          require_scan_ip_allowlist: draft.requireScanIpAllowlist === true,
+        }
+      : {
+          nama_role: draft.name,
+          deskripsi: draft.description,
+          status: draft.status,
+          require_totp: draft.requireTotp === true,
+          require_scan_photo: draft.requireScanPhoto === true,
+          require_scan_ip_allowlist: draft.requireScanIpAllowlist === true,
+        };
     return invokeDesktop<{ sukses: true }>("desktop_update_role", {
       roleId,
-      draft: {
-        nama_role: draft.name,
-        deskripsi: draft.description,
-        status: draft.status,
-        require_totp: draft.requireTotp === true,
-      },
+      draft: draftPayload,
     });
   }
   return requestWebApi<{ sukses: true }>("/api/roles", "PATCH", {

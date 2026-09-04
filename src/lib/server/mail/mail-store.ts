@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Client } from "@libsql/client";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   assertMailConfigDraft,
   buildResetEmail,
@@ -152,7 +153,7 @@ export async function sendMail(
     };
   }
 
-  const senderName = config.senderName || "Absensi SPPG";
+  const senderName = config.senderName || BRANDING.appDisplayName;
   try {
     const response =
       config.provider === "resend"
@@ -236,9 +237,9 @@ export async function sendTestMail(client: Client, operatorId: number) {
   const result = await sendMail(
     client,
     to,
-    "Uji Kirim Email Sistem Absensi SPPG",
-    `Halo ${name},\n\nEmail ini dikirim dari menu Pengaturan > Email Sistem untuk menguji konfigurasi pengirim.\nBila email ini sampai, fitur Lupa Password sudah siap dipakai.\n\nAbsensi SPPG`,
-    `<p>Halo <strong>${name}</strong>,</p><p>Email ini dikirim dari menu Pengaturan &gt; Email Sistem untuk menguji konfigurasi pengirim. Bila email ini sampai, fitur Lupa Password sudah siap dipakai.</p><p>Absensi SPPG</p>`,
+    `Uji Kirim Email Sistem ${BRANDING.appDisplayName}`,
+    `Halo ${name},\n\nEmail ini dikirim dari menu Pengaturan > Email Sistem untuk menguji konfigurasi pengirim.\nBila email ini sampai, fitur Lupa Password sudah siap dipakai.\n\n${BRANDING.appDisplayName}`,
+    `<p>Halo <strong>${name}</strong>,</p><p>Email ini dikirim dari menu Pengaturan &gt; Email Sistem untuk menguji konfigurasi pengirim. Bila email ini sampai, fitur Lupa Password sudah siap dipakai.</p><p>${BRANDING.appDisplayName}</p>`,
   );
   return { ...result, to };
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { BRANDING } from "@/lib/constants/branding";
+
 function loadImage(src: string) {
   if (!src || typeof src !== "string" || src.trim() === "") {
     return Promise.reject(new Error("URL gambar kosong."));
@@ -38,7 +40,7 @@ export async function createIdCardPng(
   context.fillText("KARTU KARYAWAN", 70, 92);
   context.fillStyle = "#7dd3fc";
   context.font = "bold 24px Arial";
-  context.fillText("ABSENSI SPPG", 72, 130);
+  context.fillText(BRANDING.appDisplayName.toUpperCase(), 72, 130);
   context.fillStyle = "#ffffff";
   context.font = "bold 48px Arial";
   context.fillText(String(row.nama || "Karyawan").slice(0, 27), 72, 260);

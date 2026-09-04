@@ -17,6 +17,17 @@ pub struct OperatorUser {
     pub is_superadmin: bool,
     pub permissions: Vec<String>,
     pub permission_revision: i64,
+    /// Role ini mewajibkan foto bukti pada setiap scan absensi.
+    ///
+    /// `serde(default)` bukan hiasan: struct ini ikut tersimpan di vault
+    /// kredensial offline. Snapshot yang dibuat versi lama tidak memiliki field
+    /// ini, dan tanpa default seluruh vault akan gagal dibaca — pengguna
+    /// lapangan terkunci di luar aplikasinya sendiri setelah update.
+    #[serde(default)]
+    pub require_scan_photo: bool,
+    /// Role ini hanya boleh melakukan scan dari alamat IP yang terdaftar.
+    #[serde(default)]
+    pub require_scan_ip_allowlist: bool,
     pub login_at: Option<String>,
 }
 

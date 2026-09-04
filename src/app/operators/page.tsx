@@ -22,6 +22,7 @@ import {
   updateMasterOperator,
   updateRole,
 } from "@/lib/gateways/master-operator";
+import { getScanSecurity } from "@/lib/gateways/scan-security";
 import { adminDisableTwoFactor } from "@/lib/gateways/two-factor";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import type { OperatorDraft, OperatorRecord } from "@/lib/operators/types";
@@ -63,6 +64,8 @@ interface RoleFormState {
   description: string;
   status: "Aktif" | "Nonaktif";
   requireTotp: boolean;
+  requireScanPhoto: boolean;
+  requireScanIpAllowlist: boolean;
 }
 
 function errorMessage(error: unknown) {
@@ -98,6 +101,8 @@ export default function MasterOperatorPage() {
     description: "",
     status: "Aktif",
     requireTotp: false,
+    requireScanPhoto: false,
+    requireScanIpAllowlist: false,
   });
   const [selectedPermissions, setSelectedPermissions] = useState<
     Set<PermissionKey>
@@ -107,18 +112,30 @@ export default function MasterOperatorPage() {
     | { type: "role"; item: RoleRecord }
     | null
   >(null);
+  // Sakelar per role di bawah hanya berlaku bila fiturnya dihidupkan di
+  // Pengaturan. Tanpa penanda ini, Superadmin akan menyalakan sakelar role dan
+  // mengira absensi sudah dijaga padahal fiturnya mati.
+  const [scanSecurity, setScanSecurity] = useState({
+    photoEnabled: false,
+    ipRestrictionEnabled: false,
+  });
 
   const loadData = useCallback(
     async (silent = false) => {
       if (!user?.isSuperadmin) return;
       if (!silent) setLoading(true);
       try {
-        const [operatorData, roleData] = await Promise.all([
+        const [operatorData, roleData, security] = await Promise.all([
           getMasterOperators(user.id),
           getRoleRecords(user.id),
+          getScanSecurity(),
         ]);
         setOperators(operatorData);
         setRoles(roleData);
+        setScanSecurity({
+          photoEnabled: security.photoEnabled,
+          ipRestrictionEnabled: security.ipRestrictionEnabled,
+        });
       } catch (error) {
         if (!silent) {
           setFeedback({ tone: "error", message: errorMessage(error) });
@@ -145,7 +162,9 @@ export default function MasterOperatorPage() {
   }, [loadData]);
 
   const openNewOperator = () => {
-    const firstRole = roles.find((role) => role.status === "Aktif");
+    const firstRole =
+      roles.find((role) => role.status === "Aktif" && !role.isSuperadmin) ??
+      roles.find((role) => role.status === "Aktif");
     setEditingOperator(null);
     setOperatorDraft({ ...EMPTY_OPERATOR, roleId: firstRole?.id ?? 0 });
     setOperatorModal(true);
@@ -199,6 +218,8 @@ export default function MasterOperatorPage() {
       description: "",
       status: "Aktif",
       requireTotp: false,
+      requireScanPhoto: false,
+      requireScanIpAllowlist: false,
     });
     setSelectedPermissions(new Set());
     setRoleModal(true);
@@ -229,6 +250,8 @@ export default function MasterOperatorPage() {
       description: role.description,
       status: role.status,
       requireTotp: role.requireTotp,
+      requireScanPhoto: role.requireScanPhoto,
+      requireScanIpAllowlist: role.requireScanIpAllowlist,
     });
     setSelectedPermissions(new Set(role.permissions));
     setRoleModal(true);
@@ -241,10 +264,15 @@ export default function MasterOperatorPage() {
     setFeedback(null);
     try {
       if (editingRole) {
-        await updateRole(user.id, editingRole.id, roleDraft);
-        await setRolePermissions(user.id, editingRole.id, [
-          ...selectedPermissions,
-        ]);
+        await updateRole(user.id, editingRole.id, roleDraft, {
+          isSuperadmin: editingRole.isSuperadmin,
+        });
+        // Permission Superadmin selalu penuh dan ditolak backend bila dikirim.
+        if (!editingRole.isSuperadmin) {
+          await setRolePermissions(user.id, editingRole.id, [
+            ...selectedPermissions,
+          ]);
+        }
       } else {
         await createRole(user.id, roleDraft, [...selectedPermissions]);
       }
@@ -378,6 +406,7 @@ export default function MasterOperatorPage() {
       {roleModal ? (
         <RoleFormModal
           editingRole={editingRole}
+          scanSecurity={scanSecurity}
           draft={roleDraft}
           permissions={selectedPermissions}
           saving={saving}
@@ -541,28 +570,45 @@ function OperatorFormModal({
         </FormField>
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField label="Role" htmlFor="operator-role">
-            <select
-              id="operator-role"
-              value={draft.roleId}
-              onChange={(event) =>
-                onChange({ ...draft, roleId: Number(event.target.value) })
-              }
-              className="app-input"
-            >
-              {roles
-                .filter(
-                  (role) => role.status === "Aktif" || role.id === draft.roleId,
-                )
-                .map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.name}
-                  </option>
-                ))}
-            </select>
+            {editingOperator?.isSuperadmin ? (
+              <div className="space-y-1.5">
+                <input
+                  id="operator-role"
+                  disabled
+                  value={editingOperator.roleName || "Superadmin"}
+                  className="app-input cursor-not-allowed opacity-75"
+                />
+                <p className="text-[11px] text-amber-400">
+                  Role Superadmin sistem terkunci dan tidak dapat diubah.
+                </p>
+              </div>
+            ) : (
+              <select
+                id="operator-role"
+                value={draft.roleId}
+                onChange={(event) =>
+                  onChange({ ...draft, roleId: Number(event.target.value) })
+                }
+                className="app-input"
+              >
+                {roles
+                  .filter(
+                    (role) =>
+                      !role.isSuperadmin &&
+                      (role.status === "Aktif" || role.id === draft.roleId),
+                  )
+                  .map((role) => (
+                    <option key={role.id} value={role.id}>
+                      {role.name}
+                    </option>
+                  ))}
+              </select>
+            )}
           </FormField>
           <FormField label="Status" htmlFor="operator-status">
             <select
               id="operator-status"
+              disabled={editingOperator?.isSuperadmin}
               value={draft.status}
               onChange={(event) =>
                 onChange({
@@ -570,10 +616,16 @@ function OperatorFormModal({
                   status: event.target.value as "Aktif" | "Nonaktif",
                 })
               }
-              className="app-input"
+              className={`app-input ${
+                editingOperator?.isSuperadmin
+                  ? "cursor-not-allowed opacity-75"
+                  : ""
+              }`}
             >
               <option value="Aktif">Aktif</option>
-              <option value="Nonaktif">Nonaktif</option>
+              {!editingOperator?.isSuperadmin ? (
+                <option value="Nonaktif">Nonaktif</option>
+              ) : null}
             </select>
           </FormField>
         </div>
@@ -585,6 +637,7 @@ function OperatorFormModal({
 
 function RoleFormModal({
   editingRole,
+  scanSecurity,
   draft,
   permissions,
   saving,
@@ -594,6 +647,7 @@ function RoleFormModal({
   onSubmit,
 }: {
   editingRole: RoleRecord | null;
+  scanSecurity: { photoEnabled: boolean; ipRestrictionEnabled: boolean };
   draft: RoleFormState;
   permissions: Set<PermissionKey>;
   saving: boolean;
@@ -718,9 +772,63 @@ function RoleFormModal({
             </span>
           </label>
         ) : null}
-        {!editingRole?.isSuperadmin ? (
-          <ModalActions saving={saving} onCancel={onClose} />
+        {!scanSecurity.photoEnabled || !scanSecurity.ipRestrictionEnabled ? (
+          <p className="rounded-2xl border border-amber-300/25 bg-amber-300/10 p-3 text-[11px] leading-5 text-amber-100">
+            {!scanSecurity.photoEnabled && !scanSecurity.ipRestrictionEnabled
+              ? "Fitur foto bukti dan pembatasan IP sedang NONAKTIF di Pengaturan, jadi kedua sakelar di bawah belum berpengaruh."
+              : !scanSecurity.photoEnabled
+                ? "Fitur foto bukti sedang NONAKTIF di Pengaturan, jadi sakelar foto di bawah belum berpengaruh."
+                : "Fitur pembatasan IP sedang NONAKTIF di Pengaturan, jadi sakelar IP di bawah belum berpengaruh."}
+          </p>
         ) : null}
+        <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-3">
+          <input
+            type="checkbox"
+            checked={draft.requireScanPhoto}
+            onChange={(event) =>
+              onDraftChange({
+                ...draft,
+                requireScanPhoto: event.target.checked,
+              })
+            }
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <span className="text-xs leading-5 text-slate-300">
+            <strong className="text-white">Wajibkan foto bukti absensi</strong>
+            <br />
+            Setiap scan oleh operator role ini harus menyertakan foto dari
+            kamera terminal. Scan tanpa foto ditolak dan tetap tercatat di log
+            scan sebagai bukti percobaan. Fotonya dapat ditinjau di halaman Foto
+            Absensi.
+          </span>
+        </label>
+        <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-3">
+          <input
+            type="checkbox"
+            checked={draft.requireScanIpAllowlist}
+            onChange={(event) =>
+              onDraftChange({
+                ...draft,
+                requireScanIpAllowlist: event.target.checked,
+              })
+            }
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <span className="text-xs leading-5 text-slate-300">
+            <strong className="text-white">Batasi absensi ke daftar IP</strong>
+            <br />
+            Operator role ini hanya dapat melakukan scan dari alamat IP yang
+            terdaftar di Pengaturan. Selama daftar itu masih kosong, pembatasan
+            belum berlaku — isi daftarnya agar sakelar ini benar benar menjaga.
+          </span>
+        </label>
+        {editingRole?.isSuperadmin ? (
+          <p className="text-[11px] leading-5 text-slate-400">
+            Nama, deskripsi, dan permission Superadmin terkunci. Yang tersimpan
+            dari layar ini hanya dua kewajiban absensi di atas.
+          </p>
+        ) : null}
+        <ModalActions saving={saving} onCancel={onClose} />
       </form>
     </Modal>
   );
@@ -868,6 +976,21 @@ function RoleGrid({
           <p className="mt-4 min-h-10 text-xs leading-5 text-slate-400">
             {role.description || "Belum ada deskripsi role."}
           </p>
+          {role.requireTotp ||
+          role.requireScanPhoto ||
+          role.requireScanIpAllowlist ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {role.requireTotp ? (
+                <StatusBadge tone="info">Wajib 2FA</StatusBadge>
+              ) : null}
+              {role.requireScanPhoto ? (
+                <StatusBadge tone="info">Wajib foto absensi</StatusBadge>
+              ) : null}
+              {role.requireScanIpAllowlist ? (
+                <StatusBadge tone="info">Absensi dibatasi IP</StatusBadge>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-slate-950/50 p-3 text-center">
             <div>
               <p className="text-lg font-black text-white">

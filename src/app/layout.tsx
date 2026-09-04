@@ -1,16 +1,16 @@
 import type { Metadata } from "next";
+import { BRANDING } from "@/lib/constants/branding";
 import { AuthProvider } from "@/lib/context/AuthContext";
 import { ThemeProvider } from "@/lib/context/ThemeContext";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Absensi SPPG",
-    template: "%s · Absensi SPPG",
+    default: BRANDING.appDisplayName,
+    template: `%s · ${BRANDING.appDisplayName}`,
   },
-  description:
-    "Sistem operasional absensi SPPG untuk Web dan Desktop dengan dukungan online dan offline.",
-  applicationName: "Absensi SPPG",
+  description: `${BRANDING.appDisplayName} management system for Web and Desktop with online and offline support.`,
+  applicationName: BRANDING.appDisplayName,
 };
 
 const THEME_SCRIPT = `

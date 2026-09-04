@@ -52,7 +52,9 @@ export async function authenticateOperatorWithClient(
     sql: `
       SELECT
         m.id, m.kode_operator, m.nama_operator, m.username, m.password_hash,
-        m.role_id, r.role_key, r.nama_role, r.is_superadmin
+        m.role_id, r.role_key, r.nama_role, r.is_superadmin,
+        COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
+        COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
       FROM master_operator m
       JOIN app_role r ON r.id = m.role_id
       WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
@@ -96,6 +98,8 @@ export async function authenticateOperatorWithClient(
     isSuperadmin,
     permissions: await readPermissions(database, roleId, isSuperadmin),
     permissionRevision: Number(revision.rows[0]?.value ?? 1),
+    requireScanPhoto: Number(row.require_scan_photo ?? 0) === 1,
+    requireScanIpAllowlist: Number(row.require_scan_ip_allowlist ?? 0) === 1,
     loginAt: new Date().toISOString(),
   };
 }

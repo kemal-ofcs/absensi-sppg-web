@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use base64::prelude::*;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::{config::DesktopState, models::CommandError, storage, sync};
+use super::{config::DesktopState, models::CommandError, scanner, storage, sync};
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("").trim()
@@ -1061,6 +1061,139 @@ pub fn save_geofence_settings(state: &DesktopState, settings: &Value) -> Result<
     transaction.commit().map_err(|_| CommandError::internal())
 }
 
+/// Pengaturan keamanan absensi: sakelar induk fitur + daftar IP.
+///
+/// `can_manage` menentukan apakah daftar IP ikut dikembalikan. Status hidup/mati
+/// fiturnya boleh dibaca siapa saja yang punya sesi — halaman scanner perlu
+/// tahu apakah harus menahan scan untuk foto — sedangkan daftar alamatnya hanya
+/// untuk Superadmin.
+pub fn get_scan_security(
+    state: &DesktopState,
+    can_manage: bool,
+    role_requires_photo: bool,
+    role_requires_ip: bool,
+) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let read = |key: &str| -> Result<Option<String>, CommandError> {
+        connection
+            .query_row(
+                "SELECT value FROM setting_gex_system WHERE key = ?;",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| CommandError::internal())
+    };
+    let enabled = |value: Option<String>| {
+        value
+            .map(|item| item.trim().eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    };
+
+    let entries = if can_manage {
+        read(scanner::IP_ALLOWLIST_SETTING_KEY)?
+            .as_deref()
+            .map(scanner::parse_ip_allowlist)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let device_addresses = if can_manage {
+        scanner::detect_device_ip_addresses()
+            .iter()
+            .map(std::net::IpAddr::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let photo_enabled = enabled(read(scanner::SCAN_PHOTO_ENABLED_KEY)?);
+    let ip_enabled = enabled(read(scanner::SCAN_IP_RESTRICTION_ENABLED_KEY)?);
+    Ok(json!({
+        "photoEnabled": photo_enabled,
+        "ipRestrictionEnabled": ip_enabled,
+        // Jawaban tunggal untuk halaman scanner: "apakah SAYA wajib berfoto?".
+        // Dihitung di sini supaya tidak ada penggabungan kedua di frontend yang
+        // bisa memakai salinan sesi yang sudah basi.
+        "photoRequiredForMe": photo_enabled && role_requires_photo,
+        "ipRestrictionRequiredForMe": ip_enabled && role_requires_ip,
+        "entries": entries,
+        "deviceAddresses": device_addresses,
+        "canManage": can_manage,
+    }))
+}
+
+/// Simpan sakelar induk dan daftar IP sebagai setting tersinkronisasi.
+///
+/// Entri IP dinormalisasi lebih dulu; entri tidak valid dibuang di sini agar
+/// tidak ada daftar berisi teks sampah yang diam-diam memblokir semua orang.
+pub fn save_scan_security(state: &DesktopState, payload: &Value) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut entries: Vec<String> = Vec::new();
+    if let Some(items) = payload.get("entries").and_then(Value::as_array) {
+        for item in items {
+            if let Some(entry) = item.as_str().and_then(scanner::normalize_ip_entry) {
+                if !entries.contains(&entry) {
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+    let allowlist_value = serde_json::to_string(&entries).map_err(|_| CommandError::internal())?;
+    let flag = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_bool)
+            .map(|value| if value { "true" } else { "false" })
+            .unwrap_or("false")
+            .to_owned()
+    };
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    for (key, value) in [
+        (
+            scanner::SCAN_PHOTO_ENABLED_KEY,
+            flag("photoEnabled"),
+        ),
+        (
+            scanner::SCAN_IP_RESTRICTION_ENABLED_KEY,
+            flag("ipRestrictionEnabled"),
+        ),
+        (scanner::IP_ALLOWLIST_SETTING_KEY, allowlist_value),
+    ] {
+        transaction
+            .execute(
+                "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+                params![key, value],
+            )
+            .map_err(|_| CommandError::internal())?;
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_conflict WHERE domain = 'setting' AND entity_key = ?;",
+            params![key],
+        );
+        let _ = transaction.execute(
+            "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = ? AND status IN ('pending', 'failed', 'conflict');",
+            params![key],
+        );
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "setting",
+            "update",
+            key,
+            &json!({ "key": key, "value": value }),
+            None,
+        )?;
+    }
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    // Yang menyimpan pasti Superadmin; sakelar role-nya sendiri tidak relevan
+    // untuk balasan formulir.
+    get_scan_security(state, true, false, false)
+}
+
 pub fn get_scanner_settings(state: &DesktopState) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection
@@ -1141,6 +1274,65 @@ pub fn save_scanner_settings(state: &DesktopState, settings: &Value) -> Result<(
         )?;
     }
     transaction.commit().map_err(|_| CommandError::internal())
+}
+
+pub fn get_app_display_name(state: &DesktopState) -> Result<String, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let result: Option<String> = connection
+        .query_row(
+            "SELECT value FROM setting_gex_system WHERE key = 'app_display_name' LIMIT 1;",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    Ok(result
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Absensi Perusahaan".to_string()))
+}
+
+pub fn save_app_display_name(state: &DesktopState, name: &str) -> Result<String, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    let resolved = if name.trim().is_empty() {
+        "Absensi Perusahaan".to_string()
+    } else {
+        name.trim().to_string()
+    };
+
+    transaction
+        .execute(
+            "INSERT INTO setting_gex_system (key, value) VALUES ('app_display_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            params![resolved],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let _ = transaction.execute(
+        "DELETE FROM desktop_sync_conflict WHERE domain = 'setting' AND entity_key = 'app_display_name';",
+        [],
+    );
+    let _ = transaction.execute(
+        "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = 'app_display_name' AND status IN ('pending', 'failed', 'conflict');",
+        [],
+    );
+
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "setting",
+        "update",
+        "app_display_name",
+        &json!({ "key": "app_display_name", "value": resolved }),
+        None,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(resolved)
 }
 
 pub fn update_id_card(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
@@ -1460,6 +1652,349 @@ pub fn delete_holiday(state: &DesktopState, id: i64) -> Result<Value, CommandErr
         "delete",
         &id.to_string(),
         &sync_payload,
+        revision,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Whitelist Shift/Divisi hari libur.
+//
+// Penilaian dan normalisasinya hidup di `scanner.rs` (bersama gerbang scan yang
+// memakainya) supaya jalur pengelolaan dan jalur penegakan tidak pernah drift.
+// Di sini hanya CRUD lokal + antrean outbox.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Id whitelist dibuat KLIEN, bukan AUTOINCREMENT.
+///
+/// Dua perangkat yang sedang offline sama-sama boleh menambah baris; kalau
+/// kuncinya nomor urut, keduanya memakai angka yang sama lalu saling menimpa
+/// begitu tersinkronisasi. 128 bit acak membuat keduanya hidup berdampingan.
+fn new_whitelist_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    let mut id = String::with_capacity(36);
+    id.push_str("hlw-");
+    for byte in bytes {
+        id.push_str(&format!("{byte:02x}"));
+    }
+    id
+}
+
+/// Baca satu baris whitelist sebagai JSON siap kirim.
+fn whitelist_row_json(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<Option<Value>, CommandError> {
+    transaction
+        .query_row(
+            "SELECT id, scope_type, scope_value, tanggal_libur, keterangan, status_aktif,
+                    created_at, updated_at
+             FROM hari_libur_whitelist WHERE id = ? LIMIT 1;",
+            [id],
+            |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "scope_type": row.get::<_, String>(1)?,
+                    "scope_value": row.get::<_, String>(2)?,
+                    "tanggal_libur": row.get::<_, Option<String>>(3)?,
+                    "keterangan": row.get::<_, Option<String>>(4)?,
+                    "status_aktif": row.get::<_, i64>(5)?,
+                    "created_at": row.get::<_, Option<String>>(6)?,
+                    "updated_at": row.get::<_, Option<String>>(7)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())
+}
+
+pub fn list_holiday_whitelist(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, scope_type, scope_value, tanggal_libur, keterangan, status_aktif
+             FROM hari_libur_whitelist ORDER BY scope_type ASC, scope_value ASC;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "scope_type": row.get::<_, String>(1)?,
+                "scope_value": row.get::<_, String>(2)?,
+                "tanggal_libur": row.get::<_, Option<String>>(3)?,
+                "keterangan": row.get::<_, Option<String>>(4)?,
+                "status_aktif": row.get::<_, i64>(5)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|_| CommandError::internal())?);
+    }
+    Ok(Value::Array(result))
+}
+
+/// Bentuk kanonik satu draft whitelist, atau pesan kesalahan yang ramah.
+fn normalize_whitelist_draft(
+    draft: &Value,
+) -> Result<(&'static str, String, Option<String>, Option<String>, i64), CommandError> {
+    let scope_type = scanner::normalize_whitelist_scope_type(&text(draft, "scope_type"))
+        .ok_or_else(|| {
+            CommandError::new(
+                "VALIDATION_ERROR",
+                "Cakupan whitelist harus SHIFT atau DIVISI.",
+            )
+        })?;
+    let scope_value =
+        scanner::normalize_whitelist_scope_value(scope_type, &text(draft, "scope_value"))
+            .ok_or_else(|| {
+                CommandError::new(
+                    "VALIDATION_ERROR",
+                    if scope_type == "SHIFT" {
+                        "Kode Shift harus berupa angka positif."
+                    } else {
+                        "Nama Divisi wajib diisi."
+                    },
+                )
+            })?;
+
+    let raw_date = text(draft, "tanggal_libur");
+    let tanggal_libur = if raw_date.trim().is_empty() {
+        None
+    } else {
+        match scanner::normalize_holiday_date(Some(raw_date)) {
+            Some(value) => Some(value),
+            None => {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Tanggal libur harus berformat YYYY-MM-DD.",
+                ))
+            }
+        }
+    };
+
+    let keterangan = {
+        let value = text(draft, "keterangan");
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.trim().to_owned())
+        }
+    };
+
+    let status_aktif = match draft.get("status_aktif") {
+        Some(Value::Bool(false)) => 0,
+        Some(value) if value.as_i64() == Some(0) => 0,
+        _ => 1,
+    };
+
+    Ok((
+        scope_type,
+        scope_value,
+        tanggal_libur,
+        keterangan,
+        status_aktif,
+    ))
+}
+
+/// Cegah cakupan kembar DI LAPISAN APLIKASI, bukan lewat UNIQUE constraint.
+///
+/// Constraint database akan membuat push sync gagal PERMANEN ketika dua
+/// perangkat offline mendaftarkan cakupan yang sama. Di sini penolakannya cukup
+/// memberi pesan ramah, dan duplikat yang terlanjur lolos dari jalur offline
+/// tetap tidak berbahaya karena penilaian whitelist bersifat OR.
+fn assert_whitelist_unique(
+    transaction: &Transaction<'_>,
+    scope_type: &str,
+    scope_value: &str,
+    tanggal_libur: Option<&str>,
+    except_id: Option<&str>,
+) -> Result<(), CommandError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, scope_value, tanggal_libur FROM hari_libur_whitelist WHERE scope_type = ?;",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([scope_type], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+
+    let target = scanner::fold_whitelist_text(scope_value);
+    let target_date = tanggal_libur.and_then(|value| scanner::normalize_holiday_date(Some(value)));
+    for row in rows {
+        let (id, value, date) = row.map_err(|_| CommandError::internal())?;
+        if except_id == Some(id.as_str()) {
+            continue;
+        }
+        let row_date = scanner::normalize_holiday_date(date.as_deref());
+        if scanner::fold_whitelist_text(&value) == target && row_date == target_date {
+            return Err(CommandError::new(
+                "OPERATIONAL_CONFLICT",
+                format!("Cakupan {scope_type} {scope_value} sudah terdaftar pada whitelist."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn create_holiday_whitelist(
+    state: &DesktopState,
+    draft: &Value,
+) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let (scope_type, scope_value, tanggal_libur, keterangan, status_aktif) =
+        normalize_whitelist_draft(draft)?;
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    assert_whitelist_unique(
+        &transaction,
+        scope_type,
+        &scope_value,
+        tanggal_libur.as_deref(),
+        None,
+    )?;
+
+    let id = new_whitelist_id();
+    let now: String = transaction
+        .query_row("SELECT datetime('now');", [], |row| row.get(0))
+        .unwrap_or_default();
+
+    transaction
+        .execute(
+            "INSERT INTO hari_libur_whitelist (
+                id, scope_type, scope_value, tanggal_libur, keterangan,
+                status_aktif, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            params![
+                id,
+                scope_type,
+                scope_value,
+                tanggal_libur,
+                keterangan,
+                status_aktif,
+                now,
+                now
+            ],
+        )
+        .map_err(|e| {
+            CommandError::new(
+                "OPERATIONAL_CONFLICT",
+                format!("Gagal menyimpan whitelist hari libur: {e}"),
+            )
+        })?;
+
+    let payload = whitelist_row_json(&transaction, &id)?.unwrap_or_else(|| json!({ "id": id }));
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday-whitelist",
+        "create",
+        &id,
+        &payload,
+        None,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id": id }))
+}
+
+pub fn update_holiday_whitelist(
+    state: &DesktopState,
+    id: &str,
+    draft: &Value,
+) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let (scope_type, scope_value, tanggal_libur, keterangan, status_aktif) =
+        normalize_whitelist_draft(draft)?;
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    assert_whitelist_unique(
+        &transaction,
+        scope_type,
+        &scope_value,
+        tanggal_libur.as_deref(),
+        Some(id),
+    )?;
+
+    let now: String = transaction
+        .query_row("SELECT datetime('now');", [], |row| row.get(0))
+        .unwrap_or_default();
+
+    transaction
+        .execute(
+            "UPDATE hari_libur_whitelist SET
+                scope_type = ?, scope_value = ?, tanggal_libur = ?,
+                keterangan = ?, status_aktif = ?, updated_at = ?
+             WHERE id = ?;",
+            params![
+                scope_type,
+                scope_value,
+                tanggal_libur,
+                keterangan,
+                status_aktif,
+                now,
+                id
+            ],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    let payload = whitelist_row_json(&transaction, id)?.unwrap_or_else(|| json!({ "id": id }));
+    let revision = base_revision(&transaction, "holiday-whitelist", id);
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday-whitelist",
+        "update",
+        id,
+        &payload,
+        revision,
+    )?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
+pub fn delete_holiday_whitelist(state: &DesktopState, id: &str) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    if whitelist_row_json(&transaction, id)?.is_none() {
+        return Ok(json!({ "sukses": true }));
+    }
+
+    transaction
+        .execute("DELETE FROM hari_libur_whitelist WHERE id = ?;", [id])
+        .map_err(|_| CommandError::internal())?;
+
+    let revision = base_revision(&transaction, "holiday-whitelist", id);
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "holiday-whitelist",
+        "delete",
+        id,
+        &json!({ "id": id }),
         revision,
     )?;
 
@@ -2510,7 +3045,7 @@ fn current_iso(connection: &rusqlite::Connection) -> String {
         .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
 }
 
-const DEFAULT_CARD_TERMS: &str = "1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.\n2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.\n3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.\n4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.";
+const DEFAULT_CARD_TERMS: &str = "1. This card is the official identification of your company's employees/personnel.\n2. Must be carried and scanned (QR scan) every time you arrive and leave work.\n3. It is prohibited to transfer or lend this card to other parties.\n4. If the card is lost or found, please report it immediately to the HR/Operations Department.";
 
 pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
@@ -2553,9 +3088,9 @@ pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> 
                     leader_name, leader_title, leader_nip,
                     card_terms, timezone, updated_at
                 ) VALUES (
-                    'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
-                    'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
-                    'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+                    'default_company', 'YOUR COMPANY', 'Operations Center', NULL, NULL,
+                    'Your Company Address', '-', 'info@yourcompany.com', 'https://yourcompany.com',
+                    'Your Name', 'Director', '-',
                     ?, 'Asia/Jakarta', ?
                 );
                 "#,
@@ -2563,17 +3098,17 @@ pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> 
             );
             Ok(json!({
                 "id": "default_company",
-                "company_name": "SPPG",
-                "branch_name": "Pusat Operasional",
+                "company_name": "YOUR COMPANY",
+                "branch_name": "Operations Center",
                 "logo_url": Value::Null,
                 "signature_url": Value::Null,
-                "address": "Jl. Sudirman No. 123, Jakarta",
-                "phone": "021-5550123",
-                "email": "info@sppg.id",
-                "website": "https://sppg.id",
-                "leader_name": "Dr. H. Ahmad Fauzi, M.M.",
-                "leader_title": "Kepala SPPG",
-                "leader_nip": "19750815 200003 1 002",
+                "address": "Your Company Address",
+                "phone": "-",
+                "email": "info@yourcompany.com",
+                "website": "https://yourcompany.com",
+                "leader_name": "Your Name",
+                "leader_title": "Director",
+                "leader_nip": "-",
                 "card_terms": DEFAULT_CARD_TERMS,
                 "timezone": "Asia/Jakarta",
                 "updated_at": now,
@@ -2595,7 +3130,7 @@ pub fn update_company_profile(
     let now = current_iso(&transaction);
     let company_name = text(profile, "company_name");
     let company_name = if company_name.is_empty() {
-        "SPPG"
+        "YOUR COMPANY"
     } else {
         company_name
     };

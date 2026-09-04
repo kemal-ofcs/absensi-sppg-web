@@ -50,9 +50,8 @@ export function AttendanceWeeklyTrend({
     // Populate from rekapHarian
     for (const row of rekapHarian) {
       const tgl = String(row.tanggal || "");
-      if (!tgl || !daysMap.has(tgl)) continue;
-
-      const stat = daysMap.get(tgl)!;
+      const stat = daysMap.get(tgl);
+      if (!stat) continue;
       const status = String(row.status_kehadiran || "");
       const telat = Number(row.menit_terlambat || 0);
 

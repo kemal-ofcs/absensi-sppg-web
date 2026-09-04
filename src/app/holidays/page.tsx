@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { HolidayWhitelistPanel } from "@/components/HolidayWhitelistPanel";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -261,7 +262,7 @@ export default function HolidaysPage() {
         <PageHeader
           eyebrow="Operasional & Kalender"
           title="Kalender & Manajemen Hari Libur"
-          description="Atur jadwal hari libur nasional, cuti bersama, dan hari non-kerja. Pada tanggal libur aktif, QR Scanner otomatis menolak scan dan Generate Alfa otomatis dinonaktifkan."
+          description="Atur jadwal hari libur nasional, cuti bersama, dan hari non-kerja. Pada tanggal libur aktif, QR Scanner hanya melayani Shift/Divisi yang terdaftar di Whitelist di bawah, dan Generate Alfa otomatis dinonaktifkan sehingga yang libur tidak kena Alfa."
           actions={
             canManage ? (
               <button
@@ -659,6 +660,8 @@ export default function HolidaysPage() {
             </div>
           </Modal>
         ) : null}
+
+        <HolidayWhitelistPanel canManage={canManage} />
       </div>
     </AppShell>
   );

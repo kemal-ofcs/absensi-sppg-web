@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { FormEvent } from "react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { validatePasswordStrength } from "@/lib/auth/password";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   completePasswordReset,
   inspectResetToken,
@@ -123,7 +124,7 @@ function ResetPasswordForm() {
     <PageShell>
       <header className="space-y-1">
         <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
-          Absensi SPPG
+          {BRANDING.appDisplayName}
         </p>
         <h1 className="text-2xl font-black text-white">Buat Password Baru</h1>
       </header>

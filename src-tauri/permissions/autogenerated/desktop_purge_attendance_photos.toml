@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-purge-attendance-photos"
+description = "Enables the desktop_purge_attendance_photos command without any pre-configured scope."
+commands.allow = ["desktop_purge_attendance_photos"]
+
+[[permission]]
+identifier = "deny-desktop-purge-attendance-photos"
+description = "Denies the desktop_purge_attendance_photos command without any pre-configured scope."
+commands.deny = ["desktop_purge_attendance_photos"]
