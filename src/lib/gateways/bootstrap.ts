@@ -39,26 +39,40 @@ export async function getBootstrapStatus(): Promise<BootstrapStatus | null> {
   return invokeDesktop<BootstrapStatus>("desktop_get_bootstrap_status");
 }
 
+/**
+ * Buat Superadmin pertama, lalu terima kode pemulihannya.
+ *
+ * Kodenya hanya bisa dibaca SEKALI: database memegang hash-nya saja. Layar
+ * pemanggil WAJIB menampilkannya sampai pengguna menyatakan sudah menyimpan —
+ * membuangnya diam-diam berarti pemasangan tanpa jaringan kehilangan satu-
+ * satunya jalan pulih bila password Superadmin terlupa.
+ */
 export async function bootstrapSuperadmin(
   draft: BootstrapDraft,
-): Promise<void> {
+): Promise<string[]> {
   if (!isDesktopRuntime()) {
     throw new Error("Bootstrap hanya tersedia pada aplikasi desktop/mobile.");
   }
-  await invokeDesktop<void>("desktop_bootstrap_superadmin", {
-    draft: {
-      kode_operator: draft.kodeOperator,
-      nama_operator: draft.namaOperator,
-      username: draft.username,
-      email: draft.email,
-      no_hp: draft.noHp,
-      password: draft.password,
+  const response = await invokeDesktop<{ recoveryCodes?: unknown }>(
+    "desktop_bootstrap_superadmin",
+    {
+      draft: {
+        kode_operator: draft.kodeOperator,
+        nama_operator: draft.namaOperator,
+        username: draft.username,
+        email: draft.email,
+        no_hp: draft.noHp,
+        password: draft.password,
+      },
+      databaseUrl: draft.databaseUrl?.trim() || null,
+      authToken: draft.authToken?.trim() || null,
+      provider: draft.provider ?? null,
+      allowInsecureTransport: draft.allowInsecureTransport ?? null,
     },
-    databaseUrl: draft.databaseUrl?.trim() || null,
-    authToken: draft.authToken?.trim() || null,
-    provider: draft.provider ?? null,
-    allowInsecureTransport: draft.allowInsecureTransport ?? null,
-  });
+  );
+  return Array.isArray(response.recoveryCodes)
+    ? response.recoveryCodes.map((code) => String(code))
+    : [];
 }
 
 export type DatabaseCheckResult = {

@@ -200,6 +200,15 @@ export function generateRecoveryCodes(count = RECOVERY_CODE_COUNT) {
   });
 }
 
+/**
+ * Bentuk baku sebuah kode cadangan sebelum di-hash atau dibandingkan.
+ *
+ * Membuang SETIAP karakter non-alfanumerik, bukan hanya spasi dan tanda
+ * hubung. Ini cerminan `normalize_recovery_code` di `turso.rs`, yang memakai
+ * `is_ascii_alphanumeric`: satu kode yang sama harus menghasilkan hash yang
+ * sama di Web maupun Desktop/Mobile, jadi kedua sisi tidak boleh berbeda
+ * dalam menerima karakter pemisah yang tidak disengaja.
+ */
 export function normalizeRecoveryCode(value: string) {
-  return value.replace(/[\s-]/g, "").toUpperCase();
+  return value.replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 }

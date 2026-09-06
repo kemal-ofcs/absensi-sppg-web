@@ -27,6 +27,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-stronghold",
  "tempfile",
+ "tokio",
  "url",
  "zeroize",
 ]

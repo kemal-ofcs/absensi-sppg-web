@@ -1399,6 +1399,58 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     BASE64_STANDARD.decode(&clean).ok()
 }
 
+/// Folder yang benar-benar bisa dijangkau pengguna, berurutan menurut prioritas.
+///
+/// Dipisahkan dari [`save_desktop_file`] supaya ekspor cadangan database memakai
+/// daftar yang SAMA. Kalau daftarnya diduplikasi, satu sisi cepat atau lambat
+/// akan menyimpan berkas ke tempat yang tidak dicari sisi lain.
+///
+/// TIDAK ADA direktori sementara di sini. Di Android `std::env::temp_dir()`
+/// adalah folder privat aplikasi: ketika penulisan ke `/storage/emulated/0/Download`
+/// ditolak — dan sejak Android 10 penolakan itu lazim, karena manifest membatasi
+/// WRITE_EXTERNAL_STORAGE pada maxSdkVersion 28 — berkasnya tetap tertulis,
+/// pemanggil melaporkan sukses, dan pengguna tidak pernah menemukan hasilnya.
+/// Kegagalan yang dilaporkan sebagai keberhasilan jauh lebih buruk daripada
+/// kegagalan yang terlihat.
+pub fn public_output_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    // 1. Direktori publik Android
+    dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
+    dirs.push(std::path::PathBuf::from("/sdcard/Download"));
+    dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
+    dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
+
+    // 2. Folder Unduhan standar Windows / Linux / macOS
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join("Downloads"));
+    }
+
+    dirs
+}
+
+/// Salin sebuah berkas ke folder pertama yang benar-benar bisa ditulisi.
+///
+/// `None` berarti tidak ada satu pun folder publik yang menerima tulisan —
+/// keadaan nyata pada Android 10, dan pemanggil WAJIB menyampaikannya apa adanya
+/// alih-alih berpura-pura berhasil.
+pub fn copy_to_public_dir(source: &std::path::Path, file_name: &str) -> Option<std::path::PathBuf> {
+    let sanitized = file_name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+    for dir in public_output_dirs() {
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        let target = dir.join(&sanitized);
+        if std::fs::copy(source, &target).is_ok() {
+            return Some(target);
+        }
+    }
+    None
+}
+
 pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, CommandError> {
     let bytes = decode_base64(base64_data).ok_or_else(|| {
         CommandError::new("DESKTOP_SAVE_FAILED", "Format base64 file tidak valid.")
@@ -1406,27 +1458,8 @@ pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, Com
 
     let sanitized_filename = filename.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
 
-    let mut potential_dirs = Vec::new();
-
-    // 1. Android public directories
-    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
-    potential_dirs.push(std::path::PathBuf::from("/sdcard/Download"));
-    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
-    potential_dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
-
-    // 2. Desktop Windows / Linux / macOS standard Downloads directory
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        potential_dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        potential_dirs.push(std::path::PathBuf::from(home).join("Downloads"));
-    }
-
-    // 3. Fallback to temp dir
-    potential_dirs.push(std::env::temp_dir());
-
     let mut last_error = String::new();
-    for dir in potential_dirs {
+    for dir in public_output_dirs() {
         if !dir.exists() {
             let _ = std::fs::create_dir_all(&dir);
         }
@@ -1447,7 +1480,9 @@ pub fn save_desktop_file(filename: &str, base64_data: &str) -> Result<Value, Com
 
     Err(CommandError::new(
         "DESKTOP_SAVE_FAILED",
-        &format!("Gagal menulis file ke media penyimpanan: {}", last_error),
+        &format!(
+            "Berkas tidak dapat disimpan ke folder Unduhan perangkat: {last_error}. Pada Android 10 ke atas, gunakan tombol Bagikan untuk memilih sendiri tujuan penyimpanannya."
+        ),
     ))
 }
 

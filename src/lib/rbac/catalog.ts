@@ -91,6 +91,25 @@ export const PERMISSION_CATALOG = [
     name: "Hapus Foto Bukti Absensi",
     group: "Sistem",
   },
+  // Portabilitas data. MEMBUAT cadangan tidak butuh izin khusus di luar ini,
+  // tetapi berkasnya memuat hash password, rahasia TOTP, dan foto absensi —
+  // jadi mengeluarkannya dari perangkat adalah tindakan yang harus diberikan
+  // sadar, bukan ikut paket bawaan.
+  {
+    key: "password_reset.approve",
+    name: "Setujui Pemulihan Password",
+    group: "Sistem",
+  },
+  {
+    key: "database_backup.export",
+    name: "Ekspor Cadangan Database",
+    group: "Sistem",
+  },
+  {
+    key: "database_backup.restore",
+    name: "Pulihkan Database dari Cadangan",
+    group: "Sistem",
+  },
   { key: "operators.view", name: "Lihat Master Operator", group: "Sistem" },
   { key: "operators.manage", name: "Kelola Master Operator", group: "Sistem" },
   { key: "roles.manage", name: "Kelola Role & Akses", group: "Sistem" },
@@ -170,6 +189,14 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Menghapus foto bukti absensi menghilangkan satu-satunya bukti visual bahwa
   // sebuah scan benar dilakukan orang yang bersangkutan.
   "attendance_photo.delete",
+  // Memulihkan cadangan MENIMPA seluruh data perusahaan sekaligus — absensi,
+  // payroll, operator, dan hak aksesnya. Tidak ada operasi lain di aplikasi ini
+  // yang bisa menghapus sebanyak itu dalam satu langkah.
+  "database_backup.restore",
+  // Menyetujui pemulihan berarti menyerahkan kendali sebuah akun kepada orang
+  // yang sedang berdiri di depan layar. Peninjaunya WAJIB sadar memikul itu,
+  // jadi tidak ikut paket bawaan Admin.
+  "password_reset.approve",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [

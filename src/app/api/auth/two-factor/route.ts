@@ -3,6 +3,7 @@ import {
   requireWebPermission,
   requireWebSession,
 } from "@/lib/server/auth/authorize";
+import { issuePasswordRecoveryCodes } from "@/lib/server/auth/password-reset";
 import {
   beginTwoFactorSetup,
   confirmTwoFactorSetup,
@@ -39,7 +40,8 @@ type TwoFactorStep =
   | "begin"
   | "confirm"
   | "disable"
-  | "admin-disable";
+  | "admin-disable"
+  | "recovery-codes";
 
 interface TwoFactorBody {
   step?: unknown;
@@ -87,6 +89,16 @@ export async function POST(request: NextRequest) {
           code,
         });
         return noStoreJson({ sukses: true });
+      // Kode pemulihan password, bukan kode cadangan 2FA — tetapi tunduk pada
+      // aturan yang sama seperti langkah lain di berkas ini: id operatornya
+      // diambil dari SESI, tidak pernah dari badan permintaan. Mencetak kode
+      // bagi akun orang lain berarti membuat kunci cadangan ke akun itu tanpa
+      // pemiliknya pernah tahu.
+      case "recovery-codes":
+        return noStoreJson({
+          sukses: true,
+          codes: await issuePasswordRecoveryCodes(database, actor.id),
+        });
       default:
         return noStoreJson({
           sukses: true,

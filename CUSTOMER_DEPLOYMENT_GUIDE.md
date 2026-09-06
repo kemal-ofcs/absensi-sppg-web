@@ -4,6 +4,58 @@ Dokumen ini adalah panduan resmi penyiapan lingkungan server (*Web Cloud*) dan p
 
 ---
 
+## 0. Memilih Mode Database
+
+Aplikasi mendukung tiga mode. Pilihannya disimpan **eksplisit** di
+`TursoConfig.provider` dan tidak pernah ditebak dari bentuk URL — sebuah salah
+ketik tidak boleh diam-diam melonggarkan aturan keamanan alamat.
+
+| Mode | Nilai provider | Cocok untuk | Biaya berulang |
+| :--- | :--- | :--- | :--- |
+| **Database Lokal** | `local_file` | Satu perangkat berdiri sendiri, tanpa internet sama sekali | Nol |
+| **Server Sendiri** | `self_hosted` | 2–3 perangkat berbagi data lewat `sqld` di komputer kantor/NAS | Nol |
+| **Turso Cloud** | `turso` | Beberapa cabang, akses dari luar kantor | Langganan Turso |
+
+### Database Lokal — yang perlu diketahui sebelum menjual
+
+- Berlaku untuk **Desktop (.exe) dan Mobile (.apk) saja**. Sisi **Web selalu
+  memakai database remote**; kebutuhan offline kantor dilayani kedua aplikasi
+  Tauri itu, dan `SPPG_DATABASE_PROVIDER=local_file` sengaja **ditolak** di sisi
+  server.
+- Datanya hidup di dua berkas berdampingan di folder data aplikasi:
+  `sppg-hub.db` (seluruh data perusahaan) dan database perangkat (vault,
+  outbox, cermin operasional). Hanya berkas pertama yang ikut dicadangkan.
+- **Tidak ada cadangan otomatis di mana pun.** Menu **Pengaturan → Cadangan
+  database** adalah satu-satunya jaring pengaman — pastikan customer tahu cara
+  memakainya sebelum serah terima.
+- Akun ber-verifikasi dua langkah **tetap bisa masuk tanpa internet** pada mode
+  ini, karena kodenya diperiksa langsung terhadap berkas lokal.
+
+### Mencadangkan dan memulihkan
+
+- **Ekspor** menghasilkan satu berkas mandiri. Isilah frasa sandi: tanpa itu,
+  berkasnya memuat hash password, rahasia verifikasi dua langkah, dan foto
+  absensi dalam bentuk yang bisa dibuka siapa pun.
+- Salinan otomatis diletakkan di folder **Unduhan**. Bila perangkat menolaknya
+  (lazim pada Android 10), aplikasi mengatakannya apa adanya dan menyebut lokasi
+  aslinya — bukan melaporkan sukses palsu.
+- **Pemulihan MENIMPA** seluruh data, bukan menggabungkan. Database yang lama
+  disimpan berdampingan sebagai `sppg-hub.pre-restore-<stempel>.db`, sehingga
+  salah pilih berkas masih bisa dibatalkan secara manual.
+- Berkas cadangan dari aplikasi versi lebih baru **ditolak**, agar kolom yang
+  belum dikenal tidak terbuang diam-diam.
+
+### Naik dari satu perangkat ke banyak perangkat
+
+Menggabungkan dua database yang pernah berjalan sendiri-sendiri **bukan** operasi
+pemulihan: keduanya hampir pasti memakai `id` yang sama untuk baris berbeda, dan
+bisa memakai kode karyawan atau username yang sama untuk orang berbeda. Jalur
+promosi memetakan ulang id dan **berhenti melapor** bila menemukan tabrakan nilai
+unik — tidak pernah menggabung diam-diam. Rencana dan aturannya ada di
+`src/lib/server/database-promotion.ts`.
+
+---
+
 ## 1. Prinsip Isolasi & Keamanan Data (Tenant Isolation)
 
 Setiap customer/organisasi wajib memiliki lingkungan yang terisolasi 100%:

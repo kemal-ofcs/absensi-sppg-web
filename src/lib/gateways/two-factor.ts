@@ -59,6 +59,27 @@ export async function getTwoFactorStatus() {
   return normalizeStatus(response.status);
 }
 
+/**
+ * Terbitkan ulang kode pemulihan password untuk akun yang sedang login.
+ *
+ * Menerbitkan ulang MENGGANTI seluruh kode lama: daftar yang sebagiannya sudah
+ * tercetak di kertas lama tidak boleh tetap berlaku bersamaan dengan yang baru.
+ * Hasilnya hanya bisa dibaca sekali — database memegang hash-nya saja.
+ */
+export async function issueRecoveryCodes(): Promise<string[]> {
+  const response = isDesktopRuntime()
+    ? await invokeDesktop<{ codes?: unknown }>(
+        "desktop_issue_recovery_codes",
+        {},
+      )
+    : await requestWebApi<{ codes?: unknown }>("/api/auth/two-factor", "POST", {
+        step: "recovery-codes",
+      });
+  return Array.isArray(response.codes)
+    ? response.codes.map((code) => String(code))
+    : [];
+}
+
 export async function beginTwoFactorSetup() {
   if (isDesktopRuntime()) {
     const payload = await invokeDesktop<JsonRecord>(

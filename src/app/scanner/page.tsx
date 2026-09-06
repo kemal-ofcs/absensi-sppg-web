@@ -21,6 +21,7 @@ import { useAuth } from "@/lib/context/AuthContext";
 import type { ScanResult, ScanTerminalInput } from "@/lib/contracts/scanner";
 import { getScanSecurity } from "@/lib/gateways/scan-security";
 import { submitTerminalScan } from "@/lib/gateways/scanner";
+import { requestSyncNow } from "@/lib/gateways/sync-status";
 import { useClock } from "@/lib/hooks/useClock";
 import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
@@ -238,6 +239,20 @@ export default function ScannerPage() {
 
         const result = await submitTerminalScan(input);
         setLastResult(result);
+
+        // Bangunkan siklus sinkronisasi, JANGAN menunggu jadwal berikutnya.
+        //
+        // Absensi adalah satu-satunya mutasi bervolume tinggi yang tidak punya
+        // pemicu push sendiri: hanya lima perintah pengaturan yang memanggil
+        // `push_outbox` langsung, dan halaman ini tidak termasuk. Tanpa
+        // panggilan ini sebuah scan menunggu sampai 30 detik sebelum terkirim —
+        // dan pada terminal yang jendelanya tersembunyi, sampai 90 detik.
+        //
+        // Sengaja LEPAS dari alur scan (tidak di-`await`) supaya tidak menambah
+        // satu milidetik pun ke waktu respons terminal, dan sudah di-throttle
+        // 5 detik oleh AutoSyncRunner sehingga antrean panjang saat jam masuk
+        // tidak berubah menjadi badai siklus.
+        if (result.sukses) requestSyncNow();
 
         // Visual flash feedback
         if (result.sukses) {

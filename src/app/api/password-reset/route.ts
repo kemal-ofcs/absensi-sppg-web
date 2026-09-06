@@ -10,6 +10,8 @@ import {
   inspectResetToken,
   lookupResetAccount,
   PasswordResetError,
+  recoverWithRecoveryCode,
+  resolvePasswordResetRoute,
   swapResetChallenge,
   verifyResetLiveness,
 } from "@/lib/server/auth/password-reset";
@@ -45,7 +47,9 @@ type ResetStep =
   | "verify"
   | "swap-challenge"
   | "inspect-token"
-  | "complete";
+  | "complete"
+  | "route"
+  | "recover-with-code";
 
 interface ResetBody {
   step?: unknown;
@@ -59,6 +63,8 @@ interface ResetBody {
   photoMime?: unknown;
   token?: unknown;
   password?: unknown;
+  code?: unknown;
+  newPassword?: unknown;
 }
 
 /** Payload verifikasi memuat frame piksel mentah, jadi batasnya lebih besar. */
@@ -178,6 +184,30 @@ export async function POST(request: NextRequest) {
         const info = await inspectResetToken(database, text(body.token, 256));
         await clearLoginFailures(database, clientAddress, rateIdentity);
         return okResponse({ token: info });
+      }
+      // Dibaca layar "Lupa Password" sebelum ia menjanjikan email apa pun.
+      // Tidak menyentuh akun mana pun, jadi tidak ada yang bisa dipetakan
+      // darinya — tetapi tetap melewati rate limit yang sama seperti langkah
+      // lain di berkas ini.
+      case "route": {
+        const route = await resolvePasswordResetRoute(database);
+        await clearLoginFailures(database, clientAddress, rateIdentity);
+        return okResponse({ route });
+      }
+      // Jalur kode cetak: tanpa sesi, karena yang memakainya justru orang yang
+      // sedang terkunci di luar. Yang menjaganya adalah kode sekali pakai itu
+      // sendiri — disimpan sebagai hash, dihapus begitu dipakai — ditambah rate
+      // limit di atas, supaya kode 8 karakter tidak bisa ditebak dengan
+      // mencoba terus-menerus.
+      case "recover-with-code": {
+        const result = await recoverWithRecoveryCode(database, {
+          identifier: text(body.identifier),
+          code: text(body.code, 64),
+          newPassword:
+            typeof body.newPassword === "string" ? body.newPassword : "",
+        });
+        await clearLoginFailures(database, clientAddress, rateIdentity);
+        return okResponse(result);
       }
       case "complete": {
         const result = await completePasswordReset(

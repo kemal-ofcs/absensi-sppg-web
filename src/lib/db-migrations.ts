@@ -18,6 +18,7 @@ const OPERATOR_CONTACT_AND_RESET_MIGRATION_VERSION = 11;
 const TWO_FACTOR_MIGRATION_VERSION = 12;
 const SCAN_SECURITY_MIGRATION_VERSION = 13;
 const HOLIDAY_WHITELIST_MIGRATION_VERSION = 14;
+const PASSWORD_RECOVERY_MIGRATION_VERSION = 15;
 
 const SYSTEM_ROLES = [
   {
@@ -348,6 +349,19 @@ export async function runDatabaseMigrations(client: Client) {
       "master_operator",
       "updated_at",
       "ALTER TABLE master_operator ADD COLUMN updated_at TEXT;",
+    ],
+    // Kode pemulihan password Superadmin (schema versi 15). Dieja di sini DAN
+    // di daftar ensure_column milik `turso.rs`, supaya klien mana pun bisa
+    // menyembuhkan database yang dibuat jalur lainnya.
+    [
+      "master_operator",
+      "password_recovery_codes",
+      "ALTER TABLE master_operator ADD COLUMN password_recovery_codes TEXT;",
+    ],
+    [
+      "master_operator",
+      "password_recovery_created_at",
+      "ALTER TABLE master_operator ADD COLUMN password_recovery_created_at TEXT;",
     ],
     [
       "tax_rules",
@@ -883,6 +897,17 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'holiday-whitelist-and-holiday-overtime', ?);`,
     args: [HOLIDAY_WHITELIST_MIGRATION_VERSION, now],
+  });
+
+  // Kode pemulihan password Superadmin. Baris versi ini WAJIB dicatat di sini:
+  // `isDatabaseSchemaReady` membandingkan MAX(version) dengan
+  // CURRENT_SCHEMA_VERSION, sehingga menaikkan konstanta tanpa mencatat
+  // barisnya membuat aplikasi menganggap database selamanya belum siap dan
+  // menjalankan ulang seluruh migrasi pada setiap permintaan.
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'superadmin-password-recovery-codes', ?);`,
+    args: [PASSWORD_RECOVERY_MIGRATION_VERSION, now],
   });
 
   await client.execute(

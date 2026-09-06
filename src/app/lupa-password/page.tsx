@@ -14,6 +14,7 @@ import {
   lookupResetAccount,
   type ResetAccountPreview,
   type ResetChallenge,
+  recoverWithCode,
   swapResetChallenge,
   verifyResetLiveness,
 } from "@/lib/gateways/password-reset";
@@ -30,7 +31,14 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
  * satunya titik di alur ini yang memaksa pemohon menyatakan kembali akun mana
  * yang ia klaim setelah melihat petunjuknya.
  */
-type Step = "cari" | "konfirmasi" | "ulangi" | "foto" | "terkirim";
+type Step =
+  | "cari"
+  | "konfirmasi"
+  | "ulangi"
+  | "foto"
+  | "terkirim"
+  | "kode-pemulihan"
+  | "pulih";
 
 export default function LupaPasswordPage() {
   const isHydrated = useHydrated();
@@ -42,8 +50,20 @@ export default function LupaPasswordPage() {
   const [account, setAccount] = useState<ResetAccountPreview | null>(null);
   const [challenge, setChallenge] = useState<ResetChallenge | null>(null);
   const [deliveryMessage, setDeliveryMessage] = useState("");
+  /**
+   * Jalur penyerahan token yang dipakai permintaan ini.
+   *
+   * Pada pemasangan tanpa konfigurasi email — termasuk seluruh Mode Database
+   * Lokal — tidak ada email yang dikirim, sehingga layar terakhir tidak boleh
+   * menyuruh pengguna membuka kotak masuknya.
+   */
+  const [deliveryMode, setDeliveryMode] = useState<"email" | "in_app">("email");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryConfirm, setRecoveryConfirm] = useState("");
+  const [sisaKode, setSisaKode] = useState(0);
 
   const fail = useCallback((cause: unknown) => {
     setError(
@@ -52,6 +72,33 @@ export default function LupaPasswordPage() {
         : "Permintaan tidak dapat diproses.",
     );
   }, []);
+
+  const submitRecovery = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (recoveryPassword !== recoveryConfirm) {
+      setError("Konfirmasi password baru tidak sama.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const hasil = await recoverWithCode({
+        identifier,
+        code: recoveryCode,
+        newPassword: recoveryPassword,
+      });
+      setSisaKode(hasil.sisaKode);
+      setRecoveryCode("");
+      setRecoveryPassword("");
+      setRecoveryConfirm("");
+      setStep("pulih");
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submitLookup = async (event: FormEvent) => {
     event.preventDefault();
@@ -100,6 +147,7 @@ export default function LupaPasswordPage() {
           challenges: challenge.challenges,
         });
         setDeliveryMessage(delivery.message);
+        setDeliveryMode(delivery.mode);
         setStep("terkirim");
       } catch (cause) {
         fail(cause);
@@ -195,7 +243,113 @@ export default function LupaPasswordPage() {
             >
               {busy ? "Mencari akun..." : "Cari akun"}
             </button>
+
+            {/* Jalur kedua, untuk akun yang tidak bisa menunggu peninjau —
+                terutama Superadmin, yang tidak punya siapa pun di atasnya. */}
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setStep("kode-pemulihan");
+              }}
+              className="min-h-11 w-full rounded-2xl border border-amber-400/30 text-xs font-bold text-amber-200 transition hover:bg-amber-400/10"
+            >
+              Saya punya kode pemulihan cetak
+            </button>
           </form>
+        ) : null}
+
+        {step === "kode-pemulihan" ? (
+          <form className="space-y-4" onSubmit={submitRecovery}>
+            <p className="rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-[11px] leading-4 text-amber-100">
+              Masukkan salah satu kode yang dicetak saat aplikasi pertama kali
+              dipasang. Setiap kode hanya berlaku sekali, dan cara ini bekerja
+              tanpa internet.
+            </p>
+            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              Username atau kode operator
+              <input
+                required
+                autoComplete="username"
+                value={identifier}
+                onChange={(event) => setIdentifier(event.target.value)}
+                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              Kode pemulihan
+              <input
+                required
+                value={recoveryCode}
+                onChange={(event) => setRecoveryCode(event.target.value)}
+                placeholder="XXXX-XXXX"
+                autoComplete="off"
+                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-sm uppercase tracking-wider text-white"
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              Password baru
+              <input
+                required
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                value={recoveryPassword}
+                onChange={(event) => setRecoveryPassword(event.target.value)}
+                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              Ulangi password baru
+              <input
+                required
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                value={recoveryConfirm}
+                onChange={(event) => setRecoveryConfirm(event.target.value)}
+                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={busy}
+              className="min-h-12 w-full rounded-2xl bg-amber-400 text-sm font-black text-slate-950 disabled:opacity-50"
+            >
+              {busy ? "Memulihkan..." : "Pulihkan akses"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setStep("cari");
+              }}
+              className="min-h-10 w-full text-xs font-bold text-slate-400"
+            >
+              Kembali
+            </button>
+          </form>
+        ) : null}
+
+        {step === "pulih" ? (
+          <div className="space-y-4">
+            <p className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-200">
+              Password berhasil diganti dan seluruh sesi lama dicabut. Silakan
+              masuk memakai password baru Anda.
+            </p>
+            <p className="text-[11px] leading-4 text-slate-400">
+              Sisa kode pemulihan: <strong>{sisaKode}</strong>. Terbitkan
+              kumpulan kode baru dari halaman Master Operator bila sisanya
+              menipis.
+            </p>
+            <button
+              type="button"
+              onClick={() => router.replace("/login")}
+              className="min-h-12 w-full rounded-2xl bg-emerald-500 text-sm font-black text-slate-950"
+            >
+              Ke halaman masuk
+            </button>
+          </div>
         ) : null}
 
         {step === "konfirmasi" && account ? (
@@ -294,10 +448,19 @@ export default function LupaPasswordPage() {
             <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
               {deliveryMessage}
             </p>
-            <p className="text-sm text-slate-300">
-              Buka email tersebut lalu klik tautannya untuk membuat password
-              baru. Bila email hanya memuat kode, masukkan kode itu di bawah.
-            </p>
+            {deliveryMode === "in_app" ? (
+              <p className="text-sm text-slate-300">
+                Tidak ada email yang dikirim: pemasangan ini memang tidak
+                memakai jalur email. Hubungi Superadmin agar meninjau foto Anda
+                di halaman Riwayat Reset Password, lalu minta kode pemulihan
+                yang ditampilkan di layarnya. Masukkan kode itu di bawah.
+              </p>
+            ) : (
+              <p className="text-sm text-slate-300">
+                Buka email tersebut lalu klik tautannya untuk membuat password
+                baru. Bila email hanya memuat kode, masukkan kode itu di bawah.
+              </p>
+            )}
             <button
               type="button"
               onClick={() => router.push("/lupa-password/reset")}

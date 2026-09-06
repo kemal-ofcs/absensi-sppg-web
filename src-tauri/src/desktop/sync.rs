@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 14;
+pub const CLIENT_SCHEMA_VERSION: i64 = 15;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -2518,6 +2518,9 @@ pub fn status(state: &DesktopState) -> Result<DesktopSyncStatus, CommandError> {
         }),
         push_error: None,
         changed_rows: 0,
+        local_mode: state
+            .turso_config()
+            .is_some_and(|config| config.provider.is_local_file()),
     })
 }
 
@@ -2697,6 +2700,42 @@ mod tests {
         assert!(!is_client_schema_outdated(CLIENT_SCHEMA_VERSION - 1));
         // Cloud kosong / belum bermigrasi.
         assert!(!is_client_schema_outdated(0));
+    }
+
+    /// `AutoSyncRunner` memakai bendera ini untuk memutuskan apakah
+    /// `navigator.onLine === false` boleh dipakai sebagai alasan melewatkan
+    /// siklus. Salah di sini berarti perangkat mode lokal yang benar-benar
+    /// terputus berhenti menguras outbox, hub tertinggal, lalu ekspor cadangan
+    /// dan promosi ke cloud kehilangan data tanpa satu pun pesan error.
+    #[test]
+    fn status_menandai_mode_lokal_hanya_untuk_provider_local_file() {
+        let (_dir, state) = fixture();
+
+        // Belum dikonfigurasi: bukan mode lokal.
+        assert!(!super::status(&state).expect("status").local_mode);
+
+        for (provider, harapan) in [
+            (crate::desktop::turso::DatabaseProvider::Turso, false),
+            (crate::desktop::turso::DatabaseProvider::SelfHosted, false),
+            (crate::desktop::turso::DatabaseProvider::LocalFile, true),
+        ] {
+            *state.turso_config.write().expect("kunci config") =
+                Some(crate::desktop::turso::TursoConfig::new(
+                    if provider.is_local_file() {
+                        "C:/data/sppg-hub.db".to_string()
+                    } else {
+                        "https://contoh.turso.io".to_string()
+                    },
+                    "token".to_string(),
+                    provider,
+                    false,
+                ));
+            assert_eq!(
+                super::status(&state).expect("status").local_mode,
+                harapan,
+                "provider {provider:?} salah ditandai"
+            );
+        }
     }
 
     fn fixture() -> (tempfile::TempDir, DesktopState) {

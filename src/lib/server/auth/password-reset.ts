@@ -20,6 +20,10 @@ import {
   pickLivenessChallenges,
 } from "@/lib/security/face-liveness";
 import { decodeLivenessFrames } from "@/lib/security/liveness-codec";
+import {
+  generateRecoveryCodes,
+  normalizeRecoveryCode,
+} from "@/lib/security/totp";
 import { buildResetEmail, sendMail } from "@/lib/server/mail/mail-store";
 
 /** Umur permintaan sebelum verifikasi wajah selesai. */
@@ -380,6 +384,14 @@ export async function swapResetChallenge(
 
 export interface ResetVerificationResult {
   delivered: boolean;
+  /**
+   * Jalur yang benar-benar dipakai permintaan ini.
+   *
+   * Layar terakhir membacanya untuk memutuskan kalimat penutupnya. Tanpa ini
+   * ia akan menyuruh pengguna membuka kotak masuk pada pemasangan yang tidak
+   * pernah mengirim email apa pun — bug yang persis pernah terjadi.
+   */
+  mode: "email" | "in_app";
   maskedEmail: string;
   message: string;
   score: number;
@@ -393,6 +405,235 @@ export interface ResetVerificationResult {
  * bukti tetap disimpan walaupun verifikasi gagal pada percobaan terakhir,
  * karena justru percobaan gagal yang paling perlu diaudit.
  */
+/**
+ * Jalur penyerahan token pemulihan yang berlaku pada instalasi ini.
+ *
+ * Cerminan `password_reset_route` di `turso.rs`, dan urutannya WAJIB tetap
+ * sama: nilai eksplisit di `setting_gex_system` menang lebih dulu, baru
+ * status email dipakai sebagai bawaan. Satu database yang sama bisa dilayani
+ * Web dan Desktop bergantian; kalau keduanya menyimpulkan jalur yang berbeda,
+ * sebuah permintaan bisa menunggu persetujuan yang tidak pernah diminta.
+ *
+ * Bawaannya ditentukan otomatis, bukan dipaksakan: pemasangan yang sudah
+ * mengaktifkan email tetap memakai email setelah pembaruan, sisanya memakai
+ * persetujuan di aplikasi.
+ */
+export async function resolvePasswordResetRoute(
+  client: Client,
+): Promise<"email" | "in_app"> {
+  const explicit = await client.execute({
+    sql: "SELECT value FROM setting_gex_system WHERE key = 'password_reset_route' LIMIT 1;",
+    args: [],
+  });
+  const chosen = String(explicit.rows[0]?.value ?? "").trim();
+  if (chosen) return chosen === "email" ? "email" : "in_app";
+
+  const config = await client.execute({
+    sql: "SELECT COALESCE(is_active, 0) AS is_active FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+    args: [],
+  });
+  return Number(config.rows[0]?.is_active ?? 0) === 1 ? "email" : "in_app";
+}
+
+export interface ResetApprovalResult {
+  token: string;
+  berlakuMenit: number;
+  namaOperator: string;
+  identifier: string;
+}
+
+/**
+ * Setujui permintaan pemulihan, lalu serahkan tokennya SEKALI.
+ *
+ * Token baru dibuat di sini, bukan saat verifikasi wajah. Itu disengaja: kalau
+ * ia dibuat lebih dulu, bentuk aslinya harus disimpan di suatu tempat sampai
+ * disetujui — dan database hanya boleh memegang hash-nya.
+ *
+ * Peninjau manusia yang melihat foto wajah pemohon adalah faktor kedua di
+ * jalur ini, dan sebenarnya lebih kuat daripada email: email hanya membuktikan
+ * penguasaan kotak masuk, bukan siapa yang meminta.
+ *
+ * Pemanggil WAJIB sudah memeriksa izin `password_reset.approve`.
+ */
+export async function approvePasswordReset(
+  client: Client,
+  actorId: number,
+  requestId: string,
+): Promise<ResetApprovalResult> {
+  const found = await client.execute({
+    sql: `
+      SELECT p.id, p.status, p.delivery_status, p.identifier_used,
+             COALESCE(m.nama_operator, '') AS nama_operator,
+             CASE WHEN p.expires_at <= ${NOW_SQL} THEN 1 ELSE 0 END AS kedaluwarsa
+      FROM password_reset_request p
+      LEFT JOIN master_operator m ON m.id = p.operator_id
+      WHERE p.id = ? LIMIT 1;
+    `,
+    args: [requestId.trim()],
+  });
+  const row = found.rows[0];
+  if (!row) {
+    throw new PasswordResetError("Permintaan pemulihan tidak ditemukan.", 404);
+  }
+  if (String(row.status ?? "") !== "Menunggu Verifikasi") {
+    throw new PasswordResetError(
+      "Permintaan ini sudah diproses sebelumnya.",
+      409,
+    );
+  }
+  if (String(row.delivery_status ?? "") !== "Menunggu Persetujuan") {
+    throw new PasswordResetError(
+      "Permintaan ini tidak menunggu persetujuan.",
+      409,
+    );
+  }
+  if (Number(row.kedaluwarsa ?? 0) === 1) {
+    await client.execute({
+      sql: "UPDATE password_reset_request SET status = 'Kedaluwarsa' WHERE id = ?;",
+      args: [requestId.trim()],
+    });
+    throw new PasswordResetError(
+      "Permintaan ini sudah kedaluwarsa. Minta pemohon mengulang dari awal.",
+      409,
+    );
+  }
+
+  const resetToken = createOpaqueSessionToken();
+  const applied = await client.execute({
+    sql: `
+      UPDATE password_reset_request
+      SET token_hash = ?, status = 'Terkirim', delivery_status = 'Disetujui',
+          delivery_error = NULL, sent_at = ${NOW_SQL},
+          expires_at = ${expirySql(RESET_TOKEN_TTL_MINUTES)}
+      WHERE id = ? AND status = 'Menunggu Verifikasi';
+    `,
+    args: [await hashSessionToken(resetToken), requestId.trim()],
+  });
+  if (Number(applied.rowsAffected ?? 0) === 0) {
+    throw new PasswordResetError(
+      "Permintaan ini sudah diproses oleh orang lain.",
+      409,
+    );
+  }
+
+  await client
+    .execute({
+      sql: `INSERT INTO role_permission_audit (actor_operator_id, action, detail, created_at) VALUES (?, 'password-reset-approve', ?, ${NOW_SQL});`,
+      args: [actorId, requestId.trim()],
+    })
+    .catch(() => undefined);
+
+  return {
+    token: resetToken,
+    berlakuMenit: RESET_TOKEN_TTL_MINUTES,
+    namaOperator: String(row.nama_operator ?? ""),
+    identifier: String(row.identifier_used ?? ""),
+  };
+}
+
+/**
+ * Terbitkan ulang kode pemulihan password untuk sebuah akun.
+ *
+ * Yang tersimpan hanya hash SHA-256-nya, sama seperti kode cadangan 2FA.
+ * Bentuk aslinya dikembalikan SEKALI dan tidak pernah bisa dibaca lagi — jadi
+ * pemanggil wajib menampilkannya sampai pengguna menyatakan sudah menyimpan.
+ *
+ * Menerbitkan ulang MENGGANTI seluruh kode lama: daftar yang sebagiannya sudah
+ * tercetak di kertas lama tidak boleh tetap berlaku bersamaan dengan yang baru.
+ */
+export async function issuePasswordRecoveryCodes(
+  client: Client,
+  operatorId: number,
+): Promise<string[]> {
+  const codes = generateRecoveryCodes();
+  const hashes = await Promise.all(
+    codes.map((code) => hashSessionToken(normalizeRecoveryCode(code))),
+  );
+  await client.execute({
+    sql: `UPDATE master_operator SET password_recovery_codes = ?, password_recovery_created_at = ${NOW_SQL} WHERE id = ?;`,
+    args: [JSON.stringify(hashes), operatorId],
+  });
+  return codes;
+}
+
+/**
+ * Masuk kembali memakai kode pemulihan cetak, lalu setel password baru.
+ *
+ * Cerminan `password_recovery_with_code` di `turso.rs`. Kode yang dipakai
+ * LANGSUNG DIHAPUS sebelum password diganti — kode sekali pakai yang masih
+ * hidup setelah dipakai bukan lagi kode sekali pakai.
+ *
+ * Akun yang tidak ada dan kode yang salah dijawab dengan pesan yang SAMA.
+ * Membedakannya akan mengubah layar ini menjadi alat memetakan akun mana yang
+ * ada.
+ */
+export async function recoverWithRecoveryCode(
+  client: Client,
+  input: { identifier: string; code: string; newPassword: string },
+): Promise<{ namaOperator: string; sisaKode: number }> {
+  const identifier = input.identifier.trim();
+  if (!identifier) {
+    throw new PasswordResetError("Username atau kode operator wajib diisi.");
+  }
+  const strengthError = validatePasswordStrength(input.newPassword);
+  if (strengthError) throw new PasswordResetError(strengthError);
+
+  const normalized = normalizeRecoveryCode(input.code);
+  if (!normalized) {
+    throw new PasswordResetError("Kode pemulihan wajib diisi.");
+  }
+
+  const ditolak = () =>
+    new PasswordResetError(
+      "Kode pemulihan tidak sesuai, atau sudah pernah dipakai.",
+      409,
+    );
+
+  const found = await client.execute({
+    sql: `
+      SELECT m.id, COALESCE(m.password_recovery_codes, '[]') AS kode,
+             COALESCE(m.nama_operator, '') AS nama_operator
+      FROM master_operator m
+      JOIN app_role r ON r.id = m.role_id
+      WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
+        AND m.status = 'Aktif' AND r.status = 'Aktif'
+      LIMIT 1;
+    `,
+    args: [identifier, identifier],
+  });
+  const row = found.rows[0];
+  if (!row) throw ditolak();
+
+  let stored: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(String(row.kode ?? "[]"));
+    stored = Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    stored = [];
+  }
+
+  const hashed = await hashSessionToken(normalized);
+  if (!stored.includes(hashed)) throw ditolak();
+
+  const operatorId = Number(row.id);
+  const remaining = stored.filter((item) => item !== hashed);
+  await client.execute({
+    sql: "UPDATE master_operator SET password_recovery_codes = ? WHERE id = ?;",
+    args: [JSON.stringify(remaining), operatorId],
+  });
+
+  await client.execute({
+    sql: `UPDATE master_operator SET password_hash = ?, updated_at = ${NOW_SQL} WHERE id = ?;`,
+    args: [await hashPassword(input.newPassword), operatorId],
+  });
+  await revokeOperatorSessions(client, operatorId, "password-recovery");
+
+  return {
+    namaOperator: String(row.nama_operator ?? ""),
+    sisaKode: remaining.length,
+  };
+}
+
 export async function verifyResetLiveness(
   client: Client,
   input: {
@@ -468,6 +709,39 @@ export async function verifyResetLiveness(
     );
   }
 
+  // Jalur persetujuan di aplikasi: tidak ada token yang dibuat di sini, dan
+  // tidak ada yang dikirim ke mana pun. Permintaannya tetap "Menunggu
+  // Verifikasi" sampai seorang peninjau melihat foto wajahnya dan menyetujui —
+  // barulah token dibuat, sekali, di layar peninjau. Tanpa cabang ini, sebuah
+  // pemasangan tanpa konfigurasi email akan selalu gagal mengirim, dan
+  // kegagalan itu MEMBATALKAN permintaannya sehingga fitur ini mati total.
+  if ((await resolvePasswordResetRoute(client)) !== "email") {
+    await client.execute({
+      sql: `
+        UPDATE password_reset_request
+        SET liveness_score = ?, liveness_report = ?, photo_mime = ?, photo_base64 = ?,
+            contact_channel = 'in_app', delivery_status = 'Menunggu Persetujuan',
+            delivery_error = NULL, verified_at = ${NOW_SQL},
+            expires_at = ${expirySql(RESET_TOKEN_TTL_MINUTES)}
+        WHERE id = ? AND status = 'Menunggu Verifikasi';
+      `,
+      args: [
+        verdict.score,
+        report,
+        input.photoMime.slice(0, 40),
+        photo,
+        pending.id,
+      ],
+    });
+    return {
+      delivered: false,
+      mode: "in_app",
+      maskedEmail: maskEmail(pending.contactTarget),
+      message: `Permintaan Anda sudah tercatat dan menunggu persetujuan Superadmin. Hubungi Superadmin untuk meninjau, lalu minta kode pemulihan yang berlaku ${RESET_TOKEN_TTL_MINUTES} menit.`,
+      score: verdict.score,
+    };
+  }
+
   const resetToken = createOpaqueSessionToken();
   const tokenHash = await hashSessionToken(resetToken);
 
@@ -536,6 +810,7 @@ export async function verifyResetLiveness(
 
   return {
     delivered: true,
+    mode: "email",
     maskedEmail: maskEmail(pending.contactTarget),
     message: `Link reset password sudah dikirim ke ${maskEmail(pending.contactTarget)}. Berlaku ${RESET_TOKEN_TTL_MINUTES} menit.`,
     score: verdict.score,

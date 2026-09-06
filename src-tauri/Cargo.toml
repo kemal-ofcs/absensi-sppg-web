@@ -44,7 +44,24 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 rust_decimal = { version = "1.36", features = ["serde-with-str", "maths"] }
 
 [dev-dependencies]
+# Hanya untuk tes: `ensure_schema` bersifat async, dan menguji provisioning
+# mode lokal secara utuh menuntut sebuah runtime. Fitur `macros` sengaja tidak
+# dipakai — `LocalTransport` sepenuhnya sinkron, jadi runtime satu-utas yang
+# dibangun manual sudah cukup. Tidak ikut ke binary rilis.
+tokio = { version = "1", features = ["rt"] }
 tempfile = "3.23.0"
 
 [profile.dev.package.scrypt]
+opt-level = 3
+
+# Hashing password tanpa optimasi membuat satu tes login memakan lebih dari satu
+# menit — biaya yang ditanggung setiap kali `cargo test` dijalankan. Ketiganya
+# hanya dipercepat pada profil dev; profil rilis sudah dioptimasi penuh.
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.argon2]
 opt-level = 3

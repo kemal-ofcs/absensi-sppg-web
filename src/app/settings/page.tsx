@@ -4,7 +4,9 @@ import { redirect } from "next/navigation";
 import type { ChangeEvent, FormEvent } from "react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { DatabaseBackupCard } from "@/components/DatabaseBackupCard";
 import { MailSettingsCard } from "@/components/MailSettingsCard";
+import { PasswordRecoveryCard } from "@/components/PasswordRecoveryCard";
 import { TwoFactorCard } from "@/components/TwoFactorCard";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon } from "@/components/ui/Icon";
@@ -78,6 +80,7 @@ import { syncAppNameCache } from "@/lib/hooks/useAppName";
 import { syncCompanyNameCache } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
+import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import {
   DATABASE_PROVIDER_OPTIONS,
   type DatabaseProvider,
@@ -1239,6 +1242,7 @@ export default function SettingsPage() {
       {/* Keamanan akun sendiri: tidak dijaga izin apa pun, karena setiap
           operator berhak mengamankan akunnya — termasuk role paling terbatas. */}
       <TwoFactorCard />
+      <PasswordRecoveryCard />
 
       {hasPermission(user, "settings.manage") ? <MailSettingsCard /> : null}
 
@@ -1863,6 +1867,16 @@ export default function SettingsPage() {
             </div>
           </form>
         </section>
+      ) : null}
+
+      {/* Cadangan berkas hanya ada artinya bila databasenya memang berada di
+          perangkat ini. Pada Web datanya di database remote, dan seluruh
+          perintah portabilitas adalah command Tauri yang tidak terdaftar di
+          sana — menampilkan kartunya hanya menjanjikan tombol yang pasti
+          gagal. isHydrated menjaga agar render server dan render pertama di
+          peramban tetap sama. */}
+      {isHydrated && user?.isSuperadmin && isDesktopRuntime() ? (
+        <DatabaseBackupCard provider={tursoProvider} />
       ) : null}
 
       {user?.isSuperadmin ? (

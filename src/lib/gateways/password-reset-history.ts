@@ -110,6 +110,64 @@ export async function getPasswordResetPhoto(requestId: string) {
   return response.photo;
 }
 
+export interface ResetApprovalResult {
+  /** Kode pemulihan, diserahkan SEKALI kepada peninjau. */
+  token: string;
+  berlakuMenit: number;
+  namaOperator: string;
+  identifier: string;
+}
+
+/**
+ * Setujui permintaan pemulihan, lalu terima kodenya sekali.
+ *
+ * Jalur ini dipakai ketika instalasi tidak mengirim token lewat email — antara
+ * lain seluruh pemasangan Mode Database Lokal, yang memang tidak punya jaringan.
+ * Peninjau melihat foto wajah pemohon lebih dulu; itulah faktor kedua di jalur
+ * ini, dan sebenarnya lebih kuat daripada email yang hanya membuktikan
+ * penguasaan kotak masuk.
+ *
+ * Kodenya TIDAK disimpan dalam bentuk asli di mana pun — database hanya
+ * memegang hash-nya — sehingga balasan ini adalah satu-satunya kesempatan
+ * membacanya. Layar pemanggil wajib menampilkannya sampai peninjau menutupnya
+ * sendiri.
+ */
+export async function approvePasswordReset(
+  requestId: string,
+): Promise<ResetApprovalResult> {
+  const response = isDesktopRuntime()
+    ? await invokeDesktop<JsonRecord>("desktop_password_reset_approve", {
+        requestId,
+      })
+    : ((await requestWebApi<JsonRecord>(
+        "/api/password-reset/history/approve",
+        "POST",
+        { requestId },
+      )) as JsonRecord);
+  return {
+    token: text(response.token),
+    berlakuMenit: Number(response.berlakuMenit ?? 30),
+    namaOperator: text(response.namaOperator),
+    identifier: text(response.identifier),
+  };
+}
+
+/**
+ * Jalur penyerahan token yang berlaku pada instalasi ini: `email` atau `in_app`.
+ *
+ * Dibaca layar riwayat supaya tombol persetujuan hanya muncul ketika memang
+ * relevan, dan layar "Lupa Password" tidak menjanjikan email pada pemasangan
+ * yang tidak punya jaringan.
+ */
+export async function getPasswordResetRoute(): Promise<"email" | "in_app"> {
+  const response = isDesktopRuntime()
+    ? await invokeDesktop<JsonRecord>("desktop_password_reset_route", {})
+    : ((await requestWebApi<JsonRecord>("/api/password-reset", "POST", {
+        step: "route",
+      })) as JsonRecord);
+  return text(response.route) === "email" ? "email" : "in_app";
+}
+
 export async function deletePasswordResetHistory(requestId: string) {
   if (isDesktopRuntime()) {
     await invokeDesktop<JsonRecord>("desktop_delete_password_reset_history", {

@@ -38,36 +38,62 @@ export function Modal({
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  // Keyboard navigation: Escape key closes modal
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !mounted) return;
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", handleKeyDown);
-    dialogRef.current?.focus({ preventScroll: true });
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, mounted]);
+
+  // Initial focus management & restoration:
+  // Hanya fokus ke dialogRef ketika modal pertama kali terbuka/mounted.
+  // JANGAN PERNAH mencuri fokus jika fokus sudah berada di dalam dialog (misal input aktif).
+  useEffect(() => {
+    if (!isOpen || !mounted) return;
+    const previousFocus = (
+      typeof document !== "undefined" ? document.activeElement : null
+    ) as HTMLElement | null;
+
+    if (
+      dialogRef.current &&
+      !dialogRef.current.contains(document.activeElement)
+    ) {
+      dialogRef.current.focus({ preventScroll: true });
+    }
+
+    return () => {
+      previousFocus?.focus?.();
+    };
+  }, [isOpen, mounted]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !mounted) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isOpen]);
+  }, [isOpen, mounted]);
 
   if (!isOpen || !mounted) return null;
 
   const handleContainerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       event.stopPropagation();
-      onClose();
+      onCloseRef.current();
     }
   };
 

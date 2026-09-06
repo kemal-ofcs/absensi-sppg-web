@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
+  getSyncStatus,
   isDesktopSyncAvailable,
   SYNC_COMPLETED_EVENT,
   SYNC_FAILED_EVENT,
@@ -39,6 +40,16 @@ export function AutoSyncRunner() {
   const lastRunAtRef = useRef(0);
   const failureStreakRef = useRef(0);
   const lastStatusRef = useRef<SyncStatus | null>(null);
+  /**
+   * Perangkat memakai Mode Database Lokal.
+   *
+   * Disemai sekali saat mount lewat `getSyncStatus()` — pembacaan lokal murni
+   * yang tidak menyentuh jaringan — karena penjagaan `navigator.onLine` di
+   * bawah harus sudah tahu jawabannya SEBELUM siklus pertama. Mengandalkan
+   * hasil siklus saja tidak cukup: di mode lokal yang benar-benar terputus,
+   * siklus pertama itulah yang justru dilewatkan.
+   */
+  const localModeRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedRef = useRef(false);
 
@@ -81,7 +92,18 @@ export function AutoSyncRunner() {
       }
       // Offline menurut browser: tidak perlu membuang satu round-trip yang pasti
       // gagal. Event "online" akan membangunkan siklus berikutnya seketika.
-      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      //
+      // TIDAK berlaku di Mode Database Lokal. Di sana "cloud"-nya adalah berkas
+      // hub di perangkat yang sama, jadi push adalah operasi berkas — bukan
+      // jaringan — dan mesin yang benar-benar terputus justru kasus penggunaan
+      // utamanya. Melewatkan siklus di sana membuat outbox tidak pernah
+      // terkuras, hub tertinggal, lalu ekspor cadangan dan promosi ke cloud
+      // (keduanya membaca hub) kehilangan data tanpa satu pun pesan error.
+      if (
+        !localModeRef.current &&
+        typeof navigator !== "undefined" &&
+        navigator.onLine === false
+      ) {
         schedule(nextDelay());
         return;
       }
@@ -94,6 +116,9 @@ export function AutoSyncRunner() {
         if (result) {
           const previous = lastStatusRef.current;
           lastStatusRef.current = result;
+          // Provider bisa berubah tanpa aplikasi ditutup (Superadmin mengganti
+          // konfigurasi database), jadi bendera ini disegarkan tiap siklus.
+          localModeRef.current = result.localMode === true;
           // Hanya kabarkan bila ada yang benar-benar berubah. Banyak halaman
           // memuat ulang datanya pada event ini; memancarkannya setiap 30 detik
           // walau tidak ada perubahan berarti refetch sia-sia terus menerus.
@@ -161,6 +186,20 @@ export function AutoSyncRunner() {
     window.addEventListener("focus", onFocus);
     window.addEventListener("online", onOnline);
     window.addEventListener(SYNC_REQUEST_EVENT, onSyncRequest);
+
+    // Baca status sekali sebelum siklus pertama: murni pembacaan lokal, tidak
+    // menyentuh jaringan, dan inilah yang membuat perangkat mode lokal yang
+    // terputus tetap menjalankan siklusnya.
+    void getSyncStatus()
+      .then((status) => {
+        if (stoppedRef.current || !status) return;
+        lastStatusRef.current = status;
+        localModeRef.current = status.localMode === true;
+      })
+      .catch(() => {
+        // Operator tanpa izin `sync.view` tidak bisa membaca status. Biarkan
+        // bendera tetap false: perilakunya kembali seperti semula, bukan gagal.
+      });
 
     schedule(INITIAL_DELAY_MS);
 

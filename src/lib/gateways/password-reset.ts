@@ -33,6 +33,15 @@ export interface ResetDelivery {
   maskedEmail: string;
   message: string;
   score: number;
+  /**
+   * Jalur penyerahan token yang benar-benar dipakai.
+   *
+   * `in_app` berarti tidak ada email yang dikirim ke mana pun — tokennya
+   * diserahkan Superadmin setelah meninjau foto pemohon. Layar pemanggil WAJIB
+   * membedakan keduanya: menyuruh pengguna membuka email pada jalur in_app
+   * membuatnya menunggu sesuatu yang tidak akan pernah datang.
+   */
+  mode: "email" | "in_app";
 }
 
 export interface ResetTokenPreview {
@@ -61,6 +70,41 @@ function asChallenges(value: unknown): LivenessChallenge[] {
  * memanggil command Rust yang bicara langsung ke Turso, karena pemasangan
  * Desktop bisa saja tidak punya aplikasi Web sama sekali.
  */
+/**
+ * Masuk kembali memakai kode pemulihan cetak, lalu setel password baru.
+ *
+ * Jalur terpisah dari lima langkah foto + tantangan: ia tidak menunggu
+ * peninjau dan tidak mengirim apa pun. Kode ini diterbitkan sekali saat
+ * provisioning, dan pada pemasangan tanpa jaringan ia satu-satunya jalan
+ * masuk kembali bagi Superadmin — akun yang tidak punya siapa pun di atasnya
+ * untuk menyetujui pemulihan.
+ */
+export async function recoverWithCode(input: {
+  identifier: string;
+  code: string;
+  newPassword: string;
+}): Promise<{ namaOperator: string; sisaKode: number }> {
+  const payload = {
+    identifier: input.identifier.trim(),
+    code: input.code.trim(),
+    newPassword: input.newPassword,
+  };
+  const response = isDesktopRuntime()
+    ? await invokeDesktop<Record<string, unknown>>(
+        "desktop_password_recovery_with_code",
+        payload,
+      )
+    : await requestWebApi<Record<string, unknown>>(
+        "/api/password-reset",
+        "POST",
+        { step: "recover-with-code", ...payload },
+      );
+  return {
+    namaOperator: String(response.namaOperator ?? ""),
+    sisaKode: Number(response.sisaKode ?? 0),
+  };
+}
+
 export async function lookupResetAccount(identifier: string) {
   if (isDesktopRuntime()) {
     const payload = await invokeDesktop<JsonRecord>(
@@ -166,6 +210,7 @@ export async function verifyResetLiveness(input: {
       maskedEmail: String(delivery.masked_email ?? delivery.maskedEmail ?? ""),
       message: String(delivery.message ?? ""),
       score: Number(delivery.score ?? 0),
+      mode: delivery.mode === "in_app" ? "in_app" : "email",
     } satisfies ResetDelivery;
   }
   const response = await requestWebApi<{ delivery: ResetDelivery }>(
@@ -180,7 +225,10 @@ export async function verifyResetLiveness(input: {
       photoMime: input.photoMime,
     },
   );
-  return response.delivery;
+  // Server Web menghitung jalurnya sendiri dan mengirimkannya di `mode`.
+  // Bawaan `email` di sini hanya untuk balasan dari server versi lama yang
+  // belum membawa field itu — bukan asumsi bahwa Web selalu memakai email.
+  return { ...response.delivery, mode: response.delivery.mode ?? "email" };
 }
 
 /**

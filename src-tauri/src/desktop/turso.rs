@@ -1201,6 +1201,8 @@ impl TursoClient {
                     totp_enabled INTEGER NOT NULL DEFAULT 0,
                     totp_confirmed_at TEXT,
                     totp_recovery_codes TEXT,
+                    password_recovery_codes TEXT,
+                    password_recovery_created_at TEXT,
                     status TEXT DEFAULT 'Aktif',
                     created_at TEXT,
                     updated_at TEXT
@@ -1711,6 +1713,9 @@ impl TursoClient {
                 ('two_factor.reset', 'Reset 2FA Operator Lain', 'Sistem', 'Mematikan verifikasi dua langkah milik operator lain.', 1, 203),
                 ('attendance_photo.view', 'Lihat Foto Bukti Absensi', 'Sistem', 'Melihat foto bukti yang diambil saat scan absensi.', 1, 204),
                 ('attendance_photo.delete', 'Hapus Foto Bukti Absensi', 'Sistem', 'Menghapus foto bukti absensi dari database cloud.', 1, 205),
+                ('password_reset.approve', 'Setujui Pemulihan Password', 'Sistem', 'Meninjau foto pemohon lalu menyerahkan kode pemulihan password.', 1, 208),
+                ('database_backup.export', 'Ekspor Cadangan Database', 'Sistem', 'Mengeluarkan seluruh isi database ke satu berkas cadangan.', 1, 206),
+                ('database_backup.restore', 'Pulihkan Database dari Cadangan', 'Sistem', 'Menimpa seluruh data perangkat dengan isi berkas cadangan.', 1, 207),
                 ('operators.view', 'Lihat Daftar Operator', 'Operator', 'Melihat data operator dan akun pengguna.', 1, 210),
                 ('operators.manage', 'Kelola Operator', 'Operator', 'Menambah dan mengubah data operator aplikasi.', 1, 220),
                 ('roles.manage', 'Kelola Hak Akses & Role', 'Role', 'Mengatur permission matriks untuk setiap role.', 1, 230),
@@ -1908,7 +1913,8 @@ impl TursoClient {
                 (10, 'payroll-engine-v1', datetime('now')),
                 (11, 'operator-contact-and-password-reset', datetime('now')),
                 (12, 'two-factor-totp', datetime('now')),
-                (14, 'holiday-whitelist-and-holiday-overtime', datetime('now'));"#,
+                (14, 'holiday-whitelist-and-holiday-overtime', datetime('now')),
+                (15, 'superadmin-password-recovery-codes', datetime('now'));"#,
                 vec![],
             ),
         ];
@@ -1981,6 +1987,12 @@ impl TursoClient {
             ("master_operator", "totp_enabled", "ALTER TABLE master_operator ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;"),
             ("master_operator", "totp_confirmed_at", "ALTER TABLE master_operator ADD COLUMN totp_confirmed_at TEXT;"),
             ("master_operator", "totp_recovery_codes", "ALTER TABLE master_operator ADD COLUMN totp_recovery_codes TEXT;"),
+            // Kode pemulihan password (schema versi 15). Satu-satunya jalan
+            // masuk kembali bagi Superadmin yang lupa passwordnya pada
+            // pemasangan tanpa jaringan — di sana tidak ada email yang bisa
+            // dikirim, dan tidak ada Superadmin lain yang bisa menyetujui.
+            ("master_operator", "password_recovery_codes", "ALTER TABLE master_operator ADD COLUMN password_recovery_codes TEXT;"),
+            ("master_operator", "password_recovery_created_at", "ALTER TABLE master_operator ADD COLUMN password_recovery_created_at TEXT;"),
             ("app_role", "require_totp", "ALTER TABLE app_role ADD COLUMN require_totp INTEGER NOT NULL DEFAULT 0;"),
             // Keamanan absensi per role (schema versi 13): foto bukti wajib dan
             // pembatasan alamat IP. Keduanya nonaktif secara bawaan supaya
@@ -2103,6 +2115,11 @@ impl TursoClient {
         .await?;
         self.query_one(
             "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2010, 'holiday-whitelist-and-holiday-overtime-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2011, 'superadmin-password-recovery-codes-v1', datetime('now'));",
             vec![],
         )
         .await?;
@@ -2317,7 +2334,10 @@ impl TursoClient {
                 // tabel atau kolom. Tanpa itu database cloud yang sudah ada
                 // dianggap mutakhir dan seluruh ensure_column dilewati, sehingga
                 // push gagal dengan "has no column named ...".
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2010;",
+                // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
+                // tabel atau kolom — nilainya di sini dan pada INSERT di atas
+                // harus selalu sama.
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2011;",
                 vec![],
             )
             .await
@@ -2485,10 +2505,17 @@ impl TursoClient {
         })
     }
 
+    /// Buat Superadmin pertama, lalu terbitkan kode pemulihannya.
+    ///
+    /// Kode dikembalikan di sini karena inilah satu-satunya saat ia bisa
+    /// dibaca: database hanya memegang hash-nya. Akun pertama juga satu-satunya
+    /// akun yang tidak punya siapa pun di atasnya untuk menyetujui pemulihan,
+    /// sehingga tanpa kode ini sebuah pemasangan tanpa jaringan bisa terkunci
+    /// selamanya hanya karena satu password terlupa.
     pub async fn bootstrap_superadmin(
         &self,
         draft: BootstrapSuperadminDraft,
-    ) -> Result<(), CommandError> {
+    ) -> Result<Vec<String>, CommandError> {
         validate_bootstrap_draft(&draft)?;
         if !self.bootstrap_status().await?.required {
             return Err(CommandError::new(
@@ -2557,7 +2584,25 @@ impl TursoClient {
                 "Superadmin awal belum berhasil dibuat.",
             ));
         }
-        Ok(())
+
+        let operator_id = self
+            .query_one(
+                "SELECT id FROM master_operator WHERE username = ? COLLATE NOCASE LIMIT 1;",
+                vec![json!(draft.username.trim())],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|row| row.get("id").and_then(Value::as_i64))
+            .ok_or_else(|| {
+                CommandError::new(
+                    "TURSO_BOOTSTRAP_FAILED",
+                    "Superadmin awal tidak dapat dibaca kembali.",
+                )
+            })?;
+
+        self.issue_password_recovery_codes(operator_id).await
     }
 
     /// Waktu dari jam DATABASE, bukan jam perangkat.
@@ -7112,6 +7157,315 @@ impl TursoClient {
     /// diketahui database: urutan tantangan acak yang diterbitkan pada langkah
     /// sebelumnya, umur permintaan, dan status barisnya. Rekaman lama atau
     /// vonis untuk urutan tantangan yang berbeda ditolak di sini.
+    /// Jalur penyerahan token pemulihan yang berlaku pada instalasi ini.
+    ///
+    /// Mode Database Lokal tidak punya jaringan sama sekali, sehingga
+    /// pengiriman email SELALU gagal di sana — dan kegagalan itu membatalkan
+    /// permintaannya, membuat fitur "Lupa Password" mati total. Karena itu
+    /// jalurnya tidak boleh mengasumsikan jaringan, dengan alasan yang sama
+    /// yang membuat verifikasi dua langkah memakai TOTP alih-alih penyedia
+    /// identitas pihak ketiga.
+    ///
+    /// Bawaannya DITENTUKAN OTOMATIS, bukan dipaksakan: instalasi yang sudah
+    /// mengaktifkan email tetap memakai email setelah pembaruan, sisanya —
+    /// termasuk seluruh pemasangan mode lokal — memakai persetujuan di
+    /// aplikasi. Nilai eksplisit di `setting_gex_system` mengalahkan keduanya.
+    /// Jumlah kode pemulihan yang diterbitkan sekali jalan.
+    ///
+    /// Cukup banyak untuk bertahan bertahun-tahun bagi akun yang jarang lupa,
+    /// tetapi masih muat dicetak pada selembar kertas dan disimpan di brankas.
+    const RECOVERY_CODE_COUNT: usize = 8;
+
+    /// Terbitkan ulang kode pemulihan password untuk sebuah akun.
+    ///
+    /// Yang tersimpan hanya hash SHA-256-nya, sama seperti kode cadangan 2FA.
+    /// Bentuk aslinya dikembalikan SEKALI dan tidak pernah bisa dibaca lagi —
+    /// karena itu pemanggil wajib menampilkannya sampai pengguna menyatakan
+    /// sudah menyimpannya.
+    ///
+    /// Menerbitkan ulang MENGGANTI seluruh kode lama: daftar yang sebagiannya
+    /// sudah tercetak di kertas lama tidak boleh tetap berlaku bersamaan dengan
+    /// yang baru.
+    pub async fn issue_password_recovery_codes(
+        &self,
+        operator_id: i64,
+    ) -> Result<Vec<String>, CommandError> {
+        let codes = generate_recovery_codes(Self::RECOVERY_CODE_COUNT);
+        let hashes: Vec<String> = codes
+            .iter()
+            .map(|code| sha256_hex(&normalize_recovery_code(code)))
+            .collect();
+
+        self.query_one(
+            "UPDATE master_operator SET password_recovery_codes = ?, password_recovery_created_at = datetime('now') WHERE id = ?;",
+            vec![
+                json!(serde_json::to_string(&hashes).unwrap_or_else(|_| "[]".to_string())),
+                json!(operator_id),
+            ],
+        )
+        .await?;
+
+        Ok(codes)
+    }
+
+    /// Masuk kembali memakai kode pemulihan, lalu setel password baru.
+    ///
+    /// Inilah satu-satunya jalan pulih bagi Superadmin pada pemasangan tanpa
+    /// jaringan: tidak ada email yang bisa dikirim, dan tidak ada Superadmin
+    /// lain yang bisa menyetujui permintaannya.
+    ///
+    /// Kode yang dipakai LANGSUNG DIHAPUS, bahkan bila langkah berikutnya
+    /// gagal — kode sekali pakai yang masih hidup setelah dipakai bukan lagi
+    /// kode sekali pakai. Verifikasinya memakai perbandingan hash, sehingga
+    /// database tidak pernah memegang bentuk aslinya.
+    pub async fn password_recovery_with_code(
+        &self,
+        identifier: &str,
+        code: &str,
+        new_password: &str,
+    ) -> Result<Value, CommandError> {
+        let identifier = identifier.trim();
+        if identifier.is_empty() {
+            return Err(CommandError::new(
+                "RECOVERY_REJECTED",
+                "Username atau kode operator wajib diisi.",
+            ));
+        }
+        if new_password.chars().count() < 8 {
+            return Err(CommandError::new(
+                "RECOVERY_PASSWORD_WEAK",
+                "Password baru minimal 8 karakter.",
+            ));
+        }
+
+        let normalized = normalize_recovery_code(code);
+        if normalized.is_empty() {
+            return Err(CommandError::new(
+                "RECOVERY_REJECTED",
+                "Kode pemulihan wajib diisi.",
+            ));
+        }
+
+        let row = self
+            .query_one(
+                r#"SELECT m.id, COALESCE(m.password_recovery_codes, '[]') AS kode,
+                          COALESCE(m.nama_operator, '') AS nama_operator
+                   FROM master_operator m
+                   JOIN app_role r ON r.id = m.role_id
+                   WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
+                     AND m.status = 'Aktif' AND r.status = 'Aktif'
+                   LIMIT 1;"#,
+                vec![json!(identifier), json!(identifier)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next();
+
+        // Akun yang tidak ada dan kode yang salah dijawab SAMA. Membedakannya
+        // akan mengubah layar ini menjadi alat memetakan akun mana yang ada.
+        let ditolak = || {
+            CommandError::new(
+                "RECOVERY_REJECTED",
+                "Kode pemulihan tidak sesuai, atau sudah pernah dipakai.",
+            )
+        };
+
+        let Some(row) = row else {
+            return Err(ditolak());
+        };
+        let operator_id = row.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let stored: Vec<String> = row
+            .get("kode")
+            .and_then(Value::as_str)
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+
+        let hashed = sha256_hex(&normalized);
+        if !stored.iter().any(|item| *item == hashed) {
+            return Err(ditolak());
+        }
+
+        let remaining: Vec<&String> = stored.iter().filter(|item| **item != hashed).collect();
+        self.query_one(
+            "UPDATE master_operator SET password_recovery_codes = ? WHERE id = ?;",
+            vec![
+                json!(serde_json::to_string(&remaining).unwrap_or_else(|_| "[]".to_string())),
+                json!(operator_id),
+            ],
+        )
+        .await?;
+
+        let password_hash = hash_password_pbkdf2(new_password);
+        self.query_one(
+            "UPDATE master_operator SET password_hash = ?, updated_at = datetime('now') WHERE id = ?;",
+            vec![json!(password_hash), json!(operator_id)],
+        )
+        .await?;
+
+        // Sesi lama dicabut: siapa pun yang masih memegang sesi dengan password
+        // lama tidak boleh tetap masuk setelah pemiliknya memulihkan akunnya.
+        self.query_one(
+            "UPDATE app_session SET revoked_at = datetime('now'), revoked_reason = 'password-recovery' WHERE operator_id = ? AND revoked_at IS NULL;",
+            vec![json!(operator_id)],
+        )
+        .await
+        .ok();
+
+        Ok(json!({
+            "sukses": true,
+            "namaOperator": row.get("nama_operator").and_then(Value::as_str).unwrap_or(""),
+            "sisaKode": remaining.len(),
+        }))
+    }
+
+    pub async fn password_reset_route(&self) -> Result<String, CommandError> {
+        let explicit = self
+            .query_one(
+                "SELECT value FROM setting_gex_system WHERE key = 'password_reset_route' LIMIT 1;",
+                vec![],
+            )
+            .await
+            .ok()
+            .and_then(|result| result.to_objects().into_iter().next())
+            .and_then(|row| {
+                row.get("value")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            });
+
+        if let Some(value) = explicit {
+            return Ok(if value == "email" {
+                "email".to_owned()
+            } else {
+                "in_app".to_owned()
+            });
+        }
+
+        let mail_active = self
+            .query_one(
+                "SELECT COALESCE(is_active, 0) AS is_active FROM app_mail_config WHERE id = 'default' LIMIT 1;",
+                vec![],
+            )
+            .await
+            .ok()
+            .and_then(|result| result.to_objects().into_iter().next())
+            .and_then(|row| {
+                row.get("is_active")
+                    .and_then(|value| value.as_i64().or_else(|| value.as_bool().map(i64::from)))
+            })
+            .unwrap_or(0);
+
+        Ok(if mail_active == 1 {
+            "email".to_owned()
+        } else {
+            "in_app".to_owned()
+        })
+    }
+
+    /// Setujui permintaan pemulihan dan serahkan tokennya SEKALI.
+    ///
+    /// Token baru dibuat di sini, bukan saat verifikasi wajah. Itu disengaja:
+    /// kalau ia dibuat lebih dulu, bentuk aslinya harus disimpan di suatu tempat
+    /// sampai disetujui — dan database hanya boleh memegang hash-nya.
+    ///
+    /// Peninjau manusia yang melihat foto wajah pemohon adalah faktor kedua di
+    /// jalur ini, dan sebenarnya lebih kuat daripada email: email hanya
+    /// membuktikan penguasaan kotak masuk, bukan siapa yang meminta.
+    pub async fn password_reset_approve(
+        &self,
+        actor_id: i64,
+        request_id: &str,
+    ) -> Result<Value, CommandError> {
+        let existing = self
+            .query_one(
+                r#"SELECT p.id, p.status, p.delivery_status, p.identifier_used,
+                          COALESCE(m.nama_operator, '') AS nama_operator,
+                          CASE WHEN p.expires_at <= datetime('now') THEN 1 ELSE 0 END AS kedaluwarsa
+                   FROM password_reset_request p
+                   LEFT JOIN master_operator m ON m.id = p.operator_id
+                   WHERE p.id = ? LIMIT 1;"#,
+                vec![json!(request_id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                CommandError::new(
+                    "RESET_REQUEST_NOT_FOUND",
+                    "Permintaan pemulihan tidak ditemukan.",
+                )
+            })?;
+
+        if existing.get("status").and_then(Value::as_str) != Some("Menunggu Verifikasi") {
+            return Err(CommandError::new(
+                "RESET_REQUEST_NOT_PENDING",
+                "Permintaan ini sudah diproses sebelumnya.",
+            ));
+        }
+        if existing.get("delivery_status").and_then(Value::as_str) != Some("Menunggu Persetujuan") {
+            return Err(CommandError::new(
+                "RESET_REQUEST_NOT_PENDING",
+                "Permintaan ini tidak menunggu persetujuan.",
+            ));
+        }
+        if existing
+            .get("kedaluwarsa")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            == 1
+        {
+            self.query_one(
+                "UPDATE password_reset_request SET status = 'Kedaluwarsa' WHERE id = ?;",
+                vec![json!(request_id)],
+            )
+            .await?;
+            return Err(CommandError::new(
+                "RESET_REQUEST_EXPIRED",
+                "Permintaan ini sudah kedaluwarsa. Minta pemohon mengulang dari awal.",
+            ));
+        }
+
+        let reset_token = random_reset_token();
+        let update_sql = format!(
+            r#"UPDATE password_reset_request
+               SET token_hash = ?, status = 'Terkirim', delivery_status = 'Disetujui',
+                   delivery_error = NULL, sent_at = datetime('now'),
+                   expires_at = datetime('now', '+{RESET_TOKEN_TTL_MINUTES} minutes')
+               WHERE id = ? AND status = 'Menunggu Verifikasi';"#
+        );
+        let applied = self
+            .query_one(
+                update_sql,
+                vec![json!(sha256_hex(&reset_token)), json!(request_id)],
+            )
+            .await?;
+        if applied.rows_affected == 0 {
+            return Err(CommandError::new(
+                "RESET_REQUEST_NOT_PENDING",
+                "Permintaan ini sudah diproses oleh orang lain.",
+            ));
+        }
+
+        self.query_one(
+            "INSERT INTO role_permission_audit (actor_operator_id, action, detail, created_at) VALUES (?, 'password-reset-approve', ?, datetime('now'));",
+            vec![json!(actor_id), json!(request_id)],
+        )
+        .await
+        .ok();
+
+        Ok(json!({
+            "sukses": true,
+            "token": reset_token,
+            "berlakuMenit": RESET_TOKEN_TTL_MINUTES,
+            "namaOperator": existing.get("nama_operator").and_then(Value::as_str).unwrap_or(""),
+            "identifier": existing.get("identifier_used").and_then(Value::as_str).unwrap_or(""),
+        }))
+    }
+
     pub async fn password_reset_verify(
         &self,
         request_id: &str,
@@ -7201,6 +7555,43 @@ impl TursoClient {
             )
             .await?;
             return Err(reset_error(reason));
+        }
+
+        // Jalur persetujuan di aplikasi: tidak ada token yang dibuat di sini,
+        // dan tidak ada yang dikirim ke mana pun. Permintaannya tetap
+        // "Menunggu Verifikasi" sampai seorang Superadmin melihat foto wajahnya
+        // dan menyetujui — barulah token dibuat, sekali, di layar peninjau.
+        if self.password_reset_route().await? != "email" {
+            let update_sql = format!(
+                r#"UPDATE password_reset_request
+                   SET liveness_score = ?, liveness_report = ?, photo_mime = ?, photo_base64 = ?,
+                       contact_channel = 'in_app', delivery_status = 'Menunggu Persetujuan',
+                       delivery_error = NULL, verified_at = datetime('now'),
+                       expires_at = datetime('now', '+{RESET_TOKEN_TTL_MINUTES} minutes')
+                   WHERE id = ? AND status = 'Menunggu Verifikasi';"#
+            );
+            self.query_one(
+                update_sql,
+                vec![
+                    json!(score),
+                    json!(verdict.to_string()),
+                    json!(photo_mime.chars().take(40).collect::<String>()),
+                    json!(photo),
+                    json!(request_id),
+                ],
+            )
+            .await?;
+
+            return Ok(json!({
+                "delivery": {
+                    "delivered": false,
+                    "mode": "in_app",
+                    "message": format!(
+                        "Permintaan Anda sudah tercatat dan menunggu persetujuan Superadmin. Hubungi Superadmin untuk meninjau, lalu minta kode pemulihan yang berlaku {RESET_TOKEN_TTL_MINUTES} menit."
+                    ),
+                    "score": score,
+                }
+            }));
         }
 
         let reset_token = random_reset_token();
@@ -8590,6 +8981,338 @@ mod tests {
     /// kewajiban token tidak berlaku. Yang justru wajib dijaga adalah origin
     /// sintetisnya tetap stabil — vault perangkat mengikat snapshot kredensial
     /// padanya, sehingga origin yang berubah membatalkan seluruh akses offline.
+    /// Regresi: "Lupa Password" lewat email pada Mode Database Lokal.
+    ///
+    /// Alur ini dilaporkan gagal dengan "akun tidak ditemukan" padahal jalur
+    /// kode pemulihan — yang mencari lewat username/kode operator — berhasil.
+    /// Perbedaannya hanya bentuk identitas yang dicari, jadi tes ini mengunci
+    /// ketiganya sekaligus terhadap berkas lokal yang sungguhan.
+    #[test]
+    fn lupa_password_menemukan_akun_lewat_email() {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("hub.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+
+        runtime.block_on(async {
+            let client = TursoClient::local_file(
+                Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            client
+                .bootstrap_superadmin(BootstrapSuperadminDraft {
+                    kode_operator: "SPD001".into(),
+                    nama_operator: "Superadmin Uji".into(),
+                    username: "superadmin.uji".into(),
+                    email: "Superadmin.Uji@Contoh.ID".into(),
+                    no_hp: "081234567890".into(),
+                    password: "KataSandiUji#2026".into(),
+                })
+                .await
+                .expect("bootstrap superadmin");
+
+            // Username — jalur yang dilaporkan berhasil.
+            client
+                .password_reset_lookup("superadmin.uji")
+                .await
+                .expect("pencarian lewat username");
+
+            // Email persis seperti yang diketik saat bootstrap.
+            client
+                .password_reset_lookup("Superadmin.Uji@Contoh.ID")
+                .await
+                .expect("pencarian lewat email apa adanya");
+
+            // Email dalam huruf kecil — bentuk yang tersimpan di database.
+            client
+                .password_reset_lookup("superadmin.uji@contoh.id")
+                .await
+                .expect("pencarian lewat email huruf kecil");
+        });
+    }
+
+    /// Jalan pulih terakhir bagi Superadmin, dibuktikan tanpa jaringan.
+    ///
+    /// Akun pertama adalah satu-satunya akun yang tidak punya siapa pun di
+    /// atasnya untuk menyetujui pemulihan. Tanpa kode ini, sebuah pemasangan
+    /// mode lokal bisa terkunci selamanya hanya karena satu password terlupa —
+    /// tidak ada email yang bisa dikirim, dan tidak ada peninjau yang bisa
+    /// dimintai tolong.
+    #[test]
+    fn kode_pemulihan_mengembalikan_akses_tanpa_jaringan() {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+
+        runtime.block_on(async {
+            let client = TursoClient::local_file(
+                Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+
+            let codes = client
+                .bootstrap_superadmin(BootstrapSuperadminDraft {
+                    kode_operator: "SPD001".into(),
+                    nama_operator: "Superadmin Uji".into(),
+                    username: "superadmin.uji".into(),
+                    email: "superadmin.uji@contoh.id".into(),
+                    no_hp: "081234567890".into(),
+                    password: "KataSandiLama#2026".into(),
+                })
+                .await
+                .expect("bootstrap superadmin");
+
+            assert_eq!(codes.len(), 8, "kode pemulihan wajib terbit saat bootstrap");
+            // Kode harus dapat dibaca manusia yang menyalinnya dari layar ke
+            // kertas: tanpa karakter yang mudah tertukar seperti 0/O dan 1/I.
+            for code in &codes {
+                assert!(!code.contains('0') && !code.contains('O'));
+                assert!(!code.contains('1') && !code.contains('I'));
+            }
+
+            let dipakai = codes.first().expect("kode pertama").clone();
+
+            // Kode yang salah ditolak, dan TIDAK boleh membocorkan apakah
+            // akunnya ada.
+            let salah = client
+                .password_recovery_with_code("superadmin.uji", "XXXX-XXXX", "KataSandiBaru#2026")
+                .await
+                .expect_err("kode salah harus ditolak");
+            assert_eq!(salah.code, "RECOVERY_REJECTED");
+            let tidak_ada = client
+                .password_recovery_with_code("akun.tidak.ada", &dipakai, "KataSandiBaru#2026")
+                .await
+                .expect_err("akun tidak ada harus ditolak");
+            assert_eq!(tidak_ada.code, salah.code);
+            assert_eq!(tidak_ada.message, salah.message);
+
+            // Password baru yang terlalu pendek ditolak SEBELUM kode dikonsumsi.
+            let lemah = client
+                .password_recovery_with_code("superadmin.uji", &dipakai, "pendek")
+                .await
+                .expect_err("password lemah harus ditolak");
+            assert_eq!(lemah.code, "RECOVERY_PASSWORD_WEAK");
+
+            let hasil = client
+                .password_recovery_with_code("superadmin.uji", &dipakai, "KataSandiBaru#2026")
+                .await
+                .expect("pemulihan harus berhasil");
+            assert_eq!(hasil.get("sisaKode").and_then(Value::as_i64), Some(7));
+
+            // Password baru berlaku, password lama tidak.
+            client
+                .authenticate_operator("superadmin.uji", "KataSandiBaru#2026", None)
+                .await
+                .expect("login dengan password baru");
+            assert!(client
+                .authenticate_operator("superadmin.uji", "KataSandiLama#2026", None)
+                .await
+                .is_err());
+
+            // Kode sekali pakai: percobaan kedua dengan kode yang sama ditolak.
+            let ulang = client
+                .password_recovery_with_code("superadmin.uji", &dipakai, "KataSandiLain#2026")
+                .await
+                .expect_err("kode bekas harus ditolak");
+            assert_eq!(ulang.code, "RECOVERY_REJECTED");
+        });
+    }
+
+    /// Janji utama mode lokal, dibuktikan ujung ke ujung: sebuah perangkat
+    /// yang belum pernah tersambung ke mana pun bisa dipasang, membuat akun
+    /// pertamanya, lalu dipakai masuk — tanpa satu paket jaringan pun.
+    ///
+    /// Ketiga langkahnya memakai fungsi produksi yang sama persis dengan jalur
+    /// cloud (`ensure_schema`, `bootstrap_superadmin`, `authenticate_operator`);
+    /// yang berbeda hanya transportnya. Kalau tes ini lulus, tidak ada lagi
+    /// bagian dari alur pemasangan yang diam-diam menuntut server.
+    #[test]
+    fn bootstrap_lalu_login_berhasil_tanpa_jaringan() {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+
+        runtime.block_on(async {
+            let client = TursoClient::local_file(
+                Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+
+            // Database baru wajib meminta akun pertama dibuat.
+            let sebelum = client.bootstrap_status().await.expect("status bootstrap");
+            assert!(sebelum.required, "database baru harus menuntut bootstrap");
+
+            client
+                .bootstrap_superadmin(BootstrapSuperadminDraft {
+                    kode_operator: "SPD001".into(),
+                    nama_operator: "Superadmin Uji".into(),
+                    username: "superadmin.uji".into(),
+                    email: "superadmin.uji@contoh.id".into(),
+                    no_hp: "081234567890".into(),
+                    password: "KataSandiUji#2026".into(),
+                })
+                .await
+                .expect("bootstrap superadmin");
+
+            // Sesudah akun pertama ada, pintu bootstrap wajib tertutup —
+            // membiarkannya terbuka berarti siapa pun bisa membuat Superadmin
+            // kedua tanpa melewati satu pun pemeriksaan hak akses.
+            let sesudah = client.bootstrap_status().await.expect("status bootstrap");
+            assert!(!sesudah.required, "bootstrap harus tertutup setelah akun pertama dibuat");
+
+            let operator = client
+                .authenticate_operator("superadmin.uji", "KataSandiUji#2026", None)
+                .await
+                .expect("login lokal");
+            assert!(operator.is_superadmin);
+            assert_eq!(operator.username, "superadmin.uji");
+            assert!(!operator.totp_enabled, "akun baru belum memakai 2FA");
+
+            // Kode operator juga sah sebagai identitas login.
+            let lewat_kode = client
+                .authenticate_operator("SPD001", "KataSandiUji#2026", None)
+                .await
+                .expect("login memakai kode operator");
+            assert_eq!(lewat_kode.id, operator.id);
+
+            // Password yang salah tetap ditolak — jalur lokal bukan jalan pintas.
+            let ditolak = client
+                .authenticate_operator("superadmin.uji", "salah", None)
+                .await
+                .expect_err("password salah harus ditolak");
+            assert_eq!(ditolak.code, "LOGIN_REJECTED");
+        });
+    }
+
+    /// Provisioning mode lokal, dari ujung ke ujung.
+    ///
+    /// Inilah bukti janji utama arsitektur ini: SQL yang sama persis yang
+    /// membangun database cloud juga membangun berkas lokal. Bukan salinan
+    /// DDL, bukan skema kedua — `ensure_schema()` yang sama, hanya dengan
+    /// transport yang ditukar. Kalau tes ini lulus, drift antara tabel lokal
+    /// dan tabel cloud tidak mungkin terjadi karena keduanya lahir dari satu
+    /// fungsi.
+    #[test]
+    fn provisioning_lokal_membangun_seluruh_tabel_cloud() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+
+        let client = TursoClient::local_file(
+            Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+            &hub,
+            Client::new(),
+        );
+        client.ensure_schema().await.expect("provisioning lokal");
+
+        let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+
+        // Ke-35 tabel yang dituntut `isDatabaseSchemaReady` di `db-schema.ts`.
+        // Daftar ini sengaja dieja ulang di sini: kalau salah satunya berhenti
+        // dibuat, aplikasi Web akan menganggap database selamanya belum siap.
+        for table in [
+            "master_data", "id_card", "master_operator", "tbl_shift",
+            "setting_gex_system", "log_scan", "absensi_harian",
+            "backup_karyawan", "koreksi_admin", "audit_absensi", "app_role",
+            "app_permission", "role_permission", "app_session",
+            "auth_login_rate_limit", "sync_operation_receipt",
+            "sync_change_log", "sync_changelog", "app_bootstrap_state",
+            "import_offline", "tbl_hari_libur", "company_profile",
+            "id_card_template", "salary_configs", "overtime_tier_rules",
+            "payroll_components", "tax_rules", "bpjs_rules", "payroll_runs",
+            "payroll_items", "payroll_audit_logs", "password_reset_request",
+            "app_mail_config", "absensi_foto", "hari_libur_whitelist",
+        ] {
+            let ada: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1;",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(ada, 1, "tabel '{table}' tidak dibuat oleh ensure_schema()");
+        }
+
+        // Penghitung perubahan per tabel: tanpa ini, setiap siklus tarik akan
+        // menganggap seluruh tabel berpotensi berubah.
+        let pulse: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sync_pulse';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(pulse, 1, "sync_pulse tidak dibuat");
+
+        let versi: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migration WHERE version > 0;",
+                [],
+                |row| row.get(0),
+            )
+            .expect("versi skema");
+        assert_eq!(
+            versi,
+            crate::desktop::sync::CLIENT_SCHEMA_VERSION,
+            "versi skema hasil provisioning lokal berbeda dari versi klien"
+        );
+        });
+    }
+
+    /// Katalog permission ikut tertanam, bukan hanya tabelnya.
+    ///
+    /// Database tanpa baris permission membuat setiap pemeriksaan hak akses
+    /// gagal — Superadmin pun tidak bisa membuka apa pun.
+    #[test]
+    fn provisioning_lokal_menanam_role_dan_permission() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+
+        let client = TursoClient::local_file(
+            Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+            &hub,
+            Client::new(),
+        );
+        client.ensure_schema().await.expect("provisioning lokal");
+
+        let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+        let permissions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM app_permission;", [], |row| row.get(0))
+            .expect("hitung permission");
+        assert!(
+            permissions > 30,
+            "katalog permission tidak tertanam (hanya {permissions} baris)"
+        );
+
+        let superadmin: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM app_role WHERE role_key = 'superadmin' AND is_superadmin = 1;",
+                [],
+                |row| row.get(0),
+            )
+            .expect("hitung role superadmin");
+        assert_eq!(superadmin, 1, "role Superadmin tidak tertanam");
+        });
+    }
+
     #[test]
     fn mode_lokal_tidak_pernah_menuntut_token() {
         let local = TursoConfig::new(

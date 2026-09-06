@@ -4,6 +4,14 @@ import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 
 export interface SyncStatus {
+  /**
+   * Perangkat ini memakai Mode Database Lokal.
+   *
+   * Dipakai `AutoSyncRunner` untuk memutuskan apakah `navigator.onLine` boleh
+   * dipakai sebagai alasan melewatkan siklus. Di mode lokal tidak boleh: push
+   * di sana adalah operasi berkas, bukan jaringan.
+   */
+  localMode?: boolean;
   clientId: string;
   pending: number;
   synced: number;

@@ -11,10 +11,12 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
+  approvePasswordReset,
   deletePasswordResetHistory,
   getPasswordResetHistory,
   getPasswordResetPhoto,
   purgePasswordResetHistory,
+  type ResetApprovalResult,
 } from "@/lib/gateways/password-reset-history";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
@@ -61,6 +63,34 @@ export default function RiwayatResetPasswordPage() {
   const [purgeOpen, setPurgeOpen] = useState(false);
 
   const canDelete = hasPermission(user, "password_reset.delete");
+  const canApprove = hasPermission(user, "password_reset.approve");
+  const [approval, setApproval] = useState<ResetApprovalResult | null>(null);
+
+  /**
+   * Setujui permintaan, lalu tampilkan kodenya.
+   *
+   * Kode ini tidak disimpan dalam bentuk asli di mana pun — database hanya
+   * memegang hash-nya — sehingga layar ini satu-satunya kesempatan membacanya.
+   * Karena itu ia ditampilkan sebagai dialog yang harus ditutup peninjau
+   * sendiri, bukan notifikasi yang hilang otomatis.
+   */
+  const approve = async (entry: ResetHistoryEntry) => {
+    setBusy(true);
+    try {
+      setApproval(await approvePasswordReset(entry.id));
+      await load();
+    } catch (caught) {
+      setFeedback({
+        tone: "error",
+        message:
+          caught instanceof Error
+            ? caught.message
+            : "Permintaan tidak dapat disetujui.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -267,12 +297,46 @@ export default function RiwayatResetPasswordPage() {
               entry={entry}
               busy={busy}
               canDelete={canDelete}
+              canApprove={canApprove}
               onOpenPhoto={() => void openPhoto(entry)}
               onDelete={() => setDeleteTarget(entry)}
+              onApprove={() => void approve(entry)}
             />
           ))}
         </ul>
       )}
+
+      {approval ? (
+        <Modal
+          title="Kode pemulihan"
+          titleId="reset-approval-title"
+          onClose={() => setApproval(null)}
+        >
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-300">
+              Serahkan kode ini kepada{" "}
+              <strong className="text-white">{approval.namaOperator}</strong>{" "}
+              secara langsung. Berlaku {approval.berlakuMenit} menit dan hanya
+              bisa dipakai sekali.
+            </p>
+            <p className="approval-code-pill select-all break-all rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-center font-mono text-base font-black tracking-wider text-emerald-100">
+              {approval.token}
+            </p>
+            <p className="text-[11px] leading-4 text-amber-300">
+              Kode ini tidak tersimpan dan tidak dapat ditampilkan ulang. Bila
+              layar ini ditutup sebelum kodenya diserahkan, pemohon harus
+              mengajukan permintaan baru.
+            </p>
+            <button
+              type="button"
+              onClick={() => setApproval(null)}
+              className="recovery-code-btn min-h-11 w-full rounded-xl bg-white/10 text-xs font-black text-slate-200 transition hover:bg-white/20"
+            >
+              Saya sudah menyerahkan kodenya
+            </button>
+          </div>
+        </Modal>
+      ) : null}
 
       {photo ? (
         <Modal
@@ -418,15 +482,25 @@ function HistoryCard({
   entry,
   busy,
   canDelete,
+  canApprove,
   onOpenPhoto,
   onDelete,
+  onApprove,
 }: {
   entry: ResetHistoryEntry;
   busy: boolean;
   canDelete: boolean;
+  canApprove: boolean;
   onOpenPhoto: () => void;
   onDelete: () => void;
+  onApprove: () => void;
 }) {
+  // Hanya permintaan yang benar-benar menunggu peninjauan manusia yang boleh
+  // disetujui. Menampilkan tombolnya pada baris lain akan mengundang klik yang
+  // pasti ditolak backend.
+  const menungguPersetujuan =
+    entry.deliveryStatus === "Menunggu Persetujuan" &&
+    entry.status === "Menunggu Verifikasi";
   return (
     <li className="app-panel rounded-3xl p-4 sm:p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -461,6 +535,16 @@ function HistoryCard({
               Tanpa foto
             </span>
           )}
+          {canApprove && menungguPersetujuan ? (
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={busy}
+              className="min-h-10 rounded-xl bg-emerald-400 px-3.5 text-xs font-black text-slate-950 transition hover:bg-emerald-300 disabled:opacity-50"
+            >
+              Setujui
+            </button>
+          ) : null}
           {canDelete ? (
             <button
               type="button"

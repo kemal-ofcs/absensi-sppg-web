@@ -1,9 +1,11 @@
+use base64::prelude::*;
 use reqwest::Method;
 use serde_json::{json, Value};
 use tauri::State;
 use zeroize::Zeroizing;
 
 use super::{
+    portability,
     administration,
     config::DesktopState,
     models::{
@@ -36,7 +38,11 @@ fn require_session(state: &DesktopState) -> Result<OperatorUser, CommandError> {
     Ok(session.operator.clone())
 }
 
-fn require_permission(
+// `pub(crate)`, bukan privat: build Mobile punya perintah yang tidak ada
+// padanannya di Desktop (`share.rs`), dan perintah itu wajib melewati gerbang
+// izin yang SAMA. Menyalin logikanya ke sana akan membuat dua gerbang yang
+// cepat atau lambat berbeda.
+pub(crate) fn require_permission(
     state: &DesktopState,
     permission: &str,
 ) -> Result<OperatorUser, CommandError> {
@@ -222,7 +228,7 @@ pub async fn desktop_bootstrap_superadmin(
     auth_token: Option<String>,
     provider: Option<turso::DatabaseProvider>,
     allow_insecure_transport: Option<bool>,
-) -> Result<(), CommandError> {
+) -> Result<Value, CommandError> {
     if state
         .session
         .lock()
@@ -250,13 +256,18 @@ pub async fn desktop_bootstrap_superadmin(
     )?;
     let client = turso::TursoClient::from_config(&config, state.http.clone())?;
     let status = client.bootstrap_status().await?;
-    if status.required {
-        client.bootstrap_superadmin(draft).await?;
-    }
+    // Kode pemulihan hanya bisa dibaca SEKALI — database memegang hash-nya saja.
+    // Karena itu ia ikut dalam balasan ini, dan layar bootstrap wajib
+    // menampilkannya sampai pengguna menyatakan sudah menyimpannya.
+    let recovery_codes = if status.required {
+        client.bootstrap_superadmin(draft).await?
+    } else {
+        Vec::new()
+    };
     state.set_database_config(&config)?;
     let _ = sync::pull_snapshot(&state, "").await;
     storage::audit(&state.data_dir, None, "bootstrap-superadmin-success", None);
-    Ok(())
+    Ok(json!({ "sukses": true, "recoveryCodes": recovery_codes }))
 }
 
 fn ensure_bootstrap_window_open(state: &DesktopState) -> Result<(), CommandError> {
@@ -288,6 +299,37 @@ fn resolve_bootstrap_turso_config(
     let token = auth_token.unwrap_or_default().trim().to_owned();
     let stored = state.turso_config();
 
+    // Provider yang tidak dikirim frontend mewarisi pilihan yang sudah tersimpan;
+    // instalasi lama yang belum punya konfigurasi apa pun tetap jatuh ke Turso.
+    //
+    // WAJIB ditentukan SEBELUM alamat kosong ditolak di bawah: Mode Database
+    // Lokal memang tidak punya alamat, dan formulirnya sengaja tidak menampilkan
+    // kolom itu. Versi sebelumnya memeriksa alamat lebih dulu, sehingga
+    // provisioning perangkat baru dalam mode lokal selalu berhenti dengan
+    // "Alamat database wajib diisi" — menuntut sesuatu yang tidak pernah bisa
+    // diisi pengguna.
+    let requested_provider = provider
+        .or_else(|| stored.as_ref().map(|config| config.provider))
+        .unwrap_or_default();
+
+    if requested_provider.is_local_file() {
+        // Lokasi berkas hub ditentukan di sini persis seperti pada
+        // `set_database_config`, supaya kedua pintu masuk konfigurasi memakai
+        // lokasi bawaan yang sama. Alamat yang dikirim eksplisit tetap
+        // dihormati, agar hub bisa ditaruh di drive lain.
+        let path = if url.is_empty() {
+            state.local_hub_path().to_string_lossy().into_owned()
+        } else {
+            url
+        };
+        return Ok(turso::TursoConfig::new(
+            path,
+            String::new(),
+            turso::DatabaseProvider::LocalFile,
+            false,
+        ));
+    }
+
     if url.is_empty() {
         return stored.ok_or_else(|| {
             CommandError::new(
@@ -297,11 +339,7 @@ fn resolve_bootstrap_turso_config(
         });
     }
 
-    // Provider yang tidak dikirim frontend mewarisi pilihan yang sudah tersimpan;
-    // instalasi lama yang belum punya konfigurasi apa pun tetap jatuh ke Turso.
-    let provider = provider
-        .or_else(|| stored.as_ref().map(|config| config.provider))
-        .unwrap_or_default();
+    let provider = requested_provider;
     let allow_insecure_transport = allow_insecure_transport
         .or_else(|| {
             stored
@@ -734,6 +772,79 @@ pub async fn desktop_logout(state: State<'_, DesktopState>) -> Result<(), Comman
 /// Berbeda dengan command `desktop_password_reset_*` yang sengaja terbuka tanpa
 /// sesi, membaca dan menghapus riwayat butuh izin: setiap baris menyimpan foto
 /// wajah pemohon.
+/// Setujui permintaan pemulihan password, lalu serahkan kodenya sekali.
+///
+/// Berbeda dari lima langkah `desktop_password_reset_*` lain yang sengaja
+/// terbuka tanpa sesi, langkah ini menuntut izin: yang terjadi di sini adalah
+/// menyerahkan kendali sebuah akun kepada orang yang berdiri di depan layar,
+/// setelah peninjau melihat foto wajahnya.
+#[tauri::command]
+pub async fn desktop_password_reset_approve(
+    state: State<'_, DesktopState>,
+    request_id: String,
+) -> Result<Value, CommandError> {
+    let actor = require_permission(&state, "password_reset.approve")?;
+    let hasil = state
+        .get_turso_client()?
+        .password_reset_approve(actor.id, request_id.trim())
+        .await?;
+    storage::audit(
+        &state.data_dir,
+        Some(actor.id),
+        "password-reset-approved",
+        Some(request_id.trim()),
+    );
+    Ok(hasil)
+}
+
+/// Jalur penyerahan token pemulihan yang berlaku pada instalasi ini.
+///
+/// Dibaca layar "Lupa Password" supaya pesannya benar sejak awal: menjanjikan
+/// email pada pemasangan yang tidak punya jaringan hanya membuat pengguna
+/// menunggu sesuatu yang tidak akan pernah datang.
+/// Masuk kembali memakai kode pemulihan, lalu setel password baru.
+///
+/// Sengaja TANPA sesi, sama seperti lima langkah `desktop_password_reset_*`
+/// lainnya: yang memakainya justru orang yang sedang terkunci di luar. Yang
+/// menjaganya adalah kode sekali pakai itu sendiri — disimpan sebagai hash,
+/// dihapus begitu dipakai.
+#[tauri::command]
+pub async fn desktop_password_recovery_with_code(
+    state: State<'_, DesktopState>,
+    identifier: String,
+    code: String,
+    new_password: String,
+) -> Result<Value, CommandError> {
+    ensure_login_not_locked(&state, identifier.trim())?;
+    let hasil = state
+        .get_turso_client()?
+        .password_recovery_with_code(&identifier, &code, &new_password)
+        .await;
+    match hasil {
+        Ok(value) => {
+            storage::clear_login_failures(&state.data_dir, identifier.trim())?;
+            storage::audit(&state.data_dir, None, "password-recovery-code-used", None);
+            Ok(value)
+        }
+        Err(error) => {
+            // Kode yang salah dihitung sebagai percobaan gagal: tanpa itu,
+            // daftar kode 8 karakter bisa ditebak dengan mencoba terus-menerus.
+            if error.code == "RECOVERY_REJECTED" {
+                reject_login(&state, identifier.trim())?;
+            }
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn desktop_password_reset_route(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let route = state.get_turso_client()?.password_reset_route().await?;
+    Ok(json!({ "route": route }))
+}
+
 #[tauri::command]
 pub async fn desktop_list_password_reset_history(
     state: State<'_, DesktopState>,
@@ -914,6 +1025,33 @@ pub async fn desktop_get_two_factor_status(
         .get_turso_client()?
         .get_two_factor_status(actor.id)
         .await
+}
+
+/// Terbitkan ulang kode pemulihan password untuk akun yang sedang login.
+///
+/// SENGAJA hanya untuk akun sendiri, diambil dari sesi — bukan dari id yang
+/// dikirim pemanggil. Mencetak kode bagi akun orang lain berarti membuat kunci
+/// cadangan ke akun itu, dan itu jalur pengambilalihan yang senyap: pemiliknya
+/// tidak akan pernah tahu kuncinya pernah dibuat.
+///
+/// Akun Superadmin baru yang dibuat lewat Master Operator belum punya kode apa
+/// pun sampai pemiliknya menerbitkannya sendiri dari sini.
+#[tauri::command]
+pub async fn desktop_issue_recovery_codes(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    let actor = require_session(&state)?;
+    let codes = state
+        .get_turso_client()?
+        .issue_password_recovery_codes(actor.id)
+        .await?;
+    storage::audit(
+        &state.data_dir,
+        Some(actor.id),
+        "password-recovery-codes-reissued",
+        None,
+    );
+    Ok(json!({ "codes": codes }))
 }
 
 #[tauri::command]
@@ -1664,6 +1802,106 @@ pub fn desktop_clear_failed_sync(
     desktop_get_sync_status(state)
 }
 
+/// Keluarkan seluruh isi database lokal ke satu berkas cadangan.
+///
+/// Frasa sandi kosong menghasilkan berkas SQLite polos. Itu sah — berguna untuk
+/// diagnosa karena bisa dibuka di DB Browser — tetapi berkasnya memuat hash
+/// password, rahasia TOTP, dan foto absensi, sehingga UI WAJIB memperingatkan
+/// pengguna sebelum memilihnya.
+#[tauri::command]
+pub fn desktop_export_database(
+    state: State<'_, DesktopState>,
+    passphrase: Option<String>,
+) -> Result<portability::ExportReport, CommandError> {
+    let operator = require_permission(&state, "database_backup.export")?;
+    let report = portability::export_database(&state, passphrase.as_deref())?;
+    storage::audit(
+        &state.data_dir,
+        Some(operator.id),
+        if report.encrypted {
+            "database-export-encrypted"
+        } else {
+            "database-export-plaintext"
+        },
+        Some(&report.file_name),
+    );
+    Ok(report)
+}
+
+/// Ganti isi database lokal dengan isi berkas cadangan.
+///
+/// Ini MENIMPA seluruh data perangkat, bukan menggabungkannya — karena itu
+/// izinnya masuk `SENSITIVE_MUTATION_PERMISSIONS`. Berkas lama tetap disimpan
+/// berdampingan oleh `portability::import_database`, sehingga salah pilih
+/// berkas masih bisa dibatalkan secara manual.
+#[tauri::command]
+pub fn desktop_import_database(
+    state: State<'_, DesktopState>,
+    source_path: String,
+    passphrase: Option<String>,
+) -> Result<portability::ImportReport, CommandError> {
+    let operator = require_permission(&state, "database_backup.restore")?;
+    let report = portability::import_database(
+        &state,
+        std::path::Path::new(source_path.trim()),
+        passphrase.as_deref(),
+    )?;
+    storage::audit(
+        &state.data_dir,
+        Some(operator.id),
+        "database-restore",
+        Some(&format!("schema v{}", report.schema_version)),
+    );
+    Ok(report)
+}
+
+/// Pulihkan dari berkas yang dipilih lewat `<input type="file">`.
+///
+/// Android tidak pernah menyerahkan path sebenarnya kepada halaman web, jadi
+/// tanpa jalur ini pemulihan mustahil dilakukan di Mobile. Validasinya sama
+/// persis dengan jalur berbasis path — datangnya berkas dari pemilih berkas
+/// bukan alasan untuk melonggarkan pemeriksaan apa pun.
+#[tauri::command]
+pub fn desktop_import_database_bytes(
+    state: State<'_, DesktopState>,
+    file_name: String,
+    base64_data: String,
+    passphrase: Option<String>,
+) -> Result<portability::ImportReport, CommandError> {
+    let operator = require_permission(&state, "database_backup.restore")?;
+    let payload = BASE64_STANDARD
+        .decode(base64_data.trim())
+        .map_err(|_| CommandError::new("BACKUP_CORRUPT", "Isi berkas cadangan tidak dapat dibaca."))?;
+    let report = portability::import_database_bytes(
+        &state,
+        &payload,
+        file_name.trim(),
+        passphrase.as_deref(),
+    )?;
+    storage::audit(
+        &state.data_dir,
+        Some(operator.id),
+        "database-restore-upload",
+        Some(&format!("schema v{}", report.schema_version)),
+    );
+    Ok(report)
+}
+
+/// Lokasi folder data aplikasi, untuk ditampilkan di layar Cadangan.
+///
+/// Pada Desktop pengguna bisa membukanya sendiri di file explorer dan menyalin
+/// berkasnya secara manual — asalkan aplikasi ditutup lebih dulu. Pada Android
+/// folder ini privat dan tidak terjangkau, sehingga UI mengarahkan penggunanya
+/// ke tombol Bagikan.
+#[tauri::command]
+pub fn desktop_get_data_folder(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "database_backup.export")?;
+    Ok(json!({
+        "dataDir": state.data_dir.to_string_lossy(),
+        "hubPath": state.local_hub_path().to_string_lossy(),
+    }))
+}
+
 #[tauri::command]
 pub fn desktop_save_file(filename: String, base64_data: String) -> Result<Value, CommandError> {
     operational::save_desktop_file(&filename, &base64_data)
@@ -2056,6 +2294,72 @@ pub fn desktop_clear_turso_config(state: State<'_, DesktopState>) -> Result<(), 
 #[cfg(test)]
 mod tests_offline_login {
     use super::*;
+
+    /// Regresi: provisioning Mode Database Lokal pernah berhenti dengan
+    /// "Alamat database wajib diisi" pada perangkat baru.
+    ///
+    /// Formulirnya memang tidak menampilkan kolom alamat — mode lokal tidak
+    /// punya alamat — sehingga frontend mengirim string kosong. Versi
+    /// sebelumnya memeriksa alamat SEBELUM melihat provider, jadi pengguna
+    /// diminta mengisi sesuatu yang tidak pernah bisa diisi.
+    #[test]
+    fn mode_lokal_tidak_menuntut_alamat_saat_provisioning() {
+        let directory = tempfile::tempdir().expect("direktori sementara");
+        storage::initialize(directory.path()).expect("skema lokal");
+        let state = DesktopState {
+            server_origin: std::sync::RwLock::new("http://localhost:3000".to_string()),
+            offline_max_age_hours: 24,
+            data_dir: directory.path().to_path_buf(),
+            http: reqwest::Client::new(),
+            turso_config: std::sync::RwLock::new(None),
+            session: std::sync::Mutex::new(None),
+            vault_lock: std::sync::Mutex::new(()),
+        };
+
+        let config = resolve_bootstrap_turso_config(
+            &state,
+            Some(String::new()),
+            Some(String::new()),
+            Some(turso::DatabaseProvider::LocalFile),
+            Some(false),
+        )
+        .expect("mode lokal harus diterima tanpa alamat");
+
+        assert!(config.provider.is_local_file());
+        assert!(!config.requires_auth_token());
+        assert_eq!(
+            config.local_file_path().expect("lokasi hub"),
+            state.local_hub_path(),
+            "lokasi hub bawaan harus sama dengan yang dipakai set_database_config"
+        );
+    }
+
+    /// Provider selain lokal TETAP menuntut alamat: perangkat yang belum
+    /// dikonfigurasi tidak punya database untuk diperiksa.
+    #[test]
+    fn provider_remote_tetap_menuntut_alamat() {
+        let directory = tempfile::tempdir().expect("direktori sementara");
+        storage::initialize(directory.path()).expect("skema lokal");
+        let state = DesktopState {
+            server_origin: std::sync::RwLock::new("http://localhost:3000".to_string()),
+            offline_max_age_hours: 24,
+            data_dir: directory.path().to_path_buf(),
+            http: reqwest::Client::new(),
+            turso_config: std::sync::RwLock::new(None),
+            session: std::sync::Mutex::new(None),
+            vault_lock: std::sync::Mutex::new(()),
+        };
+
+        let error = resolve_bootstrap_turso_config(
+            &state,
+            Some(String::new()),
+            None,
+            Some(turso::DatabaseProvider::Turso),
+            None,
+        )
+        .expect_err("Turso tanpa alamat harus ditolak");
+        assert_eq!(error.code, "TURSO_NOT_CONFIGURED");
+    }
 
     fn operator(totp_enabled: bool) -> OperatorUser {
         OperatorUser {

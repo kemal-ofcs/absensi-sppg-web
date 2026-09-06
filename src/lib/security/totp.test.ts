@@ -186,5 +186,10 @@ describe("kode cadangan", () => {
   test("normalisasi menyamakan bentuk yang diketik ulang", () => {
     expect(normalizeRecoveryCode("abcd-efgh")).toBe("ABCDEFGH");
     expect(normalizeRecoveryCode(" ABCD EFGH ")).toBe("ABCDEFGH");
+    // Cerminan `is_ascii_alphanumeric` di Rust: pemisah apa pun dibuang, bukan
+    // hanya spasi dan tanda hubung. Kode yang sama wajib menghasilkan hash yang
+    // sama di kedua sisi.
+    expect(normalizeRecoveryCode("ABCD_EFGH")).toBe("ABCDEFGH");
+    expect(normalizeRecoveryCode("ABCD.EFGH")).toBe("ABCDEFGH");
   });
 });

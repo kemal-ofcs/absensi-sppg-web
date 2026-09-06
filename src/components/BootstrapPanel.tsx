@@ -73,6 +73,11 @@ export function BootstrapPanel({
   const [confirmation, setConfirmation] = useState("");
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * Kode pemulihan Superadmin, ditahan di layar sampai pengguna menyatakan
+   * sudah menyimpannya. Tidak ada kesempatan kedua untuk membacanya.
+   */
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [linking, setLinking] = useState(false);
   const [check, setCheck] = useState<DatabaseCheckResult | null>(null);
@@ -187,7 +192,7 @@ export function BootstrapPanel({
     setSubmitting(true);
     setFeedback("");
     try {
-      await bootstrapSuperadmin({
+      const codes = await bootstrapSuperadmin({
         kodeOperator: "SPD001",
         namaOperator: name,
         username,
@@ -202,6 +207,13 @@ export function BootstrapPanel({
       setPassword("");
       setConfirmation("");
       setAuthToken("");
+      // Kode pemulihan ditahan di layar lebih dulu. Memanggil onCompleted()
+      // sekarang akan memindahkan pengguna ke layar login dan membuang
+      // satu-satunya kesempatan membaca kodenya.
+      if (codes.length > 0) {
+        setRecoveryCodes(codes);
+        return;
+      }
       onCompleted();
     } catch (error: unknown) {
       setFeedback(
@@ -214,21 +226,71 @@ export function BootstrapPanel({
     }
   };
 
+  // Layar kode pemulihan MENGGANTIKAN formulir, bukan menumpang di atasnya.
+  // Ini satu-satunya kesempatan membaca kodenya, jadi tidak boleh ada tombol
+  // lain yang menggoda pengguna melewatinya.
+  if (recoveryCodes) {
+    return (
+      <main className="bootstrap-panel-root grid min-h-dvh place-items-center bg-slate-950 p-4 text-slate-100 sm:p-6">
+        <section className="bootstrap-panel-card w-full max-w-lg rounded-3xl border border-amber-400/30 bg-slate-900/95 p-6 shadow-2xl sm:p-8">
+          <p className="bootstrap-recovery-eyebrow text-xs font-black uppercase tracking-[0.18em] text-amber-300">
+            Simpan kode pemulihan
+          </p>
+          <h1 className="bootstrap-recovery-title mt-2 text-2xl font-black text-white">
+            Cetak atau salin sekarang
+          </h1>
+          <p className="bootstrap-recovery-desc mt-2 text-sm leading-6 text-slate-400">
+            Akun Superadmin adalah satu-satunya akun yang tidak punya siapa pun
+            di atasnya untuk menyetujui pemulihan. Kode di bawah adalah jalan
+            masuk terakhir bila passwordnya terlupa — terutama pada pemasangan
+            tanpa internet, yang tidak bisa mengirim email apa pun.
+          </p>
+
+          <ul className="mt-5 grid grid-cols-2 gap-2">
+            {recoveryCodes.map((code) => (
+              <li
+                key={code}
+                className="bootstrap-recovery-code select-all rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2.5 text-center font-mono text-sm font-black tracking-wider text-amber-100"
+              >
+                {code}
+              </li>
+            ))}
+          </ul>
+
+          <p className="bootstrap-recovery-warning mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-[11px] font-bold leading-4 text-rose-200">
+            Kode ini tidak tersimpan dalam bentuk aslinya dan tidak dapat
+            ditampilkan ulang. Setiap kode hanya berlaku sekali. Simpan di
+            tempat yang berbeda dari perangkat ini — brankas, atau lemari arsip
+            terkunci.
+          </p>
+
+          <button
+            type="button"
+            onClick={onCompleted}
+            className="bootstrap-recovery-submit mt-5 min-h-11 w-full rounded-xl bg-amber-400 text-xs font-black text-slate-950 transition hover:bg-amber-300"
+          >
+            Saya sudah menyimpannya, lanjutkan
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <main className="grid min-h-dvh place-items-center bg-slate-950 p-4 text-slate-100 sm:p-6">
-      <section className="w-full max-w-lg rounded-3xl border border-sky-400/20 bg-slate-900/95 p-6 shadow-2xl sm:p-8">
-        <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-300">
+    <main className="bootstrap-panel-root grid min-h-dvh place-items-center bg-slate-950 p-4 text-slate-100 sm:p-6">
+      <section className="bootstrap-panel-card w-full max-w-lg rounded-3xl border border-sky-400/20 bg-slate-900/95 p-6 shadow-2xl sm:p-8">
+        <p className="bootstrap-panel-eyebrow text-xs font-black uppercase tracking-[0.18em] text-sky-300">
           Provisioning satu kali
         </p>
-        <h1 className="mt-2 text-2xl font-black text-white">
+        <h1 className="bootstrap-panel-title mt-2 text-2xl font-black text-white">
           Cek database, lalu buat Superadmin
         </h1>
-        <p className="mt-2 text-sm leading-6 text-slate-400">
+        <p className="bootstrap-panel-desc mt-2 text-sm leading-6 text-slate-400">
           Database diperiksa lebih dulu agar salah input URL dapat ditahan, dan
           agar terlihat apakah Superadmin sudah pernah dibuat di sana.
         </p>
         {status.configured && !status.reachable ? (
-          <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-950/40 p-3 text-xs leading-5 text-amber-100">
+          <div className="bootstrap-alert-warning mt-4 rounded-xl border border-amber-400/30 bg-amber-950/40 p-3 text-xs leading-5 text-amber-100">
             <span className="font-bold">
               Database cloud tersimpan tidak dapat dihubungi.
             </span>{" "}
@@ -238,7 +300,7 @@ export function BootstrapPanel({
         ) : null}
         {status.configured ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <p className="min-w-0 flex-1 truncate rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-sky-200">
+            <p className="bootstrap-server-origin min-w-0 flex-1 truncate rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 font-mono text-xs text-sky-200">
               {status.serverOrigin}
             </p>
             <button
@@ -247,14 +309,14 @@ export function BootstrapPanel({
                 setEditingDatabase((value) => !value);
                 resetCheck();
               }}
-              className="min-h-9 rounded-xl border border-white/15 px-3 text-xs font-bold text-slate-300 hover:border-sky-400/40 hover:text-sky-200"
+              className="bootstrap-btn-toggle min-h-9 rounded-xl border border-white/15 px-3 text-xs font-bold text-slate-300 hover:border-sky-400/40 hover:text-sky-200"
             >
               {editingDatabase ? "Batal ganti" : "Ganti database"}
             </button>
           </div>
         ) : null}
         {feedback ? (
-          <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-950/50 p-3 text-xs text-rose-200">
+          <div className="bootstrap-alert-error mt-4 rounded-xl border border-rose-500/30 bg-rose-950/50 p-3 text-xs text-rose-200">
             {feedback}
           </div>
         ) : null}
@@ -263,18 +325,20 @@ export function BootstrapPanel({
           {needsCredentials ? (
             <>
               <fieldset className="grid gap-2">
-                <legend className="text-xs font-bold text-slate-300">
+                <legend className="bootstrap-panel-legend text-xs font-bold text-slate-300">
                   Jenis database
                 </legend>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {DATABASE_PROVIDER_OPTIONS.map((option) => (
                     <label
                       key={option.value}
-                      className={`grid min-w-0 cursor-pointer gap-1 rounded-xl border p-3 text-xs leading-4 transition ${
+                      className={`bootstrap-provider-option ${
                         provider === option.value
-                          ? "border-sky-400/60 bg-sky-400/10 text-sky-100"
-                          : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25"
-                      }`}
+                          ? "bootstrap-provider-active border-sky-400/60 bg-sky-400/10 text-sky-100"
+                          : "bootstrap-provider-inactive border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25"
+                      } ${
+                        option.value === "local_file" ? "sm:col-span-2" : ""
+                      } grid min-w-0 cursor-pointer gap-1 rounded-xl border p-3 text-xs leading-4 transition`}
                     >
                       <span className="flex items-center gap-2 font-black">
                         <input
@@ -300,7 +364,7 @@ export function BootstrapPanel({
               </fieldset>
               {needsEndpoint ? (
                 <>
-                  <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                  <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
                     {provider === "turso"
                       ? "URL database Turso"
                       : "Alamat server database"}
@@ -313,7 +377,7 @@ export function BootstrapPanel({
                         resetCheck();
                       }}
                       placeholder={providerInfo.urlPlaceholder}
-                      className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
+                      className="bootstrap-form-input min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
                     />
                     {databaseUrl.trim().length > 0 && endpoint.issue ? (
                       <span className="font-normal leading-5 text-amber-300">
@@ -321,7 +385,7 @@ export function BootstrapPanel({
                       </span>
                     ) : null}
                   </label>
-                  <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+                  <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
                     {endpoint.tokenRequired
                       ? "Auth Token"
                       : "Auth Token (opsional)"}
@@ -334,12 +398,12 @@ export function BootstrapPanel({
                       }}
                       placeholder={providerInfo.tokenPlaceholder}
                       autoComplete="off"
-                      className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
+                      className="bootstrap-form-input min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 font-mono text-xs text-white"
                     />
                   </label>
                 </>
               ) : (
-                <p className="rounded-xl border border-sky-400/30 bg-sky-400/5 p-3 text-[11px] font-bold leading-4 text-sky-100">
+                <p className="bootstrap-info-box rounded-xl border border-sky-400/30 bg-sky-400/5 p-3 text-[11px] font-bold leading-4 text-sky-100">
                   Data disimpan pada berkas SQLite di perangkat ini. Tidak ada
                   alamat server maupun Auth Token yang perlu diisi, dan aplikasi
                   berjalan penuh tanpa internet.
@@ -347,7 +411,7 @@ export function BootstrapPanel({
               )}
               {provider === "self_hosted" &&
               endpoint.issue?.code === "INSECURE_PUBLIC" ? (
-                <label className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-[11px] font-bold leading-4 text-rose-100">
+                <label className="bootstrap-alert-error flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-[11px] font-bold leading-4 text-rose-100">
                   <input
                     type="checkbox"
                     checked={allowInsecure}
@@ -368,7 +432,7 @@ export function BootstrapPanel({
             type="button"
             onClick={handleCheck}
             disabled={checking || linking || submitting || !credentialsReady}
-            className="min-h-12 rounded-2xl border border-sky-400/40 bg-sky-400/10 px-4 text-sm font-black text-sky-200 disabled:opacity-50"
+            className="bootstrap-btn-check min-h-12 rounded-2xl border border-sky-400/40 bg-sky-400/10 px-4 text-sm font-black text-sky-200 disabled:opacity-50"
           >
             {checking ? "Memeriksa database..." : "Cek database"}
           </button>
@@ -376,7 +440,7 @@ export function BootstrapPanel({
 
         {summary ? (
           <div
-            className={`mt-4 rounded-2xl border p-4 text-xs ${TONE_CARD[summary.tone]}`}
+            className={`bootstrap-summary-card mt-4 rounded-2xl border p-4 text-xs ${TONE_CARD[summary.tone]}`}
           >
             <div className="flex items-start gap-2">
               <span
@@ -407,7 +471,7 @@ export function BootstrapPanel({
                 type="button"
                 onClick={() => void handleUseExisting()}
                 disabled={linking}
-                className="mt-4 min-h-11 w-full rounded-2xl bg-emerald-400 px-4 text-sm font-black text-emerald-950 disabled:opacity-50"
+                className="bootstrap-btn-use-existing mt-4 min-h-11 w-full rounded-2xl bg-emerald-400 px-4 text-sm font-black text-emerald-950 disabled:opacity-50"
               >
                 {linking
                   ? "Menyimpan konfigurasi..."
@@ -415,7 +479,7 @@ export function BootstrapPanel({
               </button>
             ) : null}
             {summary.requiresConfirmation ? (
-              <label className="mt-4 flex items-start gap-2 rounded-xl border border-white/15 bg-slate-950/50 p-3 text-[11px] font-bold leading-4">
+              <label className="bootstrap-alert-error mt-4 flex items-start gap-2 rounded-xl border border-white/15 bg-slate-950/50 p-3 text-[11px] font-bold leading-4">
                 <input
                   type="checkbox"
                   checked={forceProceed}
@@ -432,15 +496,15 @@ export function BootstrapPanel({
         {provisioningUnlocked ? (
           <form onSubmit={submit} className="mt-5 grid gap-4">
             <div className="grid gap-4 sm:grid-cols-[7rem_1fr]">
-              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
                 Kode
                 <input
                   value="SPD001"
                   readOnly
-                  className="min-h-11 rounded-xl border border-white/10 bg-slate-800 px-3 font-mono text-xs text-slate-300"
+                  className="bootstrap-input-readonly min-h-11 rounded-xl border border-white/10 bg-slate-800 px-3 font-mono text-xs text-slate-300"
                 />
               </label>
-              <label className="grid min-w-0 gap-1.5 text-xs font-bold text-slate-300">
+              <label className="bootstrap-form-label grid min-w-0 gap-1.5 text-xs font-bold text-slate-300">
                 Nama lengkap
                 <input
                   required
@@ -449,11 +513,11 @@ export function BootstrapPanel({
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   autoComplete="name"
-                  className="min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                  className="bootstrap-form-input min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
                 />
               </label>
             </div>
-            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+            <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
               Username
               <input
                 required
@@ -463,14 +527,14 @@ export function BootstrapPanel({
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 autoComplete="username"
-                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                className="bootstrap-form-input min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
               />
             </label>
             {/* Kontak Superadmin wajib: akun pertama aplikasi ini adalah satu-
                 satunya akun yang tidak bisa dipulihkan oleh siapa pun kecuali
                 lewat email pada alur Lupa Password. */}
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
                 Email
                 <input
                   required
@@ -480,10 +544,10 @@ export function BootstrapPanel({
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   autoComplete="email"
-                  className="min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                  className="bootstrap-form-input min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
                 />
               </label>
-              <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+              <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
                 Nomor HP
                 <input
                   required
@@ -494,11 +558,11 @@ export function BootstrapPanel({
                   value={noHp}
                   onChange={(event) => setNoHp(event.target.value)}
                   autoComplete="tel"
-                  className="min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                  className="bootstrap-form-input min-h-11 min-w-0 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
                 />
               </label>
             </div>
-            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+            <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
               Password kuat
               <input
                 required
@@ -508,14 +572,14 @@ export function BootstrapPanel({
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 autoComplete="new-password"
-                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                className="bootstrap-form-input min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
               />
               <span className="font-normal leading-5 text-slate-500">
                 Minimal 12 karakter: huruf besar, kecil, angka, simbol, dan
                 tidak memuat username.
               </span>
             </label>
-            <label className="grid gap-1.5 text-xs font-bold text-slate-300">
+            <label className="bootstrap-form-label grid gap-1.5 text-xs font-bold text-slate-300">
               Ulangi password
               <input
                 required
@@ -525,19 +589,19 @@ export function BootstrapPanel({
                 value={confirmation}
                 onChange={(event) => setConfirmation(event.target.value)}
                 autoComplete="new-password"
-                className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
+                className="bootstrap-form-input min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
               />
             </label>
             <button
               type="submit"
               disabled={submitting}
-              className="min-h-12 rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 disabled:opacity-50"
+              className="bootstrap-btn-submit min-h-12 rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 disabled:opacity-50"
             >
               {submitting ? "Mengamankan database..." : "Aktifkan Superadmin"}
             </button>
           </form>
         ) : (
-          <p className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-xs leading-5 text-slate-400">
+          <p className="bootstrap-hint-box mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-xs leading-5 text-slate-400">
             Form pembuatan Superadmin terbuka setelah database berhasil
             diperiksa dan dinyatakan siap.
           </p>
@@ -546,7 +610,7 @@ export function BootstrapPanel({
           <button
             type="button"
             onClick={onCancel}
-            className="mt-4 min-h-11 w-full rounded-2xl border border-white/15 px-4 text-xs font-bold text-slate-300 hover:border-sky-400/40 hover:text-sky-200"
+            className="bootstrap-btn-cancel mt-4 min-h-11 w-full rounded-2xl border border-white/15 px-4 text-xs font-bold text-slate-300 hover:border-sky-400/40 hover:text-sky-200"
           >
             Kembali ke layar login
           </button>

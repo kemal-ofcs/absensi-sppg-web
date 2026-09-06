@@ -248,6 +248,7 @@ html.light a[href="/scanner"].bg-sky-400 * {
 html[data-theme="light"] .bg-slate-900,
 html[data-theme="light"] .bg-slate-950,
 html[data-theme="light"] .bg-slate-900\/98,
+html[data-theme="light"] .bg-slate-900\/95,
 html[data-theme="light"] .bg-slate-900\/90,
 html[data-theme="light"] .bg-slate-900\/85,
 html[data-theme="light"] .bg-slate-900\/80,
@@ -273,6 +274,7 @@ html[data-theme="light"] .bg-white\/\[0\.05\],
 html.light .bg-slate-900,
 html.light .bg-slate-950,
 html.light .bg-slate-900\/98,
+html.light .bg-slate-900\/95,
 html.light .bg-slate-900\/90,
 html.light .bg-slate-900\/85,
 html.light .bg-slate-900\/80,
@@ -608,6 +610,7 @@ html[data-theme="light"] .bg-sky-500\/20,
 html[data-theme="light"] .bg-sky-500\/10,
 html[data-theme="light"] .bg-sky-400\/25,
 html[data-theme="light"] .bg-sky-400\/10,
+html[data-theme="light"] .bg-sky-400\/5,
 html.light .bg-sky-950,
 html.light .bg-sky-950\/80,
 html.light .bg-sky-950\/60,
@@ -617,7 +620,8 @@ html.light .bg-sky-900,
 html.light .bg-sky-500\/20,
 html.light .bg-sky-500\/10,
 html.light .bg-sky-400\/25,
-html.light .bg-sky-400\/10 {
+html.light .bg-sky-400\/10,
+html.light .bg-sky-400\/5 {
   background-color: #e0f2fe !important;
   border-color: #bae6fd !important;
   color: #0369a1 !important;
@@ -645,6 +649,10 @@ html[data-theme="light"] .bg-amber-950\/40,
 html[data-theme="light"] .bg-amber-900,
 html[data-theme="light"] .bg-amber-500\/20,
 html[data-theme="light"] .bg-amber-500\/10,
+html[data-theme="light"] .bg-amber-400\/30,
+html[data-theme="light"] .bg-amber-400\/25,
+html[data-theme="light"] .bg-amber-400\/20,
+html[data-theme="light"] .bg-amber-400\/10,
 html[data-theme="light"] .bg-amber-300\/30,
 html[data-theme="light"] .bg-amber-300\/25,
 html[data-theme="light"] .bg-amber-300\/10,
@@ -656,6 +664,10 @@ html.light .bg-amber-950\/40,
 html.light .bg-amber-900,
 html.light .bg-amber-500\/20,
 html.light .bg-amber-500\/10,
+html.light .bg-amber-400\/30,
+html.light .bg-amber-400\/25,
+html.light .bg-amber-400\/20,
+html.light .bg-amber-400\/10,
 html.light .bg-amber-300\/30,
 html.light .bg-amber-300\/25,
 html.light .bg-amber-300\/10 {
@@ -675,6 +687,16 @@ html[data-theme="light"] .bg-amber-950\/80 *,
 html.light .bg-amber-950 *,
 html.light .bg-amber-950\/80 * {
   color: inherit !important;
+}
+html[data-theme="light"] .text-amber-100,
+html[data-theme="light"] .text-amber-200,
+html.light .text-amber-100,
+html.light .text-amber-200 {
+  color: #92400e !important;
+}
+html[data-theme="light"] .text-amber-300,
+html.light .text-amber-300 {
+  color: #b45309 !important;
 }
 
 /* VIOLET / PURPLE TONE (Operator, Superadmin, RBAC) */
@@ -1580,4 +1602,297 @@ html.light .scanner-terminal-audio.border-slate-700 {
   background-color: #f8fafc !important;
   color: #64748b !important;
   border-color: #cbd5e1 !important;
+}
+
+/* ==========================================================================
+   Bootstrap / Provisioning Panel in Light Mode
+   Harmonized card, typography, radio options, action buttons & alert banners
+   ========================================================================== */
+html[data-theme="light"] .bootstrap-panel-root,
+html.light .bootstrap-panel-root {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-card,
+html.light .bootstrap-panel-card {
+  background-color: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow:
+    0 25px 50px -12px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(15, 23, 42, 0.03) !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-eyebrow,
+html.light .bootstrap-panel-eyebrow {
+  color: #0284c7 !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-title,
+html.light .bootstrap-panel-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-desc,
+html.light .bootstrap-panel-desc {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-legend,
+html.light .bootstrap-panel-legend {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .bootstrap-alert-warning,
+html.light .bootstrap-alert-warning {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #92400e !important;
+}
+
+html[data-theme="light"] .bootstrap-alert-error,
+html.light .bootstrap-alert-error {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .bootstrap-server-origin,
+html.light .bootstrap-server-origin {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #0369a1 !important;
+}
+
+html[data-theme="light"] .bootstrap-btn-toggle,
+html.light .bootstrap-btn-toggle {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #334155 !important;
+}
+html[data-theme="light"] .bootstrap-btn-toggle:hover,
+html.light .bootstrap-btn-toggle:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+/* Database provider radio options */
+html[data-theme="light"] .bootstrap-provider-option.bootstrap-provider-inactive,
+html.light .bootstrap-provider-option.bootstrap-provider-inactive {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-inactive:hover,
+html.light .bootstrap-provider-option.bootstrap-provider-inactive:hover {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-provider-option.bootstrap-provider-active,
+html.light .bootstrap-provider-option.bootstrap-provider-active {
+  background-color: #f0f9ff !important;
+  border-color: #0284c7 !important;
+  color: #0369a1 !important;
+  box-shadow: 0 0 0 1px #0284c7 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-active
+  span,
+html.light .bootstrap-provider-option.bootstrap-provider-active span {
+  color: #0369a1 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-active
+  span.font-black,
+html.light
+  .bootstrap-provider-option.bootstrap-provider-active
+  span.font-black {
+  color: #0284c7 !important;
+}
+
+/* Info Callout Box (SQLite info) */
+html[data-theme="light"] .bootstrap-info-box,
+html.light .bootstrap-info-box {
+  background-color: #f0f9ff !important;
+  border-color: #bae6fd !important;
+  color: #0369a1 !important;
+}
+
+/* Check Database Button */
+html[data-theme="light"] .bootstrap-btn-check,
+html.light .bootstrap-btn-check {
+  background-color: #f0f9ff !important;
+  border-color: #38bdf8 !important;
+  color: #0284c7 !important;
+}
+html[data-theme="light"] .bootstrap-btn-check:hover:not(:disabled),
+html.light .bootstrap-btn-check:hover:not(:disabled) {
+  background-color: #e0f2fe !important;
+  border-color: #0284c7 !important;
+  color: #0369a1 !important;
+}
+
+/* Summary Card */
+html[data-theme="light"] .bootstrap-summary-card.border-emerald-400\/30,
+html.light .bootstrap-summary-card.border-emerald-400\/30 {
+  background-color: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  color: #166534 !important;
+}
+html[data-theme="light"] .bootstrap-summary-card.border-amber-400\/30,
+html.light .bootstrap-summary-card.border-amber-400\/30 {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #92400e !important;
+}
+html[data-theme="light"] .bootstrap-summary-card.border-rose-500\/30,
+html.light .bootstrap-summary-card.border-rose-500\/30 {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dl,
+html.light .bootstrap-summary-card dl {
+  border-top-color: rgba(15, 23, 42, 0.1) !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dt,
+html.light .bootstrap-summary-card dt {
+  color: #64748b !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dd,
+html.light .bootstrap-summary-card dd {
+  color: #0f172a !important;
+}
+
+/* Form Inputs & Labels */
+html[data-theme="light"] .bootstrap-form-label,
+html.light .bootstrap-form-label {
+  color: #334155 !important;
+}
+html[data-theme="light"] .bootstrap-form-input,
+html.light .bootstrap-form-input {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+html[data-theme="light"] .bootstrap-form-input:focus,
+html.light .bootstrap-form-input:focus {
+  border-color: #0284c7 !important;
+  outline: 2px solid rgba(2, 132, 199, 0.25) !important;
+  outline-offset: 1px !important;
+}
+html[data-theme="light"] .bootstrap-input-readonly,
+html.light .bootstrap-input-readonly {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+
+/* Submit & Cancel Buttons */
+html[data-theme="light"] .bootstrap-btn-submit,
+html.light .bootstrap-btn-submit {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+}
+html[data-theme="light"] .bootstrap-btn-submit:hover:not(:disabled),
+html.light .bootstrap-btn-submit:hover:not(:disabled) {
+  background-color: #0369a1 !important;
+}
+html[data-theme="light"] .bootstrap-btn-cancel,
+html.light .bootstrap-btn-cancel {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #475569 !important;
+}
+html[data-theme="light"] .bootstrap-btn-cancel:hover,
+html.light .bootstrap-btn-cancel:hover {
+  background-color: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+/* Hint Box */
+html[data-theme="light"] .bootstrap-hint-box,
+html.light .bootstrap-hint-box {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+/* ==========================================================================
+   Superadmin Recovery Codes & Password Recovery in Light Mode
+   ========================================================================== */
+html[data-theme="light"] .bootstrap-recovery-eyebrow,
+html.light .bootstrap-recovery-eyebrow {
+  color: #b45309 !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-title,
+html.light .bootstrap-recovery-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-desc,
+html.light .bootstrap-recovery-desc {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-code,
+html.light .bootstrap-recovery-code,
+html[data-theme="light"] .recovery-code-pill,
+html.light .recovery-code-pill {
+  background-color: #fffbeb !important;
+  border: 1px solid #fcd34d !important;
+  color: #78350f !important;
+  box-shadow: 0 1px 2px rgba(180, 83, 9, 0.05) !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-warning,
+html.light .bootstrap-recovery-warning {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-submit,
+html.light .bootstrap-recovery-submit {
+  background-color: #f59e0b !important;
+  color: #0f172a !important;
+}
+html[data-theme="light"] .bootstrap-recovery-submit:hover,
+html.light .bootstrap-recovery-submit:hover {
+  background-color: #d97706 !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .recovery-code-btn,
+html.light .recovery-code-btn {
+  background-color: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+}
+html[data-theme="light"] .recovery-code-btn:hover,
+html.light .recovery-code-btn:hover {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* ==========================================================================
+   Pil kode persetujuan pemulihan pada mode terang
+
+   Nadanya hijau, bukan kuning seperti `.recovery-code-pill`, karena kode ini
+   lahir dari persetujuan seorang peninjau — bukan dari kertas cadangan. Ia
+   tetap butuh kelasnya sendiri: `text-emerald-100` di atas latar terang
+   nyaris tak terbaca, dan kode yang salah dibaca berarti pemohon harus
+   mengajukan permintaan baru dari awal.
+   ========================================================================== */
+html[data-theme="light"] .approval-code-pill,
+html.light .approval-code-pill {
+  border: 1px solid #6ee7b7 !important;
+  background-color: #ecfdf5 !important;
+  color: #064e3b !important;
 }
