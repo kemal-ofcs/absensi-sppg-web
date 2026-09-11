@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Client, Transaction } from "@libsql/client";
+import {
+  aturanShiftDariBaris,
+  type HasilHitungDariJam,
+  hitungUlangAbsensiDariJam,
+} from "@/lib/attendance/time-policy";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { assertActorPermission } from "@/lib/auth/permission-assertion";
 import { BRANDING } from "@/lib/constants/branding";
@@ -1045,69 +1050,12 @@ async function applyCorrection(
                 ? "Belum Pulang"
                 : "Perlu Verifikasi";
 
-          const idShift = Number(abs.id_shift || 1);
-          const shiftRes = await transaction.execute({
-            sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-            args: [idShift],
-          });
-          const shiftData = shiftRes.rows[0] as
-            | Record<string, unknown>
-            | undefined;
-          const normalShiftMin = Number(
-            shiftData?.jam_kerja_normal_menit ?? 480,
+          const hasil = await hitungUlangDariLogTersisa(
+            transaction,
+            Number(abs.id_shift || 1),
+            inVal,
+            outVal,
           );
-          const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-          const toleransiShiftMin = Number(
-            shiftData?.toleransi_masuk_menit ?? 0,
-          );
-          const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-          const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-
-          const parseMin = (t: string | undefined | null): number | null => {
-            if (!t) return null;
-            const clean = t.includes(" ") ? t.split(" ")[1] : t;
-            const parts = clean.split(":");
-            if (parts.length < 2) return null;
-            const h = Number(parts[0]);
-            const m = Number(parts[1]);
-            if (Number.isNaN(h) || Number.isNaN(m)) return null;
-            return h * 60 + m;
-          };
-
-          const shiftInMin = parseMin(shiftJamMasukStr) ?? 420;
-          const shiftOutMin = parseMin(shiftJamPulangStr) ?? 900;
-          const isOvernightShift = shiftOutMin < shiftInMin;
-
-          let calculatedLate = 0;
-          let calculatedEarly = 0;
-          let calculatedWork = 0;
-          let calculatedOvertime = 0;
-          let calculatedShortage = 0;
-
-          const inMin = parseMin(inVal);
-          const outMin = parseMin(outVal);
-
-          if (inMin !== null) {
-            let userInTimeline = inMin;
-            if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-              userInTimeline += 1440;
-            }
-            if (userInTimeline > shiftInMin + toleransiShiftMin) {
-              calculatedLate = userInTimeline - shiftInMin;
-            } else if (userInTimeline < shiftInMin) {
-              calculatedEarly = shiftInMin - userInTimeline;
-            }
-          }
-
-          if (inMin !== null && outMin !== null) {
-            let duration = outMin - inMin;
-            if (duration < 0) {
-              duration += 1440;
-            }
-            calculatedWork = Math.max(0, duration - breakShiftMin);
-            calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
-            calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
-          }
 
           await transaction.execute({
             sql: `UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
@@ -1118,11 +1066,11 @@ async function applyCorrection(
               outVal,
               statusAbsen,
               new Date().toISOString(),
-              calculatedLate,
-              calculatedEarly,
-              calculatedWork,
-              calculatedOvertime,
-              calculatedShortage,
+              hasil.menitTerlambat,
+              hasil.menitDatangAwal,
+              hasil.jamKerja,
+              hasil.lembur,
+              hasil.jamKerjaKurang,
               idSesi,
             ],
           });
@@ -1353,6 +1301,46 @@ async function applyBackup(
   return { revision, payload: { id_backup: event.entityKey } };
 }
 
+/**
+ * Menghitung ulang metrik absensi dari log scan yang tersisa setelah sebuah
+ * koreksi/import dihapus, dengan rumus yang sama dengan scanner.
+ */
+async function hitungUlangDariLogTersisa(
+  transaction: Transaction,
+  idShift: number,
+  inVal: string,
+  outVal: string,
+): Promise<HasilHitungDariJam> {
+  const shiftRes = await transaction.execute({
+    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    args: [idShift],
+  });
+  const parseMin = (t: string): number | null => {
+    if (!t) return null;
+    const clean = t.includes(" ") ? t.split(" ")[1] : t;
+    const parts = clean.split(":");
+    if (parts.length < 2) return null;
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+  const inMin = parseMin(inVal);
+  const outMin = parseMin(outVal);
+  let duration: number | null = null;
+  if (inMin !== null && outMin !== null) {
+    duration = outMin - inMin;
+    if (duration < 0) duration += 1440;
+  }
+  return hitungUlangAbsensiDariJam({
+    masukMenit: inMin,
+    durasiMenit: duration,
+    shift: aturanShiftDariBaris(
+      shiftRes.rows[0] as Record<string, unknown> | undefined,
+    ),
+  });
+}
+
 async function applyOfflineImport(
   transaction: Transaction,
   actor: OperatorUser,
@@ -1413,69 +1401,12 @@ async function applyOfflineImport(
                 ? "Belum Pulang"
                 : "Perlu Verifikasi";
 
-          const idShift = Number(abs.id_shift || 1);
-          const shiftRes = await transaction.execute({
-            sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-            args: [idShift],
-          });
-          const shiftData = shiftRes.rows[0] as
-            | Record<string, unknown>
-            | undefined;
-          const normalShiftMin = Number(
-            shiftData?.jam_kerja_normal_menit ?? 480,
+          const hasil = await hitungUlangDariLogTersisa(
+            transaction,
+            Number(abs.id_shift || 1),
+            inVal,
+            outVal,
           );
-          const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-          const toleransiShiftMin = Number(
-            shiftData?.toleransi_masuk_menit ?? 0,
-          );
-          const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-          const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-
-          const parseMin = (t: string | undefined | null): number | null => {
-            if (!t) return null;
-            const clean = t.includes(" ") ? t.split(" ")[1] : t;
-            const parts = clean.split(":");
-            if (parts.length < 2) return null;
-            const h = Number(parts[0]);
-            const m = Number(parts[1]);
-            if (Number.isNaN(h) || Number.isNaN(m)) return null;
-            return h * 60 + m;
-          };
-
-          const shiftInMin = parseMin(shiftJamMasukStr) ?? 420;
-          const shiftOutMin = parseMin(shiftJamPulangStr) ?? 900;
-          const isOvernightShift = shiftOutMin < shiftInMin;
-
-          let calculatedLate = 0;
-          let calculatedEarly = 0;
-          let calculatedWork = 0;
-          let calculatedOvertime = 0;
-          let calculatedShortage = 0;
-
-          const inMin = parseMin(inVal);
-          const outMin = parseMin(outVal);
-
-          if (inMin !== null) {
-            let userInTimeline = inMin;
-            if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-              userInTimeline += 1440;
-            }
-            if (userInTimeline > shiftInMin + toleransiShiftMin) {
-              calculatedLate = userInTimeline - shiftInMin;
-            } else if (userInTimeline < shiftInMin) {
-              calculatedEarly = shiftInMin - userInTimeline;
-            }
-          }
-
-          if (inMin !== null && outMin !== null) {
-            let duration = outMin - inMin;
-            if (duration < 0) {
-              duration += 1440;
-            }
-            calculatedWork = Math.max(0, duration - breakShiftMin);
-            calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
-            calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
-          }
 
           await transaction.execute({
             sql: `UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
@@ -1486,11 +1417,11 @@ async function applyOfflineImport(
               outVal,
               statusAbsen,
               new Date().toISOString(),
-              calculatedLate,
-              calculatedEarly,
-              calculatedWork,
-              calculatedOvertime,
-              calculatedShortage,
+              hasil.menitTerlambat,
+              hasil.menitDatangAwal,
+              hasil.jamKerja,
+              hasil.lembur,
+              hasil.jamKerjaKurang,
               idSesi,
             ],
           });

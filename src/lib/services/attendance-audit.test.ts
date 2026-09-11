@@ -20,7 +20,7 @@ const { db, ensureDbInitialized } = await import("@/lib/db");
 const { auditKualitasAbsensi } = await import("./attendance-audit");
 const { tambahHariLibur } = await import("./holiday");
 
-/** Shift 1: jendela masuk tutup 07:45 (07:00 + 15 + 30), scan pulang tutup 16:00 (15:00 + 60). */
+/** Shift 1: jendela masuk tutup 07:30 (07:00 + toleransi 30), scan pulang tutup 16:00 (15:00 + 60). */
 const TANGGAL = "2026-08-19";
 
 function waktu(jam: string) {
@@ -113,11 +113,11 @@ describe("Audit Kualitas Absensi", () => {
     );
     expect(temuan.length).toBe(2);
     expect(temuan[0].keparahan).toBe("tinggi");
-    expect(temuan[0].detail).toContain("07:45");
+    expect(temuan[0].detail).toContain("07:30");
   });
 
   test("belum menyalahkan karyawan selagi jendela scan masuk masih terbuka", async () => {
-    const hasil = await auditKualitasAbsensi(TANGGAL, waktu("07:30"));
+    const hasil = await auditKualitasAbsensi(TANGGAL, waktu("07:20"));
 
     expect(hasil.ringkasan.belumScanMasuk).toBe(0);
     expect(hasil.ringkasan.menungguJamAbsen).toBe(2);
@@ -309,15 +309,15 @@ describe("Audit Kualitas Absensi", () => {
       await db.execute("UPDATE master_data SET id_shift = 3;");
     });
 
-    test("belum scan masuk baru muncul setelah jendela masuk 22:45 lewat", async () => {
-      // 22:30 — masih di dalam jendela (22:00 + 15 + 30).
-      const masihBuka = await auditKualitasAbsensi(TANGGAL, waktu("22:30"));
+    test("belum scan masuk baru muncul setelah jendela masuk 22:30 lewat", async () => {
+      // 22:20 — masih di dalam jendela (22:00 + toleransi 30).
+      const masihBuka = await auditKualitasAbsensi(TANGGAL, waktu("22:20"));
       expect(masihBuka.ringkasan.menungguJamAbsen).toBe(2);
       expect(masihBuka.ringkasan.belumScanMasuk).toBe(0);
 
       const sudahTutup = await auditKualitasAbsensi(TANGGAL, waktu("23:00"));
       expect(sudahTutup.ringkasan.belumScanMasuk).toBe(2);
-      expect(sudahTutup.temuan[0].detail).toContain("22:45");
+      expect(sudahTutup.temuan[0].detail).toContain("22:30");
     });
 
     test("masih dianggap bekerja sampai jendela pulang lintas hari tertutup", async () => {

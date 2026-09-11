@@ -171,22 +171,295 @@ export function isShiftFleksibel(
   }
 }
 
+export type AturanJendelaMasuk = Pick<
+  ShiftTimePolicy,
+  "awalAbsenMenit" | "batasMasukMenit" | "toleransiMasukMenit"
+>;
+
 /**
- * Menit pada garis waktu tanggal kerja saat jendela scan masuk tertutup.
+ * Batas-batas jendela scan masuk, dalam menit RELATIF terhadap Jam Masuk.
  *
- * Sama dengan `finalEntryEnd` di `putuskanScanWaktu`: jam masuk + batas masuk
- * tepat waktu + toleransi terlambat. Setelah menit ini scanner menolak scan
- * masuk, jadi karyawan tanpa baris absensi memang benar-benar "belum absen
- * padahal jam absen sudah lewat".
+ * Seluruh jendelanya tersusun mundur dari Jam Masuk, lalu maju sebatas
+ * toleransi (contoh 07:00, awal 120, batas 60, toleransi 30):
+ *
+ *   04:00 ─ Awal Absen Masuk ─ 06:00 ─ Tepat Waktu ─ 07:00 ─ Terlambat ─ 07:30
+ *   buka = -(batas + awal)     tepatWaktu = -batas   0      tutup = +toleransi
+ *
+ * Sebelum `buka` absensi belum dibuka; setelah `tutup` scan masuk ditolak dan
+ * karyawannya harus menghubungi Admin/Operator. Satu-satunya tempat rumus ini
+ * dieja di TypeScript — cerminannya `entry_window_offsets` di `time_policy.rs`.
+ */
+export function jendelaScanMasuk(aturan: AturanJendelaMasuk): {
+  bukaMenit: number;
+  tepatWaktuMenit: number;
+  tutupMenit: number;
+} {
+  return {
+    bukaMenit: -(aturan.batasMasukMenit + aturan.awalAbsenMenit),
+    tepatWaktuMenit: -aturan.batasMasukMenit,
+    tutupMenit: aturan.toleransiMasukMenit,
+  };
+}
+
+/** Apakah selisih (menit scan − Jam Masuk) masih di dalam jendela scan masuk. */
+export function diDalamJendelaScanMasuk(
+  selisihMenit: number,
+  aturan: AturanJendelaMasuk,
+): boolean {
+  const jendela = jendelaScanMasuk(aturan);
+  return (
+    selisihMenit >= jendela.bukaMenit && selisihMenit <= jendela.tutupMenit
+  );
+}
+
+/**
+ * Rentang jam masuk yang boleh dicatat lewat KOREKSI ADMIN: sejak absensi
+ * dibuka sampai sebelum Jam Pulang.
+ *
+ * Sengaja lebih longgar daripada `diDalamJendelaScanMasuk`: karyawan yang
+ * datang melewati toleransi keterlambatan ditolak scanner dan diarahkan ke
+ * Admin/Operator, jadi koreksi adalah satu-satunya jalan mencatat kehadirannya.
+ * Bila koreksi memakai jendela scanner, orang itu tidak bisa dicatat sama sekali.
+ */
+export function diDalamRentangKoreksiMasuk(
+  selisihMenit: number,
+  aturan: AturanJendelaMasuk & Pick<ShiftTimePolicy, "jamMasuk" | "jamPulang">,
+): boolean {
+  if (selisihMenit < jendelaScanMasuk(aturan).bukaMenit) return false;
+  let masuk: number;
+  let pulang: number;
+  try {
+    masuk = parseClock(aturan.jamMasuk, "jamMasuk");
+    pulang = parseClock(aturan.jamPulang, "jamPulang");
+  } catch {
+    return diDalamJendelaScanMasuk(selisihMenit, aturan);
+  }
+  if (pulang <= masuk) pulang += 1440;
+  return (
+    selisihMenit < pulang - masuk ||
+    selisihMenit <= jendelaScanMasuk(aturan).tutupMenit
+  );
+}
+
+/**
+ * Menit terlambat dan menit datang awal, keduanya diukur dari Jam Masuk.
+ *
+ * Terlambat dihitung sejak Jam Masuk (bukan sejak akhir jendela Tepat Waktu):
+ * jendela Tepat Waktu kini berada SEBELUM Jam Masuk, sehingga menit pertama
+ * setelah Jam Masuk sudah terhitung terlambat.
+ */
+export function hitungTerlambatDanDatangAwal(
+  masukMenit: number,
+  jamMasukMenit: number,
+): { menitTerlambat: number; menitDatangAwal: number } {
+  return {
+    menitTerlambat: Math.max(0, masukMenit - jamMasukMenit),
+    menitDatangAwal: Math.max(0, jamMasukMenit - masukMenit),
+  };
+}
+
+/**
+ * Jam Kerja Normal sebuah shift: (Jam Pulang − Jam Masuk) − Istirahat.
+ *
+ * Shift malam (jam pulang < jam masuk) melewati tengah malam, jadi jam
+ * pulangnya digeser +1440. Cerminan Rust: `calculate_normal_work_minutes`.
+ */
+export function hitungJamKerjaNormalMenit(
+  jamMasuk: string,
+  jamPulang: string,
+  istirahatMenit: number,
+): number {
+  let masuk: number;
+  let pulang: number;
+  try {
+    masuk = parseClock(jamMasuk, "jamMasuk");
+    pulang = parseClock(jamPulang, "jamPulang");
+  } catch {
+    return 0;
+  }
+  if (pulang < masuk) pulang += 1440;
+  return Math.max(0, pulang - masuk - (Number(istirahatMenit) || 0));
+}
+
+export type AturanJamKerja = Pick<
+  ShiftTimePolicy,
+  "offsetIstirahatMulai" | "istirahatMenit" | "jamKerjaNormalMenit"
+>;
+
+/**
+ * Inti perhitungan jam kerja shift reguler. Semua argumen waktunya dalam
+ * DETIK pada garis waktu yang sama (asal garis waktunya bebas, asal ketiganya
+ * seragam), supaya pemanggil yang hanya punya jam "HH:mm" (koreksi admin,
+ * import) dan pemanggil yang punya instant lengkap (scanner) memakai rumus
+ * yang sama persis.
+ *
+ * - Jam kerja dimulai dari Jam Masuk shift: datang lebih awal tidak menambah
+ *   jam kerja maupun lembur. Datang terlambat tetap dihitung dari jam scan.
+ * - Istirahat dimulai pada Jam Masuk + Offset Potong Istirahat. Pulang setelah
+ *   titik itu memotong istirahat PENUH; pulang sebelum atau tepat pada titik
+ *   itu tidak dipotong sama sekali.
+ *
+ * Cerminan Rust: `calculate_work_on_timeline` di `time_policy.rs`.
+ */
+export function hitungMenitKerjaPadaGarisWaktu(
+  masukDetik: number,
+  pulangDetik: number,
+  jamMasukShiftDetik: number,
+  aturan: AturanJamKerja,
+): WorkMetrics {
+  const durasiHadirMenit = Math.max(
+    0,
+    Math.floor((pulangDetik - masukDetik) / 60),
+  );
+  const mulaiKerjaDetik = Math.max(masukDetik, jamMasukShiftDetik);
+  const mulaiIstirahatDetik =
+    jamMasukShiftDetik + aturan.offsetIstirahatMulai * 60;
+  const selesaiIstirahatDetik =
+    mulaiIstirahatDetik + aturan.istirahatMenit * 60;
+  const potonganIstirahatMenit =
+    pulangDetik > mulaiIstirahatDetik && mulaiKerjaDetik < selesaiIstirahatDetik
+      ? aturan.istirahatMenit
+      : 0;
+  const jamKerjaMenit = Math.max(
+    0,
+    Math.floor(Math.max(0, pulangDetik - mulaiKerjaDetik) / 60) -
+      potonganIstirahatMenit,
+  );
+
+  return {
+    durasiHadirMenit,
+    potonganIstirahatMenit,
+    jamKerjaMenit,
+    lemburMenit: Math.max(0, jamKerjaMenit - aturan.jamKerjaNormalMenit),
+    jamKerjaKurangMenit: Math.max(
+      0,
+      aturan.jamKerjaNormalMenit - jamKerjaMenit,
+    ),
+  };
+}
+
+/**
+ * Menempatkan jam masuk "HH:mm" (menit-dalam-hari) pada garis waktu shift:
+ * selisihnya terhadap Jam Masuk dinormalkan ke ±12 jam, sehingga scan 23:30
+ * untuk shift 01:00 terbaca 90 menit SEBELUM jam masuk (−30), dan scan 00:10
+ * untuk shift 22:00 terbaca 130 menit SESUDAHNYA (1450).
+ */
+export function menitMasukPadaGarisWaktuShift(
+  masukMenit: number,
+  jamMasukMenit: number,
+): number {
+  let selisih = masukMenit - jamMasukMenit;
+  if (selisih < -720) selisih += 1440;
+  if (selisih > 720) selisih -= 1440;
+  return jamMasukMenit + selisih;
+}
+
+export interface AturanShiftDariJam extends AturanJamKerja {
+  jamMasuk: string;
+  jamPulang: string;
+}
+
+/**
+ * Membaca aturan jam kerja dari baris `tbl_shift` mentah. Bawaan untuk kolom
+ * NULL mengikuti DDL, sama dengan yang dipakai jalur admin sebelum ini.
+ */
+export function aturanShiftDariBaris(
+  row: Record<string, unknown> | undefined,
+): AturanShiftDariJam & AturanJendelaMasuk {
+  return {
+    jamMasuk: String(row?.jam_masuk || "07:00"),
+    jamPulang: String(row?.jam_pulang || "15:00"),
+    jamKerjaNormalMenit: Number(row?.jam_kerja_normal_menit ?? 480),
+    istirahatMenit: Number(row?.istirahat_menit ?? 60),
+    offsetIstirahatMulai: Number(row?.offset_istirahat_mulai ?? 240),
+    awalAbsenMenit: Number(row?.awal_absen_menit ?? 120),
+    batasMasukMenit: Number(row?.batas_masuk_menit ?? 60),
+    toleransiMasukMenit: Number(row?.toleransi_masuk_menit ?? 0),
+  };
+}
+
+export interface HasilHitungDariJam {
+  menitTerlambat: number;
+  menitDatangAwal: number;
+  jamKerja: number;
+  lembur: number;
+  jamKerjaKurang: number;
+}
+
+/**
+ * Perhitungan ulang untuk jalur admin (edit riwayat, koreksi, import, hapus
+ * log, sync-push) yang hanya memegang jam masuk "HH:mm" dan durasi hadir yang
+ * sudah dihitung pemanggilnya (termasuk lintas tengah malam). Rumusnya sama
+ * dengan scanner: terlambat/datang awal diukur dari Jam Masuk, jam kerja
+ * dimulai dari Jam Masuk, istirahat dipotong penuh setelah Jam Masuk + Offset.
+ *
+ * Shift fleksibel tidak punya jam masuk efektif: terlambat/datang awal selalu
+ * 0 dan jam kerjanya durasi hadir dikurangi istirahat, seperti sebelumnya.
+ * Cerminan Rust: `recalculate_from_clock` di `time_policy.rs`.
+ */
+export function hitungUlangAbsensiDariJam(input: {
+  masukMenit: number | null;
+  durasiMenit: number | null;
+  shift: AturanShiftDariJam;
+}): HasilHitungDariJam {
+  const hasil: HasilHitungDariJam = {
+    menitTerlambat: 0,
+    menitDatangAwal: 0,
+    jamKerja: 0,
+    lembur: 0,
+    jamKerjaKurang: 0,
+  };
+  if (input.masukMenit === null) return hasil;
+
+  const { shift } = input;
+  const normal = shift.jamKerjaNormalMenit;
+  if (isShiftFleksibel(shift.jamMasuk, shift.jamPulang, normal)) {
+    if (input.durasiMenit !== null) {
+      hasil.jamKerja = Math.max(0, input.durasiMenit - shift.istirahatMenit);
+      hasil.lembur = Math.max(0, hasil.jamKerja - normal);
+      hasil.jamKerjaKurang = Math.max(0, normal - hasil.jamKerja);
+    }
+    return hasil;
+  }
+
+  let jamMasukMenit: number;
+  try {
+    jamMasukMenit = parseClock(shift.jamMasuk, "jamMasuk");
+  } catch {
+    return hasil;
+  }
+  const masuk = menitMasukPadaGarisWaktuShift(input.masukMenit, jamMasukMenit);
+  const selisih = hitungTerlambatDanDatangAwal(masuk, jamMasukMenit);
+  hasil.menitTerlambat = selisih.menitTerlambat;
+  hasil.menitDatangAwal = selisih.menitDatangAwal;
+
+  if (input.durasiMenit !== null) {
+    const kerja = hitungMenitKerjaPadaGarisWaktu(
+      masuk * 60,
+      (masuk + input.durasiMenit) * 60,
+      jamMasukMenit * 60,
+      shift,
+    );
+    hasil.jamKerja = kerja.jamKerjaMenit;
+    hasil.lembur = kerja.lemburMenit;
+    hasil.jamKerjaKurang = kerja.jamKerjaKurangMenit;
+  }
+  return hasil;
+}
+
+/**
+ * Menit pada garis waktu tanggal kerja saat jendela scan masuk tertutup:
+ * Jam Masuk + Toleransi Keterlambatan (sama dengan `tutupMenit` pada
+ * `jendelaScanMasuk`). Setelah menit ini scanner menolak scan masuk, jadi
+ * karyawan tanpa baris absensi memang benar-benar "belum absen padahal jam
+ * absen sudah lewat".
  */
 export function menitPenutupanScanMasuk(shift: ShiftTimePolicy): number {
   // Karyawan shift fleksibel bebas datang jam berapa pun, jadi tidak ada menit
   // di tengah hari yang membuatnya "belum absen padahal sudah lewat".
   if (shift.kind === "flexible") return MENIT_AKHIR_HARI;
   return (
-    parseClock(shift.jamMasuk, "jamMasuk") +
-    shift.batasMasukMenit +
-    shift.toleransiMasukMenit
+    parseClock(shift.jamMasuk, "jamMasuk") + jendelaScanMasuk(shift).tutupMenit
   );
 }
 
@@ -272,17 +545,25 @@ export function hitungMenitKerja(
     };
   }
 
-  const potonganIstirahatMenit =
-    durasiHadirMenit > shift.offsetIstirahatMulai ? shift.istirahatMenit : 0;
-  const jamKerjaMenit = Math.max(0, durasiHadirMenit - potonganIstirahatMenit);
+  // Jam Masuk shift sebagai instant: tengah malam tanggal kerja (dihitung dari
+  // komponen operasional scan masuk, jadi tidak ada offset zona yang dieja di
+  // sini) ditambah jam masuknya.
+  const lokalMasuk = getOperationalDateTime(masuk);
+  const tanggalKerja = tentukanTanggalKerja(masuk, shift);
+  const tengahMalamTanggalKerjaMs =
+    masuk.getTime() -
+    masuk.getUTCMilliseconds() -
+    (lokalMasuk.minuteOfDay * 60 + lokalMasuk.second) * 1000 +
+    calendarDayDifference(lokalMasuk.date, tanggalKerja) * 86_400_000;
+  const jamMasukShiftMs =
+    tengahMalamTanggalKerjaMs + parseClock(shift.jamMasuk, "jamMasuk") * 60_000;
 
-  return {
-    durasiHadirMenit,
-    potonganIstirahatMenit,
-    jamKerjaMenit,
-    lemburMenit: Math.max(0, jamKerjaMenit - shift.jamKerjaNormalMenit),
-    jamKerjaKurangMenit: Math.max(0, shift.jamKerjaNormalMenit - jamKerjaMenit),
-  };
+  return hitungMenitKerjaPadaGarisWaktu(
+    masuk.getTime() / 1000,
+    pulang.getTime() / 1000,
+    jamMasukShiftMs / 1000,
+    shift,
+  );
 }
 
 export function putuskanScanWaktu(
@@ -398,10 +679,15 @@ export function putuskanScanWaktu(
   const jamPulangDasar = parseClock(input.shift.jamPulang, "jamPulang");
   const jamPulang =
     jamPulangDasar < jamMasuk ? jamPulangDasar + 1440 : jamPulangDasar;
-  const awalMasuk = jamMasuk - input.shift.awalAbsenMenit;
-  const batasMasukNormal = jamMasuk + input.shift.batasMasukMenit;
-  const batasAkhirMasuk = batasMasukNormal + input.shift.toleransiMasukMenit;
+  const jendelaMasuk = jendelaScanMasuk(input.shift);
+  const awalMasuk = jamMasuk + jendelaMasuk.bukaMenit;
+  const mulaiTepatWaktu = jamMasuk + jendelaMasuk.tepatWaktuMenit;
+  const batasAkhirMasuk = jamMasuk + jendelaMasuk.tutupMenit;
   const batasAkhirPulang = jamPulang + input.shift.batasPulangMenit;
+  const selisihMasuk = hitungTerlambatDanDatangAwal(
+    menitPadaGarisWaktu,
+    jamMasuk,
+  );
 
   if (!waktuMasuk) {
     if (
@@ -426,25 +712,25 @@ export function putuskanScanWaktu(
         jenisScan: "Masuk Ditolak - Terlalu Awal",
         statusProses: "Ditolak",
         keterangan: "",
-        catatanSistem: "Scan sebelum batas datang awal shift",
+        catatanSistem: "Scan sebelum jendela Awal Absen Masuk dibuka",
         tanggalKerja,
       });
     }
 
-    if (menitPadaGarisWaktu < jamMasuk) {
+    if (menitPadaGarisWaktu < mulaiTepatWaktu) {
       return decision({
         boleh: true,
         alasan: "EARLY_ENTRY",
         jenisScan: "Masuk",
         statusProses: "Berhasil",
         keterangan: "Datang Lebih Awal",
-        catatanSistem: "Scan masuk dalam jendela datang awal",
+        catatanSistem: "Scan masuk dalam jendela Awal Absen Masuk",
         tanggalKerja,
-        menitDatangAwal: jamMasuk - menitPadaGarisWaktu,
+        menitDatangAwal: selisihMasuk.menitDatangAwal,
       });
     }
 
-    if (menitPadaGarisWaktu <= batasMasukNormal) {
+    if (menitPadaGarisWaktu <= jamMasuk) {
       return decision({
         boleh: true,
         alasan: "ON_TIME_ENTRY",
@@ -453,6 +739,7 @@ export function putuskanScanWaktu(
         keterangan: "Tepat Waktu",
         catatanSistem: "Scan masuk tepat waktu",
         tanggalKerja,
+        menitDatangAwal: selisihMasuk.menitDatangAwal,
       });
     }
 
@@ -465,7 +752,7 @@ export function putuskanScanWaktu(
         keterangan: "Terlambat",
         catatanSistem: "Scan masuk dalam toleransi keterlambatan",
         tanggalKerja,
-        menitTerlambat: menitPadaGarisWaktu - batasMasukNormal,
+        menitTerlambat: selisihMasuk.menitTerlambat,
       });
     }
 
@@ -475,7 +762,8 @@ export function putuskanScanWaktu(
       jenisScan: "Masuk Ditolak",
       statusProses: "Ditolak",
       keterangan: "",
-      catatanSistem: "Melewati batas toleransi masuk",
+      catatanSistem:
+        "Melewati batas toleransi keterlambatan, perlu Admin/Operator",
       tanggalKerja,
     });
   }

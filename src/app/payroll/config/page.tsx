@@ -625,6 +625,11 @@ export default function PayrollConfigPage() {
                         id_karyawan: e.target.value,
                       }))
                     }
+                    // Rate unik per (karyawan, tanggal berlaku) dan kedua
+                    // backend meng-upsert lewat kunci itu: mengganti salah
+                    // satunya pada baris yang sudah ada selalu gagal (bentrok
+                    // PK). Rate baru untuk tanggal lain = tambah rate baru.
+                    disabled={Boolean(draftSalary.id)}
                     required
                     className="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500 font-normal"
                   >
@@ -700,10 +705,18 @@ export default function PayrollConfigPage() {
                         effective_date: e.target.value,
                       }))
                     }
+                    disabled={Boolean(draftSalary.id)}
                     required
-                    className="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500 font-normal"
+                    className="w-full mt-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500 font-normal disabled:opacity-60"
                   />
                 </label>
+                {draftSalary.id ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Karyawan dan tanggal berlaku dikunci. Untuk tanggal lain,
+                    tambahkan rate baru — rate lama tetap tersimpan sebagai
+                    riwayat.
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">

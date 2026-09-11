@@ -13,7 +13,12 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            app.manage(desktop::DesktopState::initialize(app.handle())?);
+            let state = desktop::DesktopState::initialize(app.handle())?;
+            // Nama aplikasi bisa diganti customer dari Pengaturan; bilah judul
+            // harus sudah benar sejak jendela pertama muncul, bukan menunggu
+            // penggantian nama berikutnya.
+            desktop::commands::apply_window_title(app.handle(), &state);
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

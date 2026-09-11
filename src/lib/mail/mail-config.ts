@@ -21,7 +21,7 @@ export interface MailConfig {
   senderEmail: string;
   senderName: string;
   /**
-   * Basis URL halaman reset, mis. `https://absensi.sppg.id`. Bila kosong, email
+   * Basis URL halaman reset, mis. `https://absensi.perusahaan.co.id`. Bila kosong, email
    * hanya memuat kode reset dan operator memasukkannya manual di aplikasi —
    * jalur yang dipakai pemasangan Desktop tanpa aplikasi Web.
    */
@@ -223,7 +223,7 @@ export function describeMailFailure(detail: string): string {
       return "Alamat email pengirim belum terdaftar di penyedia. Pada Brevo: buka Senders, Domains & Dedicated IPs > Senders, tambahkan alamat itu, lalu klik tautan konfirmasi yang dikirim ke alamat tersebut. Cara ini TIDAK memerlukan domain sendiri.";
     }
     if (menyebutPengirim) {
-      return "Alamat email pengirim ditolak. Isi dengan satu alamat lengkap yang sudah diverifikasi di penyedia, mis. absensi.sppg@gmail.com.";
+      return "Alamat email pengirim ditolak. Isi dengan satu alamat lengkap yang sudah diverifikasi di penyedia, mis. absensi.perusahaan@gmail.com.";
     }
     return "Isi kiriman ditolak penyedia. Periksa kembali email pengirim dan nama pengirim.";
   }

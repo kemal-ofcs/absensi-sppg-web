@@ -1,5 +1,6 @@
 import "server-only";
 
+import { hitungJamKerjaNormalMenit } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface ShiftInput {
@@ -38,32 +39,15 @@ export function ubahJamKeMenit(
 }
 
 /**
- * Menghitung jam kerja normal dalam satuan MENIT sesuai acuan code-sheet/13.1_Helper_Tambahan.txt
- * Rumus: (jamPulang - jamMasuk) - istirahat + batasMasuk
+ * Menghitung jam kerja normal dalam satuan MENIT.
+ * Rumus: (jamPulang - jamMasuk) - istirahat — lihat `hitungJamKerjaNormalMenit`.
  */
 export function kalkulasiJamKerjaNormalMenit(
   jamMasuk: string,
   jamPulang: string,
   istirahatMenit: number = 60,
-  batasMasukMenit: number = 60,
 ): number {
-  const menitMasuk = ubahJamKeMenit(jamMasuk);
-  let menitPulang = ubahJamKeMenit(jamPulang);
-
-  if (menitMasuk === null || menitPulang === null) {
-    return 0;
-  }
-
-  // Penanganan Shift Malam (jika jam pulang melewati tengah malam)
-  if (menitPulang < menitMasuk) {
-    menitPulang += 1440; // Tambah 24 jam (1440 menit)
-  }
-
-  const istirahat = Number(istirahatMenit || 0);
-  const batasMasuk = Number(batasMasukMenit || 0);
-
-  const totalMenit = menitPulang - menitMasuk - istirahat + batasMasuk;
-  return totalMenit > 0 ? totalMenit : 0;
+  return hitungJamKerjaNormalMenit(jamMasuk, jamPulang, istirahatMenit);
 }
 
 export async function getDaftarShift() {
@@ -96,12 +80,7 @@ export async function tambahShift(data: ShiftInput) {
   const istirahat = data.istirahat_menit ?? 60;
   const jamKerjaNormal =
     data.jam_kerja_normal_menit ??
-    kalkulasiJamKerjaNormalMenit(
-      data.jam_masuk,
-      data.jam_pulang,
-      istirahat,
-      batasMasuk,
-    );
+    kalkulasiJamKerjaNormalMenit(data.jam_masuk, data.jam_pulang, istirahat);
 
   const res = await db.execute({
     sql: `

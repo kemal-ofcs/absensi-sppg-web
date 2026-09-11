@@ -158,16 +158,16 @@ describe("buildOtpAuthUri", () => {
     const uri = buildOtpAuthUri({
       secret: "GEZDGNBVGY3TQOJQ",
       accountLabel: "operator01",
-      issuer: "Absensi SPPG",
+      issuer: "Absensi Perusahaan",
     });
     expect(uri.startsWith("otpauth://totp/")).toBe(true);
     expect(uri).toContain("secret=GEZDGNBVGY3TQOJQ");
     expect(uri).toContain("algorithm=SHA1");
     expect(uri).toContain("digits=6");
     expect(uri).toContain("period=30");
-    // Label memuat issuer supaya beberapa akun SPPG di satu ponsel tidak
-    // tampil bertumpuk tanpa keterangan.
-    expect(decodeURIComponent(uri)).toContain("Absensi SPPG:operator01");
+    // Label memuat issuer supaya beberapa akun di satu ponsel tidak tampil
+    // bertumpuk tanpa keterangan.
+    expect(decodeURIComponent(uri)).toContain("Absensi Perusahaan:operator01");
   });
 });
 

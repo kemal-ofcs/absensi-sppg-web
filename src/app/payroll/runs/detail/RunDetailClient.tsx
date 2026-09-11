@@ -129,9 +129,12 @@ export default function RunDetailClient() {
     hasPermission(user, "payroll.run.approve") && currentStatus === "REVIEWED";
   const canDisburse =
     hasPermission(user, "payroll.run.disburse") && currentStatus === "APPROVED";
+  // Tolak menuntut `payroll.run.review` di KEDUA backend (Rust
+  // `desktop_transition_payroll_status` dan `PATCH /api/payroll/runs`).
+  // Sebelumnya pemegang `approve` saja juga melihat tombolnya, lalu ditolak
+  // server saat menekannya.
   const canReject =
-    (hasPermission(user, "payroll.run.review") ||
-      hasPermission(user, "payroll.run.approve")) &&
+    hasPermission(user, "payroll.run.review") &&
     (currentStatus === "SUBMITTED" || currentStatus === "REVIEWED");
 
   return (

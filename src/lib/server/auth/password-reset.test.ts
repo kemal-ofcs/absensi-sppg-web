@@ -166,7 +166,7 @@ async function activateMail() {
   await client.execute(`
     UPDATE app_mail_config
     SET api_key = 'test-key', sender_email = 'no-reply@sppg.id',
-        sender_name = 'Absensi SPPG', is_active = 1
+        sender_name = 'Absensi Perusahaan', is_active = 1
     WHERE id = 'default';
   `);
 }

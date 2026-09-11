@@ -434,12 +434,10 @@ export async function getPayrollRecap(
   periodStart: string,
   periodEnd: string,
 ): Promise<PayrollRecapRow[]> {
-  if (isMobileRuntime()) {
-    return invokeDesktop<PayrollRecapRow[]>("mobile_get_payroll_recap", {
-      periodStart,
-      periodEnd,
-    });
-  }
+  // Desktop DAN Mobile: Mobile mendaftarkan `desktop_get_payroll_recap` dari
+  // modul `payroll_admin` (salinan persis modul Desktop). Dulu Mobile memakai
+  // `mobile_get_payroll_recap` dengan salinan kalkulatornya sendiri yang tidak
+  // mengenal jam hari libur, sehingga estimasi di HP berbeda dari batch.
   if (isDesktopRuntime()) {
     return invokeDesktop<PayrollRecapRow[]>("desktop_get_payroll_recap", {
       periodStart,
@@ -665,9 +663,9 @@ export async function getEmployeePayrollEstimate(
 export async function getMyPayrollSlips(
   idKaryawan: string,
 ): Promise<MobileSlipSummary[]> {
-  // Build Mobile tidak mendaftarkan command administrasi payroll, jadi jalur
-  // "kumpulkan semua run lalu ambil detailnya" di bawah akan gagal di sana.
-  // Mobile punya command khusus yang membaca tabel hasil sync dalam satu query.
+  // Jalur "kumpulkan semua run lalu ambil detailnya" di bawah memanggil satu
+  // command per batch. Mobile punya command khusus yang membaca tabel hasil
+  // sync dalam SATU query — jauh lebih ringan di perangkat genggam.
   if (isMobileRuntime()) {
     const slips = await invokeDesktop<MobileSlipSummary[]>(
       "mobile_get_my_payroll_slips",
@@ -750,7 +748,9 @@ export async function getPayrollSlipDetail(
         };
       }
     } catch {
-      // Ignore
+      // Baris yang bentuknya tidak dikenali dilewati, bukan menjatuhkan
+      // seluruh daftar. Satu baris payroll lama berskema berbeda tidak boleh
+      // membuat riwayat penggajian gagal tampil seluruhnya.
     }
   }
   throw new Error("Slip gaji tidak ditemukan.");

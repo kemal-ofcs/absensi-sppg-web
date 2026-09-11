@@ -1,7 +1,7 @@
 use base64::prelude::*;
 use reqwest::Method;
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroizing;
 
 use super::{
@@ -1702,13 +1702,31 @@ pub fn desktop_get_app_display_name(state: State<'_, DesktopState>) -> Result<St
     operational::get_app_display_name(&state)
 }
 
+/// Menyamakan judul jendela dengan nama aplikasi yang diatur customer.
+///
+/// Judul pada `tauri.conf.json` hanya nilai awal yang dipanggang saat build,
+/// jadi tanpa ini nama baru tidak akan pernah terlihat di bilah judul tanpa
+/// build ulang. Kegagalannya sengaja diabaikan: nama merek yang tidak terbaca
+/// tidak boleh menggagalkan startup, dan pada Mobile memang tidak ada jendela
+/// berjudul yang bisa diubah.
+pub fn apply_window_title(app: &AppHandle, state: &DesktopState) {
+    let Ok(name) = operational::get_app_display_name(state) else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_title(&name);
+    }
+}
+
 #[tauri::command]
 pub async fn desktop_update_app_display_name(
+    app: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
 ) -> Result<String, CommandError> {
     require_permission(&state, "settings.manage")?;
     let saved = operational::save_app_display_name(&state, &name)?;
+    apply_window_title(&app, &state);
     let _ = sync::push_outbox(&state, &session_token(&state)).await;
     Ok(saved)
 }

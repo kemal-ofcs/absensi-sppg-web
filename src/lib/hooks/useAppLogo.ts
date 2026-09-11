@@ -14,8 +14,8 @@ import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
  * sampai ke cloud maupun perangkat lain — dan perangkat yang pernah mengunggah
  * logo tidak akan pernah melihat perubahan dari perangkat lain.
  */
-const APP_LOGO_CACHE_KEY = "absensi_sppg_custom_logo";
-const APP_LOGO_EVENT = "absensi-sppg:logo-change";
+const APP_LOGO_CACHE_KEY = "app_branding_logo";
+const APP_LOGO_EVENT = "app-attendance:branding-logo-change";
 
 const listeners = new Set<() => void>();
 

@@ -76,7 +76,7 @@ import {
   testTursoConnection,
 } from "@/lib/gateways/turso-config";
 import { syncAppLogoCache, useAppLogo } from "@/lib/hooks/useAppLogo";
-import { syncAppNameCache } from "@/lib/hooks/useAppName";
+import { syncAppNameCache, useAppName } from "@/lib/hooks/useAppName";
 import { syncCompanyNameCache } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
@@ -200,6 +200,10 @@ export default function SettingsPage() {
   const [appDisplayName, setAppDisplayName] = useState<string>(
     BRANDING.appDisplayName,
   );
+  // Baris info memakai nama yang SUDAH tersimpan, bukan isi kolom yang sedang
+  // diketik: kalau memakai draft, baris itu ikut berubah sebelum disimpan dan
+  // seolah-olah perubahan sudah berlaku.
+  const savedAppName = useAppName();
   const [companyProfileBusy, setCompanyProfileBusy] = useState(false);
 
   useEffect(() => {
@@ -1211,9 +1215,7 @@ export default function SettingsPage() {
           <dl className="mt-6 divide-y divide-white/10 rounded-2xl border border-white/10 bg-slate-950/50 px-4">
             <div className="flex items-center justify-between gap-4 py-3 text-xs">
               <dt className="text-slate-400">Aplikasi</dt>
-              <dd className="font-bold text-white">
-                {BRANDING.appDisplayName} v0.1.0
-              </dd>
+              <dd className="font-bold text-white">{savedAppName} v0.1.0</dd>
             </div>
             <div className="flex items-center justify-between gap-4 py-3 text-xs">
               <dt className="text-slate-400">Frontend</dt>

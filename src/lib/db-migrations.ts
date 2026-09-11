@@ -1,4 +1,5 @@
 import type { Client } from "@libsql/client";
+import { BRANDING } from "@/lib/constants/branding";
 import {
   DEFAULT_ROLE_PERMISSIONS,
   PERMISSION_CATALOG,
@@ -19,6 +20,33 @@ const TWO_FACTOR_MIGRATION_VERSION = 12;
 const SCAN_SECURITY_MIGRATION_VERSION = 13;
 const HOLIDAY_WHITELIST_MIGRATION_VERSION = 14;
 const PASSWORD_RECOVERY_MIGRATION_VERSION = 15;
+const SHIFT_TIME_RULES_MIGRATION_VERSION = 16;
+
+/**
+ * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
+ * Istirahat, tanpa "+ Batas Masuk" lama. Nilai tersimpan dihitung ulang SEKALI.
+ *
+ * Shift fleksibel (jam kerja normal 0, jam masuk = jam pulang, atau
+ * 00:00–23:59) sengaja dilewati: nilainya adalah penanda fleksibel, dan
+ * menghitung ulangnya akan diam-diam mengubah shift itu menjadi reguler.
+ * Hasil ≤ 0 juga dilewati karena alasan yang sama. Teks SQL ini WAJIB identik
+ * dengan `RECALCULATE_NORMAL_WORK_SQL` di `turso.rs`.
+ */
+export const RECALCULATE_NORMAL_WORK_SQL = `UPDATE tbl_shift
+SET jam_kerja_normal_menit =
+  (CAST(substr(jam_pulang, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_pulang, 4, 2) AS INTEGER))
+  - (CAST(substr(jam_masuk, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_masuk, 4, 2) AS INTEGER))
+  + (CASE WHEN substr(jam_pulang, 1, 5) < substr(jam_masuk, 1, 5) THEN 1440 ELSE 0 END)
+  - COALESCE(istirahat_menit, 0)
+WHERE COALESCE(jam_kerja_normal_menit, 0) > 0
+  AND jam_masuk GLOB '[0-2][0-9]:[0-5][0-9]*'
+  AND jam_pulang GLOB '[0-2][0-9]:[0-5][0-9]*'
+  AND substr(jam_masuk, 1, 5) <> substr(jam_pulang, 1, 5)
+  AND NOT (substr(jam_masuk, 1, 5) = '00:00' AND substr(jam_pulang, 1, 5) = '23:59')
+  AND (CAST(substr(jam_pulang, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_pulang, 4, 2) AS INTEGER))
+    - (CAST(substr(jam_masuk, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_masuk, 4, 2) AS INTEGER))
+    + (CASE WHEN substr(jam_pulang, 1, 5) < substr(jam_masuk, 1, 5) THEN 1440 ELSE 0 END)
+    - COALESCE(istirahat_menit, 0) > 0;`;
 
 const SYSTEM_ROLES = [
   {
@@ -574,7 +602,7 @@ export async function runDatabaseMigrations(client: Client) {
   await client.execute(`
     CREATE TABLE IF NOT EXISTS company_profile (
       id TEXT PRIMARY KEY DEFAULT 'default_company',
-      company_name TEXT NOT NULL DEFAULT 'SPPG',
+      company_name TEXT NOT NULL DEFAULT 'YOUR COMPANY',
       branch_name TEXT,
       logo_url TEXT,
       signature_url TEXT,
@@ -594,7 +622,7 @@ export async function runDatabaseMigrations(client: Client) {
   await client.execute(`
     CREATE TABLE IF NOT EXISTS id_card_template (
       id TEXT PRIMARY KEY DEFAULT 'default_template',
-      name TEXT NOT NULL DEFAULT 'Template Default SPPG',
+      name TEXT NOT NULL DEFAULT 'Default ID Card Template',
       orientation TEXT NOT NULL DEFAULT 'landscape',
       front_bg_url TEXT,
       back_bg_url TEXT,
@@ -605,10 +633,7 @@ export async function runDatabaseMigrations(client: Client) {
     );
   `);
 
-  const defaultTerms = `1. Kartu ini adalah tanda pengenal resmi karyawan/personil SPPG.
-2. Wajib dibawa dan dipindai (scan QR) setiap hadir dan pulang kerja.
-3. Dilarang memindahtangankan atau meminjamkan kartu ini kepada pihak lain.
-4. Apabila kartu hilang atau menemukan kartu ini, harap segera melapor ke Bagian SDM/Operasional SPPG.`;
+  const defaultTerms = BRANDING.defaultCardTerms;
 
   await client.execute({
     sql: `
@@ -618,13 +643,25 @@ export async function runDatabaseMigrations(client: Client) {
         leader_name, leader_title, leader_nip,
         card_terms, timezone, updated_at
       ) VALUES (
-        'default_company', 'SPPG', 'Pusat Operasional', NULL, NULL,
-        'Jl. Sudirman No. 123, Jakarta', '021-5550123', 'info@sppg.id', 'https://sppg.id',
-        'Dr. H. Ahmad Fauzi, M.M.', 'Kepala SPPG', '19750815 200003 1 002',
+        'default_company', ?, ?, NULL, NULL,
+        ?, ?, ?, ?,
+        ?, ?, ?,
         ?, 'Asia/Jakarta', ?
       );
     `,
-    args: [defaultTerms, now],
+    args: [
+      BRANDING.defaultCompanyName,
+      BRANDING.defaultBranchName,
+      BRANDING.defaultAddress,
+      BRANDING.defaultPhone,
+      BRANDING.defaultEmail,
+      BRANDING.defaultWebsite,
+      BRANDING.defaultLeaderName,
+      BRANDING.defaultLeaderTitle,
+      BRANDING.defaultLeaderNip,
+      defaultTerms,
+      now,
+    ],
   });
 
   await client.execute({
@@ -908,6 +945,27 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'superadmin-password-recovery-codes', ?);`,
     args: [PASSWORD_RECOVERY_MIGRATION_VERSION, now],
+  });
+
+  // ── v16: Aturan jam scan baru (lihat RECALCULATE_NORMAL_WORK_SQL) ──
+  //
+  // Data migration, bukan DDL: dijalankan hanya sekali, dijaga baris versinya.
+  // Setelah itu Jam Kerja Normal selalu ditulis dengan rumus baru oleh form
+  // shift, jadi menjalankannya ulang tidak diperlukan.
+  const shiftRulesApplied = await client.execute({
+    sql: "SELECT COUNT(*) AS total FROM schema_migration WHERE version = ?;",
+    args: [SHIFT_TIME_RULES_MIGRATION_VERSION],
+  });
+  if (
+    Number(shiftRulesApplied.rows[0]?.total ?? 0) === 0 &&
+    (await hasTable(client, "tbl_shift"))
+  ) {
+    await client.execute(RECALCULATE_NORMAL_WORK_SQL);
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'shift-time-rules-v2', ?);`,
+    args: [SHIFT_TIME_RULES_MIGRATION_VERSION, now],
   });
 
   await client.execute(

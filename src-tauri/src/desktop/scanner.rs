@@ -785,8 +785,9 @@ fn load_shift(transaction: &Transaction<'_>, shift_id: i64) -> Result<Option<Shi
                         },
                         start,
                         end,
-                        early_window_minutes: row.get::<_, Option<i64>>(4)?.unwrap_or(60),
-                        normal_entry_minutes: row.get::<_, Option<i64>>(5)?.unwrap_or(120),
+                        // Bawaan NULL mengikuti DDL `tbl_shift` (awal 120, batas 60).
+                        early_window_minutes: row.get::<_, Option<i64>>(4)?.unwrap_or(120),
+                        normal_entry_minutes: row.get::<_, Option<i64>>(5)?.unwrap_or(60),
                         late_tolerance_minutes: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
                         checkout_limit_minutes: row.get::<_, Option<i64>>(7)?.unwrap_or(240),
                         night_buffer_minutes: row.get::<_, Option<i64>>(8)?.unwrap_or(120),
@@ -827,8 +828,12 @@ fn is_check_in_window_matched(time_str: &str, shift: &Shift) -> bool {
     if diff > 720 {
         diff -= 1440;
     }
-    diff >= -shift.policy.early_window_minutes
-        && diff <= (shift.policy.normal_entry_minutes + shift.policy.late_tolerance_minutes)
+    super::time_policy::is_within_entry_window(
+        diff,
+        shift.policy.early_window_minutes,
+        shift.policy.normal_entry_minutes,
+        shift.policy.late_tolerance_minutes,
+    )
 }
 
 fn find_effective_backup(
@@ -950,7 +955,7 @@ fn rejected_decision_message(reason: DecisionReason) -> &'static str {
     match reason {
         DecisionReason::TooEarly => "Absensi belum dibuka untuk shift ini.",
         DecisionReason::EntryWindowClosed => {
-            "Waktu absensi masuk sudah ditutup. Silakan hubungi operator."
+            "Anda melewati batas toleransi keterlambatan. Silakan hubungi Admin atau Operator."
         }
         DecisionReason::MultiScan => "Scan ditolak. Kemungkinan Anda melakukan scan masuk ulang.",
         DecisionReason::CheckoutTooLate => "Scan ditolak. Batas waktu pulang shift sudah berakhir.",
@@ -2812,11 +2817,12 @@ mod tests {
     #[test]
     fn policy_rejection_is_logged_and_enqueued_without_attendance() {
         let (_directory, state) = fixture();
+        // Shift 07:00, batas tepat waktu 15, awal absen 60: dibuka 05:45.
         let result = scan(
             &state,
             "K001",
             "TOKEN-TEST",
-            moment("2026-08-12", "05:59:00"),
+            moment("2026-08-12", "05:44:00"),
         );
         assert_eq!(result["jenisScan"], "Masuk Ditolak - Terlalu Awal");
         assert_eq!(result["sukses"], false);

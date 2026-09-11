@@ -179,7 +179,8 @@ describe("integrasi Web mesin aturan scan", () => {
   });
 
   test("scan waktu ditolak hanya menulis LOG_SCAN", async () => {
-    const result = await scanAt(jakarta("2026-08-12", "05:59"));
+    // Shift Pagi 07:00, batas tepat waktu 15, awal absen 60: dibuka 05:45.
+    const result = await scanAt(jakarta("2026-08-12", "05:44"));
 
     expect(result).toMatchObject({ sukses: false, status: "Ditolak" });
     expect(await tableCount("log_scan")).toBe(1);
@@ -329,7 +330,8 @@ describe("integrasi Web mesin aturan scan", () => {
       jenisScan: "Masuk",
       status: "Berhasil",
       keterangan: "Terlambat",
-      menitTerlambat: 47,
+      // Terlambat diukur dari jam masuk 23:00, bukan dari 23:15.
+      menitTerlambat: 62,
     });
 
     const pulang = await scanAt(jakarta("2026-08-13", "07:00"));

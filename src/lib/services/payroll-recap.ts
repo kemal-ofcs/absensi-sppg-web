@@ -91,12 +91,34 @@ async function loadPayrollComponents(
   }));
 }
 
-async function loadTaxRules(client: Client): Promise<TaxRule[]> {
-  const result = await client.execute(
-    `SELECT id, category, bracket_min, bracket_max, rate_percentage, effective_date
+/**
+ * Tarif pajak yang BERLAKU pada akhir periode, bukan seluruh isi tabelnya.
+ *
+ * `effective_date` sudah ada di skema dan didokumentasikan sebagai kunci
+ * generasi tarif, tetapi tidak pernah dipakai menyaring: tabelnya dibaca utuh,
+ * lalu `calculatePph21Ter` memakai bracket PERTAMA yang cocok. Menambahkan
+ * tabel TER tahun depan membuat periode berjalan memakai bracket yang
+ * urutannya tidak ditentukan siapa pun. Bahkan tanpa generasi ganda, tarif
+ * yang berlakunya masih di MASA DEPAN pun ikut terpakai hari ini.
+ *
+ * SQL-nya sama persis dengan `load_tax_rules` di `payroll/commands.rs`.
+ */
+async function loadTaxRules(
+  client: Client,
+  periodEnd: string,
+): Promise<TaxRule[]> {
+  const result = await client.execute({
+    sql: `SELECT id, category, bracket_min, bracket_max, rate_percentage, effective_date
      FROM tax_rules
+     WHERE effective_date = COALESCE(
+       (SELECT MAX(t2.effective_date) FROM tax_rules t2
+         WHERE t2.category = tax_rules.category AND t2.effective_date <= ?),
+       (SELECT MIN(t3.effective_date) FROM tax_rules t3
+         WHERE t3.category = tax_rules.category)
+     )
      ORDER BY category, bracket_min ASC;`,
-  );
+    args: [periodEnd],
+  });
   return result.rows.map((row) => ({
     id: String(row.id),
     category: String(row.category),
@@ -107,12 +129,28 @@ async function loadTaxRules(client: Client): Promise<TaxRule[]> {
   }));
 }
 
-async function loadBpjsRules(client: Client): Promise<BpjsRule[]> {
-  const result = await client.execute(
-    `SELECT id, component_code, component_name, rate_percentage, wage_cap, effective_date
+/**
+ * Iuran BPJS yang BERLAKU pada akhir periode.
+ *
+ * Alasannya sama dengan `loadTaxRules`. SQL-nya sama persis dengan
+ * `load_bpjs_rules` di `payroll/commands.rs`.
+ */
+async function loadBpjsRules(
+  client: Client,
+  periodEnd: string,
+): Promise<BpjsRule[]> {
+  const result = await client.execute({
+    sql: `SELECT id, component_code, component_name, rate_percentage, wage_cap, effective_date
      FROM bpjs_rules
+     WHERE effective_date = COALESCE(
+       (SELECT MAX(b2.effective_date) FROM bpjs_rules b2
+         WHERE b2.component_code = bpjs_rules.component_code AND b2.effective_date <= ?),
+       (SELECT MIN(b3.effective_date) FROM bpjs_rules b3
+         WHERE b3.component_code = bpjs_rules.component_code)
+     )
      ORDER BY component_code ASC;`,
-  );
+    args: [periodEnd],
+  });
   return result.rows.map((row) => ({
     id: String(row.id),
     component_code: String(row.component_code),
@@ -142,8 +180,8 @@ export async function computePayrollRecap(
     // itu tersimpan dan bisa disunting, tetapi tidak pernah dibaca siapa pun.
     loadOvertimeTiers(client, "HARI_LIBUR"),
     loadPayrollComponents(client),
-    loadTaxRules(client),
-    loadBpjsRules(client),
+    loadTaxRules(client, periodEnd),
+    loadBpjsRules(client, periodEnd),
     client.execute({
       sql: `
           SELECT
@@ -198,8 +236,25 @@ export async function computePayrollRecap(
     // `desktop_get_payroll_recap` di payroll/commands.rs.
     const otIndex = calculateOvertimeIndex(otHours, overtimeTiers);
     const holidayIndex = calculateOvertimeIndex(holidayHours, holidayTiers);
-    const basicSalary = roundMoney(regHours * ratePerHour);
-    const overtimeSalary = roundMoney((otIndex + holidayIndex) * ratePerHour);
+
+    // Uang diturunkan dari MENIT BULAT, bukan dari jam yang sudah dibagi.
+    //
+    // `regHours * ratePerHour` menempuh dua operasi pecahan: menit dibagi 60
+    // lalu dikalikan tarif, dan galat pembagiannya membuat nilai yang
+    // seharusnya jatuh TEPAT di titik tengah pembulatan mendarat sedikit di
+    // bawahnya. Sebelas menit pada tarif 18.750/jam bernilai 3.437,5 persis,
+    // tetapi lewat jalur itu ia menjadi 3.437,4999… lalu dibulatkan ke 3.437.
+    //
+    // `menit * tarif` adalah bilangan bulat eksak, dan hasil baginya oleh 60
+    // hanya punya satu bit pecahan ketika ia setengah bulat — sehingga
+    // titik tengahnya terwakili persis dan `roundMoney` menjawab benar. Ini
+    // yang membuat hasilnya sama dengan `Decimal` di `payroll/commands.rs`.
+    const basicSalary = roundMoney((jamKerjaMenit * ratePerHour) / 60);
+
+    // Alasan yang sama untuk lembur: indeksnya sudah dibulatkan ke 2 desimal,
+    // jadi seratus kalinya bilangan bulat dan perkaliannya menjadi eksak.
+    const indeksRatusan = Math.round((otIndex + holidayIndex) * 100);
+    const overtimeSalary = roundMoney((indeksRatusan * ratePerHour) / 100);
 
     const {
       allowance,

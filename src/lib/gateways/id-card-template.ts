@@ -1,6 +1,7 @@
 "use client";
 
 import { requestWebApi } from "@/lib/client/api-client";
+import { BRANDING } from "@/lib/constants/branding";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 import type { IdCardElement, IdCardTemplateConfig } from "@/types/id-card";
@@ -11,7 +12,7 @@ function normalizeIdCardTemplate(raw: unknown): IdCardTemplateConfig {
   if (!raw || typeof raw !== "object") {
     return {
       id: "default_template",
-      name: "Template Default SPPG",
+      name: BRANDING.defaultTemplateName,
       orientation: "landscape",
       frontBgUrl: undefined,
       backBgUrl: undefined,
@@ -67,7 +68,7 @@ function normalizeIdCardTemplate(raw: unknown): IdCardTemplateConfig {
 
   return {
     id: String(r.id || "default_template"),
-    name: String(r.name || "Template Default SPPG"),
+    name: String(r.name || BRANDING.defaultTemplateName),
     orientation,
     frontBgUrl,
     backBgUrl,

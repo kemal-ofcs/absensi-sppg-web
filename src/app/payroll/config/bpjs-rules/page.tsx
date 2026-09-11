@@ -250,9 +250,11 @@ export default function BpjsRulesPage() {
                 </tr>
               ) : (
                 rules.map((rule) => {
-                  const isEmployee =
-                    rule.component_code.endsWith("_EMP") ||
-                    rule.component_code.includes("PEKERJA");
+                  // Aturan yang SAMA dengan kedua engine (Rust `engine.rs` dan
+                  // `payroll-calculator.ts`): hanya akhiran `_EMP` yang dipotong
+                  // dari gaji. Tebakan lain di sini membuat label berkebalikan
+                  // dengan hitungan sebenarnya.
+                  const isEmployee = rule.component_code.endsWith("_EMP");
                   return (
                     <tr
                       key={rule.id || rule.component_code}
@@ -347,6 +349,9 @@ export default function BpjsRulesPage() {
                     id="bpjs-code"
                     type="text"
                     required
+                    // Kode adalah kunci unik upsert-nya; mengganti kode baris
+                    // yang sudah ada selalu bentrok PK di kedua backend.
+                    disabled={Boolean(editingRule.id)}
                     placeholder="misal: JHT_EMP, BPJS_KES_CO"
                     value={editingRule.component_code ?? ""}
                     onChange={(e) =>

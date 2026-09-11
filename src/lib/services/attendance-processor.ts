@@ -1,5 +1,6 @@
 import type { Client, Transaction } from "@libsql/client";
 import {
+  diDalamJendelaScanMasuk,
   type ExplicitInstant,
   formatJamOperasional,
   formatTanggalOperasional,
@@ -770,10 +771,7 @@ function isCheckInWindowMatch(waktuScan: Date, shiftRow: Row | null): boolean {
     let diff = userMin - shiftIn;
     if (diff < -720) diff += 1440;
     if (diff > 720) diff -= 1440;
-    return (
-      diff >= -policy.awalAbsenMenit &&
-      diff <= policy.batasMasukMenit + policy.toleransiMasukMenit
-    );
+    return diDalamJendelaScanMasuk(diff, policy);
   } catch {
     return false;
   }
@@ -1288,7 +1286,7 @@ function rejectedDecisionMessage(keputusan: TimeScanDecision): string {
     case "TOO_EARLY":
       return "Absensi belum dibuka untuk shift ini.";
     case "ENTRY_WINDOW_CLOSED":
-      return "Waktu absensi masuk sudah ditutup. Silakan hubungi operator.";
+      return "Anda melewati batas toleransi keterlambatan. Silakan hubungi Admin atau Operator.";
     case "MULTI_SCAN":
       return "Scan ditolak. Kemungkinan Anda melakukan scan masuk ulang.";
     case "CHECKOUT_TOO_LATE":

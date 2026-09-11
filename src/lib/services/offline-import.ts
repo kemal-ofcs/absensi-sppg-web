@@ -2,7 +2,12 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { InValue, Transaction } from "@libsql/client";
-import { isShiftFleksibel } from "@/lib/attendance/time-policy";
+import {
+  aturanShiftDariBaris,
+  diDalamJendelaScanMasuk,
+  hitungUlangAbsensiDariJam,
+  isShiftFleksibel,
+} from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface OfflineImportRow {
@@ -150,12 +155,7 @@ async function processRow(
         let diff = userMin - sIn;
         if (diff < -720) diff += 1440;
         if (diff > 720) diff -= 1440;
-        return (
-          diff >= -Number(s.awal_absen_menit ?? 60) &&
-          diff <=
-            Number(s.batas_masuk_menit ?? 360) +
-              Number(s.toleransi_masuk_menit ?? 0)
-        );
+        return diDalamJendelaScanMasuk(diff, aturanShiftDariBaris(s));
       }
       const sOut = parseMin(String(s.jam_pulang || "15:00"));
       let diff = userMin - sOut;
@@ -243,7 +243,7 @@ async function processRow(
     return fail("Data sudah dikoreksi admin; import tidak boleh menimpa.");
 
   const shiftResult = await transaction.execute({
-    sql: "SELECT id_shift, nama_shift, kode_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+    sql: "SELECT id_shift, nama_shift, kode_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
     args: [shiftId],
   });
   const shiftRowData = shiftResult.rows[0] as
@@ -276,7 +276,7 @@ async function processRow(
       : checkIn
         ? "Belum Pulang"
         : "Perlu Verifikasi");
-  let worked = 0;
+  let durasiHadir: number | null = null;
   if (checkIn && checkOut) {
     const inDate = new Date(`${checkIn.replace(" ", "T")}+07:00`).getTime();
     const outDate = new Date(`${checkOut.replace(" ", "T")}+07:00`).getTime();
@@ -284,17 +284,16 @@ async function processRow(
     if (diffMinutes < 0) {
       diffMinutes += 1440;
     }
-    worked = Math.max(0, diffMinutes);
+    durasiHadir = Math.max(0, diffMinutes);
   }
 
   const shiftData = shiftResult.rows[0];
   if (!shiftData) return fail(`Shift #${shiftId} tidak ditemukan.`);
 
-  const normal = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-  const breakMinutes = Number(shiftData?.istirahat_menit ?? 60);
-  const toleransi = Number(shiftData?.toleransi_masuk_menit ?? 0);
-  const awalAbsen = Number(shiftData?.awal_absen_menit ?? 60);
-  const batasMasuk = Number(shiftData?.batas_masuk_menit ?? 0);
+  const aturanShift = aturanShiftDariBaris(
+    shiftData as Record<string, unknown>,
+  );
+  const normal = aturanShift.jamKerjaNormalMenit;
   const batasPulang = Number(shiftData?.batas_pulang_menit ?? 360);
   const shiftJamMasuk = String(shiftData?.jam_masuk || "07:00");
   const shiftJamPulang = String(shiftData?.jam_pulang || "15:00");
@@ -321,7 +320,7 @@ async function processRow(
       let diff = userMasukMin - shiftMasukMin;
       if (diff < -720) diff += 1440;
       if (diff > 720) diff -= 1440;
-      if (diff < -awalAbsen || diff > batasMasuk + toleransi) {
+      if (!diDalamJendelaScanMasuk(diff, aturanShift)) {
         return fail(
           `Jam masuk (${row.jam_masuk}) di luar rentang jadwal ${shiftData.nama_shift || `Shift ${shiftId}`} (Jam Masuk: ${shiftJamMasuk}).`,
         );
@@ -340,31 +339,20 @@ async function processRow(
     }
   }
 
-  let menitTerlambat = 0;
-  let menitDatangAwal = 0;
-
-  // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
-  // keterlambatan maupun datang awal yang bisa dihitung.
-  if (checkIn && !shiftFleksibel) {
-    const checkInTime = checkIn.includes(" ") ? checkIn.split(" ")[1] : checkIn;
-    let userMasukMin = parseTimeMin(checkInTime);
-    if (isOvernightShift && userMasukMin < shiftMasukMin - 720) {
-      userMasukMin += 1440;
-    }
-    const batasNormalMasuk = shiftMasukMin + batasMasuk;
-    if (userMasukMin < shiftMasukMin) {
-      menitDatangAwal = shiftMasukMin - userMasukMin;
-    } else if (userMasukMin <= batasNormalMasuk) {
-      menitTerlambat = 0;
-      menitDatangAwal = 0;
-    } else {
-      menitTerlambat = userMasukMin - batasNormalMasuk;
-    }
-  }
-
-  worked = worked > 0 ? Math.max(0, worked - breakMinutes) : 0;
-  const overtime = Math.max(0, worked - normal);
-  const shortage = checkIn && checkOut ? Math.max(0, normal - worked) : 0;
+  // Shift fleksibel tidak punya jam masuk efektif, jadi terlambat/datang awal
+  // selalu 0 di sana — ditangani `hitungUlangAbsensiDariJam`.
+  const hasil = hitungUlangAbsensiDariJam({
+    masukMenit: checkIn
+      ? parseTimeMin(checkIn.includes(" ") ? checkIn.split(" ")[1] : checkIn)
+      : null,
+    durasiMenit: durasiHadir,
+    shift: aturanShift,
+  });
+  const menitTerlambat = hasil.menitTerlambat;
+  const menitDatangAwal = hasil.menitDatangAwal;
+  const worked = hasil.jamKerja;
+  const overtime = hasil.lembur;
+  const shortage = hasil.jamKerjaKurang;
   const [year, month] = date.split("-").map(Number);
   await transaction.execute({
     sql: `INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi,

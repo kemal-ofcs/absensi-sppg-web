@@ -308,7 +308,7 @@ fn inspect_candidate(path: &Path) -> Result<(i64, i64), CommandError> {
     if table_count < 5 {
         return Err(CommandError::new(
             "BACKUP_NOT_RECOGNIZED",
-            "Berkas ini adalah database SQLite, tetapi bukan database Absensi SPPG.",
+            "Berkas ini adalah database SQLite, tetapi bukan database aplikasi ini.",
         ));
     }
 

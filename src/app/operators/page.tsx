@@ -32,6 +32,7 @@ import {
   SUPERADMIN_ONLY_PERMISSIONS,
 } from "@/lib/rbac/catalog";
 import type { RoleRecord } from "@/lib/rbac/types";
+import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 
 type ActiveTab = "operators" | "roles";
 
@@ -468,6 +469,12 @@ function OperatorFormModal({
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  // `update_operator` di Rust (Desktop/Mobile) tidak menyimpan kode operator
+  // maupun username — perubahannya dibuang diam-diam sementara layar melapor
+  // berhasil. Keduanya juga tercatat di `log_scan` & `koreksi_admin`, jadi
+  // mengubahnya bukan sekadar mengganti satu kolom. Web tetap boleh
+  // mengubahnya karena jalur servernya memang menyimpan.
+  const lockIdentity = Boolean(editingOperator) && isDesktopRuntime();
   return (
     <Modal
       title={editingOperator ? "Edit operator" : "Tambah operator"}
@@ -480,6 +487,7 @@ function OperatorFormModal({
             <input
               id="operator-code"
               required
+              disabled={lockIdentity}
               value={draft.kodeOperator}
               onChange={(event) =>
                 onChange({ ...draft, kodeOperator: event.target.value })
@@ -491,6 +499,7 @@ function OperatorFormModal({
             <input
               id="operator-username"
               required
+              disabled={lockIdentity}
               autoComplete="username"
               value={draft.username}
               onChange={(event) =>
@@ -500,6 +509,13 @@ function OperatorFormModal({
             />
           </FormField>
         </div>
+        {lockIdentity ? (
+          <p className="text-xs leading-5 text-slate-400">
+            Kode operator dan username tidak dapat diubah dari aplikasi Desktop.
+            Untuk menggantinya, buat akun operator baru lalu nonaktifkan akun
+            lama.
+          </p>
+        ) : null}
         <FormField label="Nama operator" htmlFor="operator-name">
           <input
             id="operator-name"
@@ -518,7 +534,7 @@ function OperatorFormModal({
               type="email"
               required
               autoComplete="email"
-              placeholder="operator@sppg.id"
+              placeholder="operator@perusahaan.co.id"
               value={draft.email}
               onChange={(event) =>
                 onChange({ ...draft, email: event.target.value })

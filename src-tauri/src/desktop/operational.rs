@@ -697,7 +697,7 @@ fn insert_shift(
     {
         integer(draft, "jam_kerja_normal_menit", 0)
     } else {
-        super::time_policy::calculate_normal_work_minutes(start, end, break_min, ontime)
+        super::time_policy::calculate_normal_work_minutes(start, end, break_min)
     };
     let checkout_limit = integer(draft, "batas_pulang_menit", 240);
     let break_offset = integer(draft, "offset_istirahat_mulai", 240);
@@ -786,7 +786,7 @@ pub fn update_shift(state: &DesktopState, id: i64, draft: &Value) -> Result<Valu
     {
         integer(draft, "jam_kerja_normal_menit", 0)
     } else {
-        super::time_policy::calculate_normal_work_minutes(start, end, break_min, ontime)
+        super::time_policy::calculate_normal_work_minutes(start, end, break_min)
     };
     let checkout_limit = integer(draft, "batas_pulang_menit", 240);
     let break_offset = integer(draft, "offset_istirahat_mulai", 240);
@@ -933,7 +933,11 @@ pub fn delete_shift(state: &DesktopState, id: i64) -> Result<Value, CommandError
 pub fn list_id_cards(state: &DesktopState, filter: &Value) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection.prepare(
-        "SELECT c.id_card_id, m.id_unik, m.nama, m.divisi, COALESCE(c.idcard_status, 'Belum'), c.idcard_pdf_url, c.idcard_last_generate, c.idcard_catatan, c.tanggal_generate, c.link_qr_png, m.kode_karyawan, m.status_aktif, m.token_absensi, m.qr_code FROM master_data m LEFT JOIN id_card c ON c.id_unik = m.id_unik ORDER BY m.nama;"
+        // `jabatan_status` WAJIB ikut: halaman ID Card mengirim baris ini
+        // langsung ke renderer kartu, dan tanpa kolom itu setiap kartu yang
+        // dicetak dari sana berjabatan bawaan "Staff". Sama dengan
+        // `getDaftarIdCard` di `lib/services/idcard.ts`.
+        "SELECT c.id_card_id, m.id_unik, m.nama, m.divisi, COALESCE(c.idcard_status, 'Belum'), c.idcard_pdf_url, c.idcard_last_generate, c.idcard_catatan, c.tanggal_generate, c.link_qr_png, m.kode_karyawan, m.status_aktif, m.token_absensi, m.qr_code, m.jabatan_status FROM master_data m LEFT JOIN id_card c ON c.id_unik = m.id_unik ORDER BY m.nama;"
     ).map_err(|_| CommandError::internal())?;
     let search = text(filter, "search").to_lowercase();
     let status = text(filter, "status");
@@ -945,6 +949,7 @@ pub fn list_id_cards(state: &DesktopState, filter: &Value) -> Result<Value, Comm
         "tanggal_generate": row.get::<_, Option<String>>(8)?, "link_qr_png": row.get::<_, Option<String>>(9)?,
         "kode_karyawan": row.get::<_, Option<String>>(10)?, "status_aktif": row.get::<_, Option<String>>(11)?,
         "token_absensi": row.get::<_, Option<String>>(12)?, "qr_code": row.get::<_, Option<String>>(13)?,
+        "jabatan_status": row.get::<_, Option<String>>(14)?,
     }))).map_err(|_| CommandError::internal())?;
     let values = rows
         .collect::<Result<Vec<_>, _>>()
@@ -3540,14 +3545,14 @@ pub fn get_id_card_template(state: &DesktopState, id: &str) -> Result<Value, Com
                 INSERT OR IGNORE INTO id_card_template (
                     id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
                 ) VALUES (
-                    ?, 'Template Default SPPG', 'landscape', NULL, NULL, ?, 1, ?, ?
+                    ?, 'Default ID Card Template', 'landscape', NULL, NULL, ?, 1, ?, ?
                 );
                 "#,
                 params![target_id, default_elements_str, now, now],
             );
             Ok(json!({
                 "id": target_id,
-                "name": "Template Default SPPG",
+                "name": "Default ID Card Template",
                 "orientation": "landscape",
                 "frontBgUrl": Value::Null,
                 "backBgUrl": Value::Null,
@@ -3579,7 +3584,7 @@ pub fn save_id_card_template(
     };
     let name = text(template, "name");
     let name = if name.is_empty() {
-        "Template Default SPPG"
+        "Default ID Card Template"
     } else {
         name
     };

@@ -21,12 +21,12 @@ const localAppData =
   path.resolve(process.env.USERPROFILE || "", "AppData/Local");
 const targetDbPath = path.join(
   localAppData,
-  "id.sppg.absensi",
+  "id.absensi.perusahaan",
   "desktop-security.db",
 );
 
 console.log(
-  "=== Absensi SPPG - Skrip Migrasi & Outbox Enqueue Database Lama ===",
+  "=== Absensi Perusahaan - Skrip Migrasi & Outbox Enqueue Database Lama ===",
 );
 console.log(`Database Sumber : ${sourceDbPath}`);
 console.log(`Database Tujuan : ${targetDbPath}`);

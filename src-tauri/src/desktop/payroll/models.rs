@@ -197,6 +197,20 @@ pub struct PayrollRecapRow {
     pub ptkp_status: String,
     pub total_hadir: i64,
     pub total_terlambat_menit: i64,
+    /// Menit MENTAH dari `absensi_harian`, sebelum dibagi 60.
+    ///
+    /// Inilah sumber kebenaran jamnya, dan pembekuan payroll WAJIB berangkat
+    /// dari sini — bukan dari `total_regular_hours` di bawah. Angka jam itu
+    /// `f64` hasil pembagian, dan membacanya kembali menjadi `Decimal` tidak
+    /// mengembalikan presisi yang sudah hilang: pratinjau menghitung
+    /// `menit/60` secara eksak, sementara pembekuan yang berangkat dari `f64`
+    /// menghasilkan angka yang berbeda satu rupiah pada setiap nilai yang
+    /// jatuh tepat di titik tengah pembulatan (11 menit pada tarif 18.750/jam
+    /// = 3.437,5 tepat). Admin lalu menyetujui satu angka dan membayarkan
+    /// angka lain.
+    pub total_regular_minutes: i64,
+    pub total_overtime_minutes: i64,
+    pub total_holiday_minutes: i64,
     pub total_regular_hours: f64,
     pub total_overtime_hours: f64,
     pub total_overtime_index: f64,

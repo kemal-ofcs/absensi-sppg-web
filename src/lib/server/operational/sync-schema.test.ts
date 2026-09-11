@@ -88,7 +88,7 @@ describe("operational sync schema", () => {
         entityKey: "default_template",
         payload: {
           id: "default_template",
-          name: "Template Default SPPG",
+          name: "Default ID Card Template",
           orientation: "landscape",
           front_bg_url: null,
           back_bg_url: null,

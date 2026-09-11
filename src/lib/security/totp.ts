@@ -159,7 +159,7 @@ function constantTimeEquals(left: string, right: string) {
  * URI `otpauth://` yang dibaca aplikasi autentikator lewat QR.
  *
  * `issuer` muncul sebagai nama aplikasi di daftar autentikator, dan sengaja
- * diulang pada label supaya beberapa akun SPPG tidak tampil bertumpuk tanpa
+ * diulang pada label supaya beberapa akun tidak tampil bertumpuk tanpa
  * keterangan di ponsel yang sama.
  */
 export function buildOtpAuthUri(input: {

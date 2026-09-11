@@ -205,7 +205,7 @@ export function MailSettingsCard() {
             type="email"
             value={senderEmail}
             onChange={(event) => setSenderEmail(event.target.value)}
-            placeholder="no-reply@sppg.id"
+            placeholder="no-reply@perusahaan.co.id"
             className="app-input"
           />
         </label>
@@ -225,7 +225,7 @@ export function MailSettingsCard() {
           <input
             value={resetBaseUrl}
             onChange={(event) => setResetBaseUrl(event.target.value)}
-            placeholder="https://absensi.sppg.id"
+            placeholder="https://absensi.perusahaan.co.id"
             className="app-input"
           />
           <span className="font-normal leading-5 text-slate-500">

@@ -54,6 +54,52 @@ fn parse_time_min(raw: &str) -> Option<i64> {
     Some(h * 60 + m)
 }
 
+/// Aturan jam kerja shift `(jam_masuk, jam_pulang, jam_kerja_normal,
+/// istirahat, offset_istirahat)` untuk perhitungan ulang jalur admin.
+type ShiftClockRules = (String, String, i64, i64, i64);
+
+fn load_shift_clock_rules(transaction: &Transaction<'_>, id_shift: i64) -> ShiftClockRules {
+    transaction
+        .query_row(
+            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, COALESCE(offset_istirahat_mulai, 240) FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+            params![id_shift],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 240))
+}
+
+/// Menghitung ulang metrik absensi dari jam masuk dan durasi hadir dengan
+/// rumus yang sama dengan scanner (`time_policy::recalculate_from_clock`).
+fn recalc_with_shift_rules(
+    rules: &ShiftClockRules,
+    check_in_minute: Option<i64>,
+    duration_minutes: Option<i64>,
+) -> super::time_policy::ClockRecalc {
+    super::time_policy::recalculate_from_clock(
+        check_in_minute,
+        duration_minutes,
+        &super::time_policy::ClockRules {
+            start: &rules.0,
+            end: &rules.1,
+            normal_work_minutes: rules.2,
+            break_minutes: rules.3,
+            break_offset_minutes: rules.4,
+        },
+    )
+}
+
+/// Durasi hadir dari dua jam "HH:mm"; jam pulang yang lebih kecil dianggap
+/// melewati tengah malam.
+fn clock_duration(check_in_minute: Option<i64>, check_out_minute: Option<i64>) -> Option<i64> {
+    match (check_in_minute, check_out_minute) {
+        (Some(check_in), Some(check_out)) if check_out < check_in => {
+            Some(check_out + 1440 - check_in)
+        }
+        (Some(check_in), Some(check_out)) => Some(check_out - check_in),
+        _ => None,
+    }
+}
+
 fn format_date_time_str(date_str: &str, time_str: &str) -> String {
     let clean_time = if time_str.contains(' ') {
         time_str.split(' ').nth(1).unwrap_or(time_str)
@@ -118,7 +164,7 @@ fn time_matches_shift_window(
         if diff > 720 {
             diff -= 1440;
         }
-        diff >= -awal_absen && diff <= (batas_masuk + toleransi)
+        super::time_policy::is_within_entry_window(diff, awal_absen, batas_masuk, toleransi)
     } else {
         let shift_out = parse_min(jam_pulang);
         let mut diff = user_min - shift_out;
@@ -526,13 +572,15 @@ pub fn create_correction(
     let mut late = 0_i64;
     let mut early = 0_i64;
     let scan_kind;
-    let mut shift_config: (String, String, i64, i64, i64, i64, i64, i64) = transaction
+    // (jam_masuk, jam_pulang, normal, istirahat, toleransi, batas_masuk,
+    //  awal_absen, batas_pulang, offset_istirahat)
+    let mut shift_config: (String, String, i64, i64, i64, i64, i64, i64, i64) = transaction
         .query_row(
-            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ?;",
             [shift_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get::<_, Option<i64>>(6)?.unwrap_or(120), row.get::<_, Option<i64>>(7)?.unwrap_or(240))),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get::<_, Option<i64>>(6)?.unwrap_or(120), row.get::<_, Option<i64>>(7)?.unwrap_or(240), row.get::<_, Option<i64>>(8)?.unwrap_or(240))),
         )
-        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 120, 240));
+        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 120, 240, 240));
 
     let to_minutes = |value: &str| {
         let clean = if value.contains(' ') {
@@ -595,7 +643,14 @@ pub fn create_correction(
             if diff > 720 {
                 diff -= 1440;
             }
-            diff >= -shift_config.6 && diff <= shift_config.5 + shift_config.4
+            super::time_policy::is_within_correction_entry_range(
+                diff,
+                shift_config.6,
+                shift_config.5,
+                shift_config.4,
+                &shift_config.0,
+                &shift_config.1,
+            )
         } else {
             let shift_out = to_minutes(&shift_config.1);
             let mut diff = user_time - shift_out;
@@ -610,7 +665,7 @@ pub fn create_correction(
 
         if !fits_current {
             let mut stmt = transaction
-                .prepare("SELECT id_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit FROM tbl_shift ORDER BY id_shift ASC;")
+                .prepare("SELECT id_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, batas_masuk_menit, awal_absen_menit, batas_pulang_menit, offset_istirahat_mulai FROM tbl_shift ORDER BY id_shift ASC;")
                 .map_err(|_| CommandError::internal())?;
             let shifts = stmt
                 .query_map([], |r| {
@@ -624,6 +679,7 @@ pub fn create_correction(
                         r.get::<_, i64>(6)?,
                         r.get::<_, Option<i64>>(7)?.unwrap_or(120),
                         r.get::<_, Option<i64>>(8)?.unwrap_or(240),
+                        r.get::<_, Option<i64>>(9)?.unwrap_or(240),
                     ))
                 })
                 .map_err(|_| CommandError::internal())?;
@@ -643,7 +699,9 @@ pub fn create_correction(
                         if diff > 720 {
                             diff -= 1440;
                         }
-                        diff >= -s.7 && diff <= s.6 + s.5
+                        super::time_policy::is_within_correction_entry_range(
+                            diff, s.7, s.6, s.5, &s.1, &s.2,
+                        )
                     } else {
                         let mut diff = user_time - s_out;
                         if diff < -720 {
@@ -656,7 +714,7 @@ pub fn create_correction(
                     };
                     if fits {
                         shift_id = s.0;
-                        shift_config = (s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8);
+                        shift_config = (s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8, s.9);
                         break;
                     }
                 }
@@ -689,7 +747,14 @@ pub fn create_correction(
             if diff > 720 {
                 diff -= 1440;
             }
-            if diff < -shift_config.6 || diff > shift_config.5 + shift_config.4 {
+            if !super::time_policy::is_within_correction_entry_range(
+                diff,
+                shift_config.6,
+                shift_config.5,
+                shift_config.4,
+                &shift_config.0,
+                &shift_config.1,
+            ) {
                 return Err(CommandError::new(
                     "OPERATIONAL_VALIDATION_FAILED",
                     format!(
@@ -750,33 +815,6 @@ pub fn create_correction(
             current_in.clone()
         };
 
-        if scan_kind == "Pulang" {
-            if !check_in.is_empty() {
-                late = current_late;
-                early = current_early;
-            } else {
-                late = 0;
-                early = 0;
-            }
-        } else if !check_in.is_empty() && !shift_fleksibel {
-            let in_time_str = clean_time(&check_in);
-            let mut arrival = to_minutes(&in_time_str);
-            if is_overnight_shift && arrival < shift_start_min - 720 {
-                arrival += 1440;
-            }
-            let on_time_limit = shift_start_min + shift_config.5;
-            if arrival > on_time_limit {
-                late = (arrival - on_time_limit).max(0);
-                early = 0;
-            } else if arrival < shift_start_min {
-                early = (shift_start_min - arrival).max(0);
-                late = 0;
-            } else {
-                late = 0;
-                early = 0;
-            }
-        }
-
         let check_out = if matches!(
             correction_type,
             "Lupa Absen Pulang" | "Kendala Sistem - Jam Pulang"
@@ -818,10 +856,7 @@ pub fn create_correction(
         let has_check_in = !check_in.is_empty();
         let has_check_out = !check_out.is_empty();
 
-        let mut worked = 0;
-        let mut overtime = 0;
-        let mut shortage = 0;
-
+        let mut duration = None;
         if has_check_in && has_check_out {
             let in_min = to_minutes(&clean_time(&check_in));
             let out_min = to_minutes(&clean_time(&check_out));
@@ -839,16 +874,31 @@ pub fn create_correction(
             } else {
                 (out_min - in_min).max(0)
             };
-
-            let break_min = shift_config.3;
-            let normal_work_min = shift_config.2;
-
-            if total_presence > 0 {
-                worked = (total_presence - break_min).max(0);
-            }
-            overtime = (worked - normal_work_min).max(0);
-            shortage = (normal_work_min - worked).max(0);
+            duration = Some(total_presence.max(0));
         }
+
+        let recalc = super::time_policy::recalculate_from_clock(
+            has_check_in.then(|| to_minutes(&clean_time(&check_in))),
+            duration,
+            &super::time_policy::ClockRules {
+                start: &shift_config.0,
+                end: &shift_config.1,
+                normal_work_minutes: shift_config.2,
+                break_minutes: shift_config.3,
+                break_offset_minutes: shift_config.8,
+            },
+        );
+        if scan_kind == "Pulang" {
+            // Koreksi jam pulang tidak mengubah kapan karyawannya masuk.
+            late = if has_check_in { current_late } else { 0 };
+            early = if has_check_in { current_early } else { 0 };
+        } else {
+            late = recalc.late_minutes;
+            early = recalc.early_minutes;
+        }
+        let worked = recalc.work_minutes;
+        let overtime = recalc.overtime_minutes;
+        let shortage = recalc.shortage_minutes;
 
         let record_status = if has_check_in && has_check_out {
             "Lengkap"
@@ -1427,13 +1477,15 @@ pub fn import_offline(
                 )
             };
 
-            let shift: (String, String, i64, i64, i64, i64, i64, i64) = transaction
+            // (jam_masuk, jam_pulang, normal, istirahat, toleransi, awal_absen,
+            //  batas_masuk, batas_pulang, offset_istirahat)
+            let shift: (String, String, i64, i64, i64, i64, i64, i64, i64) = transaction
                 .query_row(
-                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit FROM tbl_shift WHERE id_shift = ?;",
+                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit, awal_absen_menit, batas_masuk_menit, batas_pulang_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ?;",
                     [shift_id],
-                    |result| Ok((result.get(0)?, result.get(1)?, result.get(2)?, result.get(3)?, result.get(4)?, result.get(5)?, result.get(6)?, result.get(7)?)),
+                    |result| Ok((result.get(0)?, result.get(1)?, result.get(2)?, result.get(3)?, result.get(4)?, result.get(5)?, result.get(6)?, result.get(7)?, result.get::<_, Option<i64>>(8)?.unwrap_or(240))),
                 )
-                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 360, 360));
+                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0, 60, 360, 360, 240));
 
             let to_min = |val: &str| -> i64 {
                 val.split(':')
@@ -1501,7 +1553,7 @@ pub fn import_offline(
                     if diff > 720 {
                         diff -= 1440;
                     }
-                    if diff < -shift.5 || diff > shift.6 + shift.4 {
+                    if !super::time_policy::is_within_entry_window(diff, shift.5, shift.6, shift.4) {
                         return Err(CommandError::new(
                             "OPERATIONAL_VALIDATION_FAILED",
                             format!(
@@ -1533,49 +1585,35 @@ pub fn import_offline(
                 }
             }
 
-            let mut late = 0_i64;
-            let mut early = 0_i64;
-
-            // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
-            // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
-            // dihitung hanyalah jam kerjanya.
-            if !check_in.is_empty() && !shift_fleksibel_import {
-                let in_time_str = clean_time(&check_in);
-                let mut user_in = to_min(&in_time_str);
-                let shift_in = to_min(&shift.0);
-                if is_overnight_shift && user_in < shift_in - 720 {
-                    user_in += 1440;
-                }
-                // Batas tepat waktu = jam masuk + batas_masuk_menit (shift.6).
-                // `toleransi_masuk_menit` (shift.4) hanya menentukan sampai kapan
-                // scan masih DITERIMA, bukan titik awal penghitungan telat. Rumus
-                // lama memakai toleransi sebagai ambang lalu mengukur selisih dari
-                // jam shift, sehingga scan 23:01 pada shift 22:00 dengan batas
-                // masuk 60 menit tercatat telat 61 menit, bukan 1 menit.
-                let batas_tepat_waktu = shift_in + shift.6;
-                if user_in > batas_tepat_waktu {
-                    late = (user_in - batas_tepat_waktu).max(0);
-                } else if user_in < shift_in {
-                    early = (shift_in - user_in).max(0);
-                }
-            }
-
-            let total: i64 = if !check_in.is_empty() && !check_out.is_empty() {
-                transaction
-                    .query_row(
-                        "SELECT MAX(0, CAST((julianday(?) - julianday(?)) * 1440 AS INTEGER));",
-                        params![check_out, check_in],
-                        |result| result.get(0),
-                    )
-                    .unwrap_or_default()
+            let duration: Option<i64> = if !check_in.is_empty() && !check_out.is_empty() {
+                Some(
+                    transaction
+                        .query_row(
+                            "SELECT MAX(0, CAST((julianday(?) - julianday(?)) * 1440 AS INTEGER));",
+                            params![check_out, check_in],
+                            |result| result.get(0),
+                        )
+                        .unwrap_or_default(),
+                )
             } else {
-                0
+                None
             };
-            let worked = if total > 0 {
-                (total - shift.3).max(0)
-            } else {
-                0
-            };
+            // Terlambat/datang awal diukur dari Jam Masuk, jam kerja dimulai
+            // dari Jam Masuk — rumus yang sama dengan scanner. Shift fleksibel
+            // tidak punya jam masuk efektif, sehingga keduanya 0 di sana.
+            let recalc = super::time_policy::recalculate_from_clock(
+                (!check_in.is_empty()).then(|| to_min(&clean_time(&check_in))),
+                duration,
+                &super::time_policy::ClockRules {
+                    start: &shift.0,
+                    end: &shift.1,
+                    normal_work_minutes: shift.2,
+                    break_minutes: shift.3,
+                    break_offset_minutes: shift.8,
+                },
+            );
+            let (late, early, worked) =
+                (recalc.late_minutes, recalc.early_minutes, recalc.work_minutes);
             let record_status = if !text(row, "status_absen").is_empty() {
                 text(row, "status_absen")
             } else if !check_in.is_empty() && !check_out.is_empty() {
@@ -1608,7 +1646,7 @@ pub fn import_offline(
             ];
             transaction.execute(
                 "INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, sumber, update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_sesi) DO UPDATE SET jam_masuk = CASE WHEN excluded.jam_masuk != '' THEN excluded.jam_masuk ELSE absensi_harian.jam_masuk END, jam_pulang = CASE WHEN excluded.jam_pulang != '' THEN excluded.jam_pulang ELSE absensi_harian.jam_pulang END, status_kehadiran = excluded.status_kehadiran, status_absen = excluded.status_absen, keterangan = excluded.keterangan, sumber = 'Import Offline', update_terakhir = excluded.update_terakhir, menit_terlambat = excluded.menit_terlambat, menit_datang_awal = excluded.menit_datang_awal, jam_kerja = excluded.jam_kerja, lembur = excluded.lembur, jam_kerja_kurang = excluded.jam_kerja_kurang;",
-                params![sync::new_local_id(), &date, id, name, division, check_in, check_out, attendance_status, record_status, text(row, "keterangan"), now, late, early, worked, (worked - shift.2).max(0), if total > 0 { (shift.2 - worked).max(0) } else { 0 }, shift_id, months.get(month.saturating_sub(1) as usize).unwrap_or(&"Januari"), year, session_id, mode, backup_id, original_id, if mode == "PENGGANTI" { &date } else { "" }],
+                params![sync::new_local_id(), &date, id, name, division, check_in, check_out, attendance_status, record_status, text(row, "keterangan"), now, late, early, worked, recalc.overtime_minutes, recalc.shortage_minutes, shift_id, months.get(month.saturating_sub(1) as usize).unwrap_or(&"Januari"), year, session_id, mode, backup_id, original_id, if mode == "PENGGANTI" { &date } else { "" }],
             ).map_err(|_| CommandError::internal())?;
             let attendance = attendance_json(&transaction, &session_id)?;
             let mut logs = Vec::new();
@@ -1983,51 +2021,12 @@ pub fn delete_correction(
                 .map(|t| format_date_time_str(&tanggal, &t))
                 .unwrap_or_default();
 
-            let shift_data: (String, String, i64, i64, i64) = transaction
-                .query_row(
-                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-                    params![id_shift],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                )
-                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0));
-
-            let shift_in_min = parse_time_min(&shift_data.0).unwrap_or(420);
-            let shift_out_min = parse_time_min(&shift_data.1).unwrap_or(900);
-            let is_overnight = shift_out_min < shift_in_min;
-            let normal_shift_min = shift_data.2;
-            let break_shift_min = shift_data.3;
-            let toleransi_shift_min = shift_data.4;
-
             let in_m = parse_time_min(&in_val);
-            let out_m = parse_time_min(&out_val);
-
-            let mut calculated_late = 0_i64;
-            let mut calculated_early = 0_i64;
-            let mut calculated_work = 0_i64;
-            let mut calculated_overtime = 0_i64;
-            let mut calculated_shortage = 0_i64;
-
-            if let Some(user_in) = in_m {
-                let mut user_in_timeline = user_in;
-                if is_overnight && user_in_timeline < shift_in_min - 720 {
-                    user_in_timeline += 1440;
-                }
-                if user_in_timeline > shift_in_min + toleransi_shift_min {
-                    calculated_late = user_in_timeline - shift_in_min;
-                } else if user_in_timeline < shift_in_min {
-                    calculated_early = shift_in_min - user_in_timeline;
-                }
-            }
-
-            if let (Some(in_val_min), Some(out_val_min)) = (in_m, out_m) {
-                let mut duration = out_val_min - in_val_min;
-                if duration < 0 {
-                    duration += 1440;
-                }
-                calculated_work = (duration - break_shift_min).max(0);
-                calculated_overtime = (calculated_work - normal_shift_min).max(0);
-                calculated_shortage = (normal_shift_min - calculated_work).max(0);
-            }
+            let recalc = recalc_with_shift_rules(
+                &load_shift_clock_rules(&transaction, id_shift),
+                in_m,
+                clock_duration(in_m, parse_time_min(&out_val)),
+            );
 
             let status_absen = if !in_val.is_empty() && !out_val.is_empty() {
                 "Lengkap"
@@ -2045,11 +2044,11 @@ pub fn delete_correction(
                         out_val,
                         status_absen,
                         now,
-                        calculated_late,
-                        calculated_early,
-                        calculated_work,
-                        calculated_overtime,
-                        calculated_shortage,
+                        recalc.late_minutes,
+                        recalc.early_minutes,
+                        recalc.work_minutes,
+                        recalc.overtime_minutes,
+                        recalc.shortage_minutes,
                         id_sesi
                     ],
                 )
@@ -2155,20 +2154,10 @@ pub fn update_attendance(
         .query_row("SELECT date(?, '+1 day');", params![&tanggal], |r| r.get(0))
         .unwrap_or_else(|_| tanggal.clone());
 
-    let shift_data: (String, String, i64, i64, i64) = transaction
-        .query_row(
-            "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-            params![id_shift],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0));
-
-    let shift_in_min = parse_time_min(&shift_data.0).unwrap_or(420);
-    let shift_out_min = parse_time_min(&shift_data.1).unwrap_or(900);
+    let shift_rules = load_shift_clock_rules(&transaction, id_shift);
+    let shift_in_min = parse_time_min(&shift_rules.0).unwrap_or(420);
+    let shift_out_min = parse_time_min(&shift_rules.1).unwrap_or(900);
     let is_overnight = shift_out_min < shift_in_min;
-    let normal_shift_min = shift_data.2;
-    let break_shift_min = shift_data.3;
-    let toleransi_shift_min = shift_data.4;
 
     let patch_masuk = text(patch, "jam_masuk");
     let patch_pulang = text(patch, "jam_pulang");
@@ -2241,32 +2230,22 @@ pub fn update_attendance(
         let in_m = parse_time_min(&check_in_val);
         let out_m = parse_time_min(&check_out_val);
 
-        if let Some(user_in) = in_m {
-            let mut user_in_timeline = user_in;
-            if is_overnight && user_in_timeline < shift_in_min - 720 {
-                user_in_timeline += 1440;
-            }
-            if user_in_timeline > shift_in_min + toleransi_shift_min {
-                calculated_late = user_in_timeline - shift_in_min;
-            } else if user_in_timeline < shift_in_min {
-                calculated_early = shift_in_min - user_in_timeline;
-            }
-        }
-
-        if let (Some(in_val_min), Some(out_val_min)) = (in_m, out_m) {
-            let mut duration = out_val_min - in_val_min;
-            if duration < 0 {
-                duration += 1440;
-            } else if check_out_val.starts_with(&next_date)
+        let mut duration = clock_duration(in_m, out_m);
+        if let Some(value) = duration.as_mut() {
+            if check_out_val.starts_with(&next_date)
                 && check_in_val.starts_with(&tanggal)
                 && next_date != tanggal
+                && out_m >= in_m
             {
-                duration += 1440;
+                *value += 1440;
             }
-            calculated_work = (duration - break_shift_min).max(0);
-            calculated_overtime = (calculated_work - normal_shift_min).max(0);
-            calculated_shortage = (normal_shift_min - calculated_work).max(0);
         }
+        let recalc = recalc_with_shift_rules(&shift_rules, in_m, duration);
+        calculated_late = recalc.late_minutes;
+        calculated_early = recalc.early_minutes;
+        calculated_work = recalc.work_minutes;
+        calculated_overtime = recalc.overtime_minutes;
+        calculated_shortage = recalc.shortage_minutes;
     }
 
     let status_absen = if !patch_absen.is_empty() {
@@ -2528,62 +2507,28 @@ pub fn delete_log_scan(
                     .unwrap_or_else(|| existing_out.unwrap_or_default())
             };
 
-            let shift_data: (String, String, i64, i64, i64) = transaction
-                .query_row(
-                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-                    params![id_shift],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                )
-                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0));
-
-            let shift_in_min = parse_time_min(&shift_data.0).unwrap_or(420);
-            let shift_out_min = parse_time_min(&shift_data.1).unwrap_or(900);
-            let is_overnight = shift_out_min < shift_in_min;
-            let normal_shift_min = shift_data.2;
-            let break_shift_min = shift_data.3;
-            let batas_masuk_min = shift_data.4;
-
             let in_m = parse_time_min(&in_val);
-            let out_m = parse_time_min(&out_val);
-
-            let mut calculated_late = 0_i64;
-            let mut calculated_early = 0_i64;
-            let mut calculated_work = 0_i64;
-            let mut calculated_overtime = 0_i64;
-            let mut calculated_shortage = 0_i64;
-
-            if !in_val.is_empty() {
-                if jenis_scan_deleted == "Pulang" && !in_val.is_empty() {
-                    calculated_late = existing_late;
-                    calculated_early = existing_early;
-                } else if let Some(user_in) = in_m {
-                    let mut user_in_timeline = user_in;
-                    if is_overnight && user_in_timeline < shift_in_min - 720 {
-                        user_in_timeline += 1440;
-                    }
-                    let batas_normal_masuk = shift_in_min + batas_masuk_min;
-                    if user_in_timeline < shift_in_min {
-                        calculated_early = shift_in_min - user_in_timeline;
-                    } else if user_in_timeline <= batas_normal_masuk {
-                        calculated_late = 0;
-                        calculated_early = 0;
-                    } else {
-                        calculated_late = user_in_timeline - batas_normal_masuk;
-                    }
-                }
-            }
-
-            if let (Some(in_val_min), Some(out_val_min)) = (in_m, out_m) {
-                if !in_val.is_empty() && !out_val.is_empty() {
-                    let mut duration = out_val_min - in_val_min;
-                    if duration < 0 {
-                        duration += 1440;
-                    }
-                    calculated_work = (duration - break_shift_min).max(0);
-                    calculated_overtime = (calculated_work - normal_shift_min).max(0);
-                    calculated_shortage = (normal_shift_min - calculated_work).max(0);
-                }
-            }
+            let recalc = recalc_with_shift_rules(
+                &load_shift_clock_rules(&transaction, id_shift),
+                in_m,
+                clock_duration(in_m, parse_time_min(&out_val)),
+            );
+            // Log Pulang yang dihapus tidak mengubah kapan karyawannya masuk,
+            // jadi terlambat/datang awal yang sudah tercatat dipertahankan.
+            let keep_entry = jenis_scan_deleted == "Pulang" && !in_val.is_empty();
+            let calculated_late = if keep_entry {
+                existing_late
+            } else {
+                recalc.late_minutes
+            };
+            let calculated_early = if keep_entry {
+                existing_early
+            } else {
+                recalc.early_minutes
+            };
+            let calculated_work = recalc.work_minutes;
+            let calculated_overtime = recalc.overtime_minutes;
+            let calculated_shortage = recalc.shortage_minutes;
 
             let status_absen = if !in_val.is_empty() && !out_val.is_empty() {
                 "Lengkap"
@@ -2827,51 +2772,12 @@ pub fn delete_import_offline(
                 .map(|t| format_date_time_str(&tanggal, &t))
                 .unwrap_or_default();
 
-            let shift_data: (String, String, i64, i64, i64) = transaction
-                .query_row(
-                    "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-                    params![id_shift],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                )
-                .unwrap_or_else(|_| ("07:00".to_owned(), "15:00".to_owned(), 480, 60, 0));
-
-            let shift_in_min = parse_time_min(&shift_data.0).unwrap_or(420);
-            let shift_out_min = parse_time_min(&shift_data.1).unwrap_or(900);
-            let is_overnight = shift_out_min < shift_in_min;
-            let normal_shift_min = shift_data.2;
-            let break_shift_min = shift_data.3;
-            let toleransi_shift_min = shift_data.4;
-
             let in_m = parse_time_min(&in_val);
-            let out_m = parse_time_min(&out_val);
-
-            let mut calculated_late = 0_i64;
-            let mut calculated_early = 0_i64;
-            let mut calculated_work = 0_i64;
-            let mut calculated_overtime = 0_i64;
-            let mut calculated_shortage = 0_i64;
-
-            if let Some(user_in) = in_m {
-                let mut user_in_timeline = user_in;
-                if is_overnight && user_in_timeline < shift_in_min - 720 {
-                    user_in_timeline += 1440;
-                }
-                if user_in_timeline > shift_in_min + toleransi_shift_min {
-                    calculated_late = user_in_timeline - shift_in_min;
-                } else if user_in_timeline < shift_in_min {
-                    calculated_early = shift_in_min - user_in_timeline;
-                }
-            }
-
-            if let (Some(in_val_min), Some(out_val_min)) = (in_m, out_m) {
-                let mut duration = out_val_min - in_val_min;
-                if duration < 0 {
-                    duration += 1440;
-                }
-                calculated_work = (duration - break_shift_min).max(0);
-                calculated_overtime = (calculated_work - normal_shift_min).max(0);
-                calculated_shortage = (normal_shift_min - calculated_work).max(0);
-            }
+            let recalc = recalc_with_shift_rules(
+                &load_shift_clock_rules(&transaction, id_shift),
+                in_m,
+                clock_duration(in_m, parse_time_min(&out_val)),
+            );
 
             let status_absen = if !in_val.is_empty() && !out_val.is_empty() {
                 "Lengkap"
@@ -2888,11 +2794,11 @@ pub fn delete_import_offline(
                     out_val,
                     status_absen,
                     now,
-                    calculated_late,
-                    calculated_early,
-                    calculated_work,
-                    calculated_overtime,
-                    calculated_shortage,
+                    recalc.late_minutes,
+                    recalc.early_minutes,
+                    recalc.work_minutes,
+                    recalc.overtime_minutes,
+                    recalc.shortage_minutes,
                     id_sesi
                 ],
             );
@@ -3183,12 +3089,12 @@ mod tests {
     }
 
     #[test]
-    fn import_menghitung_telat_dari_batas_tepat_waktu() {
+    fn import_menghitung_telat_dari_jam_masuk() {
         let (_directory, state) = fixture();
         {
             // Shift malam 22:00 dengan batas tepat waktu 60 menit dan toleransi
-            // terlambat 60 menit: tepat waktu sampai 23:00, masih diterima
-            // sampai 24:00 tetapi dihitung terlambat sejak 23:00.
+            // terlambat 60 menit: tepat waktu 21:00–22:00, terlambat sejak
+            // 22:00 dan masih diterima sampai 23:00.
             let connection = storage::database(&state.data_dir).expect("local database");
             connection
                 .execute_batch(
@@ -3205,12 +3111,22 @@ mod tests {
                 .expect("seed shift malam");
         }
 
-        let rows = vec![json!({
+        // Lewat dari jam masuk + toleransi: import ditolak seperti scanner.
+        let ditolak = vec![json!({
             "tanggal": "20/08/2026",
             "id_unik": "K001",
             "jam_masuk": "23:01",
             "status_kehadiran": "Hadir",
         })];
+        let hasil = import_offline(&state, &ditolak, "SPD001").expect("import offline");
+        assert_eq!(hasil["gagal"], 1, "import seharusnya ditolak: {hasil}");
+
+        let rows = vec![json!({
+            "tanggal": "20/08/2026",
+            "id_unik": "K001",
+            "jam_masuk": "22:10",
+            "status_kehadiran": "Hadir",
+        })];
         let hasil = import_offline(&state, &rows, "SPD001").expect("import offline");
         assert_eq!(hasil["gagal"], 0, "import ditolak: {hasil}");
 
@@ -3222,13 +3138,12 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("baris absensi");
-        // 23:01 - 23:00 = 1 menit. Rumus lama mengukur dari 22:00 dan
-        // menghasilkan 61 menit.
-        assert_eq!(telat, 1);
+        // 22:10 - 22:00 = 10 menit, diukur dari jam masuk.
+        assert_eq!(telat, 10);
     }
 
     #[test]
-    fn import_tepat_waktu_di_dalam_batas_masuk_tidak_telat() {
+    fn import_di_jendela_tepat_waktu_tidak_telat() {
         let (_directory, state) = fixture();
         {
             let connection = storage::database(&state.data_dir).expect("local database");
@@ -3247,25 +3162,26 @@ mod tests {
                 .expect("seed shift malam");
         }
 
-        // Tepat di batas tepat waktu: masih 0 menit.
+        // Di jendela Tepat Waktu (21:00–22:00): 0 menit terlambat, dan menit
+        // sebelum jam masuk tercatat sebagai datang awal.
         let rows = vec![json!({
             "tanggal": "20/08/2026",
             "id_unik": "K001",
-            "jam_masuk": "23:00",
+            "jam_masuk": "21:30",
             "status_kehadiran": "Hadir",
         })];
         let hasil = import_offline(&state, &rows, "SPD001").expect("import offline");
         assert_eq!(hasil["gagal"], 0, "import ditolak: {hasil}");
 
         let connection = storage::database(&state.data_dir).expect("local database");
-        let telat: i64 = connection
+        let (telat, awal): (i64, i64) = connection
             .query_row(
-                "SELECT menit_terlambat FROM absensi_harian WHERE id_karyawan = 'K001' AND tanggal = '2026-08-20';",
+                "SELECT menit_terlambat, menit_datang_awal FROM absensi_harian WHERE id_karyawan = 'K001' AND tanggal = '2026-08-20';",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("baris absensi");
-        assert_eq!(telat, 0);
+        assert_eq!((telat, awal), (0, 30));
     }
 
     #[test]

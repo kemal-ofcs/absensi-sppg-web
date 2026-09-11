@@ -95,12 +95,11 @@ pub fn determine_work_date(moment: &LocalMoment, shift: &ShiftPolicy) -> Result<
     }
 }
 
-pub fn calculate_normal_work_minutes(
-    start: &str,
-    end: &str,
-    break_minutes: i64,
-    entry_threshold_minutes: i64,
-) -> i64 {
+/// Jam Kerja Normal sebuah shift: (Jam Pulang − Jam Masuk) − Istirahat.
+///
+/// Shift malam (jam pulang < jam masuk) melewati tengah malam, jadi jam
+/// pulangnya digeser +1440. Cerminan TS: `hitungJamKerjaNormalMenit`.
+pub fn calculate_normal_work_minutes(start: &str, end: &str, break_minutes: i64) -> i64 {
     let start_min = match clock_minutes(start) {
         Ok(m) => m,
         Err(_) => return 0,
@@ -112,8 +111,208 @@ pub fn calculate_normal_work_minutes(
     if end_min < start_min {
         end_min += 1440;
     }
-    let total = end_min - start_min - break_minutes + entry_threshold_minutes;
-    total.max(0)
+    (end_min - start_min - break_minutes).max(0)
+}
+
+/// Batas-batas jendela scan masuk dalam menit RELATIF terhadap Jam Masuk:
+/// `(buka, mulai_tepat_waktu, tutup)`.
+///
+/// Jendelanya tersusun mundur dari Jam Masuk, lalu maju sebatas toleransi
+/// (contoh 07:00, awal 120, batas 60, toleransi 30):
+///
+/// ```text
+/// 04:00 ─ Awal Absen Masuk ─ 06:00 ─ Tepat Waktu ─ 07:00 ─ Terlambat ─ 07:30
+/// buka = -(batas + awal)     mulai = -batas        0      tutup = +toleransi
+/// ```
+///
+/// Sebelum `buka` absensi belum dibuka; setelah `tutup` scan masuk ditolak dan
+/// karyawannya harus menghubungi Admin/Operator. Cerminan TS: `jendelaScanMasuk`.
+pub fn entry_window_offsets(
+    early_window_minutes: i64,
+    normal_entry_minutes: i64,
+    late_tolerance_minutes: i64,
+) -> (i64, i64, i64) {
+    (
+        -(normal_entry_minutes + early_window_minutes),
+        -normal_entry_minutes,
+        late_tolerance_minutes,
+    )
+}
+
+/// Apakah selisih (menit scan − Jam Masuk) masih di dalam jendela scan masuk.
+pub fn is_within_entry_window(
+    diff_minutes: i64,
+    early_window_minutes: i64,
+    normal_entry_minutes: i64,
+    late_tolerance_minutes: i64,
+) -> bool {
+    let (open, _, close) = entry_window_offsets(
+        early_window_minutes,
+        normal_entry_minutes,
+        late_tolerance_minutes,
+    );
+    diff_minutes >= open && diff_minutes <= close
+}
+
+/// `(menit_terlambat, menit_datang_awal)`, keduanya diukur dari Jam Masuk.
+///
+/// Jendela Tepat Waktu kini berada SEBELUM Jam Masuk, sehingga menit pertama
+/// setelah Jam Masuk sudah terhitung terlambat. Cerminan TS:
+/// `hitungTerlambatDanDatangAwal`.
+pub fn late_and_early_minutes(check_in_minute: i64, shift_start_minute: i64) -> (i64, i64) {
+    (
+        (check_in_minute - shift_start_minute).max(0),
+        (shift_start_minute - check_in_minute).max(0),
+    )
+}
+
+/// Inti perhitungan jam kerja shift reguler. Ketiga argumen waktunya dalam
+/// DETIK pada garis waktu yang sama, supaya pemanggil yang hanya punya jam
+/// "HH:mm" (koreksi admin, import) dan scanner memakai rumus yang sama persis.
+///
+/// - Jam kerja dimulai dari Jam Masuk shift: datang lebih awal tidak menambah
+///   jam kerja maupun lembur. Datang terlambat tetap dihitung dari jam scan.
+/// - Istirahat dimulai pada Jam Masuk + Offset Potong Istirahat. Pulang setelah
+///   titik itu memotong istirahat PENUH; pulang sebelum atau tepat pada titik
+///   itu tidak dipotong sama sekali.
+///
+/// Cerminan TS: `hitungMenitKerjaPadaGarisWaktu`.
+pub fn calculate_work_on_timeline(
+    check_in_seconds: i64,
+    check_out_seconds: i64,
+    shift_start_seconds: i64,
+    break_offset_minutes: i64,
+    break_minutes: i64,
+    normal_work_minutes: i64,
+) -> WorkMetrics {
+    let presence_minutes = ((check_out_seconds - check_in_seconds) / 60).max(0);
+    let work_start = check_in_seconds.max(shift_start_seconds);
+    let break_start = shift_start_seconds + break_offset_minutes * 60;
+    let break_end = break_start + break_minutes * 60;
+    let break_deduction_minutes = if check_out_seconds > break_start && work_start < break_end {
+        break_minutes
+    } else {
+        0
+    };
+    let work_minutes =
+        ((check_out_seconds - work_start).max(0) / 60 - break_deduction_minutes).max(0);
+    WorkMetrics {
+        presence_minutes,
+        break_deduction_minutes,
+        work_minutes,
+        overtime_minutes: (work_minutes - normal_work_minutes).max(0),
+        shortage_minutes: (normal_work_minutes - work_minutes).max(0),
+    }
+}
+
+/// Rentang jam masuk yang boleh dicatat lewat KOREKSI ADMIN: sejak absensi
+/// dibuka sampai sebelum Jam Pulang.
+///
+/// Sengaja lebih longgar daripada `is_within_entry_window`: karyawan yang
+/// datang melewati toleransi keterlambatan ditolak scanner dan diarahkan ke
+/// Admin/Operator, jadi koreksi adalah satu-satunya jalan mencatat kehadirannya.
+/// Cerminan TS: `diDalamRentangKoreksiMasuk`.
+pub fn is_within_correction_entry_range(
+    diff_minutes: i64,
+    early_window_minutes: i64,
+    normal_entry_minutes: i64,
+    late_tolerance_minutes: i64,
+    start: &str,
+    end: &str,
+) -> bool {
+    let (open, _, close) = entry_window_offsets(
+        early_window_minutes,
+        normal_entry_minutes,
+        late_tolerance_minutes,
+    );
+    if diff_minutes < open {
+        return false;
+    }
+    let (Ok(start_minute), Ok(mut end_minute)) = (clock_minutes(start), clock_minutes(end)) else {
+        return diff_minutes <= close;
+    };
+    if end_minute <= start_minute {
+        end_minute += 1440;
+    }
+    diff_minutes < end_minute - start_minute || diff_minutes <= close
+}
+
+/// Menempatkan jam masuk "HH:mm" (menit-dalam-hari) pada garis waktu shift:
+/// selisihnya terhadap Jam Masuk dinormalkan ke ±12 jam. Cerminan TS:
+/// `menitMasukPadaGarisWaktuShift`.
+pub fn check_in_minute_on_shift_timeline(check_in_minute: i64, shift_start_minute: i64) -> i64 {
+    let mut diff = check_in_minute - shift_start_minute;
+    if diff < -720 {
+        diff += 1440;
+    }
+    if diff > 720 {
+        diff -= 1440;
+    }
+    shift_start_minute + diff
+}
+
+/// Aturan shift yang dibutuhkan jalur admin untuk menghitung ulang absensi.
+pub struct ClockRules<'a> {
+    pub start: &'a str,
+    pub end: &'a str,
+    pub normal_work_minutes: i64,
+    pub break_minutes: i64,
+    pub break_offset_minutes: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClockRecalc {
+    pub late_minutes: i64,
+    pub early_minutes: i64,
+    pub work_minutes: i64,
+    pub overtime_minutes: i64,
+    pub shortage_minutes: i64,
+}
+
+/// Perhitungan ulang untuk jalur admin (koreksi, import, hapus log) yang hanya
+/// memegang jam masuk "HH:mm" dan durasi hadir yang sudah dihitung pemanggilnya.
+/// Rumusnya sama dengan scanner. Shift fleksibel: terlambat/datang awal 0 dan
+/// jam kerja = durasi − istirahat, seperti sebelumnya.
+/// Cerminan TS: `hitungUlangAbsensiDariJam`.
+pub fn recalculate_from_clock(
+    check_in_minute: Option<i64>,
+    duration_minutes: Option<i64>,
+    rules: &ClockRules<'_>,
+) -> ClockRecalc {
+    let mut result = ClockRecalc::default();
+    let Some(check_in_minute) = check_in_minute else {
+        return result;
+    };
+    let normal = rules.normal_work_minutes;
+    if is_flexible_shift(rules.start, rules.end, normal) {
+        if let Some(duration) = duration_minutes {
+            result.work_minutes = (duration - rules.break_minutes).max(0);
+            result.overtime_minutes = (result.work_minutes - normal).max(0);
+            result.shortage_minutes = (normal - result.work_minutes).max(0);
+        }
+        return result;
+    }
+    let Ok(shift_start) = clock_minutes(rules.start) else {
+        return result;
+    };
+    let check_in = check_in_minute_on_shift_timeline(check_in_minute, shift_start);
+    let (late, early) = late_and_early_minutes(check_in, shift_start);
+    result.late_minutes = late;
+    result.early_minutes = early;
+    if let Some(duration) = duration_minutes {
+        let metrics = calculate_work_on_timeline(
+            check_in * 60,
+            (check_in + duration) * 60,
+            shift_start * 60,
+            rules.break_offset_minutes,
+            rules.break_minutes,
+            normal,
+        );
+        result.work_minutes = metrics.work_minutes;
+        result.overtime_minutes = metrics.overtime_minutes;
+        result.shortage_minutes = metrics.shortage_minutes;
+    }
+    result
 }
 
 pub fn calculate_work(
@@ -122,28 +321,28 @@ pub fn calculate_work(
     shift: &ShiftPolicy,
 ) -> Result<WorkMetrics, String> {
     validate_shift(shift)?;
-    let presence_minutes =
-        ((timestamp_seconds(check_out)? - timestamp_seconds(check_in)?) / 60).max(0);
+    let check_in_seconds = timestamp_seconds(check_in)?;
+    let check_out_seconds = timestamp_seconds(check_out)?;
     if shift.kind == ShiftKind::Flexible {
+        let presence_minutes = ((check_out_seconds - check_in_seconds) / 60).max(0);
         return Ok(WorkMetrics {
             presence_minutes,
             work_minutes: presence_minutes,
             ..WorkMetrics::default()
         });
     }
-    let break_deduction_minutes = if presence_minutes > shift.break_offset_minutes {
-        shift.break_minutes
-    } else {
-        0
-    };
-    let work_minutes = (presence_minutes - break_deduction_minutes).max(0);
-    Ok(WorkMetrics {
-        presence_minutes,
-        break_deduction_minutes,
-        work_minutes,
-        overtime_minutes: (work_minutes - shift.normal_work_minutes).max(0),
-        shortage_minutes: (shift.normal_work_minutes - work_minutes).max(0),
-    })
+    // Jam Masuk shift pada tanggal kerja scan masuk, di garis waktu yang sama
+    // dengan `timestamp_seconds`.
+    let work_date = determine_work_date(&timestamp_to_moment(check_in)?, shift)?;
+    let shift_start_seconds = parse_date(&work_date)? * 86_400 + clock_minutes(&shift.start)? * 60;
+    Ok(calculate_work_on_timeline(
+        check_in_seconds,
+        check_out_seconds,
+        shift_start_seconds,
+        shift.break_offset_minutes,
+        shift.break_minutes,
+        shift.normal_work_minutes,
+    ))
 }
 
 pub fn decide_scan(
@@ -264,10 +463,16 @@ pub fn decide_scan(
     } else {
         raw_end
     };
-    let entry_open = start - shift.early_window_minutes;
-    let normal_entry_end = start + shift.normal_entry_minutes;
-    let final_entry_end = normal_entry_end + shift.late_tolerance_minutes;
+    let (open_offset, on_time_offset, close_offset) = entry_window_offsets(
+        shift.early_window_minutes,
+        shift.normal_entry_minutes,
+        shift.late_tolerance_minutes,
+    );
+    let entry_open = start + open_offset;
+    let on_time_start = start + on_time_offset;
+    let final_entry_end = start + close_offset;
     let final_checkout = end + shift.checkout_limit_minutes;
+    let (late_minutes, early_minutes) = late_and_early_minutes(current, start);
 
     if check_in.is_none() {
         if current >= end && current <= final_checkout {
@@ -288,25 +493,25 @@ pub fn decide_scan(
                 "Masuk Ditolak - Terlalu Awal",
                 "Ditolak",
                 "",
-                "Scan sebelum batas datang awal shift",
+                "Scan sebelum jendela Awal Absen Masuk dibuka",
                 work_date,
             ));
         }
-        if current < start {
+        if current < on_time_start {
             let mut result = decision(
                 true,
                 DecisionReason::EarlyEntry,
                 "Masuk",
                 "Berhasil",
                 "Datang Lebih Awal",
-                "Scan masuk dalam jendela datang awal",
+                "Scan masuk dalam jendela Awal Absen Masuk",
                 work_date,
             );
-            result.early_minutes = start - current;
+            result.early_minutes = early_minutes;
             return Ok(result);
         }
-        if current <= normal_entry_end {
-            return Ok(decision(
+        if current <= start {
+            let mut result = decision(
                 true,
                 DecisionReason::OnTimeEntry,
                 "Masuk",
@@ -314,7 +519,9 @@ pub fn decide_scan(
                 "Tepat Waktu",
                 "Scan masuk tepat waktu",
                 work_date,
-            ));
+            );
+            result.early_minutes = early_minutes;
+            return Ok(result);
         }
         if current <= final_entry_end {
             let mut result = decision(
@@ -326,7 +533,7 @@ pub fn decide_scan(
                 "Scan masuk dalam toleransi keterlambatan",
                 work_date,
             );
-            result.late_minutes = current - normal_entry_end;
+            result.late_minutes = late_minutes;
             return Ok(result);
         }
         return Ok(decision(
@@ -335,7 +542,7 @@ pub fn decide_scan(
             "Masuk Ditolak",
             "Ditolak",
             "",
-            "Melewati batas toleransi masuk",
+            "Melewati batas toleransi keterlambatan, perlu Admin/Operator",
             work_date,
         ));
     }
@@ -636,10 +843,10 @@ pub fn alfa_generation_minute(shift: &ShiftPolicy, alfa_offset_minutes: i64) -> 
 
 /// Menit pada garis waktu tanggal kerja saat jendela scan masuk tertutup.
 ///
-/// Sama dengan `final_entry_end` di `decide_scan`: jam masuk + batas masuk
-/// tepat waktu + toleransi terlambat. Setelah menit ini scanner menolak scan
-/// masuk, jadi karyawan yang belum punya baris absensi memang benar-benar
-/// "belum absen padahal jam absen sudah lewat".
+/// Sama dengan `final_entry_end` di `decide_scan`: Jam Masuk + Toleransi
+/// Keterlambatan. Setelah menit ini scanner menolak scan masuk, jadi karyawan
+/// yang belum punya baris absensi memang benar-benar "belum absen padahal jam
+/// absen sudah lewat".
 pub fn entry_window_close_minute(shift: &ShiftPolicy) -> Option<i64> {
     // Karyawan shift fleksibel bebas datang jam berapa pun, jadi tidak ada
     // menit di tengah hari yang membuatnya "belum absen padahal sudah lewat".
@@ -648,7 +855,12 @@ pub fn entry_window_close_minute(shift: &ShiftPolicy) -> Option<i64> {
         return Some(END_OF_DAY_MINUTE);
     }
     let start = clock_minutes(&shift.start).ok()?;
-    Some(start + shift.normal_entry_minutes + shift.late_tolerance_minutes)
+    let (_, _, close) = entry_window_offsets(
+        shift.early_window_minutes,
+        shift.normal_entry_minutes,
+        shift.late_tolerance_minutes,
+    );
+    Some(start + close)
 }
 
 pub fn is_checkout_window_expired(
@@ -690,24 +902,158 @@ mod tests {
     }
 
     #[test]
-    fn jendela_masuk_tutup_setelah_batas_dan_toleransi() {
+    fn jendela_masuk_tutup_pada_jam_masuk_ditambah_toleransi() {
         let mut shift = regular();
         shift.start = "07:00".into();
         shift.normal_entry_minutes = 15;
         shift.late_tolerance_minutes = 30;
 
-        // 07:00 (420) + 15 + 30 = 07:45 (465) — persis `final_entry_end`
-        // yang dipakai decide_scan untuk menolak scan masuk.
-        assert_eq!(entry_window_close_minute(&shift), Some(465));
+        // 07:00 (420) + toleransi 30 = 07:30 (450) — persis `final_entry_end`
+        // yang dipakai decide_scan. Batas Tepat Waktu tidak lagi ikut
+        // dijumlahkan: jendelanya kini berada SEBELUM jam masuk.
+        assert_eq!(entry_window_close_minute(&shift), Some(450));
 
         let tolak = decide_scan(
-            &moment("2026-08-19", "07:46"),
+            &moment("2026-08-19", "07:31"),
             &shift,
             &ScanHistory::default(),
             0,
         )
         .expect("keputusan scan");
         assert_eq!(tolak.reason, DecisionReason::EntryWindowClosed);
+    }
+
+    #[test]
+    fn jendela_masuk_disusun_mundur_dari_jam_masuk() {
+        // Vektor yang sama dengan `time-policy.test.ts`: awal 120, batas 60,
+        // toleransi 30 → buka −180, tepat waktu −60, tutup +30.
+        assert_eq!(entry_window_offsets(120, 60, 30), (-180, -60, 30));
+        assert!(!is_within_entry_window(-181, 120, 60, 30));
+        assert!(is_within_entry_window(-180, 120, 60, 30));
+        assert!(is_within_entry_window(0, 120, 60, 30));
+        assert!(is_within_entry_window(30, 120, 60, 30));
+        assert!(!is_within_entry_window(31, 120, 60, 30));
+        assert_eq!(late_and_early_minutes(430, 420), (10, 0));
+        assert_eq!(late_and_early_minutes(400, 420), (0, 20));
+    }
+
+    #[test]
+    fn koreksi_admin_boleh_mencatat_masuk_setelah_toleransi_sebelum_pulang() {
+        // Vektor yang sama dengan `time-policy.test.ts`.
+        let range = |diff| is_within_correction_entry_range(diff, 120, 60, 0, "07:00", "15:00");
+        assert!(!range(-181));
+        assert!(range(45));
+        assert!(range(479));
+        assert!(!range(480));
+    }
+
+    #[test]
+    fn perhitungan_ulang_jalur_admin_sama_dengan_scanner() {
+        let rules = ClockRules {
+            start: "07:00",
+            end: "15:00",
+            normal_work_minutes: 420,
+            break_minutes: 60,
+            break_offset_minutes: 240,
+        };
+        assert_eq!(
+            recalculate_from_clock(Some(360), Some(540), &rules),
+            ClockRecalc {
+                late_minutes: 0,
+                early_minutes: 60,
+                work_minutes: 420,
+                overtime_minutes: 0,
+                shortage_minutes: 0,
+            }
+        );
+        assert_eq!(
+            recalculate_from_clock(Some(430), None, &rules),
+            ClockRecalc {
+                late_minutes: 10,
+                ..ClockRecalc::default()
+            }
+        );
+        let night = ClockRules {
+            start: "22:00",
+            end: "06:00",
+            ..rules
+        };
+        assert_eq!(recalculate_from_clock(Some(10), None, &night).late_minutes, 130);
+        let flexible = ClockRules {
+            start: "00:00",
+            end: "23:59",
+            normal_work_minutes: 1439,
+            break_minutes: 0,
+            ..rules
+        };
+        assert_eq!(recalculate_from_clock(Some(780), Some(240), &flexible).late_minutes, 0);
+    }
+
+    #[test]
+    fn jam_kerja_normal_tidak_lagi_ditambah_batas_masuk() {
+        assert_eq!(calculate_normal_work_minutes("07:00", "15:00", 60), 420);
+        assert_eq!(calculate_normal_work_minutes("22:00", "06:00", 60), 420);
+        assert_eq!(calculate_normal_work_minutes("07:00", "07:30", 60), 0);
+        assert_eq!(calculate_normal_work_minutes("bukan-jam", "15:00", 60), 0);
+    }
+
+    #[test]
+    fn jam_kerja_dimulai_dari_jam_masuk_shift() {
+        // Datang 06:00 (jendela Tepat Waktu) pulang 15:00: satu jam sebelum
+        // jam masuk tidak menjadi jam kerja maupun lembur.
+        let early = calculate_work("2026-08-12 06:00:00", "2026-08-12 15:00:00", &regular())
+            .expect("datang awal");
+        assert_eq!(
+            (early.presence_minutes, early.work_minutes, early.overtime_minutes),
+            (540, 420, 0)
+        );
+        // Terlambat tetap dihitung dari jam scan sebenarnya.
+        let late = calculate_work("2026-08-12 07:10:00", "2026-08-12 15:00:00", &regular())
+            .expect("terlambat");
+        assert_eq!((late.work_minutes, late.shortage_minutes), (410, 10));
+    }
+
+    #[test]
+    fn istirahat_dipotong_penuh_setelah_jam_masuk_ditambah_offset() {
+        // Istirahat mulai 07:00 + 240 = 11:00, lamanya 60 menit.
+        let cases = [
+            ("10:30", 0, 210),
+            ("11:00", 0, 240),
+            ("11:01", 60, 181),
+            ("11:30", 60, 210),
+            ("12:00", 60, 240),
+        ];
+        for (out, deduction, work) in cases {
+            let metrics = calculate_work(
+                "2026-08-12 07:00:00",
+                &format!("2026-08-12 {out}:00"),
+                &regular(),
+            )
+            .expect("metrics");
+            assert_eq!(
+                (metrics.break_deduction_minutes, metrics.work_minutes),
+                (deduction, work),
+                "pulang {out}"
+            );
+        }
+        // Offset diukur dari JAM MASUK SHIFT, bukan dari jam scan: datang
+        // 06:00 lalu pulang 10:30 belum melewati 11:00, jadi tidak dipotong.
+        let early = calculate_work("2026-08-12 06:00:00", "2026-08-12 10:30:00", &regular())
+            .expect("datang awal");
+        assert_eq!((early.break_deduction_minutes, early.work_minutes), (0, 210));
+    }
+
+    #[test]
+    fn jam_kerja_shift_malam_dimulai_dari_jam_masuk() {
+        let mut shift = regular();
+        shift.start = "22:00".into();
+        shift.end = "06:00".into();
+        let metrics = calculate_work("2026-08-12 21:00:00", "2026-08-13 06:00:00", &shift)
+            .expect("shift malam");
+        assert_eq!(
+            (metrics.presence_minutes, metrics.break_deduction_minutes, metrics.work_minutes),
+            (540, 60, 420)
+        );
     }
 
     fn fleksibel() -> ShiftPolicy {
@@ -832,26 +1178,33 @@ mod tests {
 
     #[test]
     fn regular_entry_matrix_matches_web() {
+        // Shift 07:00, awal 60, batas tepat waktu 15, toleransi 30:
+        // 05:45 ─ awal absen ─ 06:45 ─ tepat waktu ─ 07:00 ─ terlambat ─ 07:30.
         assert_eq!(
-            decide("05:59", ScanHistory::default()).reason,
+            decide("05:44", ScanHistory::default()).reason,
             DecisionReason::TooEarly
         );
-        let early = decide("06:30", ScanHistory::default());
+        let early = decide("06:00", ScanHistory::default());
         assert_eq!(
             (early.reason, early.early_minutes),
-            (DecisionReason::EarlyEntry, 30)
+            (DecisionReason::EarlyEntry, 60)
+        );
+        let on_time = decide("06:50", ScanHistory::default());
+        assert_eq!(
+            (on_time.reason, on_time.early_minutes, on_time.late_minutes),
+            (DecisionReason::OnTimeEntry, 10, 0)
         );
         assert_eq!(
-            decide("07:15", ScanHistory::default()).reason,
+            decide("07:00", ScanHistory::default()).reason,
             DecisionReason::OnTimeEntry
         );
-        let late = decide("07:30", ScanHistory::default());
+        let late = decide("07:20", ScanHistory::default());
         assert_eq!(
             (late.reason, late.late_minutes),
-            (DecisionReason::LateEntry, 15)
+            (DecisionReason::LateEntry, 20)
         );
         assert_eq!(
-            decide("07:46", ScanHistory::default()).reason,
+            decide("07:31", ScanHistory::default()).reason,
             DecisionReason::EntryWindowClosed
         );
     }

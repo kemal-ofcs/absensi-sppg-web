@@ -47,6 +47,51 @@ fn iso_now_tx(tx: &rusqlite::Transaction<'_>) -> String {
     .unwrap_or_else(|_| format!("epoch-{}", storage::now_epoch_seconds()))
 }
 
+/// Id baris payroll dibuat KLIEN: `<awalan>-<detik epoch>-<48 bit acak>`.
+///
+/// Dulu hanya `<awalan>-<detik epoch>`, dan itu bertabrakan di tiga tempat:
+/// (1) fungsi simpan MASSAL (`save_*_rules`) memberi id yang SAMA ke setiap
+/// baris baru dalam satu loop, sehingga baris berikutnya menimpa yang pertama
+/// lewat `ON CONFLICT(id)`; (2) dua perangkat yang menyimpan pada detik yang
+/// sama menghasilkan id sama, dan cloud menolak push kedua dengan pelanggaran
+/// PK — outbox-nya macet permanen; (3) dua transisi status batch dalam satu
+/// detik menabrakkan id `payroll_audit_logs`. Detiknya dipertahankan supaya id
+/// tetap terbaca dan terurut kira-kira menurut waktu.
+/// Id baris BPJS yang sudah memakai `component_code` ini, atau id baru.
+///
+/// `bpjs_rules` unik per kode dan INSERT-nya menimpa lewat kode itu dengan id
+/// LAMA; tanpa ini outbox mengantrekan id yang tidak dimiliki baris mana pun.
+fn bpjs_rule_id(
+    tx: &rusqlite::Transaction<'_>,
+    requested_id: &str,
+    component_code: &str,
+) -> Result<String, CommandError> {
+    if !requested_id.trim().is_empty() {
+        return Ok(requested_id.to_string());
+    }
+    let existing = tx
+        .query_row(
+            "SELECT id FROM bpjs_rules WHERE component_code = ?1;",
+            params![component_code],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+    Ok(existing.unwrap_or_else(|| {
+        new_payroll_id(&format!("bpjs-{}", component_code.to_lowercase()))
+    }))
+}
+
+fn new_payroll_id(prefix: &str) -> String {
+    let mut bytes = [0u8; 6];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    format!(
+        "{prefix}-{}-{}",
+        storage::now_epoch_seconds(),
+        hex::encode(bytes)
+    )
+}
+
 #[tauri::command]
 pub async fn desktop_get_salary_configs(
     state: State<'_, DesktopState>,
@@ -105,8 +150,18 @@ pub async fn desktop_save_salary_config(
     let mut conn = storage::database(&state.data_dir)?;
 
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
+    // Rate unik per (karyawan, tanggal berlaku) dan INSERT di bawah menimpa
+    // baris lama lewat kunci alami itu — dengan id LAMA. Tanpa pencarian ini,
+    // outbox mengantrekan id baru yang tidak dimiliki baris mana pun.
     let config_id = if draft.id.trim().is_empty() {
-        format!("sc-{}", storage::now_epoch_seconds())
+        tx.query_row(
+            "SELECT id FROM salary_configs WHERE id_karyawan = ?1 AND effective_date = ?2;",
+            params![draft.id_karyawan, draft.effective_date],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .unwrap_or_else(|| new_payroll_id("sc"))
     } else {
         draft.id.clone()
     };
@@ -234,7 +289,7 @@ pub async fn desktop_save_overtime_rule(
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
     let rule_id = if draft.id.trim().is_empty() {
-        format!("ot-{}-{}", draft.rule_type.to_lowercase(), storage::now_epoch_seconds())
+        new_payroll_id(&format!("ot-{}", draft.rule_type.to_lowercase()))
     } else {
         draft.id.clone()
     };
@@ -326,7 +381,7 @@ pub async fn desktop_save_overtime_rules(
 
     for rule in rules {
         let rule_id = if rule.id.trim().is_empty() {
-            format!("ot-{}-{}", rule.rule_type.to_lowercase(), storage::now_epoch_seconds())
+            new_payroll_id(&format!("ot-{}", rule.rule_type.to_lowercase()))
         } else {
             rule.id.clone()
         };
@@ -429,7 +484,7 @@ pub async fn desktop_save_payroll_component(
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
     let comp_id = if draft.id.trim().is_empty() {
-        format!("comp-{}", storage::now_epoch_seconds())
+        new_payroll_id("comp")
     } else {
         draft.id.clone()
     };
@@ -558,7 +613,7 @@ pub async fn desktop_save_tax_rule(
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
     let rule_id = if draft.id.trim().is_empty() {
-        format!("tax-{}-{}", draft.category.to_lowercase(), storage::now_epoch_seconds())
+        new_payroll_id(&format!("tax-{}", draft.category.to_lowercase()))
     } else {
         draft.id.clone()
     };
@@ -652,7 +707,7 @@ pub async fn desktop_save_tax_rules(
 
     for rule in rules {
         let rule_id = if rule.id.trim().is_empty() {
-            format!("tax-{}-{}", rule.category.to_lowercase(), storage::now_epoch_seconds())
+            new_payroll_id(&format!("tax-{}", rule.category.to_lowercase()))
         } else {
             rule.id.clone()
         };
@@ -716,11 +771,7 @@ pub async fn desktop_save_bpjs_rule(
     let mut conn = storage::database(&state.data_dir)?;
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
-    let rule_id = if draft.id.trim().is_empty() {
-        format!("bpjs-{}-{}", draft.component_code.to_lowercase(), storage::now_epoch_seconds())
-    } else {
-        draft.id.clone()
-    };
+    let rule_id = bpjs_rule_id(&tx, &draft.id, &draft.component_code)?;
     let eff_date = if draft.effective_date.trim().is_empty() {
         iso_now_tx(&tx)[..10].to_string()
     } else {
@@ -848,11 +899,7 @@ pub async fn desktop_save_bpjs_rules(
     let client_id = sync::ensure_client_id(&state)?;
 
     for rule in rules {
-        let rule_id = if rule.id.trim().is_empty() {
-            format!("bpjs-{}-{}", rule.component_code.to_lowercase(), storage::now_epoch_seconds())
-        } else {
-            rule.id.clone()
-        };
+        let rule_id = bpjs_rule_id(&tx, &rule.id, &rule.component_code)?;
         let eff_date = if rule.effective_date.trim().is_empty() {
             iso_now_tx(&tx)[..10].to_string()
         } else {
@@ -919,8 +966,8 @@ pub async fn desktop_get_payroll_recap(
     // siapa pun — seluruh lembur selalu dihitung dengan tarif HARI_KERJA.
     let holiday_tiers = load_overtime_tiers(&conn, "HARI_LIBUR")?;
     let components = load_payroll_components(&conn)?;
-    let tax_rules = load_tax_rules(&conn)?;
-    let bpjs_rules = load_bpjs_rules(&conn)?;
+    let tax_rules = load_tax_rules(&conn, &period_end)?;
+    let bpjs_rules = load_bpjs_rules(&conn, &period_end)?;
 
     let mut stmt = conn
         .prepare(
@@ -1003,8 +1050,8 @@ pub async fn desktop_get_payroll_recap(
             let ot_index = PayrollCalculator::calculate_overtime_index(ot_hours, &overtime_tiers);
             let holiday_index =
                 PayrollCalculator::calculate_overtime_index(holiday_hours, &holiday_tiers);
-            let basic_salary = (reg_hours * rate_dec)
-                .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+            let basic_salary =
+                PayrollCalculator::wage_from_minutes(agg.jam_kerja_menit, agg.rate_per_hour);
             let overtime_salary = ((ot_index + holiday_index) * rate_dec)
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
@@ -1031,6 +1078,12 @@ pub async fn desktop_get_payroll_recap(
                 total_overtime_index: ot_index.to_f64().unwrap_or(0.0),
                 total_holiday_hours: holiday_hours.to_f64().unwrap_or(0.0),
                 total_holiday_overtime_index: holiday_index.to_f64().unwrap_or(0.0),
+                // Menit mentah ikut dibawa supaya pembekuan bisa menurunkan
+                // jamnya dengan cara yang sama persis seperti di sini, alih-alih
+                // membaca ulang `f64` di bawah yang presisinya sudah hilang.
+                total_regular_minutes: agg.jam_kerja_menit,
+                total_overtime_minutes: agg.lembur_menit,
+                total_holiday_minutes: agg.libur_menit,
                 est_basic_salary: basic_salary.to_i64().unwrap_or(0),
                 est_overtime_salary: overtime_salary.to_i64().unwrap_or(0),
                 est_gross_salary: gross.to_i64().unwrap_or(0),
@@ -1095,12 +1148,12 @@ pub async fn desktop_create_payroll_run(
     let overtime_tiers = load_overtime_tiers(&conn, "HARI_KERJA")?;
     let holiday_tiers = load_overtime_tiers(&conn, "HARI_LIBUR")?;
     let components = load_payroll_components(&conn)?;
-    let tax_rules = load_tax_rules(&conn)?;
-    let bpjs_rules = load_bpjs_rules(&conn)?;
+    let tax_rules = load_tax_rules(&conn, &period_end)?;
+    let bpjs_rules = load_bpjs_rules(&conn, &period_end)?;
 
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
-    let run_id = format!("PR-{}-{}", period_start.replace('-', ""), storage::now_epoch_seconds());
+    let run_id = new_payroll_id(&format!("PR-{}", period_start.replace('-', "")));
     let now = iso_now_tx(&tx);
 
     let mut total_gross_sum = 0i64;
@@ -1110,17 +1163,29 @@ pub async fn desktop_create_payroll_run(
 
     for row in &recap {
         let item_id = format!("{}-{}", run_id, row.id_karyawan);
-        let reg_hours = Decimal::from_f64_retain(row.total_regular_hours).unwrap_or(Decimal::ZERO);
-        let ot_hours = Decimal::from_f64_retain(row.total_overtime_hours).unwrap_or(Decimal::ZERO);
-        let holiday_hours =
-            Decimal::from_f64_retain(row.total_holiday_hours).unwrap_or(Decimal::ZERO);
+        // Jam diturunkan dari MENIT MENTAH, sama persis seperti di
+        // `desktop_get_payroll_recap`. Bentuk sebelumnya membaca ulang
+        // `total_regular_hours` yang bertipe `f64`, dan `from_f64_retain` tidak
+        // mengembalikan presisi yang sudah hilang saat pembagian: pratinjau
+        // menghitung 11/60 secara eksak sehingga 11 menit pada tarif
+        // 18.750/jam menjadi 3.437,5 tepat lalu dibulatkan ke 3.438, sementara
+        // pembekuan mendapat 3.437,4999… dan membekukan 3.437.
+        //
+        // Selisihnya satu rupiah per baris, tetapi ia mengalir ke gross,
+        // komponen, BPJS, PPh 21, dan net — dan yang lebih buruk, angka yang
+        // DISETUJUI admin bukan angka yang DIBAYARKAN.
+        // Jam reguler tidak lagi diturunkan di sini: upahnya dihitung langsung
+        // dari menit lewat `wage_from_minutes`. Jam lembur masih diperlukan
+        // karena jenjangnya memang dinyatakan dalam jam.
+        let ot_hours = Decimal::from(row.total_overtime_minutes) / Decimal::from(60);
+        let holiday_hours = Decimal::from(row.total_holiday_minutes) / Decimal::from(60);
         let rate_dec = Decimal::from(row.rate_per_hour);
 
         let ot_index = PayrollCalculator::calculate_overtime_index(ot_hours, &overtime_tiers);
         let holiday_index =
             PayrollCalculator::calculate_overtime_index(holiday_hours, &holiday_tiers);
-        let basic_salary = (reg_hours * rate_dec)
-            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+        let basic_salary =
+            PayrollCalculator::wage_from_minutes(row.total_regular_minutes, row.rate_per_hour);
         let overtime_salary = ((ot_index + holiday_index) * rate_dec)
             .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
@@ -1284,7 +1349,7 @@ pub async fn desktop_create_payroll_run(
         .map_err(|_| CommandError::new("RUN_FAILED", "Gagal menyimpan rincian slip gaji karyawan."))?;
     }
 
-    let audit_id = format!("audit-{}", storage::now_epoch_seconds());
+    let audit_id = new_payroll_id("audit");
     tx.execute(
         r#"
         INSERT INTO payroll_audit_logs (
@@ -1596,7 +1661,7 @@ pub async fn desktop_transition_payroll_status(
     )
     .map_err(|_| CommandError::new("UPDATE_FAILED", "Gagal memperbarui status payroll."))?;
 
-    let audit_id = format!("audit-{}", storage::now_epoch_seconds());
+    let audit_id = new_payroll_id("audit");
     let notes_text = notes.unwrap_or_default();
     tx.execute(
         r#"
@@ -1717,19 +1782,39 @@ fn load_payroll_components(conn: &Connection) -> Result<Vec<PayrollComponent>, C
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-fn load_tax_rules(conn: &Connection) -> Result<Vec<TaxRule>, CommandError> {
+/// Tarif yang BERLAKU pada akhir periode, bukan seluruh isi tabelnya.
+///
+/// `effective_date` sudah ada di skema sejak awal dan didokumentasikan sebagai
+/// kunci generasi tarif, tetapi tidak pernah dipakai menyaring: tabelnya dibaca
+/// utuh, lalu `calculate_pph21_ter` memakai `.find()` — bracket PERTAMA yang
+/// cocok. Begitu admin menambahkan tabel TER tahun depan, periode berjalan
+/// memakai bracket yang urutannya tidak ditentukan siapa pun, karena dua baris
+/// dengan `bracket_min` sama diurutkan sembarang oleh SQLite.
+///
+/// Polanya disalin dari `salary_configs` di query rekap — generasi terbaru yang
+/// sudah berlaku, per kategori. `COALESCE` ke generasi terawal menjaga periode
+/// yang lebih tua daripada seluruh tarif tetap punya tarif, alih-alih diam-diam
+/// menghasilkan potongan nol. Cerminan TS-nya: `loadTaxRules` di
+/// `payroll-recap.ts` (dibawa dari Project Meksa).
+fn load_tax_rules(conn: &Connection, period_end: &str) -> Result<Vec<TaxRule>, CommandError> {
     let mut stmt = conn
         .prepare(
             r#"
             SELECT id, category, bracket_min, bracket_max, rate_percentage, effective_date
             FROM tax_rules
+            WHERE effective_date = COALESCE(
+                (SELECT MAX(t2.effective_date) FROM tax_rules t2
+                  WHERE t2.category = tax_rules.category AND t2.effective_date <= ?1),
+                (SELECT MIN(t3.effective_date) FROM tax_rules t3
+                  WHERE t3.category = tax_rules.category)
+            )
             ORDER BY category, bracket_min ASC;
             "#,
         )
         .map_err(|_| CommandError::internal())?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([period_end], |row| {
             Ok(TaxRule {
                 id: row.get(0)?,
                 category: row.get(1)?,
@@ -1744,19 +1829,27 @@ fn load_tax_rules(conn: &Connection) -> Result<Vec<TaxRule>, CommandError> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-fn load_bpjs_rules(conn: &Connection) -> Result<Vec<BpjsRule>, CommandError> {
+/// Iuran BPJS yang BERLAKU pada akhir periode — alasan dan polanya sama dengan
+/// `load_tax_rules`. Cerminan TS-nya: `loadBpjsRules` di `payroll-recap.ts`.
+fn load_bpjs_rules(conn: &Connection, period_end: &str) -> Result<Vec<BpjsRule>, CommandError> {
     let mut stmt = conn
         .prepare(
             r#"
             SELECT id, component_code, component_name, rate_percentage, wage_cap, effective_date
             FROM bpjs_rules
+            WHERE effective_date = COALESCE(
+                (SELECT MAX(b2.effective_date) FROM bpjs_rules b2
+                  WHERE b2.component_code = bpjs_rules.component_code AND b2.effective_date <= ?1),
+                (SELECT MIN(b3.effective_date) FROM bpjs_rules b3
+                  WHERE b3.component_code = bpjs_rules.component_code)
+            )
             ORDER BY component_code ASC;
             "#,
         )
         .map_err(|_| CommandError::internal())?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([period_end], |row| {
             Ok(BpjsRule {
                 id: row.get(0)?,
                 component_code: row.get(1)?,
@@ -1769,4 +1862,27 @@ fn load_bpjs_rules(conn: &Connection) -> Result<Vec<BpjsRule>, CommandError> {
         .map_err(|_| CommandError::internal())?;
 
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_payroll_id;
+    use std::collections::HashSet;
+
+    #[test]
+    fn id_payroll_tidak_bertabrakan_dalam_satu_detik() {
+        // Fungsi simpan massal memanggilnya berkali-kali dalam loop yang sama —
+        // persis keadaan yang dulu memberi setiap baris id identik.
+        let ids: HashSet<String> = (0..500).map(|_| new_payroll_id("ot-hari_kerja")).collect();
+        assert_eq!(ids.len(), 500);
+    }
+
+    #[test]
+    fn id_payroll_mempertahankan_awalan_yang_terbaca() {
+        let id = new_payroll_id("PR-20260901");
+        assert!(id.starts_with("PR-20260901-"));
+        let suffix = id.rsplit('-').next().unwrap_or_default();
+        assert_eq!(suffix.len(), 12);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

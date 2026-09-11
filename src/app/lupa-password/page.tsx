@@ -232,7 +232,7 @@ export default function LupaPasswordPage() {
                 autoComplete="username"
                 value={identifier}
                 onChange={(event) => setIdentifier(event.target.value)}
-                placeholder="operator01 atau operator@sppg.id"
+                placeholder="operator01 atau operator@perusahaan.co.id"
                 className="min-h-11 rounded-xl border border-white/15 bg-slate-950 px-3 text-sm text-white"
               />
             </label>

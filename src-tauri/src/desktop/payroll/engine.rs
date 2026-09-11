@@ -7,6 +7,26 @@ use super::models::{BpjsRule, OvertimeTierRule, PayrollComponent, TaxRule};
 pub struct PayrollCalculator;
 
 impl PayrollCalculator {
+    /// Upah dari MENIT bulat dan tarif per jam.
+    ///
+    /// Urutannya menentukan, dan inilah satu-satunya tempat urutan itu dieja.
+    /// Membagi lebih dulu — `Decimal::from(menit) / 60`, lalu dikalikan tarif —
+    /// membuang presisi SEBELUM pembulatan: `11/60` bukan pecahan yang
+    /// berhenti, jadi ia dipotong pada 28 digit menjadi sedikit di BAWAH nilai
+    /// sebenarnya, dan hasil kalinya menjadi 3437,4999… Nilai yang seharusnya
+    /// 3437,5 tepat lalu dibulatkan ke bawah, sehingga kebijakan
+    /// `MidpointAwayFromZero` yang tertulis di bawah tidak pernah benar-benar
+    /// berlaku pada titik tengah.
+    ///
+    /// Mengalikan lebih dulu membuat pembilangnya bilangan bulat eksak, dan
+    /// hasil baginya oleh 60 selalu berhenti tepat ketika nilainya setengah
+    /// bulat — persis kasus yang pembulatannya diperdebatkan. Cerminan TS-nya
+    /// ada di `payroll-recap.ts` dan wajib tetap sama.
+    pub fn wage_from_minutes(minutes: i64, rate_per_hour: i64) -> Decimal {
+        ((Decimal::from(minutes) * Decimal::from(rate_per_hour)) / Decimal::from(60))
+            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+    }
+
     /// Menghitung akumulasi indeks lembur berjenjang (PP 35/2021)
     /// Contoh Hari Kerja: 3 Jam Lembur -> Jam 1: 1.0 * 1.5 = 1.5; Jam 2-3: 2.0 * 2.0 = 4.0; Total Indeks = 5.5
     pub fn calculate_overtime_index(
@@ -198,5 +218,73 @@ impl PayrollCalculator {
                 }),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PayrollCalculator;
+    use rust_decimal::Decimal;
+
+    /// Vektor yang SAMA dieja di `payroll-calculator.test.ts`.
+    ///
+    /// Uang dihitung dua kali di repo ini — Rust untuk Desktop/Mobile, TypeScript
+    /// untuk Web — dan keduanya menulis ke `payroll_items` yang sama. Yang
+    /// menjaga keduanya tetap sepakat bukan komentar, melainkan vektor ini.
+    ///
+    /// Empat kasus pertama adalah titik tengah sejati: `menit x tarif` habis
+    /// dibagi 30 tetapi tidak habis dibagi 60, sehingga nilainya tepat setengah
+    /// rupiah. Di sanalah kebijakan `MidpointAwayFromZero` benar-benar diuji,
+    /// dan di sanalah urutan bagi-lalu-kali yang lama selalu membulatkan ke
+    /// BAWAH.
+    const VEKTOR: &[(i64, i64, i64)] = &[
+        // (menit, tarif per jam, upah yang benar)
+        (11, 18_750, 3_438),
+        (9, 18_750, 2_813),
+        (7, 18_750, 2_188),
+        (13, 18_750, 4_063),
+        // Pembagian yang berhenti: tidak ada perdebatan pembulatan.
+        (60, 25_000, 25_000),
+        (30, 25_000, 12_500),
+        (0, 25_000, 0),
+        // Sehari penuh dan sebulan penuh.
+        (480, 18_750, 150_000),
+        (10_080, 21_875, 3_675_000),
+    ];
+
+    #[test]
+    fn upah_dari_menit_membulatkan_titik_tengah_menjauhi_nol() {
+        for (menit, tarif, harapan) in VEKTOR {
+            let hasil = PayrollCalculator::wage_from_minutes(*menit, *tarif);
+            assert_eq!(
+                hasil,
+                Decimal::from(*harapan),
+                "{menit} menit pada tarif {tarif}/jam"
+            );
+        }
+    }
+
+    /// Membagi lebih dulu memang membuang titik tengahnya.
+    ///
+    /// Tes ini menahan bentuk lama supaya tidak diam-diam kembali: ia menuntut
+    /// urutan bagi-lalu-kali benar-benar menghasilkan jawaban yang BERBEDA,
+    /// sehingga siapa pun yang menyederhanakan `wage_from_minutes` kembali ke
+    /// bentuk itu akan melihat tes ini gagal, bukan menemukannya berbulan
+    /// kemudian di slip gaji.
+    #[test]
+    fn membagi_lebih_dulu_kehilangan_titik_tengahnya() {
+        let menit = Decimal::from(11);
+        let tarif = Decimal::from(18_750);
+        let lewat_jam = (menit / Decimal::from(60) * tarif).round();
+        assert_eq!(
+            lewat_jam,
+            Decimal::from(3_437),
+            "bentuk lama membulatkan ke bawah"
+        );
+        assert_eq!(
+            PayrollCalculator::wage_from_minutes(11, 18_750),
+            Decimal::from(3_438),
+            "bentuk sekarang membulatkan menjauhi nol"
+        );
     }
 }

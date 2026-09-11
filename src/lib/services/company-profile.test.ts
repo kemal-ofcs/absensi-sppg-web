@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BRANDING } from "@/lib/constants/branding";
 
 mock.module("server-only", () => ({}));
 
@@ -29,7 +30,9 @@ describe("Company Profile Service", () => {
     const profile = await getCompanyProfile();
     expect(profile).toBeDefined();
     expect(profile.id).toBe("default_company");
-    expect(profile.company_name).toBe("SPPG");
+    // Nilai default berasal dari BRANDING, bukan nama customer tertentu —
+    // menuliskannya ulang di sini membuat test mengunci merek lama.
+    expect(profile.company_name).toBe(BRANDING.defaultCompanyName);
   });
 
   test("updateCompanyProfile memperbarui profil instansi dengan benar", async () => {

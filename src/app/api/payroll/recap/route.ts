@@ -9,6 +9,7 @@ import {
   readJsonBody,
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
+import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 import { computePayrollRecap } from "@/lib/services/payroll-recap";
 
 export const runtime = "nodejs";
@@ -16,6 +17,9 @@ export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
     await requireWebPermission(request, "payroll.view");
+    // Sama dengan Project Meksa: rekap berisi gaji seluruh karyawan, jadi
+    // permintaan lintas situs yang menumpang cookie sesi ditolak.
+    assertSameOriginMutation(request);
     await ensureServerDatabaseInitialized();
     const client = getServerDatabase();
 

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { BRANDING } from "@/lib/constants/branding";
 import { db, ensureDbInitialized } from "@/lib/db";
 import type { IdCardElement, IdCardTemplateConfig } from "@/types/id-card";
 
@@ -190,7 +191,7 @@ export async function getIdCardTemplate(
         INSERT OR IGNORE INTO id_card_template (
           id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, created_at, updated_at
         ) VALUES (
-          ?, 'Template Default SPPG', 'landscape', NULL, NULL, ?, 1, ?, ?
+          ?, 'Default ID Card Template', 'landscape', NULL, NULL, ?, 1, ?, ?
         );
       `,
       args: [id, defaultElementsJson, now, now],
@@ -198,7 +199,7 @@ export async function getIdCardTemplate(
 
     return {
       id,
-      name: "Template Default SPPG",
+      name: BRANDING.defaultTemplateName,
       orientation: "landscape",
       frontBgUrl: undefined,
       backBgUrl: undefined,
@@ -221,7 +222,7 @@ export async function getIdCardTemplate(
 
   return {
     id: String(row?.id || id),
-    name: String(row?.name || "Template Default SPPG"),
+    name: String(row?.name || BRANDING.defaultTemplateName),
     orientation: (row?.orientation === "portrait" ? "portrait" : "landscape") as
       | "portrait"
       | "landscape",
@@ -259,7 +260,7 @@ export async function saveIdCardTemplate(
     `,
     args: [
       id,
-      template.name || "Template Default SPPG",
+      template.name || "Default ID Card Template",
       template.orientation || "landscape",
       template.frontBgUrl || null,
       template.backBgUrl || null,

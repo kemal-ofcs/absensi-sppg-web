@@ -1,4 +1,4 @@
-const FORCED_LOGOUT_KEY = "absensi-sppg-forced-logout-v1";
+const FORCED_LOGOUT_KEY = "app-attendance-forced-logout-v1";
 
 interface SessionStorageLike {
   getItem(key: string): string | null;

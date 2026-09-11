@@ -1,6 +1,9 @@
 import "server-only";
 
-import { isShiftFleksibel } from "@/lib/attendance/time-policy";
+import {
+  aturanShiftDariBaris,
+  hitungUlangAbsensiDariJam,
+} from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface EditAbsensiHarianPatch {
@@ -61,23 +64,15 @@ export async function editAbsensiHarian(
 
   // Fetch shift details
   const shiftRes = await db.execute({
-    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
     args: [idShift],
   });
-  const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
-  const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-  const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-  const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
-  const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-  const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-  const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
-  const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
-  const isOvernightShift = shiftOutMin < shiftInMin;
-  const shiftFleksibel = isShiftFleksibel(
-    shiftJamMasukStr,
-    shiftJamPulangStr,
-    normalShiftMin,
+  const aturanShift = aturanShiftDariBaris(
+    shiftRes.rows[0] as Record<string, unknown> | undefined,
   );
+  const shiftInMin = parseTimeToMinutes(aturanShift.jamMasuk) ?? 420;
+  const shiftOutMin = parseTimeToMinutes(aturanShift.jamPulang) ?? 900;
+  const isOvernightShift = shiftOutMin < shiftInMin;
 
   const nextDate = (() => {
     const d = new Date(tanggal);
@@ -128,30 +123,9 @@ export async function editAbsensiHarian(
     const inMin = parseTimeToMinutes(checkInVal);
     const outMin = parseTimeToMinutes(checkOutVal);
 
-    if (inMin !== null) {
-      let userInTimeline = inMin;
-      if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-        userInTimeline += 1440;
-      }
-      const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-      if (shiftFleksibel) {
-        // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
-        // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
-        // dihitung hanyalah jam kerjanya.
-        calculatedLate = 0;
-        calculatedEarly = 0;
-      } else if (userInTimeline < shiftInMin) {
-        calculatedEarly = shiftInMin - userInTimeline;
-      } else if (userInTimeline <= batasNormalMasuk) {
-        calculatedLate = 0;
-        calculatedEarly = 0;
-      } else {
-        calculatedLate = userInTimeline - batasNormalMasuk;
-      }
-    }
-
+    let duration: number | null = null;
     if (inMin !== null && outMin !== null) {
-      let duration = outMin - inMin;
+      duration = outMin - inMin;
       if (duration < 0) {
         duration += 1440;
       } else if (
@@ -161,10 +135,18 @@ export async function editAbsensiHarian(
       ) {
         duration += 1440;
       }
-      calculatedWork = Math.max(0, duration - breakShiftMin);
-      calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
-      calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
     }
+
+    const hasil = hitungUlangAbsensiDariJam({
+      masukMenit: inMin,
+      durasiMenit: duration,
+      shift: aturanShift,
+    });
+    calculatedLate = hasil.menitTerlambat;
+    calculatedEarly = hasil.menitDatangAwal;
+    calculatedWork = hasil.jamKerja;
+    calculatedOvertime = hasil.lembur;
+    calculatedShortage = hasil.jamKerjaKurang;
   }
 
   const statusAbsen =
@@ -371,69 +353,40 @@ export async function hapusLogScan(
 
       const idShift = Number(abs.id_shift || 1);
       const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
         args: [idShift],
       });
-      const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
-      const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-      const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-      const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
-      const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-      const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-      const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
-      const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
-      const isOvernightShift = shiftOutMin < shiftInMin;
-      const shiftFleksibel = isShiftFleksibel(
-        shiftJamMasukStr,
-        shiftJamPulangStr,
-        normalShiftMin,
+      const aturanShift = aturanShiftDariBaris(
+        shiftRes.rows[0] as Record<string, unknown> | undefined,
       );
 
-      let calculatedLate = 0;
-      let calculatedEarly = 0;
-      let calculatedWork = 0;
-      let calculatedOvertime = 0;
-      let calculatedShortage = 0;
-
-      const inMin = parseTimeToMinutes(inVal);
-      const outMin = parseTimeToMinutes(outVal);
-
-      if (inVal) {
-        if (jenisScanDeleted === "Pulang" && inVal) {
-          calculatedLate = existingLate;
-          calculatedEarly = existingEarly;
-        } else if (inMin !== null) {
-          let userInTimeline = inMin;
-          if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-            userInTimeline += 1440;
-          }
-          const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-          if (shiftFleksibel) {
-            // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
-            // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
-            // dihitung hanyalah jam kerjanya.
-            calculatedLate = 0;
-            calculatedEarly = 0;
-          } else if (userInTimeline < shiftInMin) {
-            calculatedEarly = shiftInMin - userInTimeline;
-          } else if (userInTimeline <= batasNormalMasuk) {
-            calculatedLate = 0;
-            calculatedEarly = 0;
-          } else {
-            calculatedLate = userInTimeline - batasNormalMasuk;
-          }
-        }
-      }
-
-      if (inVal && outVal && inMin !== null && outMin !== null) {
-        let duration = outMin - inMin;
+      const inMin = inVal ? parseTimeToMinutes(inVal) : null;
+      const outMin = outVal ? parseTimeToMinutes(outVal) : null;
+      let duration: number | null = null;
+      if (inMin !== null && outMin !== null) {
+        duration = outMin - inMin;
         if (duration < 0) {
           duration += 1440;
         }
-        calculatedWork = Math.max(0, duration - breakShiftMin);
-        calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
-        calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
       }
+
+      const hasil = hitungUlangAbsensiDariJam({
+        masukMenit: inMin,
+        durasiMenit: duration,
+        shift: aturanShift,
+      });
+      // Log Pulang yang dihapus tidak mengubah kapan karyawannya masuk, jadi
+      // terlambat/datang awal yang sudah tercatat dipertahankan.
+      const pertahankanMasuk = jenisScanDeleted === "Pulang" && Boolean(inVal);
+      const calculatedLate = pertahankanMasuk
+        ? existingLate
+        : hasil.menitTerlambat;
+      const calculatedEarly = pertahankanMasuk
+        ? existingEarly
+        : hasil.menitDatangAwal;
+      const calculatedWork = hasil.jamKerja;
+      const calculatedOvertime = hasil.lembur;
+      const calculatedShortage = hasil.jamKerjaKurang;
 
       await db.execute({
         sql: `UPDATE absensi_harian SET
@@ -578,62 +531,31 @@ export async function hapusImportOffline(
 
       const idShift = Number(abs.id_shift || 1);
       const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_masuk_menit, toleransi_masuk_menit FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
         args: [idShift],
       });
-      const shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
-      const normalShiftMin = Number(shiftData?.jam_kerja_normal_menit ?? 480);
-      const breakShiftMin = Number(shiftData?.istirahat_menit ?? 60);
-      const batasMasukShiftMin = Number(shiftData?.batas_masuk_menit ?? 0);
-      const shiftJamMasukStr = String(shiftData?.jam_masuk || "07:00");
-      const shiftJamPulangStr = String(shiftData?.jam_pulang || "15:00");
-      const shiftInMin = parseTimeToMinutes(shiftJamMasukStr) ?? 420;
-      const shiftOutMin = parseTimeToMinutes(shiftJamPulangStr) ?? 900;
-      const isOvernightShift = shiftOutMin < shiftInMin;
-      const shiftFleksibel = isShiftFleksibel(
-        shiftJamMasukStr,
-        shiftJamPulangStr,
-        normalShiftMin,
+      const aturanShift = aturanShiftDariBaris(
+        shiftRes.rows[0] as Record<string, unknown> | undefined,
       );
-
-      let calculatedLate = 0;
-      let calculatedEarly = 0;
-      let calculatedWork = 0;
-      let calculatedOvertime = 0;
-      let calculatedShortage = 0;
 
       const inMin = parseTimeToMinutes(inVal);
       const outMin = parseTimeToMinutes(outVal);
-
-      if (inMin !== null) {
-        let userInTimeline = inMin;
-        if (isOvernightShift && userInTimeline < shiftInMin - 720) {
-          userInTimeline += 1440;
-        }
-        const batasNormalMasuk = shiftInMin + batasMasukShiftMin;
-        if (shiftFleksibel) {
-          // Shift fleksibel tidak punya jam masuk efektif, jadi tidak ada
-          // keterlambatan maupun datang awal yang bisa dihitung. Yang tetap
-          // dihitung hanyalah jam kerjanya.
-          calculatedLate = 0;
-          calculatedEarly = 0;
-        } else if (userInTimeline < shiftInMin) {
-          calculatedEarly = shiftInMin - userInTimeline;
-        } else if (userInTimeline <= batasNormalMasuk) {
-          calculatedLate = 0;
-          calculatedEarly = 0;
-        } else {
-          calculatedLate = userInTimeline - batasNormalMasuk;
-        }
-      }
-
+      let duration: number | null = null;
       if (inMin !== null && outMin !== null) {
-        let duration = outMin - inMin;
+        duration = outMin - inMin;
         if (duration < 0) duration += 1440;
-        calculatedWork = Math.max(0, duration - breakShiftMin);
-        calculatedOvertime = Math.max(0, calculatedWork - normalShiftMin);
-        calculatedShortage = Math.max(0, normalShiftMin - calculatedWork);
       }
+
+      const hasil = hitungUlangAbsensiDariJam({
+        masukMenit: inMin,
+        durasiMenit: duration,
+        shift: aturanShift,
+      });
+      const calculatedLate = hasil.menitTerlambat;
+      const calculatedEarly = hasil.menitDatangAwal;
+      const calculatedWork = hasil.jamKerja;
+      const calculatedOvertime = hasil.lembur;
+      const calculatedShortage = hasil.jamKerjaKurang;
 
       await db.execute({
         sql: `UPDATE absensi_harian SET

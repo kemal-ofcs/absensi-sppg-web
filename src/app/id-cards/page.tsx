@@ -30,6 +30,7 @@ import {
   setActivePrintLayoutId,
   upsertPrintLayoutPreset,
 } from "@/lib/client/print-layout-store";
+import { BRANDING } from "@/lib/constants/branding";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   type CompanyProfile,
@@ -219,7 +220,7 @@ export default function IdCardsPage() {
   );
   const [template, setTemplate] = useState<IdCardTemplateConfig>({
     id: "default_template",
-    name: "Template Standar SPPG",
+    name: BRANDING.defaultTemplateName,
     orientation: "landscape",
     frontBgUrl: "",
     backBgUrl: "",
@@ -260,7 +261,7 @@ export default function IdCardsPage() {
   const [newElementLabel, setNewElementLabel] =
     useState<string>("Teks Kustom Baru");
   const [newElementStaticVal, setNewElementStaticVal] =
-    useState<string>("Teks Kustom SPPG");
+    useState<string>("Teks Kustom");
   const builderCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Unified Print Modal State (Single or Batch)
@@ -466,12 +467,12 @@ export default function IdCardsPage() {
   useEffect(() => {
     if (!template) return;
     const sampleEmp = rows[0] || {
-      id_unik: "SPPG-2026-001",
+      id_unik: "EMP-2026-001",
       nama: "AHMAD FAUZI, S.Kom.",
-      kode_karyawan: "SPPG-001",
+      kode_karyawan: "EMP-001",
       divisi: "Divisi Operasional & IT",
       jabatan_status: "Koordinator Tim",
-      token_absensi: "DEMO_TOKEN_SPPG_2026",
+      token_absensi: "DEMO_TOKEN_2026",
     };
     void preloadCardAssets({
       template,
@@ -486,13 +487,13 @@ export default function IdCardsPage() {
     if (!canvas || !template) return;
 
     const sampleEmp = rows[0] || {
-      id_unik: "SPPG-2026-001",
+      id_unik: "EMP-2026-001",
       nama: "AHMAD FAUZI, S.Kom.",
-      kode_karyawan: "SPPG-001",
+      kode_karyawan: "EMP-001",
       jenis_kelamin: "Laki-laki",
       divisi: "Divisi Operasional & IT",
       jabatan_status: "Koordinator Tim",
-      token_absensi: "DEMO_TOKEN_SPPG_2026",
+      token_absensi: "DEMO_TOKEN_2026",
     };
 
     let animId: number;
@@ -656,7 +657,7 @@ export default function IdCardsPage() {
         title:
           printTargetRows.length === 1
             ? `ID Card - ${String(printTargetRows[0]?.nama || "Karyawan")}`
-            : "Cetak Lembar ID Card SPPG",
+            : "Cetak Lembar ID Card",
         customLayout: activeLayout,
       });
 
@@ -1030,7 +1031,9 @@ export default function IdCardsPage() {
       elements: DEFAULT_ID_CARD_ELEMENTS,
     });
     setSelectedElementId("el-emp-name");
-    setMessage("Tata letak elemen ID Card berhasil di-reset ke standar SPPG.");
+    setMessage(
+      "Tata letak elemen ID Card berhasil di-reset ke tata letak standar.",
+    );
   };
 
   const selectedElement = useMemo(() => {
@@ -1446,7 +1449,7 @@ export default function IdCardsPage() {
                 onClick={handleResetToDefault}
                 className="rounded-xl border border-white/10 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-300 hover:bg-slate-700 hover:text-white transition"
               >
-                Reset ke Standar SPPG
+                Reset ke Tata Letak Standar
               </button>
               <button
                 type="button"
@@ -2592,7 +2595,7 @@ export default function IdCardsPage() {
                   Foto / Avatar Karyawan
                 </option>
                 <option value="company_logo|company.logo">
-                  Logo Instansi SPPG
+                  Logo Instansi / Perusahaan
                 </option>
                 <option value="photo|company.signature">
                   Tanda Tangan & Stempel Pimpinan
@@ -2612,7 +2615,9 @@ export default function IdCardsPage() {
                 <option value="text|employee.department">
                   Divisi / Unit Departemen
                 </option>
-                <option value="text|company.name">Nama Instansi SPPG</option>
+                <option value="text|company.name">
+                  Nama Instansi / Perusahaan
+                </option>
                 <option value="text|company.terms">
                   Syarat & Ketentuan Penggunaan
                 </option>

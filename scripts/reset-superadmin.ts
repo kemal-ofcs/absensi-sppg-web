@@ -18,7 +18,7 @@ function ask(question: string): Promise<string> {
 
 async function main() {
   console.log("\n========================================================");
-  console.log("      ABSENSI SPPG — MANAJEMEN AKUN SUPERADMIN CLOUD    ");
+  console.log("      ABSENSI PERUSAHAAN — MANAJEMEN AKUN SUPERADMIN CLOUD    ");
   console.log("========================================================\n");
 
   let dbUrl = process.env.TURSO_DATABASE_URL?.trim();

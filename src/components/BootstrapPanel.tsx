@@ -540,7 +540,7 @@ export function BootstrapPanel({
                   required
                   type="email"
                   maxLength={120}
-                  placeholder="superadmin@sppg.id"
+                  placeholder="superadmin@perusahaan.co.id"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   autoComplete="email"

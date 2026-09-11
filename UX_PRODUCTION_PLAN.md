@@ -25,7 +25,7 @@ Tanggal audit awal: 9 Agustus 2026 (Asia/Jakarta)
 - Next.js 16.3 menyediakan `useOffline`, tetapi masih experimental. API ini tidak akan diaktifkan sebelum diuji terhadap static export, Tauri, dan kebutuhan aplikasi.
 - Mode offline web/desktop belum tervalidasi end-to-end. Jalur database lokal hanya dipilih saat `window` tidak tersedia, sedangkan WebView Tauri berjalan dengan `window`.
 - Ada blocker keamanan production: fallback admin tertanam, password dibandingkan/disimpan sebagai plaintext di browser, token Turso dapat masuk bundle publik, session berada di `localStorage`, dan CSP Tauri bernilai `null`.
-- Identifier paket desktop sudah memakai `id.sppg.absensi`. Metadata produk lain dan perilaku jendela 800 x 600 masih perlu ditinjau sebelum release candidate.
+- Identifier paket desktop sudah memakai `id.absensi.perusahaan`. Metadata produk lain dan perilaku jendela 800 x 600 masih perlu ditinjau sebelum release candidate.
 - Worktree sudah memiliki banyak perubahan lokal yang belum di-commit. Semuanya dianggap sebagai pekerjaan pemilik dan harus dipertahankan.
 
 ## Keputusan produk yang disetujui
@@ -216,7 +216,7 @@ jawaban: aku belum tau soalnya ini untuk aplikasi freelance aku, kemungkinan pas
 - Next.js production build dan TypeScript: lulus; seluruh route tetap static-exported.
 - `git diff --check`: lulus.
 
-- Identifier Tauri sudah menggunakan `id.sppg.absensi` di `src-tauri/tauri.conf.json` dan telah dikonfirmasi oleh pemilik aplikasi.
+- Identifier Tauri sudah menggunakan `id.absensi.perusahaan` di `src-tauri/tauri.conf.json` dan telah dikonfirmasi oleh pemilik aplikasi.
 
 ### Audit ulang kode baru dan Tahap 2 — selesai (9 Agustus 2026)
 

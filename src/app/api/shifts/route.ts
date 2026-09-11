@@ -40,6 +40,11 @@ function parseDraft(value: unknown): ShiftInput {
   const awalAbsen = Number(draft.awal_absen_menit ?? 120);
   const batasMasuk = Number(draft.batas_masuk_menit ?? 60);
   const istirahat = Number(draft.istirahat_menit ?? 60);
+  const jamKerjaNormalOtomatis = kalkulasiJamKerjaNormalMenit(
+    jamMasuk,
+    jamPulang,
+    istirahat,
+  );
 
   const parsed: ShiftInput = {
     kode_shift: Number(draft.kode_shift),
@@ -54,12 +59,7 @@ function parseDraft(value: unknown): ShiftInput {
       draft.jam_kerja_normal_menit !== undefined &&
       Number(draft.jam_kerja_normal_menit) >= 0
         ? Number(draft.jam_kerja_normal_menit)
-        : kalkulasiJamKerjaNormalMenit(
-            jamMasuk,
-            jamPulang,
-            istirahat,
-            batasMasuk,
-          ),
+        : jamKerjaNormalOtomatis,
     istirahat_menit: istirahat,
     batas_pulang_menit: Number(draft.batas_pulang_menit ?? 240),
     offset_istirahat_mulai: Number(draft.offset_istirahat_mulai ?? 240),

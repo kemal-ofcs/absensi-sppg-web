@@ -124,6 +124,41 @@ pub fn is_private_network_host(host: &str) -> bool {
 /// tidak ada kemungkinan permintaan nyasar ke host milik orang lain.
 pub const LOCAL_FILE_ORIGIN: &str = "https://local-file.sppg.invalid";
 
+/// Nama tampilan aplikasi ketika `setting_gex_system.app_display_name` belum
+/// diisi.
+///
+/// WAJIB identik dengan `BRANDING.appDisplayName` di
+/// `src/lib/constants/branding.ts` dan dengan fallback pada
+/// `operational::get_app_display_name`. Ketiganya bisa menerbitkan artefak yang
+/// dibaca pihak yang sama — issuer TOTP yang tersimpan di aplikasi autentikator
+/// dan nama pengirim email — jadi nilai yang berbeda membuat satu pemasangan
+/// tampak seperti dua aplikasi berbeda.
+pub const DEFAULT_APP_DISPLAY_NAME: &str = "Absensi Perusahaan";
+
+/// v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
+/// Istirahat, tanpa "+ Batas Masuk" lama. Nilai tersimpan dihitung ulang SEKALI.
+///
+/// Shift fleksibel (jam kerja normal 0, jam masuk = jam pulang, atau
+/// 00:00–23:59) sengaja dilewati: nilainya adalah penanda fleksibel, dan
+/// menghitung ulangnya akan diam-diam mengubah shift itu menjadi reguler.
+/// Hasil ≤ 0 juga dilewati. Teks SQL ini WAJIB identik dengan
+/// `RECALCULATE_NORMAL_WORK_SQL` di `db-migrations.ts`.
+pub const RECALCULATE_NORMAL_WORK_SQL: &str = "UPDATE tbl_shift
+SET jam_kerja_normal_menit =
+  (CAST(substr(jam_pulang, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_pulang, 4, 2) AS INTEGER))
+  - (CAST(substr(jam_masuk, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_masuk, 4, 2) AS INTEGER))
+  + (CASE WHEN substr(jam_pulang, 1, 5) < substr(jam_masuk, 1, 5) THEN 1440 ELSE 0 END)
+  - COALESCE(istirahat_menit, 0)
+WHERE COALESCE(jam_kerja_normal_menit, 0) > 0
+  AND jam_masuk GLOB '[0-2][0-9]:[0-5][0-9]*'
+  AND jam_pulang GLOB '[0-2][0-9]:[0-5][0-9]*'
+  AND substr(jam_masuk, 1, 5) <> substr(jam_pulang, 1, 5)
+  AND NOT (substr(jam_masuk, 1, 5) = '00:00' AND substr(jam_pulang, 1, 5) = '23:59')
+  AND (CAST(substr(jam_pulang, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_pulang, 4, 2) AS INTEGER))
+    - (CAST(substr(jam_masuk, 1, 2) AS INTEGER) * 60 + CAST(substr(jam_masuk, 4, 2) AS INTEGER))
+    + (CASE WHEN substr(jam_pulang, 1, 5) < substr(jam_masuk, 1, 5) THEN 1440 ELSE 0 END)
+    - COALESCE(istirahat_menit, 0) > 0;";
+
 pub fn normalize_database_url(
     raw: &str,
     provider: DatabaseProvider,
@@ -395,7 +430,7 @@ impl BootstrapStatus {
     }
 }
 
-/// Tabel inti yang wajib ada agar database dianggap benar-benar database Absensi SPPG.
+/// Tabel inti yang wajib ada agar sebuah database dianggap benar-benar database aplikasi ini.
 const DATABASE_CHECK_CORE_TABLES: [&str; 6] = [
     "app_role",
     "master_operator",
@@ -1108,6 +1143,30 @@ impl TursoClient {
         results
             .pop()
             .ok_or_else(|| CommandError::new("TURSO_QUERY_EMPTY", "Hasil query kosong."))
+    }
+
+    /// Nama tampilan aplikasi menurut database cloud yang sedang dipakai.
+    ///
+    /// Dipakai untuk artefak yang keluar dari aplikasi dan dibaca manusia —
+    /// issuer TOTP, nama pengirim dan isi email. Sengaja TIDAK mengembalikan
+    /// `Result`: nama merek yang gagal dibaca tidak boleh membatalkan pengiriman
+    /// email pemulihan password atau pendaftaran 2FA, jadi kegagalan apa pun
+    /// jatuh ke `DEFAULT_APP_DISPLAY_NAME`.
+    pub async fn app_display_name(&self) -> String {
+        self.query_one(
+            "SELECT value FROM setting_gex_system WHERE key = 'app_display_name' LIMIT 1;",
+            vec![],
+        )
+        .await
+        .ok()
+        .and_then(|result| result.to_objects().into_iter().next())
+        .and_then(|row| {
+            row.get("value")
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_APP_DISPLAY_NAME.to_string())
     }
 
     pub async fn ping(&self) -> Result<u64, CommandError> {
@@ -2098,6 +2157,32 @@ impl TursoClient {
         self.ensure_sync_pulse().await?;
         self.purge_legacy_rate_rows().await?;
         self.repair_web_owned_tables().await?;
+
+        // v16 — aturan jam scan baru. Data migration sekali jalan yang dijaga
+        // baris versinya, sama persis dengan jalur Web di `db-migrations.ts`.
+        // Dijalankan setelah trigger `sync_pulse` terpasang supaya perangkat
+        // lain ikut menarik Jam Kerja Normal yang baru.
+        let shift_rules_applied = self
+            .query_one(
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = 16;",
+                vec![],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|row| row.get("total").cloned())
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            > 0;
+        if !shift_rules_applied {
+            self.query_one(RECALCULATE_NORMAL_WORK_SQL, vec![]).await?;
+        }
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (16, 'shift-time-rules-v2', datetime('now'));",
+            vec![],
+        )
+        .await?;
         self.query_one(
             "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2007, 'tbl-shift-continuation-column-v1', datetime('now'));",
             vec![],
@@ -2120,6 +2205,11 @@ impl TursoClient {
         .await?;
         self.query_one(
             "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2011, 'superadmin-password-recovery-codes-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2012, 'shift-time-rules-v2', datetime('now'));",
             vec![],
         )
         .await?;
@@ -2337,7 +2427,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2011;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2012;",
                 vec![],
             )
             .await
@@ -2691,14 +2781,20 @@ impl TursoClient {
             vec![json!(secret), json!(operator_id)],
         )
         .await?;
-        let label = format!("Absensi SPPG:{}", row.username);
+        // Issuer mengikuti nama aplikasi yang diatur customer. Web sudah memakai
+        // `BRANDING.appDisplayName`; kalau Rust tetap memakai nama tetap, satu
+        // pemasangan yang sama muncul sebagai dua entri berbeda di aplikasi
+        // autentikator tergantung dari mana operatornya mendaftar.
+        let issuer = self.app_display_name().await;
+        let label = format!("{issuer}:{}", row.username);
         Ok(json!({
             "setup": {
                 "secret": secret,
                 "otpauthUri": format!(
-                    "otpauth://totp/{}?secret={}&issuer=Absensi%20SPPG&algorithm=SHA1&digits=6&period=30",
+                    "otpauth://totp/{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
                     urlencoding_minimal(&label),
-                    secret
+                    secret,
+                    urlencoding_minimal(&issuer)
                 ),
             }
         }))
@@ -5917,7 +6013,7 @@ async fn apply_event_to_turso(
                         json!(row
                             .get("company_name")
                             .and_then(Value::as_str)
-                            .unwrap_or("SPPG")),
+                            .unwrap_or("YOUR COMPANY")),
                         json!(row.get("branch_name").and_then(Value::as_str)),
                         json!(row.get("logo_url").and_then(Value::as_str)),
                         json!(row.get("signature_url").and_then(Value::as_str)),
@@ -6024,7 +6120,7 @@ async fn apply_event_to_turso(
                         json!(row
                             .get("name")
                             .and_then(Value::as_str)
-                            .unwrap_or("Template Default SPPG")),
+                            .unwrap_or("Default ID Card Template")),
                         json!(row
                             .get("orientation")
                             .and_then(Value::as_str)
@@ -7941,11 +8037,12 @@ impl TursoClient {
             .and_then(Value::as_str)
             .unwrap_or("Admin")
             .to_string();
+        let app_name = self.app_display_name().await;
         let body = format!(
-            "Halo {name},\n\nEmail ini dikirim dari menu Pengaturan > Email Sistem untuk menguji konfigurasi pengirim.\nBila email ini sampai, fitur Lupa Password sudah siap dipakai.\n\nAbsensi SPPG"
+            "Halo {name},\n\nEmail ini dikirim dari menu Pengaturan > Email Sistem untuk menguji konfigurasi pengirim.\nBila email ini sampai, fitur Lupa Password sudah siap dipakai.\n\n{app_name}"
         );
         match self
-            .deliver_mail(&to, "Uji Kirim Email Sistem Absensi SPPG", &body)
+            .deliver_mail(&to, &format!("Uji Kirim Email Sistem {app_name}"), &body)
             .await
         {
             Ok(()) => Ok(json!({
@@ -8006,7 +8103,7 @@ impl TursoClient {
             });
         }
         let sender_name = if text("sender_name").is_empty() {
-            "Absensi SPPG".to_string()
+            self.app_display_name().await
         } else {
             text("sender_name")
         };
@@ -8088,11 +8185,12 @@ impl TursoClient {
 {base_url}/lupa-password/reset?token={reset_token}"
             )
         };
+        let app_name = self.app_display_name().await;
         let body_text = format!(
             "Halo {operator_name},
 
 \
-             Kami menerima permintaan pemulihan password untuk akun Absensi SPPG Anda.
+             Kami menerima permintaan pemulihan password untuk akun {app_name} Anda.
 \
              Permintaan ini sudah melewati verifikasi wajah pada perangkat pemohon.
 
@@ -8107,9 +8205,9 @@ impl TursoClient {
              laporkan ke Admin — foto pemohon sudah tersimpan sebagai bukti.
 
 \
-             Absensi SPPG"
+             {app_name}"
         );
-        self.deliver_mail(to, "Pemulihan Password Absensi SPPG", &body_text)
+        self.deliver_mail(to, &format!("Pemulihan Password {app_name}"), &body_text)
             .await
     }
 }
@@ -9032,6 +9130,66 @@ mod tests {
                 .await
                 .expect("pencarian lewat email huruf kecil");
         });
+    }
+
+    /// Migrasi v16: Jam Kerja Normal lama (+ Batas Masuk) dihitung ulang
+    /// sekali menjadi (Jam Pulang − Jam Masuk) − Istirahat, tanpa menyentuh
+    /// penanda shift fleksibel. Vektornya sama dengan `db-migrations.test.ts`.
+    #[test]
+    fn migrasi_v16_menghitung_ulang_jam_kerja_normal_sekali() {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        let client = TursoClient::local_file(
+            Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+            &hub,
+            Client::new(),
+        );
+        runtime.block_on(async {
+            client.ensure_schema().await.expect("provisioning lokal");
+        });
+
+        let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+        connection
+            .execute_batch(
+                "INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit) VALUES
+                   (1, 1, 'Pagi', '07:00', '15:00', 480, 60),
+                   (2, 2, 'Malam', '22:00:00', '06:00:00', 480, 60),
+                   (3, 3, 'Fleksibel', '00:00', '23:59', 1439, 0),
+                   (4, 4, 'Fleksibel Nol', '08:00', '17:00', 0, 60),
+                   (5, 5, 'Pendek', '07:00', '07:30', 30, 60);
+                 DELETE FROM schema_migration WHERE version IN (16, -2012);",
+            )
+            .expect("siapkan shift lama");
+        runtime.block_on(async {
+            client.ensure_schema().await.expect("migrasi v16");
+        });
+
+        let normal = |id: i64| -> i64 {
+            connection
+                .query_row(
+                    "SELECT jam_kerja_normal_menit FROM tbl_shift WHERE id_shift = ?;",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("jam kerja normal")
+        };
+        assert_eq!(normal(1), 420);
+        assert_eq!(normal(2), 420);
+        assert_eq!(normal(3), 1439, "penanda fleksibel 00:00-23:59 tidak disentuh");
+        assert_eq!(normal(4), 0, "penanda fleksibel 0 tidak disentuh");
+        assert_eq!(normal(5), 30, "hasil <= 0 tidak ditulis");
+
+        // Sekali jalan: nilai yang ditulis sesudahnya tidak ditimpa lagi.
+        connection
+            .execute("UPDATE tbl_shift SET jam_kerja_normal_menit = 999 WHERE id_shift = 1;", [])
+            .expect("ubah manual");
+        runtime.block_on(async {
+            client.ensure_schema().await.expect("provisioning ulang");
+        });
+        assert_eq!(normal(1), 999);
     }
 
     /// Jalan pulih terakhir bagi Superadmin, dibuktikan tanpa jaringan.

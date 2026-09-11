@@ -1,6 +1,6 @@
 "use client";
 
-import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
+import { isDesktopRuntime, isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 
 export interface DownloadResult {
@@ -114,6 +114,31 @@ export async function downloadDataUrl(
     : dataUrl.includes(",")
       ? dataUrl.split(",")[1] || ""
       : dataUrl;
+
+  // Android WAJIB lewat dialog "Simpan ke…" (Storage Access Framework).
+  // `desktop_save_file` menulis ke folder Unduhan, dan sejak Android 10 tulisan
+  // itu ditolak atau jatuh ke folder privat aplikasi sementara pemanggilnya
+  // tetap melapor sukses. Harus diperiksa SEBELUM `isDesktopRuntime()`, yang
+  // juga bernilai true di build Mobile. Guard POSITIF — bentuk yang dikenali
+  // `audit:contract` untuk command khusus Mobile.
+  if (isMobileRuntime()) {
+    const res = await invokeDesktop<{
+      savedToDevice: boolean;
+      fileName?: string;
+      path?: string | null;
+    }>("mobile_save_file_to_device", {
+      filename,
+      base64Data: cleanBase64,
+      mimeType: /^data:([^;,]+)/.exec(dataUrl)?.[1] ?? null,
+    });
+    // Menutup dialog adalah PEMBATALAN, bukan kegagalan.
+    if (!res.savedToDevice) return { sukses: false, cancelled: true, filename };
+    return {
+      sukses: true,
+      filename: res.fileName || filename,
+      path: res.path || undefined,
+    };
+  }
 
   if (isDesktopRuntime()) {
     try {
