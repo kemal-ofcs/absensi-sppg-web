@@ -4751,6 +4751,7 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         }
         ("backup" | "backup_karyawan", "create" | "update") => ("backup", "create"),
         ("backup" | "backup_karyawan", "cancel") => ("backup", "cancel"),
+        ("backup" | "backup_karyawan", "delete") => ("backup", "delete"),
         ("correction" | "koreksi_admin", "create" | "update") => ("correction", "create"),
         ("correction" | "koreksi_admin", "delete") => ("correction", "delete"),
         (

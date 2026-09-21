@@ -67,6 +67,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_get_backups",
     "desktop_create_backup",
     "desktop_cancel_backup",
+    "desktop_delete_backup",
     "desktop_get_imports",
     "desktop_import_offline",
     "desktop_get_dashboard_data",

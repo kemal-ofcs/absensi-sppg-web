@@ -72,6 +72,7 @@
     "allow-desktop-get-backups",
     "allow-desktop-create-backup",
     "allow-desktop-cancel-backup",
+    "allow-desktop-delete-backup",
     "allow-desktop-get-imports",
     "allow-desktop-import-offline",
     "allow-desktop-get-dashboard-data",

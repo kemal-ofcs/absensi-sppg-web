@@ -11,6 +11,7 @@ import {
   batalkanPenugasanBackup,
   buatPenugasanBackup,
   getDaftarBackup,
+  hapusPenugasanBackup,
 } from "@/lib/gateways/backup";
 import {
   getDaftarKoreksi,
@@ -57,7 +58,7 @@ export default function OperationalPage() {
   } | null>(null);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{
-    type?: "correction" | "import";
+    type?: "correction" | "import" | "backup";
     idReferensi: string;
     title: string;
     subtitle: string;
@@ -75,6 +76,12 @@ export default function OperationalPage() {
           tone: result.sukses ? "success" : "error",
           text: result.pesan,
         });
+      } else if (deleteConfirm.type === "backup") {
+        const result = await hapusPenugasanBackup(deleteConfirm.idReferensi);
+        setFeedback({
+          tone: result.sukses ? "success" : "error",
+          text: result.pesan,
+        });
       } else {
         const result = await hapusKoreksiAdmin(deleteConfirm.idReferensi);
         setFeedback({
@@ -83,11 +90,7 @@ export default function OperationalPage() {
         });
       }
       setDeleteConfirm(null);
-      await load(
-        deleteConfirm.type === "import" ? "import" : "correction",
-        false,
-        false,
-      );
+      await load(deleteConfirm.type || "correction", false, false);
     } catch (err: unknown) {
       setFeedback({
         tone: "error",

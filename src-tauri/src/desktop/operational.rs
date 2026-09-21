@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 
 use base64::prelude::*;
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -1420,18 +1420,24 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 pub fn public_output_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
 
-    // 1. Direktori publik Android
-    dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
-    dirs.push(std::path::PathBuf::from("/sdcard/Download"));
-    dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
-    dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
-
-    // 2. Folder Unduhan standar Windows / Linux / macOS
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
+    // 1. Folder Unduhan standar Windows / Linux / macOS (prioritas utama pada desktop)
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(std::path::PathBuf::from(home).join("Downloads"));
+        }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join("Downloads"));
+
+    // 2. Direktori publik Android (hanya saat berjalan di target Android)
+    #[cfg(target_os = "android")]
+    {
+        dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
+        dirs.push(std::path::PathBuf::from("/sdcard/Download"));
+        dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
+        dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
     }
 
     dirs

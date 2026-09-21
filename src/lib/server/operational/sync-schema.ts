@@ -459,6 +459,11 @@ export const operationalSyncEventSchema = z.union([
       .strict(),
   ),
   eventSchema(
+    "backup",
+    "delete",
+    z.object({ id_backup: shortText.min(1) }).strict(),
+  ),
+  eventSchema(
     "offline-import",
     "row",
     z

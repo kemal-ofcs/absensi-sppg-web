@@ -164,3 +164,25 @@ export async function getDaftarBackup(filter?: {
   const res = await db.execute({ sql: query, args: params });
   return res.rows as unknown as Record<string, unknown>[];
 }
+
+export async function hapusPenugasanBackup(
+  id_backup: string,
+  _kode_operator?: string,
+) {
+  const res = await db.execute({
+    sql: "DELETE FROM backup_karyawan WHERE id_backup = ?;",
+    args: [id_backup],
+  });
+
+  if (res.rowsAffected === 0) {
+    return {
+      sukses: false,
+      pesan: "Penugasan backup tidak ditemukan.",
+    };
+  }
+
+  return {
+    sukses: true,
+    pesan: "Penugasan backup berhasil dihapus.",
+  };
+}

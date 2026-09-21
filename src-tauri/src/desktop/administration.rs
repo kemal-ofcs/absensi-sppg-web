@@ -1172,6 +1172,58 @@ pub fn cancel_backup(
     Ok(json!({ "sukses": true, "pesan": format!("Penugasan backup '{id}' berhasil dibatalkan.") }))
 }
 
+pub fn delete_backup(
+    state: &DesktopState,
+    id: &str,
+    _operator: &str,
+) -> Result<Value, CommandError> {
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    let current_revision = revision(&transaction, "backup", id);
+
+    let pengganti: Option<String> = transaction
+        .query_row(
+            "SELECT id_karyawan_pengganti FROM backup_karyawan WHERE id_backup = ? AND status_tugas = 'Aktif' LIMIT 1;",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+
+    let changed = transaction
+        .execute(
+            "DELETE FROM backup_karyawan WHERE id_backup = ?;",
+            params![id],
+        )
+        .map_err(|_| CommandError::internal())?;
+    if changed == 0 {
+        return Err(CommandError::new(
+            "OPERATIONAL_NOT_FOUND",
+            "Penugasan backup tidak ditemukan.",
+        ));
+    }
+
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "backup",
+        "delete",
+        id,
+        &json!({ "id_backup": id }),
+        current_revision,
+    )?;
+
+    if let Some(pengganti) = pengganti.as_deref() {
+        selaraskan_status_backup(&transaction, &client_id, pengganti)?;
+    }
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "pesan": format!("Penugasan backup '{id}' berhasil dihapus.") }))
+}
+
 pub fn import_offline(
     state: &DesktopState,
     rows: &[Value],
@@ -2507,64 +2559,83 @@ pub fn delete_log_scan(
                     .unwrap_or_else(|| existing_out.unwrap_or_default())
             };
 
-            let in_m = parse_time_min(&in_val);
-            let recalc = recalc_with_shift_rules(
-                &load_shift_clock_rules(&transaction, id_shift),
-                in_m,
-                clock_duration(in_m, parse_time_min(&out_val)),
-            );
-            // Log Pulang yang dihapus tidak mengubah kapan karyawannya masuk,
-            // jadi terlambat/datang awal yang sudah tercatat dipertahankan.
-            let keep_entry = jenis_scan_deleted == "Pulang" && !in_val.is_empty();
-            let calculated_late = if keep_entry {
-                existing_late
-            } else {
-                recalc.late_minutes
-            };
-            let calculated_early = if keep_entry {
-                existing_early
-            } else {
-                recalc.early_minutes
-            };
-            let calculated_work = recalc.work_minutes;
-            let calculated_overtime = recalc.overtime_minutes;
-            let calculated_shortage = recalc.shortage_minutes;
-
-            let status_absen = if !in_val.is_empty() && !out_val.is_empty() {
-                "Lengkap"
-            } else if !in_val.is_empty() {
-                "Belum Pulang"
-            } else {
-                "Perlu Verifikasi"
-            };
-
-            let _ = transaction.execute(
-                "UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_absen = ?, update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;",
-                params![
-                    in_val,
-                    out_val,
-                    status_absen,
-                    now,
-                    calculated_late,
-                    calculated_early,
-                    calculated_work,
-                    calculated_overtime,
-                    calculated_shortage,
-                    id_sesi
-                ],
-            );
-
-            if let Ok(att_val) = attendance_json(&transaction, &id_sesi) {
+            if in_val.is_empty() && out_val.is_empty() {
+                transaction
+                    .execute(
+                        "DELETE FROM absensi_harian WHERE id_sesi = ?;",
+                        params![id_sesi],
+                    )
+                    .map_err(|_| CommandError::internal())?;
                 let att_rev = revision(&transaction, "attendance", &id_sesi);
                 let _ = sync::enqueue(
                     &transaction,
                     &client_id,
                     "attendance",
-                    "update",
+                    "delete",
                     &id_sesi,
-                    &att_val,
+                    &json!({ "id_sesi": id_sesi }),
                     att_rev,
                 );
+            } else {
+                let in_m = parse_time_min(&in_val);
+                let recalc = recalc_with_shift_rules(
+                    &load_shift_clock_rules(&transaction, id_shift),
+                    in_m,
+                    clock_duration(in_m, parse_time_min(&out_val)),
+                );
+                // Log Pulang yang dihapus tidak mengubah kapan karyawannya masuk,
+                // jadi terlambat/datang awal yang sudah tercatat dipertahankan.
+                let keep_entry = jenis_scan_deleted == "Pulang" && !in_val.is_empty();
+                let calculated_late = if keep_entry {
+                    existing_late
+                } else {
+                    recalc.late_minutes
+                };
+                let calculated_early = if keep_entry {
+                    existing_early
+                } else {
+                    recalc.early_minutes
+                };
+                let calculated_work = recalc.work_minutes;
+                let calculated_overtime = recalc.overtime_minutes;
+                let calculated_shortage = recalc.shortage_minutes;
+
+                let status_absen = if !in_val.is_empty() && !out_val.is_empty() {
+                    "Lengkap"
+                } else if !in_val.is_empty() {
+                    "Belum Pulang"
+                } else {
+                    "Perlu Verifikasi"
+                };
+
+                let _ = transaction.execute(
+                    "UPDATE absensi_harian SET jam_masuk = ?, jam_pulang = ?, status_absen = ?, update_terakhir = ?, menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ? WHERE id_sesi = ?;",
+                    params![
+                        in_val,
+                        out_val,
+                        status_absen,
+                        now,
+                        calculated_late,
+                        calculated_early,
+                        calculated_work,
+                        calculated_overtime,
+                        calculated_shortage,
+                        id_sesi
+                    ],
+                );
+
+                if let Ok(att_val) = attendance_json(&transaction, &id_sesi) {
+                    let att_rev = revision(&transaction, "attendance", &id_sesi);
+                    let _ = sync::enqueue(
+                        &transaction,
+                        &client_id,
+                        "attendance",
+                        "update",
+                        &id_sesi,
+                        &att_val,
+                        att_rev,
+                    );
+                }
             }
         }
     }

@@ -100,6 +100,16 @@ export async function DELETE(request: NextRequest) {
         actorOperatorId: actor.id,
       });
 
+      if (result.deletedAbsensiIdSesi) {
+        await recordOperationalChange(getServerDatabase(), {
+          domain: "attendance",
+          entityKey: result.deletedAbsensiIdSesi,
+          operation: "delete",
+          payload: { id_sesi: result.deletedAbsensiIdSesi },
+          actorOperatorId: actor.id,
+        });
+      }
+
       return noStoreJson({ ...result, revision });
     }
 

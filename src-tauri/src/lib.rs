@@ -88,6 +88,7 @@ pub fn run() {
             desktop::commands::desktop_get_backups,
             desktop::commands::desktop_create_backup,
             desktop::commands::desktop_cancel_backup,
+            desktop::commands::desktop_delete_backup,
             desktop::commands::desktop_get_imports,
             desktop::commands::desktop_import_offline,
             desktop::commands::desktop_get_dashboard_data,

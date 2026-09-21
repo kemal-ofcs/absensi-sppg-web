@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { isDesktopRuntime, isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
@@ -32,10 +32,8 @@ export async function saveFileWithPicker(
   options?: SavePickerOptions,
 ): Promise<DownloadResult> {
   let blob: Blob;
-  let dataUrl: string;
 
   if (typeof dataUrlOrBlob === "string") {
-    dataUrl = dataUrlOrBlob;
     if (dataUrlOrBlob.startsWith("data:")) {
       blob = dataUrlToBlob(dataUrlOrBlob);
     } else {
@@ -44,16 +42,28 @@ export async function saveFileWithPicker(
     }
   } else {
     blob = dataUrlOrBlob;
-    dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
   }
 
-  // 1. Try Native File System Access API (showSaveFilePicker)
-  // This opens the OS file picker allowing user to select folder and customize filename
+  // 1. Mobile Android SAF & Desktop Tauri Native Save
+  // Di Android WAJIB lewat dialog SAF (`mobile_save_file_to_device`). Di Desktop lewat `desktop_save_file`.
+  // Wajib diperiksa SEBELUM `showSaveFilePicker` karena WebView Android modern
+  // mengekspos `showSaveFilePicker` di window tetapi melempar `AbortError` saat dipanggil,
+  // yang menyebabkan ekspor batal tanpa memanggil dialog native Android.
+  if (isDesktopRuntime()) {
+    const dataUrl =
+      typeof dataUrlOrBlob === "string" && dataUrlOrBlob.startsWith("data:")
+        ? dataUrlOrBlob
+        : await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+    return await downloadDataUrl(dataUrl, defaultFilename);
+  }
+
+  // 2. Web browser: Native File System Access API (showSaveFilePicker)
+  // Dipanggil langsung tanpa jeda async FileReader agar user activation (gesture klik) tetap valid di Chrome/Edge desktop.
   if (typeof window !== "undefined" && "showSaveFilePicker" in window) {
     try {
       const ext = defaultFilename.split(".").pop() || "png";
@@ -96,12 +106,7 @@ export async function saveFileWithPicker(
     }
   }
 
-  // 2. Desktop Tauri fallback
-  if (isDesktopRuntime()) {
-    return await downloadDataUrl(dataUrl, defaultFilename);
-  }
-
-  // 3. Web browser fallback
+  // 3. Web browser fallback: anchor click
   return await downloadBlob(blob, defaultFilename);
 }
 
@@ -208,6 +213,6 @@ export async function downloadBlob(
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
   return { sukses: true, filename };
 }

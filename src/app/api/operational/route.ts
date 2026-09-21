@@ -12,6 +12,7 @@ import {
 } from "@/lib/server/http/api-response";
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 import { recordOperationalChange } from "@/lib/server/operational/change-log";
+import { hapusPenugasanBackup } from "@/lib/services/backup";
 import { hapusKoreksiAdmin } from "@/lib/services/correction";
 import { hapusImportOffline } from "@/lib/services/history-mutation";
 
@@ -26,17 +27,34 @@ export async function DELETE(request: NextRequest) {
       typeof body.id_referensi === "string"
         ? body.id_referensi.trim()
         : undefined;
+    const idBackup =
+      typeof body.id_backup === "string" ? body.id_backup.trim() : undefined;
     const eventKey =
       typeof body.event_key === "string" ? body.event_key.trim() : undefined;
 
-    if (!idReferensi && !eventKey) {
+    if (!idReferensi && !eventKey && !idBackup) {
       throw new ApiRequestError(
-        "ID Referensi Koreksi atau Event Key Import wajib ditentukan.",
+        "ID Referensi Koreksi, Event Key Import, atau ID Backup wajib ditentukan.",
         400,
       );
     }
 
     await ensureServerDatabaseInitialized();
+
+    if (idBackup) {
+      const result = await hapusPenugasanBackup(idBackup, actor.kode_operator);
+      if (!result.sukses) throw new ApiRequestError(result.pesan, 400);
+
+      const revision = await recordOperationalChange(getServerDatabase(), {
+        domain: "backup",
+        entityKey: idBackup,
+        operation: "delete",
+        payload: { id_backup: idBackup },
+        actorOperatorId: actor.id,
+      });
+
+      return noStoreJson({ ...result, revision });
+    }
 
     if (idReferensi) {
       const result = await hapusKoreksiAdmin(idReferensi, actor.kode_operator);

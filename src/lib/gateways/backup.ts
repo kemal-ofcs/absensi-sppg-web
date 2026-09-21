@@ -60,3 +60,19 @@ export async function batalkanPenugasanBackup(idBackup: string) {
     { id_backup: idBackup },
   );
 }
+
+export async function hapusPenugasanBackup(idBackup: string) {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; pesan: string }>(
+      "desktop_delete_backup",
+      { idBackup },
+    );
+    if (result.sukses) kickSync();
+    return result;
+  }
+  return requestWebApi<{ sukses: boolean; pesan: string }>(
+    "/api/operational",
+    "DELETE",
+    { id_backup: idBackup },
+  );
+}

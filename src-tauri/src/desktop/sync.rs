@@ -541,6 +541,7 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("attendance", "update"),
     ("backup", "cancel"),
     ("backup", "create"),
+    ("backup", "delete"),
     ("company-profile", "update"),
     ("correction", "create"),
     ("correction", "delete"),

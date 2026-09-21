@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { motion } from "motion/react";
 import { useMemo, useState } from "react";
@@ -100,11 +100,6 @@ export function LeaderboardPodium3D({
           <div className="order-2 md:order-1 flex flex-col items-center">
             <TiltCard maxTilt={8} className="w-full">
               <div className="relative rounded-3xl border border-slate-400/30 bg-gradient-to-b from-slate-800/90 via-slate-900 to-slate-950 p-5 text-center shadow-xl">
-                {/* 3D Medal Badge */}
-                <div className="mx-auto -mt-10 mb-3 flex size-14 items-center justify-center rounded-2xl border-2 border-slate-300 bg-gradient-to-br from-slate-200 to-slate-400 text-slate-950 font-black shadow-lg shadow-slate-500/20 text-xl font-mono">
-                  🥈 2
-                </div>
-
                 <h4 className="text-base font-black text-white truncate">
                   {String(top2.nama)}
                 </h4>
@@ -151,11 +146,6 @@ export function LeaderboardPodium3D({
           <div className="order-1 md:order-2 flex flex-col items-center -mt-4 md:-mt-6">
             <TiltCard maxTilt={10} className="w-full">
               <div className="relative rounded-3xl border-2 border-amber-400/60 bg-gradient-to-b from-amber-950/40 via-slate-900 to-slate-950 p-6 text-center shadow-2xl shadow-amber-950/50">
-                {/* 3D Gold Medal Crown */}
-                <div className="mx-auto -mt-12 mb-3 flex size-16 items-center justify-center rounded-2xl border-2 border-amber-300 bg-gradient-to-br from-amber-300 via-amber-400 to-yellow-600 text-slate-950 font-black shadow-xl shadow-amber-500/40 text-2xl font-mono animate-bounce duration-1000">
-                  🥇 1
-                </div>
-
                 <span className="inline-block rounded-full bg-amber-400/20 px-3 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-300 border border-amber-400/40 mb-1">
                   Karyawan Terbaik
                 </span>
@@ -204,11 +194,6 @@ export function LeaderboardPodium3D({
           <div className="order-3 flex flex-col items-center">
             <TiltCard maxTilt={8} className="w-full">
               <div className="relative rounded-3xl border border-amber-700/40 bg-gradient-to-b from-stone-900/90 via-slate-900 to-slate-950 p-5 text-center shadow-xl">
-                {/* 3D Bronze Medal */}
-                <div className="mx-auto -mt-10 mb-3 flex size-14 items-center justify-center rounded-2xl border-2 border-amber-700 bg-gradient-to-br from-amber-700 via-amber-800 to-stone-800 text-amber-200 font-black shadow-lg shadow-amber-900/30 text-xl font-mono">
-                  🥉 3
-                </div>
-
                 <h4 className="text-base font-black text-white truncate">
                   {String(top3.nama)}
                 </h4>

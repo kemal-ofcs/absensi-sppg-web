@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +13,7 @@ import {
   editAbsensiHarian,
   getRekapHarian,
   getRiwayatScan,
+  hapusAbsensiHarian,
   hapusLogScan,
 } from "@/lib/gateways/report";
 import { syncNow } from "@/lib/gateways/sync-status";
@@ -180,7 +181,10 @@ export default function HistoryPage() {
     setActionBusy(true);
     setError(null);
     try {
-      const result = await hapusLogScan(deleteData.id);
+      const result =
+        deleteData.type === "daily"
+          ? await hapusAbsensiHarian(String(deleteData.id))
+          : await hapusLogScan(deleteData.id);
 
       if (result.sukses) {
         setSuccessMsg(result.pesan);
@@ -1315,6 +1319,24 @@ export default function HistoryPage() {
                                 >
                                   <span>✏️</span>
                                   <span>Edit</span>
+                                </button>
+                              ) : null}
+                              {hasPermission(user, "history.delete") ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDeleteData({
+                                      type: "daily",
+                                      id: String(row.id_sesi || ""),
+                                      title: `Hapus Absensi Harian: ${row.nama || row.id_karyawan}`,
+                                      subtitle: `Apakah kamu ingin menghapus baris ini (${formatDisplayDate(row.tanggal)}), (${row.nama || row.id_karyawan}) ?`,
+                                    })
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[11px] font-bold transition flex items-center gap-1"
+                                  title="Hapus data absensi ini"
+                                >
+                                  <span>🗑️</span>
+                                  <span>Hapus</span>
                                 </button>
                               ) : null}
                             </div>
