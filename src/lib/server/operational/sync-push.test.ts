@@ -677,4 +677,81 @@ describe("operational sync idempotency", () => {
     expect(Number(attendance.rows[0]?.tahun)).toBe(2026);
     expect(attendance.rows[0]?.bulan).toBe("Agustus");
   });
+
+  test("event personnel-photo save dan delete diterapkan ke siswa_foto dan sync_receipt dibuat", async () => {
+    const client = await fixture();
+    await client.execute({
+      sql: `INSERT INTO master_data (
+        id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif
+      ) VALUES (?, ?, ?, ?, ?, ?);`,
+      args: [
+        "EMP-TEST-001",
+        "EMP-001",
+        "Karyawan Test",
+        "Operasional",
+        1,
+        "Aktif",
+      ],
+    });
+    const saveEvent = {
+      clientId: `desktop-${"b".repeat(64)}`,
+      eventId: `evt-${"e".repeat(64)}`,
+      domain: "personnel-photo" as const,
+      operation: "save" as const,
+      entityKey: "EMP-TEST-001",
+      baseRevision: null,
+      createdAt: Date.now(),
+      payload: {
+        id_unik: "EMP-TEST-001",
+        foto_mime: "image/jpeg" as const,
+        foto_base64: "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP...",
+        updated_at: "2026-09-22 20:00:00",
+      },
+    };
+
+    const saveResult = await processOperationalSyncEvent(
+      client,
+      actor,
+      saveEvent,
+    );
+    expect(saveResult.status).toBe("applied");
+
+    const photoRow = await client.execute({
+      sql: "SELECT id_unik, foto_mime, foto_base64 FROM personil_foto WHERE id_unik = ?;",
+      args: ["EMP-TEST-001"],
+    });
+    expect(photoRow.rows.length).toBe(1);
+    expect(photoRow.rows[0]?.id_unik).toBe("EMP-TEST-001");
+    expect(photoRow.rows[0]?.foto_mime).toBe("image/jpeg");
+    expect(photoRow.rows[0]?.foto_base64).toBe(
+      "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP...",
+    );
+
+    // Delete event
+    const deleteEvent = {
+      clientId: `desktop-${"b".repeat(64)}`,
+      eventId: `evt-${"d".repeat(64)}`,
+      domain: "personnel-photo" as const,
+      operation: "delete" as const,
+      entityKey: "EMP-TEST-001",
+      baseRevision: null,
+      createdAt: Date.now(),
+      payload: {
+        id_unik: "EMP-TEST-001",
+      },
+    };
+
+    const deleteResult = await processOperationalSyncEvent(
+      client,
+      actor,
+      deleteEvent,
+    );
+    expect(deleteResult.status).toBe("applied");
+
+    const photoRowAfterDelete = await client.execute({
+      sql: "SELECT id_unik FROM personil_foto WHERE id_unik = ?;",
+      args: ["EMP-TEST-001"],
+    });
+    expect(photoRowAfterDelete.rows.length).toBe(0);
+  });
 });

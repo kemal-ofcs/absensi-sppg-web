@@ -9,27 +9,48 @@ import {
   simpanFotoPersonil,
 } from "@/lib/gateways/personnel-photo";
 
+export interface StagedPhotoData {
+  dataUrl: string;
+  base64: string;
+  mime: string;
+}
+
 interface PersonnelPhotoFieldProps {
-  idUnik: string;
+  idUnik?: string;
   nama: string;
   disabled?: boolean;
+  stagedMode?: boolean;
+  stagedPhoto?: StagedPhotoData | null;
   onPhotoChanged?: (photoDataUrl: string | null) => void;
+  onPhotoStaged?: (staged: StagedPhotoData | null) => void;
 }
 
 export function PersonnelPhotoField({
   idUnik,
   nama,
   disabled = false,
+  stagedMode = false,
+  stagedPhoto = null,
   onPhotoChanged,
+  onPhotoStaged,
 }: PersonnelPhotoFieldProps) {
-  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(
+    stagedPhoto?.dataUrl || null,
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(
+    !stagedMode && Boolean(idUnik),
+  );
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isError, setIsError] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (stagedMode) {
+      setPhotoDataUrl(stagedPhoto?.dataUrl || null);
+      setIsLoading(false);
+      return;
+    }
     let isMounted = true;
     async function loadPhoto() {
       if (!idUnik) {
@@ -66,11 +87,12 @@ export function PersonnelPhotoField({
     return () => {
       isMounted = false;
     };
-  }, [idUnik, onPhotoChanged]);
+  }, [idUnik, stagedMode, stagedPhoto?.dataUrl, onPhotoChanged]);
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !idUnik) return;
+    if (!file) return;
+    if (!stagedMode && !idUnik) return;
 
     setIsSaving(true);
     setStatusMessage("");
@@ -95,18 +117,27 @@ export function PersonnelPhotoField({
         base64 = match[2];
       }
 
-      await simpanFotoPersonil(idUnik, base64, mime);
       const fullDataUrl = `data:${mime};base64,${base64}`;
-      setPhotoDataUrl(fullDataUrl);
-      onPhotoChanged?.(fullDataUrl);
-      setStatusMessage(
-        `Foto disimpan (${formatBytes(optimized.optimizedSizeBytes)})`,
-      );
+      if (stagedMode) {
+        setPhotoDataUrl(fullDataUrl);
+        onPhotoChanged?.(fullDataUrl);
+        onPhotoStaged?.({ dataUrl: fullDataUrl, base64, mime });
+        setStatusMessage(
+          `Foto siap disimpan saat data karyawan dibuat (${formatBytes(optimized.optimizedSizeBytes)})`,
+        );
+      } else if (idUnik) {
+        await simpanFotoPersonil(idUnik, base64, mime);
+        setPhotoDataUrl(fullDataUrl);
+        onPhotoChanged?.(fullDataUrl);
+        setStatusMessage(
+          `Foto disimpan (${formatBytes(optimized.optimizedSizeBytes)})`,
+        );
+      }
       setIsError(false);
     } catch (err) {
-      console.error("Gagal menyimpan foto personil:", err);
+      console.error("Gagal memproses foto personil:", err);
       setStatusMessage(
-        err instanceof Error ? err.message : "Gagal menyimpan foto",
+        err instanceof Error ? err.message : "Gagal memproses foto",
       );
       setIsError(true);
     } finally {
@@ -118,16 +149,22 @@ export function PersonnelPhotoField({
   }
 
   async function handleDeletePhoto() {
-    if (!idUnik) return;
     setIsSaving(true);
     setStatusMessage("");
     setIsError(false);
 
     try {
-      await hapusFotoPersonil(idUnik);
-      setPhotoDataUrl(null);
-      onPhotoChanged?.(null);
-      setStatusMessage("Foto berhasil dihapus");
+      if (stagedMode) {
+        setPhotoDataUrl(null);
+        onPhotoChanged?.(null);
+        onPhotoStaged?.(null);
+        setStatusMessage("Foto dibatalkan");
+      } else if (idUnik) {
+        await hapusFotoPersonil(idUnik);
+        setPhotoDataUrl(null);
+        onPhotoChanged?.(null);
+        setStatusMessage("Foto berhasil dihapus");
+      }
       setIsError(false);
     } catch (err) {
       console.error("Gagal menghapus foto personil:", err);

@@ -6,7 +6,10 @@ import { redirect } from "next/navigation";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { PersonnelPhotoField } from "@/components/PersonnelPhotoField";
+import {
+  PersonnelPhotoField,
+  type StagedPhotoData,
+} from "@/components/PersonnelPhotoField";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -33,6 +36,7 @@ import { getDaftarIdCard } from "@/lib/gateways/id-card";
 import {
   getPersonnelPhoto,
   type PersonnelPhotoResult,
+  simpanFotoPersonil,
 } from "@/lib/gateways/personnel-photo";
 import { getDaftarShift } from "@/lib/gateways/shift";
 import { useHydrated } from "@/lib/hooks/useHydrated";
@@ -79,6 +83,7 @@ export default function KaryawanPage() {
   > | null>(null);
   const [detailPhoto, setDetailPhoto] = useState<string | null>(null);
   const [loadingPhoto, setLoadingPhoto] = useState<boolean>(false);
+  const [stagedPhoto, setStagedPhoto] = useState<StagedPhotoData | null>(null);
   const [bulkWorking, setBulkWorking] = useState(false);
 
   // Modal State
@@ -164,10 +169,18 @@ export default function KaryawanPage() {
     getPersonnelPhoto(detailKaryawan.id_unik)
       .then((record: PersonnelPhotoResult | null) => {
         if (!cancelled) {
-          setDetailPhoto(record?.foto_base64 || null);
+          if (record?.foto_base64) {
+            const dataUrl = record.foto_base64.startsWith("data:")
+              ? record.foto_base64
+              : `data:${record.foto_mime || "image/jpeg"};base64,${record.foto_base64}`;
+            setDetailPhoto(dataUrl);
+          } else {
+            setDetailPhoto(null);
+          }
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error("Gagal memuat foto detail karyawan:", err);
         if (!cancelled) {
           setDetailPhoto(null);
         }
@@ -227,6 +240,7 @@ export default function KaryawanPage() {
     });
     setFormErrors({});
     setErrorMsg(null);
+    setStagedPhoto(null);
     setShowModal(true);
   };
 
@@ -252,6 +266,7 @@ export default function KaryawanPage() {
     });
     setFormErrors({});
     setErrorMsg(null);
+    setStagedPhoto(null);
     setShowModal(true);
   };
 
@@ -271,9 +286,31 @@ export default function KaryawanPage() {
         await updateKaryawan(editId, formData);
         setAlertMsg(`Data karyawan ${formData.nama} berhasil diperbarui.`);
       } else {
-        await tambahKaryawan(formData);
+        const res = await tambahKaryawan(formData);
+        const newId =
+          (res &&
+          typeof res === "object" &&
+          "id_unik" in res &&
+          typeof res.id_unik === "string"
+            ? res.id_unik
+            : "") || formData.id_unik;
+        if (stagedPhoto && newId) {
+          try {
+            await simpanFotoPersonil(
+              newId,
+              stagedPhoto.base64,
+              stagedPhoto.mime,
+            );
+          } catch (photoErr) {
+            console.error(
+              "Karyawan tersimpan tetapi foto gagal disimpan:",
+              photoErr,
+            );
+          }
+        }
         setAlertMsg(`Karyawan baru ${formData.nama} berhasil ditambahkan.`);
       }
+      setStagedPhoto(null);
       setShowModal(false);
       await loadData();
       setFormErrors({});
@@ -1062,12 +1099,13 @@ export default function KaryawanPage() {
             onSubmit={handleFormSubmit}
             className="space-y-3.5 text-xs font-mono"
           >
-            {isEditing && formData.id_unik ? (
-              <PersonnelPhotoField
-                idUnik={formData.id_unik}
-                nama={formData.nama}
-              />
-            ) : null}
+            <PersonnelPhotoField
+              idUnik={isEditing ? formData.id_unik : undefined}
+              nama={formData.nama || "karyawan baru"}
+              stagedMode={!isEditing}
+              stagedPhoto={stagedPhoto}
+              onPhotoStaged={(staged) => setStagedPhoto(staged)}
+            />
 
             {/* ID & Kode */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

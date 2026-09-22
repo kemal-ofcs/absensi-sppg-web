@@ -101,6 +101,77 @@ describe("operational sync schema", () => {
         createdAt: 1_786_300_000,
       }).success,
     ).toBe(true);
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "personnel-photo",
+        operation: "save",
+        entityKey: "EMP-001",
+        payload: {
+          id_unik: "EMP-001",
+          foto_mime: "image/jpeg",
+          foto_base64:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          updated_at: "2026-09-22 20:00:00",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "personnel-photo",
+        operation: "delete",
+        entityKey: "EMP-001",
+        payload: {
+          id_unik: "EMP-001",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(true);
+  });
+
+  test("menolak MIME type dan payload tidak valid pada personnel-photo", () => {
+    // MIME type tidak didukung
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "personnel-photo",
+        operation: "save",
+        entityKey: "EMP-001",
+        payload: {
+          id_unik: "EMP-001",
+          foto_mime: "image/bmp",
+          foto_base64: "base64data",
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(false);
+
+    // Field tambahan liar (strict enforcement)
+    expect(
+      operationalSyncEventSchema.safeParse({
+        eventId: `evt-${"a".repeat(64)}`,
+        clientId: `desktop-${"b".repeat(64)}`,
+        domain: "personnel-photo",
+        operation: "save",
+        entityKey: "EMP-001",
+        payload: {
+          id_unik: "EMP-001",
+          foto_mime: "image/jpeg",
+          foto_base64: "base64data",
+          hacked_column: true,
+        },
+        baseRevision: null,
+        createdAt: 1_786_300_000,
+      }).success,
+    ).toBe(false);
   });
 
   test("menolak null, primitive, domain, dan operasi yang tidak didukung", () => {

@@ -4081,7 +4081,7 @@ pub fn cache_personnel_photo_local(
     if id.is_empty() {
         return Ok(());
     }
-    let mut connection = storage::database(&state.data_dir)?;
+    let connection = storage::database(&state.data_dir)?;
     connection
         .execute(
             r#"
