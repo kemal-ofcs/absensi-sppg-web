@@ -47,6 +47,7 @@ const DOMAIN_PERMISSION: Record<string, PermissionKey> = {
   "company-profile": "settings.manage",
   "id-card-template": "settings.manage",
   payroll: "payroll.config.manage",
+  "personnel-photo": "employees.manage",
 };
 
 function permissionForEvent(event: OperationalSyncEvent): PermissionKey | null {
@@ -2063,6 +2064,54 @@ async function applyPayroll(
   return { revision, payload: { id: event.entityKey } };
 }
 
+async function applyPersonnelPhoto(
+  transaction: Transaction,
+  actor: OperatorUser,
+  event: OperationalSyncEvent,
+) {
+  const operation = event.operation;
+  const payload = event.payload;
+  const idUnik = text(payload, "id_unik") || event.entityKey;
+  if (!idUnik) {
+    throw new Error("ID personil tidak valid untuk operasi foto.");
+  }
+
+  if (operation === "save") {
+    const fotoMime = text(payload, "foto_mime");
+    const fotoBase64 = text(payload, "foto_base64");
+    const updatedAt = text(payload, "updated_at") || new Date().toISOString();
+
+    if (!fotoMime || !fotoBase64) {
+      throw new Error("Payload foto personil tidak lengkap.");
+    }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(fotoMime)) {
+      throw new Error("Format foto personil tidak didukung.");
+    }
+
+    await transaction.execute({
+      sql: `INSERT INTO personil_foto (id_unik, foto_mime, foto_base64, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id_unik) DO UPDATE SET
+              foto_mime = excluded.foto_mime,
+              foto_base64 = excluded.foto_base64,
+              updated_at = excluded.updated_at;`,
+      args: [idUnik, fotoMime, fotoBase64, updatedAt],
+    });
+  } else if (operation === "delete") {
+    await transaction.execute({
+      sql: "DELETE FROM personil_foto WHERE id_unik = ?;",
+      args: [idUnik],
+    });
+  } else {
+    throw new Error(
+      `Operasi '${operation}' tidak dikenali untuk personil_foto.`,
+    );
+  }
+
+  const revision = await appendChange(transaction, actor, event, payload);
+  return { revision, payload: { id_unik: idUnik } };
+}
+
 async function applyEvent(
   transaction: Transaction,
   actor: OperatorUser,
@@ -2103,6 +2152,9 @@ async function applyEvent(
   if (event.domain === "id-card") return applyIdCard(transaction, actor, event);
   if (event.domain === "payroll") {
     return applyPayroll(transaction, actor, event);
+  }
+  if (event.domain === "personnel-photo") {
+    return applyPersonnelPhoto(transaction, actor, event);
   }
   throw new Error(
     `Domain '${event.domain}' belum didukung oleh endpoint sync.`,

@@ -5,6 +5,7 @@ import { redirect, useRouter } from "next/navigation";
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { BootstrapPanel } from "@/components/BootstrapPanel";
+import { Icon } from "@/components/ui/Icon";
 import { LoginSceneGate } from "@/components/visual/LoginSceneGate";
 import { VisualProvider } from "@/components/visual/VisualProvider";
 import { BRANDING } from "@/lib/constants/branding";
@@ -239,9 +240,21 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs px-2 py-1 rounded transition"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs px-2 py-1 rounded transition flex items-center gap-1.5"
+                aria-label={
+                  showPassword ? "Sembunyikan kata sandi" : "Lihat kata sandi"
+                }
+                title={
+                  showPassword ? "Sembunyikan kata sandi" : "Lihat kata sandi"
+                }
               >
-                {showPassword ? "🙈 Sembunyi" : "👁️ Lihat"}
+                <Icon
+                  name={showPassword ? "eye-off" : "eye"}
+                  className="size-4"
+                />
+                <span className="text-[11px] font-medium">
+                  {showPassword ? "Sembunyikan" : "Lihat"}
+                </span>
               </button>
             </div>
           </div>

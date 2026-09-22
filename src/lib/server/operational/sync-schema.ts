@@ -614,6 +614,27 @@ export const operationalSyncEventSchema = z.union([
       })
       .strict(),
   ),
+  eventSchema(
+    "personnel-photo",
+    "save",
+    z
+      .object({
+        id_unik: shortText.min(1),
+        foto_mime: z.enum(["image/jpeg", "image/png", "image/webp"]),
+        foto_base64: assetText.min(1),
+        updated_at: optionalShortText,
+      })
+      .strict(),
+  ),
+  eventSchema(
+    "personnel-photo",
+    "delete",
+    z
+      .object({
+        id_unik: shortText.min(1),
+      })
+      .strict(),
+  ),
 ]);
 
 export type OperationalSyncEvent = {

@@ -1329,6 +1329,64 @@ pub fn desktop_generate_employee_tokens(
     operational::generate_employee_tokens(&state)
 }
 
+/// Simpan foto personil untuk keperluan ID card dan profil.
+#[tauri::command]
+pub fn desktop_save_personnel_photo(
+    state: State<'_, DesktopState>,
+    id_unik: String,
+    foto_base64: String,
+    foto_mime: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.manage")?;
+    operational::save_personnel_photo(&state, &id_unik, &foto_base64, &foto_mime)
+}
+
+/// Ambil foto personil, mencoba lokal terlebih dahulu lalu fallback ke cloud jika belum ada.
+#[tauri::command]
+pub async fn desktop_get_personnel_photo(
+    state: State<'_, DesktopState>,
+    id_unik: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.view")?;
+    if let Some(photo) = operational::get_personnel_photo_local(&state, &id_unik)? {
+        return Ok(photo);
+    }
+
+    if let Ok(turso) = state.get_turso_client() {
+        if let Ok(cloud_photo) = turso.get_personnel_photo(&id_unik).await {
+            if let (Some(mime), Some(b64)) = (
+                cloud_photo.get("foto_mime").and_then(|v| v.as_str()),
+                cloud_photo.get("foto_base64").and_then(|v| v.as_str()),
+            ) {
+                let updated_at = cloud_photo
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let _ = operational::cache_personnel_photo_local(
+                    &state,
+                    &id_unik,
+                    mime,
+                    b64,
+                    updated_at,
+                );
+            }
+            return Ok(cloud_photo);
+        }
+    }
+
+    Ok(json!(null))
+}
+
+/// Hapus foto personil.
+#[tauri::command]
+pub fn desktop_delete_personnel_photo(
+    state: State<'_, DesktopState>,
+    id_unik: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.manage")?;
+    operational::delete_personnel_photo(&state, &id_unik)
+}
+
 #[tauri::command]
 pub fn desktop_get_shifts(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
     require_permission(&state, "shifts.view")?;

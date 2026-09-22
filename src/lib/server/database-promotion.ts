@@ -104,6 +104,7 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     dependsOn: ["master_data"],
   },
   { table: "absensi_foto", uniqueColumns: [], dependsOn: ["master_data"] },
+  { table: "personil_foto", uniqueColumns: [], dependsOn: ["master_data"] },
   {
     table: "log_scan",
     autoIncrementPk: "id_log",

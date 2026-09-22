@@ -15,6 +15,7 @@ import { recordOperationalChange } from "@/lib/server/operational/change-log";
 import {
   batalkanPenugasanBackup,
   buatPenugasanBackup,
+  hapusPenugasanBackup,
   type PenugasanBackupInput,
 } from "@/lib/services/backup";
 
@@ -76,7 +77,25 @@ export async function DELETE(request: NextRequest) {
     const body = await readJsonBody<Record<string, unknown>>(request);
     const id = typeof body.id_backup === "string" ? body.id_backup.trim() : "";
     if (!id) throw new ApiRequestError("ID backup tidak valid.", 400);
+    const action =
+      typeof body.action === "string"
+        ? body.action.trim().toLowerCase()
+        : "cancel";
     await ensureServerDatabaseInitialized();
+
+    if (action === "delete") {
+      const result = await hapusPenugasanBackup(id);
+      if (!result.sukses) throw new ApiRequestError(result.pesan, 400);
+      const revision = await recordOperationalChange(getServerDatabase(), {
+        domain: "backup",
+        entityKey: id,
+        operation: "delete",
+        payload: { id_backup: id },
+        actorOperatorId: actor.id,
+      });
+      return noStoreJson({ ...result, revision });
+    }
+
     const result = await batalkanPenugasanBackup(id, actor.kode_operator);
     const revision = await recordOperationalChange(getServerDatabase(), {
       domain: "backup",

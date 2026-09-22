@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PersonnelPhotoField } from "@/components/PersonnelPhotoField";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -29,6 +30,10 @@ import {
   updateKaryawan,
 } from "@/lib/gateways/employee";
 import { getDaftarIdCard } from "@/lib/gateways/id-card";
+import {
+  getPersonnelPhoto,
+  type PersonnelPhotoResult,
+} from "@/lib/gateways/personnel-photo";
 import { getDaftarShift } from "@/lib/gateways/shift";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import {
@@ -72,6 +77,8 @@ export default function KaryawanPage() {
     string,
     unknown
   > | null>(null);
+  const [detailPhoto, setDetailPhoto] = useState<string | null>(null);
+  const [loadingPhoto, setLoadingPhoto] = useState<boolean>(false);
   const [bulkWorking, setBulkWorking] = useState(false);
 
   // Modal State
@@ -143,6 +150,37 @@ export default function KaryawanPage() {
       window.removeEventListener("sppg:sync-completed", onSyncCompleted);
     };
   }, [loadData]);
+
+  useEffect(() => {
+    if (
+      !detailKaryawan?.id_unik ||
+      typeof detailKaryawan.id_unik !== "string"
+    ) {
+      setDetailPhoto(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingPhoto(true);
+    getPersonnelPhoto(detailKaryawan.id_unik)
+      .then((record: PersonnelPhotoResult | null) => {
+        if (!cancelled) {
+          setDetailPhoto(record?.foto_base64 || null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetailPhoto(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingPhoto(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailKaryawan]);
 
   // Extract unique divisions for filter — memoized to avoid recalc on every render
   // `status_backup` tidak tersedia sebagai parameter di gateway, jadi disaring
@@ -615,12 +653,7 @@ export default function KaryawanPage() {
                       </td>
                       {/* 3. Nama */}
                       <td className="p-3.5 text-white font-bold whitespace-nowrap">
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-5 h-5 bg-slate-800 text-slate-300 rounded-full flex items-center justify-center text-[10px]">
-                            {String(row.lp) === "P" ? "👩" : "👨"}
-                          </span>
-                          <span>{String(row.nama)}</span>
-                        </div>
+                        <span>{String(row.nama)}</span>
                       </td>
                       {/* 4. Divisi */}
                       <td className="p-3.5 text-slate-300 whitespace-nowrap">
@@ -728,25 +761,25 @@ export default function KaryawanPage() {
                           <button
                             type="button"
                             onClick={() => setDetailKaryawan(row)}
-                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1.5"
                           >
-                            <span>👁️</span> Detail
+                            <Icon name="eye" className="size-3.5" /> Detail
                           </button>
                           {canManage ? (
                             <>
                               <button
                                 type="button"
                                 onClick={() => void handleShowQr(row)}
-                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1.5"
                               >
-                                <span>🔲</span> QR
+                                <Icon name="scanner" className="size-3.5" /> QR
                               </button>
                               <button
                                 type="button"
                                 onClick={() => openEditModal(row)}
-                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1"
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg text-xs transition flex items-center gap-1.5"
                               >
-                                <span>✏️</span> Edit
+                                <Icon name="edit" className="size-3.5" /> Edit
                               </button>
                             </>
                           ) : null}
@@ -781,22 +814,48 @@ export default function KaryawanPage() {
         >
           <div className="space-y-4 text-xs font-mono">
             {/* Profile Header Box */}
-            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-sky-950 border border-sky-800 text-sky-300 text-xl font-bold flex items-center justify-center">
-                  {String(detailKaryawan.lp) === "P" ? "👩" : "👨"}
+            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="relative w-20 h-26 sm:w-24 sm:h-32 aspect-[3/4] shrink-0 rounded-xl overflow-hidden bg-slate-900 border-2 border-slate-700/80 shadow-md flex items-center justify-center">
+                  {loadingPhoto ? (
+                    <div className="animate-pulse bg-slate-800 w-full h-full flex items-center justify-center">
+                      <span className="text-[10px] text-slate-500 font-sans">
+                        Memuat...
+                      </span>
+                    </div>
+                  ) : detailPhoto ? (
+                    /* biome-ignore lint/performance/noImgElement: Data URL base64 photo preview */
+                    <img
+                      src={detailPhoto}
+                      alt={String(detailKaryawan.nama || "Foto Karyawan")}
+                      className="w-full h-full object-cover object-top"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-500 p-2 text-center">
+                      <Icon
+                        name="user"
+                        className="size-8 text-slate-600 mb-1"
+                      />
+                      <span className="text-[9px] text-slate-400 font-sans">
+                        Tanpa Foto
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">
+                  <h3 className="text-sm sm:text-base font-bold text-white">
                     {String(detailKaryawan.nama || "-")}
                   </h3>
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
                     {String(detailKaryawan.divisi || "-")} •{" "}
                     {String(detailKaryawan.jabatan_status || "Staff")}
                   </p>
+                  <p className="text-[11px] text-slate-500 font-mono mt-1">
+                    NIK: {String(detailKaryawan.id_unik || "-")}
+                  </p>
                 </div>
               </div>
-              <div className="flex flex-col items-end gap-1">
+              <div className="flex flex-col sm:items-end gap-1">
                 <span
                   className={`px-3 py-1 rounded-full text-[10px] font-bold border ${
                     detailKaryawan.status_aktif === "Aktif"
@@ -916,7 +975,7 @@ export default function KaryawanPage() {
                   onClick={() => void handleShowQr(detailKaryawan)}
                   className="px-3 py-1.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 rounded-xl font-bold border border-emerald-700/60 flex items-center gap-1.5"
                 >
-                  <span>🔲</span> Lihat QR
+                  <Icon name="scanner" className="size-3.5" /> Lihat QR
                 </button>
                 {canManage ? (
                   <button
@@ -928,7 +987,7 @@ export default function KaryawanPage() {
                     }}
                     className="px-3 py-1.5 bg-sky-950 hover:bg-sky-900 text-sky-300 rounded-xl font-bold border border-sky-700/60 flex items-center gap-1.5"
                   >
-                    <span>✏️</span> Edit Data
+                    <Icon name="edit" className="size-3.5" /> Edit Data
                   </button>
                 ) : null}
               </div>
@@ -1003,6 +1062,13 @@ export default function KaryawanPage() {
             onSubmit={handleFormSubmit}
             className="space-y-3.5 text-xs font-mono"
           >
+            {isEditing && formData.id_unik ? (
+              <PersonnelPhotoField
+                idUnik={formData.id_unik}
+                nama={formData.nama}
+              />
+            ) : null}
+
             {/* ID & Kode */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>

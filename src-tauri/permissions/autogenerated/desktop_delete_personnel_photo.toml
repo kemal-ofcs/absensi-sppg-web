@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-delete-personnel-photo"
+description = "Enables the desktop_delete_personnel_photo command without any pre-configured scope."
+commands.allow = ["desktop_delete_personnel_photo"]
+
+[[permission]]
+identifier = "deny-desktop-delete-personnel-photo"
+description = "Denies the desktop_delete_personnel_photo command without any pre-configured scope."
+commands.deny = ["desktop_delete_personnel_photo"]

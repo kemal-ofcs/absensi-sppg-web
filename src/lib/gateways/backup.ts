@@ -71,8 +71,8 @@ export async function hapusPenugasanBackup(idBackup: string) {
     return result;
   }
   return requestWebApi<{ sukses: boolean; pesan: string }>(
-    "/api/operational",
+    "/api/backups",
     "DELETE",
-    { id_backup: idBackup },
+    { id_backup: idBackup, action: "delete" },
   );
 }

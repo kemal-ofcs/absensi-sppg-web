@@ -41,6 +41,7 @@ import {
   getIdCardTemplate,
   saveIdCardTemplate,
 } from "@/lib/gateways/id-card-template";
+import { ambilFotoPersonil } from "@/lib/gateways/personnel-photo";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import type {
   CardSide,
@@ -273,6 +274,32 @@ export default function IdCardsPage() {
 
   // Filename customizer for Preview Modal
   const [customFilename, setCustomFilename] = useState("");
+  const avatarCacheRef = useRef<Map<string, string>>(new Map());
+
+  const resolveEmployeeWithAvatar = useCallback(
+    async (emp: Record<string, unknown>) => {
+      const id = String(emp.id_unik || "");
+      if (!id) return emp;
+      if (emp.avatar_url) return emp;
+      if (avatarCacheRef.current.has(id)) {
+        return { ...emp, avatar_url: avatarCacheRef.current.get(id) };
+      }
+      try {
+        const photo = await ambilFotoPersonil(id);
+        if (photo?.foto_base64) {
+          const dataUrl = photo.foto_base64.startsWith("data:")
+            ? photo.foto_base64
+            : `data:${photo.foto_mime || "image/jpeg"};base64,${photo.foto_base64}`;
+          avatarCacheRef.current.set(id, dataUrl);
+          return { ...emp, avatar_url: dataUrl };
+        }
+      } catch (err) {
+        console.error("Gagal mengambil foto avatar ID card:", err);
+      }
+      return emp;
+    },
+    [],
+  );
 
   // === TAB 3: SETTING LAYOUT & KERTAS ===
   const [printLayouts, setPrintLayouts] = useState<IdCardPrintLayoutConfig[]>(
@@ -416,31 +443,34 @@ export default function IdCardsPage() {
     let cancelled = false;
     setPreviewRendering(true);
 
-    Promise.all([
-      renderIdCardSideToCanvas({
-        template,
-        side: "front",
-        employee: previewEmployee,
-        company: companyProfile,
-      }),
-      renderIdCardSideToCanvas({
-        template,
-        side: "back",
-        employee: previewEmployee,
-        company: companyProfile,
-      }),
-    ])
-      .then(([front, back]) => {
-        if (!cancelled) {
-          setPreviewFrontUrl(front);
-          setPreviewBackUrl(back);
-        }
+    resolveEmployeeWithAvatar(previewEmployee)
+      .then((emp) => {
+        if (cancelled) return null;
+        return Promise.all([
+          renderIdCardSideToCanvas({
+            template,
+            side: "front",
+            employee: emp,
+            company: companyProfile,
+          }),
+          renderIdCardSideToCanvas({
+            template,
+            side: "back",
+            employee: emp,
+            company: companyProfile,
+          }),
+        ]);
+      })
+      .then((res) => {
+        if (!res || cancelled) return;
+        const [front, back] = res;
+        setPreviewFrontUrl(front);
+        setPreviewBackUrl(back);
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Gagal me-render kartu.",
-          );
+          console.error("Gagal me-render preview ID Card:", err);
+          setError("Gagal me-render pratinjau ID card");
         }
       })
       .finally(() => {
@@ -450,7 +480,7 @@ export default function IdCardsPage() {
     return () => {
       cancelled = true;
     };
-  }, [previewEmployee, template, companyProfile]);
+  }, [previewEmployee, template, companyProfile, resolveEmployeeWithAvatar]);
 
   // Set default filename when preview employee opens
   useEffect(() => {
@@ -531,10 +561,11 @@ export default function IdCardsPage() {
     const nama = String(row.nama || id);
     setWorkingId(id);
     try {
+      const empWithAvatar = await resolveEmployeeWithAvatar(row);
       const pngUrl = await renderIdCardSideToCanvas({
         template,
         side,
-        employee: row,
+        employee: empWithAvatar,
         company: companyProfile,
       });
 
@@ -619,12 +650,13 @@ export default function IdCardsPage() {
         activeLayout.duplexMode === "side_by_side";
 
       for (const row of printTargetRows) {
+        const empWithAvatar = await resolveEmployeeWithAvatar(row);
         let frontPng = "";
         if (needFront) {
           frontPng = await renderIdCardSideToCanvas({
             template,
             side: "front",
-            employee: row,
+            employee: empWithAvatar,
             company: companyProfile,
           });
         }
@@ -634,7 +666,7 @@ export default function IdCardsPage() {
           backPng = await renderIdCardSideToCanvas({
             template,
             side: "back",
-            employee: row,
+            employee: empWithAvatar,
             company: companyProfile,
           });
         }

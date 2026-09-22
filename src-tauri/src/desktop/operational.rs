@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 
 use base64::prelude::*;
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -3953,3 +3953,189 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
         "pesan": format!("{enqueued} data master (Shift, Template ID Card, Instansi, Libur, Pengaturan) berhasil dijadwalkan untuk sinkronisasi ke cloud."),
     }))
 }
+
+pub fn save_personnel_photo(
+    state: &DesktopState,
+    id_unik: &str,
+    foto_base64: &str,
+    foto_mime: &str,
+) -> Result<Value, CommandError> {
+    let id = id_unik.trim();
+    if id.is_empty() {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "ID personil wajib diisi.",
+        ));
+    }
+    let mime = foto_mime.trim();
+    if !matches!(mime, "image/jpeg" | "image/png" | "image/webp") {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "Format foto tidak didukung. Gunakan JPEG, PNG, atau WebP.",
+        ));
+    }
+    let base64_str = foto_base64.trim();
+    if base64_str.is_empty() {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "Foto personil tidak boleh kosong.",
+        ));
+    }
+    if base64_str.len() > 512_000 {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "Ukuran foto melebihi batas maksimal 500 KB.",
+        ));
+    }
+
+    let client_id = sync::ensure_client_id(state)?;
+    let event_id = sync::new_event_id(&client_id, "personnel-photo", "save");
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let now_iso: String = transaction
+        .query_row("SELECT datetime('now');", [], |row| row.get(0))
+        .map_err(|_| CommandError::internal())?;
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO personil_foto (id_unik, foto_mime, foto_base64, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id_unik) DO UPDATE SET
+                foto_mime = excluded.foto_mime,
+                foto_base64 = excluded.foto_base64,
+                updated_at = excluded.updated_at;
+            "#,
+            params![id, mime, base64_str, now_iso],
+        )
+        .map_err(|error| {
+            CommandError::new(
+                "OPERATIONAL_CONFLICT",
+                format!("Gagal menyimpan foto personil: {error}"),
+            )
+        })?;
+
+    let payload = json!({
+        "id_unik": id,
+        "foto_mime": mime,
+        "foto_base64": base64_str,
+        "updated_at": now_iso
+    });
+    let now = storage::now_epoch_seconds();
+    transaction
+        .execute(
+            r#"
+            INSERT INTO desktop_sync_outbox (
+                event_id, client_id, domain, operation, entity_key, payload_json,
+                status, attempt_count, created_at, updated_at
+            ) VALUES (?, ?, 'personnel-photo', 'save', ?, ?, 'pending', 0, ?, ?);
+            "#,
+            params![event_id, client_id, id, payload.to_string(), now, now],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_unik": id }))
+}
+
+pub fn get_personnel_photo_local(
+    state: &DesktopState,
+    id_unik: &str,
+) -> Result<Option<Value>, CommandError> {
+    let id = id_unik.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    let connection = storage::database(&state.data_dir)?;
+    let mut stmt = connection
+        .prepare("SELECT id_unik, foto_mime, foto_base64, updated_at FROM personil_foto WHERE id_unik = ?;")
+        .map_err(|_| CommandError::internal())?;
+
+    let result = stmt.query_row(params![id], |row| {
+        Ok(json!({
+            "id_unik": row.get::<_, String>(0)?,
+            "foto_mime": row.get::<_, String>(1)?,
+            "foto_base64": row.get::<_, String>(2)?,
+            "updated_at": row.get::<_, String>(3)?,
+        }))
+    });
+
+    match result {
+        Ok(val) => Ok(Some(val)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(_) => Err(CommandError::internal()),
+    }
+}
+
+pub fn cache_personnel_photo_local(
+    state: &DesktopState,
+    id_unik: &str,
+    foto_mime: &str,
+    foto_base64: &str,
+    updated_at: &str,
+) -> Result<(), CommandError> {
+    let id = id_unik.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let mut connection = storage::database(&state.data_dir)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO personil_foto (id_unik, foto_mime, foto_base64, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id_unik) DO UPDATE SET
+                foto_mime = excluded.foto_mime,
+                foto_base64 = excluded.foto_base64,
+                updated_at = excluded.updated_at;
+            "#,
+            params![id, foto_mime, foto_base64, updated_at],
+        )
+        .map_err(|_| CommandError::internal())?;
+    Ok(())
+}
+
+pub fn delete_personnel_photo(
+    state: &DesktopState,
+    id_unik: &str,
+) -> Result<Value, CommandError> {
+    let id = id_unik.trim();
+    if id.is_empty() {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            "ID personil wajib diisi.",
+        ));
+    }
+
+    let client_id = sync::ensure_client_id(state)?;
+    let event_id = sync::new_event_id(&client_id, "personnel-photo", "delete");
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    transaction
+        .execute("DELETE FROM personil_foto WHERE id_unik = ?;", params![id])
+        .map_err(|_| CommandError::internal())?;
+
+    let payload = json!({ "id_unik": id });
+    let now = storage::now_epoch_seconds();
+    transaction
+        .execute(
+            r#"
+            INSERT INTO desktop_sync_outbox (
+                event_id, client_id, domain, operation, entity_key, payload_json,
+                status, attempt_count, created_at, updated_at
+            ) VALUES (?, ?, 'personnel-photo', 'delete', ?, ?, 'pending', 0, ?, ?);
+            "#,
+            params![event_id, client_id, id, payload.to_string(), now, now],
+        )
+        .map_err(|_| CommandError::internal())?;
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_unik": id }))
+}
+

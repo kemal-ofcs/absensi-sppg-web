@@ -1592,6 +1592,15 @@ impl TursoClient {
                 vec![],
             ),
             Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS personil_foto (
+                    id_unik TEXT PRIMARY KEY,
+                    foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
+                    foto_base64 TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );"#,
+                vec![],
+            ),
+            Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS import_offline (
                     id_import INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_key TEXT UNIQUE NOT NULL,
@@ -2213,6 +2222,16 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (17, 'personnel-photo-foundation', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2013, 'personnel-photo-foundation-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -2427,7 +2446,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2012;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2013;",
                 vec![],
             )
             .await
@@ -4743,6 +4762,12 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("attendance", "create") => ("attendance", "create"),
         ("attendance", "update") => ("attendance", "update"),
         ("attendance", "delete") => ("attendance", "delete"),
+        ("personnel-photo" | "personnel_photo" | "personil-foto" | "personil_foto", "save") => {
+            ("personnel-photo", "save")
+        }
+        ("personnel-photo" | "personnel_photo" | "personil-foto" | "personil_foto", "delete") => {
+            ("personnel-photo", "delete")
+        }
         ("scan-log" | "scan_log" | "log-scan" | "log_scan" | "scan", "create" | "submit") => {
             ("attendance", "scan")
         }
@@ -5430,6 +5455,58 @@ async fn apply_event_to_turso(
                     .query_one(
                         "DELETE FROM tbl_hari_libur WHERE tanggal = ?;",
                         vec![json!(tanggal)],
+                    )
+                    .await?;
+            }
+        }
+        // Foto profil seluruh personil. `personil_foto` sengaja DI LUAR
+        // `SNAPSHOT_TABLES` — satu foto ratusan kilobyte, dan menariknya lewat
+        // snapshot membuat tiap siklus pull membengkak di setiap perangkat.
+        // Tetapi "di luar snapshot" hanya berarti tidak ikut DITARIK; ia tetap
+        // wajib DIDORONG lewat event ini, persis seperti `absensi_foto` yang
+        // menumpang `attendance/scan`. Tanpa event ini foto hanya hidup di
+        // perangkat yang mengunggahnya, dan kartu identitas yang dicetak dari
+        // perangkat lain kehilangan fotonya.
+        ("personnel-photo", "save") => {
+            let row = payload.get("personnel_photo").unwrap_or(payload);
+            let id = row
+                .get("id_unik")
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(entity_key);
+            let base64 = row.get("foto_base64").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() && !base64.is_empty() {
+                let mime = row
+                    .get("foto_mime")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("image/jpeg");
+                let updated_at = row.get("updated_at").and_then(Value::as_str).unwrap_or("");
+                turso
+                    .query_one(
+                        r#"INSERT INTO personil_foto (id_unik, foto_mime, foto_base64, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id_unik) DO UPDATE SET
+                            foto_mime = excluded.foto_mime,
+                            foto_base64 = excluded.foto_base64,
+                            updated_at = excluded.updated_at;"#,
+                        vec![json!(id), json!(mime), json!(base64), json!(updated_at)],
+                    )
+                    .await?;
+            }
+        }
+        ("personnel-photo", "delete") => {
+            let row = payload.get("personnel_photo").unwrap_or(payload);
+            let id = row
+                .get("id_unik")
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+                .unwrap_or(entity_key);
+            if !id.is_empty() {
+                turso
+                    .query_one(
+                        "DELETE FROM personil_foto WHERE id_unik = ?;",
+                        vec![json!(id)],
                     )
                     .await?;
             }
@@ -6865,6 +6942,55 @@ impl TursoClient {
             })
             .collect();
         Ok(json!({ "entries": entries }))
+    }
+
+    /// Foto profil personil dari database cloud, bila perangkat belum memegang
+    /// salinan lokalnya.
+    ///
+    /// `personil_foto` ada di luar `SNAPSHOT_TABLES`, jadi tidak pernah ikut
+    /// ditarik bersama snapshot — persis seperti `absensi_foto`. Perangkat yang
+    /// tidak menyimpan salinan lokalnya mengambil satu baris di sini saat
+    /// dibutuhkan.
+    ///
+    /// Mengembalikan `null` bila belum ada foto, BUKAN error: kontrak gateway
+    /// (`ambilFotoPersonil`) bertipe nullable, dan personil tanpa foto adalah
+    /// keadaan yang wajar, bukan kegagalan.
+    pub async fn get_personnel_photo(&self, id_unik: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = id_unik.trim();
+        if id.is_empty() || id.len() > 200 {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ID personil tidak valid.",
+            ));
+        }
+        let Some(row) = self
+            .query_one(
+                "SELECT id_unik, COALESCE(foto_mime, 'image/jpeg') AS foto_mime, COALESCE(foto_base64, '') AS foto_base64, COALESCE(updated_at, '') AS updated_at FROM personil_foto WHERE id_unik = ? LIMIT 1;",
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+        else {
+            return Ok(Value::Null);
+        };
+        let base64 = row
+            .get("foto_base64")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if base64.is_empty() {
+            return Ok(Value::Null);
+        }
+        Ok(json!({
+            "id_unik": row.get("id_unik").and_then(Value::as_str).unwrap_or(id),
+            "foto_mime": row.get("foto_mime").and_then(Value::as_str).unwrap_or("image/jpeg"),
+            "foto_base64": base64,
+            "updated_at": row.get("updated_at").and_then(Value::as_str).unwrap_or(""),
+        }))
     }
 
     pub async fn get_attendance_photo(&self, photo_id: &str) -> Result<Value, CommandError> {

@@ -21,6 +21,7 @@ const SCAN_SECURITY_MIGRATION_VERSION = 13;
 const HOLIDAY_WHITELIST_MIGRATION_VERSION = 14;
 const PASSWORD_RECOVERY_MIGRATION_VERSION = 15;
 const SHIFT_TIME_RULES_MIGRATION_VERSION = 16;
+const PERSONNEL_PHOTO_MIGRATION_VERSION = 17;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -966,6 +967,22 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'shift-time-rules-v2', ?);`,
     args: [SHIFT_TIME_RULES_MIGRATION_VERSION, now],
+  });
+
+  // ── v17: Tabel personil_foto (Selective sync / di luar snapshot) ──
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS personil_foto (
+      id_unik TEXT PRIMARY KEY,
+      foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
+      foto_base64 TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (id_unik) REFERENCES master_data(id_unik) ON DELETE CASCADE
+    );
+  `);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'personnel-photo-foundation', ?);`,
+    args: [PERSONNEL_PHOTO_MIGRATION_VERSION, now],
   });
 
   await client.execute(
