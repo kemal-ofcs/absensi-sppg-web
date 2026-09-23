@@ -98,7 +98,9 @@ export function maskPhone(value: string) {
   const phone = normalizeOperatorPhone(value);
   if (!phone) return "";
   const digits = phone.slice(1);
-  if (digits.length <= 4) return `+${"*".repeat(digits.length)}`;
+  // Wajib sama dengan `mask_operator_phone` (turso.rs): 2 digit depan + 4
+  // belakang butuh > 6 digit, kalau tidak `repeat` menerima angka negatif.
+  if (digits.length <= 6) return `+${"*".repeat(digits.length)}`;
   const prefix = digits.slice(0, 2);
   const tail = digits.slice(-4);
   return `+${prefix}${"*".repeat(digits.length - 6)}${tail}`;

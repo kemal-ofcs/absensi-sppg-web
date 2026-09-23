@@ -6,6 +6,15 @@ use super::models::{BpjsRule, OvertimeTierRule, PayrollComponent, TaxRule};
 
 pub struct PayrollCalculator;
 
+/// Tarif/pengali tersimpan sebagai REAL. `Decimal::from_f64_retain` membawa
+/// galat biner apa adanya (0.3 -> 0.29999999999999998889...), sehingga
+/// 2.500 x 0,3% = 7,4999... dibulatkan ke 7, sementara Web mendapat 8.
+/// `Display` f64 menghasilkan representasi desimal terpendek ("0.3"), jadi
+/// nilai yang diparse sama persis dengan yang diketik admin.
+fn exact_decimal(value: f64) -> Option<Decimal> {
+    value.to_string().parse().ok()
+}
+
 impl PayrollCalculator {
     /// Upah dari MENIT bulat dan tarif per jam.
     ///
@@ -48,12 +57,12 @@ impl PayrollCalculator {
                 break;
             }
 
-            let start = Decimal::from_f64_retain(tier.hour_start).unwrap_or(Decimal::ZERO);
-            let multiplier = Decimal::from_f64_retain(tier.multiplier).unwrap_or(Decimal::ONE);
+            let start = exact_decimal(tier.hour_start).unwrap_or(Decimal::ZERO);
+            let multiplier = exact_decimal(tier.multiplier).unwrap_or(Decimal::ONE);
 
             let span = match tier.hour_end {
                 Some(end) => {
-                    let end_dec = Decimal::from_f64_retain(end).unwrap_or(Decimal::ZERO);
+                    let end_dec = exact_decimal(end).unwrap_or(Decimal::ZERO);
                     if end_dec > start {
                         end_dec - start
                     } else {
@@ -93,7 +102,7 @@ impl PayrollCalculator {
                 continue;
             }
 
-            let default_val = Decimal::from_f64_retain(comp.default_value).unwrap_or(Decimal::ZERO);
+            let default_val = exact_decimal(comp.default_value).unwrap_or(Decimal::ZERO);
             let nominal = if comp.calc_type == "PERCENTAGE" {
                 (basic_salary * (default_val / Decimal::from(100)))
                     .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
@@ -138,7 +147,7 @@ impl PayrollCalculator {
                 _ => gross_salary,
             };
 
-            let rate = Decimal::from_f64_retain(rule.rate_percentage).unwrap_or(Decimal::ZERO);
+            let rate = exact_decimal(rule.rate_percentage).unwrap_or(Decimal::ZERO);
             let nominal = (basis * (rate / Decimal::from(100)))
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
@@ -192,7 +201,7 @@ impl PayrollCalculator {
         });
 
         if let Some(rule) = matching_rule {
-            let rate = Decimal::from_f64_retain(rule.rate_percentage).unwrap_or(Decimal::ZERO);
+            let rate = exact_decimal(rule.rate_percentage).unwrap_or(Decimal::ZERO);
             let pph21 = (gross_salary * (rate / Decimal::from(100)))
                 .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
 
@@ -223,7 +232,8 @@ impl PayrollCalculator {
 
 #[cfg(test)]
 mod tests {
-    use super::PayrollCalculator;
+    use super::{exact_decimal, PayrollCalculator};
+    use rust_decimal::RoundingStrategy;
     use rust_decimal::Decimal;
 
     /// Vektor yang SAMA dieja di `payroll-calculator.test.ts`.
@@ -286,5 +296,14 @@ mod tests {
             Decimal::from(3_438),
             "bentuk sekarang membulatkan menjauhi nol"
         );
+    }
+
+    #[test]
+    fn tarif_desimal_tidak_membawa_galat_biner() {
+        let rate = exact_decimal(0.3).unwrap();
+        let nominal = (Decimal::from(2500) * (rate / Decimal::from(100)))
+            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+        assert_eq!(nominal, Decimal::from(8));
+        assert_eq!(exact_decimal(f64::NAN), None);
     }
 }

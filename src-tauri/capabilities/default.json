@@ -118,7 +118,6 @@
     "allow-desktop-get-id-card-template",
     "allow-desktop-save-id-card-template",
     "allow-desktop-force-resync-settings",
-    "allow-desktop-debug-template-sync",
     "allow-desktop-get-turso-url",
     "allow-desktop-get-database-config",
     "allow-desktop-save-turso-config",

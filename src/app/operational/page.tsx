@@ -105,7 +105,7 @@ export default function OperationalPage() {
 
   // Form State: Koreksi Admin
   const [correction, setCorrection] = useState({
-    tanggal: new Date().toISOString().slice(0, 10),
+    tanggal: new Date().toLocaleDateString("en-CA"),
     id_karyawan: "",
     nama: "",
     divisi: "",
@@ -117,7 +117,7 @@ export default function OperationalPage() {
 
   // Form State: Backup Karyawan
   const [backup, setBackup] = useState({
-    tanggal_tugas: new Date().toISOString().slice(0, 10),
+    tanggal_tugas: new Date().toLocaleDateString("en-CA"),
     id_karyawan_asal: "",
     nama_karyawan_asal: "",
     divisi_asal: "",
@@ -131,7 +131,7 @@ export default function OperationalPage() {
 
   // Form State: Import Manual (Per-Kolom)
   const [manualEntry, setManualEntry] = useState({
-    tanggal: new Date().toISOString().slice(0, 10),
+    tanggal: new Date().toLocaleDateString("en-CA"),
     id_unik: "",
     nama: "",
     divisi: "",
@@ -166,6 +166,10 @@ export default function OperationalPage() {
     }
   }, []);
 
+  // Nomor urut muat terakhir. Pindah tab atau tanggal saat request lama belum
+  // selesai membuat respons lama bisa tiba belakangan dan menimpa data yang
+  // sedang dilihat; hanya respons dari muat terbaru yang boleh diterapkan.
+  const loadSeqRef = useRef(0);
   const load = useCallback(
     async (
       currentTab: Tab = tab,
@@ -173,6 +177,7 @@ export default function OperationalPage() {
       showFeedback = false,
     ) => {
       try {
+        const seq = ++loadSeqRef.current;
         if (synchronize) {
           await syncNow().catch(() => undefined);
         }
@@ -184,6 +189,7 @@ export default function OperationalPage() {
               : getDaftarKoreksi(),
           getDaftarShift().catch(() => []),
         ]);
+        if (seq !== loadSeqRef.current) return;
         setRecords(data);
         if (Array.isArray(shiftList) && shiftList.length > 0) {
           setShifts(shiftList);
@@ -444,7 +450,7 @@ export default function OperationalPage() {
           rowObj[header] = parts[idx] ?? "";
         });
         rows.push({
-          tanggal: rowObj.tanggal || new Date().toISOString().slice(0, 10),
+          tanggal: rowObj.tanggal || new Date().toLocaleDateString("en-CA"),
           id_unik: rowObj.id_unik || "",
           nama: rowObj.nama || undefined,
           divisi: rowObj.divisi || undefined,

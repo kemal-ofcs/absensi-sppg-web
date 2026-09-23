@@ -1,5 +1,6 @@
 import "server-only";
 
+import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface KaryawanInput {
@@ -74,8 +75,7 @@ export async function importKaryawanMassal(drafts: KaryawanInput[]) {
   for (let offset = 0; offset < accepted.length; offset += 100) {
     const statements = accepted.slice(offset, offset + 100).flatMap((data) => {
       const token = generateRandomToken(10);
-      const today =
-        data.tanggal_daftar || new Date().toISOString().split("T")[0];
+      const today = data.tanggal_daftar || formatTanggalOperasional(new Date());
       return [
         {
           sql: `INSERT INTO master_data (
@@ -195,7 +195,7 @@ export async function tambahKaryawan(data: KaryawanInput) {
 
   const tokenAbsensi = generateRandomToken(10);
   const qrCodePayload = `${data.id_unik}|${tokenAbsensi}`;
-  const today = data.tanggal_daftar || new Date().toISOString().split("T")[0];
+  const today = data.tanggal_daftar || formatTanggalOperasional(new Date());
 
   // 1. Insert ke master_data
   await db.execute({

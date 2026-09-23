@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import {
   ensureServerDatabaseInitialized,
@@ -68,7 +69,7 @@ export async function PUT(request: NextRequest) {
             ? Number(rule.bracket_max)
             : null,
           Number(rule.rate_percentage),
-          String(rule.effective_date || new Date().toISOString().slice(0, 10)),
+          String(rule.effective_date || formatTanggalOperasional(new Date())),
         ],
       });
     }

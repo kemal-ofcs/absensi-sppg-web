@@ -112,7 +112,7 @@ export default function TaxRulesPage() {
       bracket_min: minVal,
       bracket_max: null,
       rate_percentage: 5.0,
-      effective_date: new Date().toISOString().slice(0, 10),
+      effective_date: new Date().toLocaleDateString("en-CA"),
     });
     setModalOpen(true);
   };
@@ -546,7 +546,7 @@ export default function TaxRulesPage() {
                     required
                     value={
                       editingRule.effective_date ??
-                      new Date().toISOString().slice(0, 10)
+                      new Date().toLocaleDateString("en-CA")
                     }
                     onChange={(e) =>
                       setEditingRule((p) =>

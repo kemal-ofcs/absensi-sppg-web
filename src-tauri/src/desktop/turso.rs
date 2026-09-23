@@ -3398,6 +3398,49 @@ impl TursoClient {
             }
         }
 
+        // Pemilik `kode_karyawan` di cloud untuk seluruh batch, satu query.
+        // Kolom itu UNIQUE; dua perangkat offline yang memberi kode sama ke dua
+        // orang berbeda dulu berakhir sebagai error mentah
+        // "UNIQUE constraint failed: master_data.kode_karyawan" yang tidak
+        // menjelaskan apa pun ke operator. Sekarang ditolak lebih awal sebagai
+        // konflik yang menyebut siapa pemilik kodenya.
+        let mut kode_owner: HashMap<String, (String, String)> = HashMap::new();
+        let kode_candidates: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                let domain = event.get("domain").and_then(Value::as_str)?;
+                let operation = event.get("operation").and_then(Value::as_str)?;
+                let (domain, operation) = canonical_sync_route(domain, operation)?;
+                let payload = event
+                    .get("payload")
+                    .or_else(|| event.get("payload_json"))
+                    .or_else(|| event.get("payloadJson"))?;
+                employee_identity_of(domain, operation, payload, "").map(|identity| identity.kode)
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !kode_candidates.is_empty() {
+            let placeholders = vec!["?"; kode_candidates.len()].join(", ");
+            let result = self
+                .query_one(
+                    format!(
+                        "SELECT kode_karyawan, id_unik, nama FROM master_data WHERE kode_karyawan IN ({placeholders});"
+                    ),
+                    kode_candidates.iter().map(|kode| json!(kode)).collect(),
+                )
+                .await?;
+            for row in result.to_objects() {
+                let text = |key: &str| {
+                    row.get(key)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                kode_owner.insert(text("kode_karyawan"), (text("id_unik"), text("nama")));
+            }
+        }
+
         // Revisi server yang dihasilkan event-event SEBELUMNYA di batch ini,
         // per (domain kanonik, entity_key).
         //
@@ -3577,6 +3620,26 @@ impl TursoClient {
                 continue;
             }
 
+            let employee = employee_identity_of(domain, operation, &parsed_payload, entity_key);
+            if let Some(identity) = &employee {
+                if let Some((owner_id, owner_nama)) = kode_owner.get(&identity.kode) {
+                    if *owner_id != identity.id_unik {
+                        let message = format!(
+                            "Kode karyawan {} sudah dipakai {} ({}). Ganti kode karyawan ini di perangkat, lalu kirim ulang.",
+                            identity.kode, owner_nama, owner_id
+                        );
+                        push_results.push(json!({
+                            "eventId": event_id,
+                            "status": "conflict",
+                            "reason": message.clone(),
+                            "message": message,
+                            "serverRevision": 0
+                        }));
+                        continue;
+                    }
+                }
+            }
+
             let collector = StatementCollector::default();
             if let Err(error) =
                 apply_event_to_turso(&collector, domain, operation, entity_key, &parsed_payload)
@@ -3732,6 +3795,11 @@ impl TursoClient {
                     )
                 })?;
             batch_revisions.insert((domain.to_owned(), entity_key.to_owned()), server_revision);
+            // Event berikutnya di batch yang sama wajib melihat kode yang baru
+            // saja dipakai, bukan keadaan sebelum batch.
+            if let Some(identity) = employee {
+                kode_owner.insert(identity.kode, (identity.id_unik, identity.nama));
+            }
             push_results.push(json!({
                 "eventId": event_id,
                 "status": "applied",
@@ -4824,6 +4892,44 @@ struct AttendanceGuardRow {
 }
 
 /// `id_sesi` absensi yang disentuh sebuah event, bila event-nya memang menulis absensi.
+struct EmployeeIdentity {
+    id_unik: String,
+    kode: String,
+    nama: String,
+}
+
+/// Identitas karyawan dari event `employee/create|update`, dengan aturan yang
+/// sama seperti handler-nya: `id_unik` payload, atau `entity_key` bila kosong.
+fn employee_identity_of(
+    domain: &str,
+    operation: &str,
+    payload: &Value,
+    entity_key: &str,
+) -> Option<EmployeeIdentity> {
+    if !matches!((domain, operation), ("employee", "create" | "update")) {
+        return None;
+    }
+    let row = payload.get("employee").unwrap_or(payload);
+    let text = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let kode = text("kode_karyawan");
+    if kode.is_empty() {
+        return None;
+    }
+    let id_unik = Some(text("id_unik"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| entity_key.to_owned());
+    Some(EmployeeIdentity {
+        id_unik,
+        kode,
+        nama: text("nama"),
+    })
+}
+
 fn attendance_session_of(domain: &str, operation: &str, payload: &Value) -> Option<String> {
     let touches_attendance = matches!(
         (domain, operation),
@@ -8441,10 +8547,12 @@ pub fn mask_operator_email(value: &str) -> String {
         .saturating_sub(head.chars().count() + tail.chars().count())
         .max(2);
     let masked_domain = match domain.find('.') {
+        // `dot` adalah indeks BYTE; karakter pertama diambil lewat iterator
+        // supaya domain yang diawali karakter multi-byte tidak memicu panic.
         Some(dot) if dot > 1 => format!(
             "{}{}{}",
-            &domain[..1],
-            "*".repeat(dot - 1),
+            domain.chars().next().map(String::from).unwrap_or_default(),
+            "*".repeat(domain[..dot].chars().count().saturating_sub(1).max(1)),
             &domain[dot..]
         ),
         _ => domain.to_string(),
@@ -8459,7 +8567,10 @@ pub fn mask_operator_phone(value: &str) -> String {
         return String::new();
     }
     let digits = &phone[1..];
-    if digits.len() <= 4 {
+    // <= 6, bukan <= 4: format di bawah menyisakan 2 digit depan + 4 belakang,
+    // dan `len - 6` pada nomor 5-6 digit (data lama sebelum validasi 9-15
+    // digit) dulu underflow lalu panic di layar Lupa Password tanpa login.
+    if digits.len() <= 6 {
         return format!("+{}", "*".repeat(digits.len()));
     }
     format!(
@@ -9055,6 +9166,21 @@ mod tests {
         assert!(phone.contains('*'));
         assert!(!phone.contains("123456"));
         assert_eq!(mask_operator_phone("bukan nomor"), "");
+        assert_eq!(mask_operator_phone("0812"), "+*****");
+        assert_eq!(mask_operator_phone("+123456"), "+******");
+        assert!(!mask_operator_email("ab@über.example").is_empty());
+    }
+
+    #[test]
+    fn employee_identity_follows_handler_key_rules() {
+        let nested = json!({ "employee": { "id_unik": "EMP-1", "kode_karyawan": "K-01", "nama": "Ana" } });
+        let identity = employee_identity_of("employee", "create", &nested, "ignored").unwrap();
+        assert_eq!((identity.id_unik.as_str(), identity.kode.as_str()), ("EMP-1", "K-01"));
+        // id_unik kosong jatuh ke entity_key, persis seperti handler push.
+        let flat = json!({ "kode_karyawan": "K-02" });
+        assert_eq!(employee_identity_of("employee", "update", &flat, "EMP-2").unwrap().id_unik, "EMP-2");
+        assert!(employee_identity_of("employee", "delete", &flat, "EMP-2").is_none());
+        assert!(employee_identity_of("employee", "create", &json!({}), "EMP-3").is_none());
     }
 
     /// Tantangan liveness harus acak dan tidak berulang dalam satu sesi.

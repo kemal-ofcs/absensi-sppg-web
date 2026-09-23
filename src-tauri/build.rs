@@ -113,7 +113,6 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_get_id_card_template",
     "desktop_save_id_card_template",
     "desktop_force_resync_settings",
-    "desktop_debug_template_sync",
     "desktop_get_turso_url",
     "desktop_get_database_config",
     "desktop_save_turso_config",

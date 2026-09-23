@@ -23,13 +23,13 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
 const PURGE_DAYS = 90;
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toLocaleDateString("en-CA");
 }
 
 function daysAgoIso(days: number) {
   const date = new Date();
   date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
+  return date.toLocaleDateString("en-CA");
 }
 
 function formatTimestamp(value: string) {

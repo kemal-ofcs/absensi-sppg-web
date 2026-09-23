@@ -146,7 +146,7 @@ export default function HolidaysPage() {
 
   const handleOpenAdd = () => {
     setEditingId(null);
-    const today = new Date().toISOString().split("T")[0];
+    const today = new Date().toLocaleDateString("en-CA");
     setDraft({
       tanggal: today,
       nama_libur: "",

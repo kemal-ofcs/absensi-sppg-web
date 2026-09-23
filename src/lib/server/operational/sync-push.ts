@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Client, Transaction } from "@libsql/client";
 import {
   aturanShiftDariBaris,
+  formatTanggalOperasional,
   type HasilHitungDariJam,
   hitungUlangAbsensiDariJam,
 } from "@/lib/attendance/time-policy";
@@ -331,13 +332,13 @@ async function applyEmployee(
           number(payload, "id_shift", 1),
           text(payload, "status_aktif") || "Aktif",
           text(payload, "tanggal_daftar") ||
-            new Date().toISOString().slice(0, 10),
+            formatTanggalOperasional(new Date()),
           text(payload, "catatan"),
           text(payload, "token_absensi"),
           text(payload, "qr_code"),
           text(payload, "jenis_personil") || "Pegawai",
           text(payload, "tanggal_mulai_aktif") ||
-            new Date().toISOString().slice(0, 10),
+            formatTanggalOperasional(new Date()),
           text(payload, "tanggal_selesai_aktif"),
         ],
       });
@@ -348,7 +349,7 @@ async function applyEmployee(
         ) SELECT ?, ?, ?, 'Belum', ?
         WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);
       `,
-        args: [id, name, division, new Date().toISOString().slice(0, 10), id],
+        args: [id, name, division, formatTanggalOperasional(new Date()), id],
       });
     }
   } else if (event.operation === "update") {

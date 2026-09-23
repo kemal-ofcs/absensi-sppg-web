@@ -8,6 +8,7 @@ import { RunStatusBadge } from "@/components/payroll/RunStatusBadge";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { canAccessArea } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { listPayrollRuns, type PayrollRunRow } from "@/lib/gateways/payroll";
 import { useHydrated } from "@/lib/hooks/useHydrated";
@@ -21,7 +22,7 @@ const IDR = new Intl.NumberFormat("id-ID", {
 export default function PayrollRunsListPage() {
   const isHydrated = useHydrated();
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
   const [runs, setRuns] = useState<PayrollRunRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,8 +57,12 @@ export default function PayrollRunsListPage() {
       router.push("/login");
       return;
     }
+    if (!canAccessArea(user, "payroll")) {
+      router.replace("/forbidden");
+      return;
+    }
     void loadRuns();
-  }, [isHydrated, authLoading, isAuthenticated, loadRuns, router]);
+  }, [isHydrated, authLoading, isAuthenticated, user, loadRuns, router]);
 
   if (!isHydrated || authLoading) {
     return (

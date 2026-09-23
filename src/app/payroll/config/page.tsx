@@ -47,7 +47,7 @@ export default function PayrollConfigPage() {
     id_karyawan: "",
     rate_per_hour: 25000,
     ptkp_status: "TK/0",
-    effective_date: new Date().toISOString().slice(0, 10),
+    effective_date: new Date().toLocaleDateString("en-CA"),
   });
 
   // Components state
@@ -370,7 +370,7 @@ export default function PayrollConfigPage() {
                       : "",
                     rate_per_hour: 25000,
                     ptkp_status: "TK/0",
-                    effective_date: new Date().toISOString().slice(0, 10),
+                    effective_date: new Date().toLocaleDateString("en-CA"),
                   });
                   setModalSalaryOpen(true);
                 }}

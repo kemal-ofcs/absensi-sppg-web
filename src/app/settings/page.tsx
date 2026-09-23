@@ -2487,15 +2487,17 @@ export default function SettingsPage() {
               >
                 Sinkronkan sekarang
               </button>
-              <button
-                type="button"
-                disabled={syncBusy || !isOnline}
-                onClick={resyncSettings}
-                className="min-h-10 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 text-xs font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
-                title="Kirim ulang data Profil Perusahaan & Template ID Card lokal ke server"
-              >
-                Kirim ulang pengaturan lokal
-              </button>
+              {user?.isSuperadmin ? (
+                <button
+                  type="button"
+                  disabled={syncBusy || !isOnline}
+                  onClick={resyncSettings}
+                  className="min-h-10 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 text-xs font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
+                  title="Kirim ulang data Profil Perusahaan & Template ID Card lokal ke server"
+                >
+                  Kirim ulang pengaturan lokal
+                </button>
+              ) : null}
               {hasPermission(user, "sync.retry") &&
               (syncStatus?.failed ?? 0) > 0 ? (
                 <>

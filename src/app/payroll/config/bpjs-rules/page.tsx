@@ -100,7 +100,7 @@ export default function BpjsRulesPage() {
       component_name: "",
       rate_percentage: 1.0,
       wage_cap: null,
-      effective_date: new Date().toISOString().slice(0, 10),
+      effective_date: new Date().toLocaleDateString("en-CA"),
     });
     setModalOpen(true);
   };
@@ -462,7 +462,7 @@ export default function BpjsRulesPage() {
                   required
                   value={
                     editingRule.effective_date ??
-                    new Date().toISOString().slice(0, 10)
+                    new Date().toLocaleDateString("en-CA")
                   }
                   onChange={(e) =>
                     setEditingRule((p) =>

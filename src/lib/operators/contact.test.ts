@@ -118,5 +118,6 @@ describe("penyamaran kontak", () => {
 
   test("maskPhone mengembalikan string kosong untuk nomor tidak valid", () => {
     expect(maskPhone("bukan nomor")).toBe("");
+    expect(maskPhone("0812")).toBe("+*****");
   });
 });

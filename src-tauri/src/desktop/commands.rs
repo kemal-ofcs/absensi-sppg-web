@@ -2069,6 +2069,8 @@ pub fn desktop_delete_holiday_whitelist(
 
 #[tauri::command]
 pub fn desktop_get_alfa_settings(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    // Paritas dengan `POST /api/settings/alfa` (query) di jalur Web.
+    require_permission(&state, "home.view")?;
     operational::get_alfa_settings(&state)
 }
 
@@ -2106,11 +2108,25 @@ pub fn desktop_get_server_url(state: State<'_, DesktopState>) -> Result<String, 
     Ok(state.server_origin())
 }
 
+/// Mengganti origin server HTTP (jalur login lama). Tanpa sesi HANYA selama
+/// database belum dikonfigurasi, karena layar login Mobile memang harus bisa
+/// memilih server sebelum ada akun. Setelah itu wajib Superadmin: origin ikut
+/// menentukan identitas vault offline dan client id, dan dulu command ini
+/// terbuka sepenuhnya sehingga siapa pun bisa mengarahkan login ke host lain.
 #[tauri::command]
 pub fn desktop_set_server_url(
     state: State<'_, DesktopState>,
     url: String,
 ) -> Result<String, CommandError> {
+    if state.turso_config().is_some() {
+        let operator = require_session(&state)?;
+        if !operator.is_superadmin {
+            return Err(CommandError::new(
+                "DESKTOP_ACCESS_DENIED",
+                "Alamat server hanya dapat diubah Superadmin setelah database dikonfigurasi.",
+            ));
+        }
+    }
     state.set_server_url(&url)
 }
 
@@ -2134,6 +2150,8 @@ pub fn desktop_get_id_card_template(
     state: State<'_, DesktopState>,
     id: Option<String>,
 ) -> Result<Value, CommandError> {
+    // Paritas dengan `/api/id-cards/templates` di jalur Web.
+    require_permission(&state, "employees.manage")?;
     operational::get_id_card_template(&state, id.as_deref().unwrap_or("default_template"))
 }
 
@@ -2150,13 +2168,31 @@ pub fn desktop_save_id_card_template(
 pub async fn desktop_force_resync_settings(
     state: State<'_, DesktopState>,
 ) -> Result<Value, CommandError> {
-    require_permission(&state, "sync.view")?;
+    // Perintah ini MENIMPA shift, profil instansi, template, hari libur, dan
+    // pengaturan di cloud dengan salinan perangkat ini — mutasi global, bukan
+    // "lihat status sync". Dulu dijaga `sync.view` sehingga pemegang izin
+    // baca-saja bisa membangkitkan kembali data yang sudah dihapus perangkat lain.
+    let operator = require_permission(&state, "settings.manage")?;
+    if !operator.is_superadmin {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Kirim ulang pengaturan lokal hanya dapat dilakukan Superadmin.",
+        ));
+    }
     let token = session_token(&state);
     if token.is_empty() && state.turso_config().is_none() {
         return Err(CommandError::new(
             "DESKTOP_ONLINE_REQUIRED",
             "Database cloud belum dikonfigurasi dan sesi ini tidak punya token online. Sinkronisasi tidak dapat dijalankan.",
         ));
+    }
+
+    // Tarik dulu: event di bawah dikirim tanpa revisi dasar (last-writer-wins),
+    // jadi salinan lokal WAJIB sudah segar. Tanpa pull yang berhasil, snapshot
+    // basi perangkat ini akan menimpa perubahan perangkat lain.
+    if let Err(error) = sync::pull_snapshot(&state, &token).await {
+        clear_expired_session(&state, &error);
+        return Err(error);
     }
 
     // Enqueue ulang pengaturan dari data lokal
@@ -2172,25 +2208,6 @@ pub async fn desktop_force_resync_settings(
     Ok(json!({
         "enqueue": enqueue_result,
         "status": status,
-    }))
-}
-
-#[tauri::command]
-pub async fn desktop_debug_template_sync(
-    state: State<'_, DesktopState>,
-) -> Result<Value, CommandError> {
-    let local_tpl = operational::get_id_card_template(&state, "default_template")?;
-    let cloud_tpl: Option<Value> = if let Ok(turso) = state.get_turso_client() {
-        turso.query_one(
-            "SELECT id, name, orientation, front_bg_url, back_bg_url, elements_json, is_active, updated_at FROM id_card_template WHERE id = 'default_template';",
-            vec![],
-        ).await.ok().and_then(|res| res.to_objects().into_iter().next().map(|map| json!(map)))
-    } else {
-        None
-    };
-    Ok(json!({
-        "local": local_tpl,
-        "cloud": cloud_tpl,
     }))
 }
 

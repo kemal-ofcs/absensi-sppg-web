@@ -111,6 +111,11 @@ export default function ScannerPage() {
     null,
   );
   const scannerControlsRef = useRef<IScannerControls | null>(null);
+  // Dinaikkan setiap kamera dihentikan. `decodeFromConstraints` bisa menunggu
+  // lama (dialog izin kamera); bila halaman ditinggalkan atau kamera dimatikan
+  // selama itu, kontrol yang baru tiba wajib langsung dihentikan, bukan
+  // disimpan. Tanpa ini kamera tetap menyala setelah pemindai ditutup.
+  const cameraGenRef = useRef(0);
   const cameraScanLockedRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const lastScannedQrRef = useRef<string>("");
@@ -125,6 +130,7 @@ export default function ScannerPage() {
   }, []);
 
   const stopCamera = useCallback(() => {
+    cameraGenRef.current += 1;
     scannerControlsRef.current?.stop();
     scannerControlsRef.current = null;
     const stream = videoRef.current?.srcObject;
@@ -519,6 +525,9 @@ export default function ScannerPage() {
         return;
       }
 
+      // Start baru membatalkan start lain yang masih menunggu (tap ganda).
+      const gen = ++cameraGenRef.current;
+
       // Hentikan stream lama jika sedang berjalan sebelum ganti device
       if (scannerControlsRef.current) {
         scannerControlsRef.current.stop();
@@ -585,6 +594,10 @@ export default function ScannerPage() {
         );
       }
 
+      if (gen !== cameraGenRef.current) {
+        controls.stop();
+        return;
+      }
       scannerControlsRef.current = controls;
       setCameraActive(true);
     } catch (error: unknown) {

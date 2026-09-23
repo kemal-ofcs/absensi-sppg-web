@@ -8,6 +8,22 @@ const longText = z.string().max(8_192);
 const assetText = z.string().max(10_485_760);
 const finiteNumber = z.number().finite();
 const integer = z.number().int().safe();
+// Nilai-nilai di bawah WAJIB identik dengan CHECK constraint tabel payroll di
+// turso.rs/storage.rs (aturan 37). Nilai yang lolos di sini tetapi ditolak
+// CHECK cloud membuat event outbox gagal permanen.
+const activeFlag = z.union([z.literal(0), z.literal(1)]);
+const nonNegative = finiteNumber.min(0);
+const ptkpStatus = z.enum([
+  "TK/0",
+  "TK/1",
+  "TK/2",
+  "TK/3",
+  "K/0",
+  "K/1",
+  "K/2",
+  "K/3",
+]);
+const taxCategory = z.enum(["TER_A", "TER_B", "TER_C", "PASAL_17"]);
 
 const optionalShortText = shortText.nullable().optional();
 
@@ -502,8 +518,8 @@ export const operationalSyncEventSchema = z.union([
       .object({
         id: shortText.min(1),
         id_karyawan: shortText.min(1),
-        rate_per_hour: finiteNumber,
-        ptkp_status: shortText.min(1),
+        rate_per_hour: integer.nonnegative(),
+        ptkp_status: ptkpStatus,
         effective_date: shortText.min(1),
         created_by: shortText.min(1),
         created_at: shortText.min(1),
@@ -518,10 +534,10 @@ export const operationalSyncEventSchema = z.union([
         id: shortText.min(1),
         rule_type: z.enum(["HARI_KERJA", "HARI_LIBUR"]),
         tier_order: finiteNumber,
-        hour_start: finiteNumber,
+        hour_start: nonNegative,
         hour_end: finiteNumber.nullable().optional(),
-        multiplier: finiteNumber,
-        is_active: finiteNumber,
+        multiplier: finiteNumber.min(1),
+        is_active: activeFlag,
       })
       .strict(),
   ),
@@ -534,9 +550,9 @@ export const operationalSyncEventSchema = z.union([
         name: shortText.min(1),
         category: z.enum(["ALLOWANCE", "DEDUCTION"]),
         calc_type: z.enum(["FIXED", "PERCENTAGE"]),
-        default_value: finiteNumber,
+        default_value: nonNegative,
         applies_to: shortText.min(1),
-        is_active: finiteNumber,
+        is_active: activeFlag,
       })
       .strict(),
   ),
@@ -546,10 +562,10 @@ export const operationalSyncEventSchema = z.union([
     z
       .object({
         id: shortText.min(1),
-        category: shortText.min(1),
+        category: taxCategory,
         bracket_min: finiteNumber,
         bracket_max: finiteNumber.nullable().optional(),
-        rate_percentage: finiteNumber,
+        rate_percentage: nonNegative,
         effective_date: shortText.min(1),
       })
       .strict(),
@@ -562,7 +578,7 @@ export const operationalSyncEventSchema = z.union([
         id: shortText.min(1),
         component_code: shortText.min(1),
         component_name: shortText.min(1),
-        rate_percentage: finiteNumber,
+        rate_percentage: nonNegative,
         wage_cap: finiteNumber.nullable().optional(),
         effective_date: shortText.min(1),
       })

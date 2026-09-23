@@ -1418,29 +1418,21 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 /// Kegagalan yang dilaporkan sebagai keberhasilan jauh lebih buruk daripada
 /// kegagalan yang terlihat.
 pub fn public_output_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-
-    // 1. Folder Unduhan standar Windows / Linux / macOS (prioritas utama pada desktop)
-    #[cfg(not(target_os = "android"))]
-    {
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            dirs.push(std::path::PathBuf::from(user_profile).join("Downloads"));
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(std::path::PathBuf::from(home).join("Downloads"));
-        }
+    // Android sengaja TIDAK punya folder di sini (aturan 28). Menulis langsung ke
+    // `/storage/emulated/0/Download` dulu meninggalkan salinan kedua cadangan
+    // database — bisa tanpa enkripsi, berisi hash password dan rahasia TOTP — di
+    // penyimpanan bersama, bertahan setelah uninstall, tanpa sepengetahuan
+    // pengguna. Satu-satunya jalur Android adalah dialog SAF
+    // (`mobile_save_file_to_device` / `mobile_export_database_to_device`).
+    if cfg!(target_os = "android") {
+        return Vec::new();
     }
-
-    // 2. Direktori publik Android (hanya saat berjalan di target Android)
-    #[cfg(target_os = "android")]
-    {
-        dirs.push(std::path::PathBuf::from("/storage/emulated/0/Download"));
-        dirs.push(std::path::PathBuf::from("/sdcard/Download"));
-        dirs.push(std::path::PathBuf::from("/storage/emulated/0/Pictures"));
-        dirs.push(std::path::PathBuf::from("/storage/emulated/0/DCIM"));
-    }
-
-    dirs
+    // Folder Unduhan standar Windows (USERPROFILE) / Linux & macOS (HOME).
+    ["USERPROFILE", "HOME"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .map(|base| std::path::PathBuf::from(base).join("Downloads"))
+        .collect()
 }
 
 /// Salin sebuah berkas ke folder pertama yang benar-benar bisa ditulisi.
@@ -3775,7 +3767,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
         let kode_shift = shift.get("kode_shift").and_then(Value::as_i64).unwrap_or(0);
         if kode_shift > 0 {
             let entity_key = format!("kode:{}", kode_shift);
-            let _ = sync::enqueue(
+            sync::enqueue(
                 &transaction,
                 &client_id,
                 "shift",
@@ -3783,7 +3775,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
                 &entity_key,
                 &shift,
                 None,
-            );
+            )?;
             enqueued += 1;
         }
     }
@@ -3821,7 +3813,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
 
     for profile in profiles {
         let cp_id = profile.get("id").and_then(Value::as_str).unwrap_or("default_company");
-        let _ = sync::enqueue(
+        sync::enqueue(
             &transaction,
             &client_id,
             "company-profile",
@@ -3829,7 +3821,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
             cp_id,
             &profile,
             None,
-        );
+        )?;
         enqueued += 1;
     }
 
@@ -3860,7 +3852,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
 
     for template in templates {
         let tpl_id = template.get("id").and_then(Value::as_str).unwrap_or("default_template");
-        let _ = sync::enqueue(
+        sync::enqueue(
             &transaction,
             &client_id,
             "id-card-template",
@@ -3868,7 +3860,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
             tpl_id,
             &template,
             None,
-        );
+        )?;
         enqueued += 1;
     }
 
@@ -3897,7 +3889,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
     for holiday in holidays {
         let tanggal = holiday.get("tanggal").and_then(Value::as_str).unwrap_or("");
         if !tanggal.is_empty() {
-            let _ = sync::enqueue(
+            sync::enqueue(
                 &transaction,
                 &client_id,
                 "holiday",
@@ -3905,7 +3897,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
                 tanggal,
                 &holiday,
                 None,
-            );
+            )?;
             enqueued += 1;
         }
     }
@@ -3933,7 +3925,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
         // `server_api_base_url` ke cloud, lalu perangkat lain menariknya dan bisa
         // diarahkan ke database yang salah saat startup.
         if !key.is_empty() && !sync::is_device_local_setting(key) {
-            let _ = sync::enqueue(
+            sync::enqueue(
                 &transaction,
                 &client_id,
                 "setting",
@@ -3941,7 +3933,7 @@ pub fn force_enqueue_settings(state: &DesktopState) -> Result<Value, CommandErro
                 key,
                 &setting,
                 None,
-            );
+            )?;
             enqueued += 1;
         }
     }

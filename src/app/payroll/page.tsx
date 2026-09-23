@@ -9,7 +9,7 @@ import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { hasPermission } from "@/lib/auth/access";
+import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   createPayrollRun,
@@ -30,10 +30,12 @@ export default function PayrollDashboardPage() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
   const now = new Date();
-  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1)
-    .toISOString()
-    .slice(0, 10);
-  const today = now.toISOString().slice(0, 10);
+  const firstDay = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    1,
+  ).toLocaleDateString("en-CA");
+  const today = now.toLocaleDateString("en-CA");
 
   const [periodStart, setPeriodStart] = useState(firstDay);
   const [periodEnd, setPeriodEnd] = useState(today);
@@ -72,8 +74,12 @@ export default function PayrollDashboardPage() {
       router.push("/login");
       return;
     }
+    if (!canAccessArea(user, "payroll")) {
+      router.replace("/forbidden");
+      return;
+    }
     void loadData();
-  }, [isHydrated, authLoading, isAuthenticated, loadData, router]);
+  }, [isHydrated, authLoading, isAuthenticated, user, loadData, router]);
 
   const handleCreateRun = async () => {
     setCreating(true);
@@ -106,7 +112,7 @@ export default function PayrollDashboardPage() {
     preset: "today" | "week" | "thisMonth" | "lastMonth" | "last30",
   ) => {
     const d = new Date();
-    const todayStr = d.toISOString().slice(0, 10);
+    const todayStr = d.toLocaleDateString("en-CA");
 
     if (preset === "today") {
       setPeriodStart(todayStr);
@@ -114,28 +120,34 @@ export default function PayrollDashboardPage() {
     } else if (preset === "week") {
       const day = d.getDay();
       const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      const monday = new Date(d.setDate(diff)).toISOString().slice(0, 10);
+      const monday = new Date(d.setDate(diff)).toLocaleDateString("en-CA");
       setPeriodStart(monday);
       setPeriodEnd(todayStr);
     } else if (preset === "thisMonth") {
-      const first = new Date(d.getFullYear(), d.getMonth(), 1)
-        .toISOString()
-        .slice(0, 10);
+      const first = new Date(
+        d.getFullYear(),
+        d.getMonth(),
+        1,
+      ).toLocaleDateString("en-CA");
       setPeriodStart(first);
       setPeriodEnd(todayStr);
     } else if (preset === "lastMonth") {
-      const firstLastMonth = new Date(d.getFullYear(), d.getMonth() - 1, 1)
-        .toISOString()
-        .slice(0, 10);
-      const lastDayLastMonth = new Date(d.getFullYear(), d.getMonth(), 0)
-        .toISOString()
-        .slice(0, 10);
+      const firstLastMonth = new Date(
+        d.getFullYear(),
+        d.getMonth() - 1,
+        1,
+      ).toLocaleDateString("en-CA");
+      const lastDayLastMonth = new Date(
+        d.getFullYear(),
+        d.getMonth(),
+        0,
+      ).toLocaleDateString("en-CA");
       setPeriodStart(firstLastMonth);
       setPeriodEnd(lastDayLastMonth);
     } else if (preset === "last30") {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .slice(0, 10);
+      const thirtyDaysAgo = new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000,
+      ).toLocaleDateString("en-CA");
       setPeriodStart(thirtyDaysAgo);
       setPeriodEnd(todayStr);
     }

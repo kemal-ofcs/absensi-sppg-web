@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import {
   ensureServerDatabaseInitialized,
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
     const result = await jalankanAuditKualitasAbsensi();
     const revision = await recordOperationalChange(getServerDatabase(), {
       domain: "system",
-      entityKey: `alfa:${new Date().toISOString().slice(0, 10)}`,
+      entityKey: `alfa:${formatTanggalOperasional(new Date())}`,
       operation: "audit-alfa",
       payload: result.ringkasan,
       actorOperatorId: actor.id,

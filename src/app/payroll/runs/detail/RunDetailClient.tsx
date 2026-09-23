@@ -11,7 +11,7 @@ import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { hasPermission } from "@/lib/auth/access";
+import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   getPayrollRunDetail,
@@ -75,8 +75,12 @@ export default function RunDetailClient() {
       router.push("/login");
       return;
     }
+    if (!canAccessArea(user, "payroll")) {
+      router.replace("/forbidden");
+      return;
+    }
     void loadDetail();
-  }, [isHydrated, authLoading, isAuthenticated, loadDetail, router]);
+  }, [isHydrated, authLoading, isAuthenticated, user, loadDetail, router]);
 
   const handleOpenTransition = (status: string) => {
     setTargetStatus(status);
