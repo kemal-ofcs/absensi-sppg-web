@@ -1,11 +1,16 @@
 import type { Client } from "@libsql/client";
 import { hashPassword } from "@/lib/auth/password";
+import { hashSessionToken } from "@/lib/auth/session-token";
 import {
   assertOperatorContact,
   normalizeOperatorEmail,
   normalizeOperatorPhone,
 } from "@/lib/operators/contact";
 import type { OperatorDraft, OperatorRecord } from "@/lib/operators/types";
+import {
+  generateRecoveryCodes,
+  normalizeRecoveryCode,
+} from "@/lib/security/totp";
 
 export function validateOperatorDraft(draft: OperatorDraft) {
   const code = draft.kodeOperator.trim().toUpperCase();
@@ -124,14 +129,63 @@ export async function insertOperator(
   return { success: true, id: Number(result.lastInsertRowid) };
 }
 
+export type BootstrapSuperadminDraft = Omit<OperatorDraft, "roleId">;
+
+/**
+ * Cermin `validate_bootstrap_draft` di `turso.rs`: urutan pemeriksaan dan
+ * pesannya sama. Aturannya lebih ketat daripada `validateOperatorDraft` karena
+ * akun ini tidak punya siapa pun di atasnya; versi TS yang lama memakai aturan
+ * operator biasa, sehingga Superadmin yang dibuat lewat server bisa memakai
+ * password yang ditolak aplikasi Desktop.
+ */
+export function validateBootstrapDraft(draft: BootstrapSuperadminDraft) {
+  const username = draft.username.trim();
+  const password = draft.password ?? "";
+  if (draft.kodeOperator.trim().toUpperCase() !== "SPD001") {
+    throw new Error("Kode bootstrap Superadmin wajib SPD001.");
+  }
+  const nameLength = [...draft.name.trim()].length;
+  if (nameLength < 3 || nameLength > 120) {
+    throw new Error("Nama Superadmin harus terdiri dari 3-120 karakter.");
+  }
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) {
+    throw new Error(
+      "Username harus terdiri dari 3-64 karakter huruf, angka, titik, garis bawah, atau tanda minus.",
+    );
+  }
+  assertOperatorContact(draft.email, draft.noHp);
+  const passwordLength = [...password].length;
+  if (
+    passwordLength < 12 ||
+    passwordLength > 128 ||
+    !/\p{Lu}/u.test(password) ||
+    !/\p{Ll}/u.test(password) ||
+    !/[0-9]/.test(password) ||
+    !/[^\p{L}\p{N}\s]/u.test(password) ||
+    password.toLowerCase().includes(username.toLowerCase())
+  ) {
+    throw new Error(
+      "Password minimal 12 karakter dan wajib memuat huruf besar, huruf kecil, angka, simbol, serta tidak memuat username.",
+    );
+  }
+}
+
+/**
+ * Buat Superadmin pertama dan kembalikan kode pemulihannya.
+ *
+ * Cermin `bootstrap_superadmin` di `turso.rs`. Klaim `app_bootstrap_state` dan
+ * baris operatornya masuk SATU batch: dua permintaan yang datang bersamaan
+ * sama-sama lolos pemeriksaan "belum ada Superadmin", dan hanya primary key
+ * klaim itu yang membuat salah satunya gagal. Tanpa klaim, keduanya berhasil
+ * dan database lahir dengan dua Superadmin milik dua orang berbeda.
+ *
+ * Kode pemulihan hanya bisa dibaca di sini: database memegang hash-nya saja.
+ */
 export async function bootstrapSuperadmin(
   client: Client,
-  draft: Omit<OperatorDraft, "roleId">,
+  draft: BootstrapSuperadminDraft,
 ) {
-  if (draft.kodeOperator.trim().toUpperCase() !== "SPD001") {
-    throw new Error("Kode bootstrap Superadmin harus SPD001.");
-  }
-  if (!draft.password) throw new Error("Password Superadmin wajib diisi.");
+  validateBootstrapDraft(draft);
 
   const existing = await client.execute(`
     SELECT COUNT(*) AS total
@@ -145,13 +199,67 @@ export async function bootstrapSuperadmin(
   }
 
   const role = await client.execute(
-    "SELECT id FROM app_role WHERE role_key = 'superadmin' AND status = 'Aktif' LIMIT 1;",
+    "SELECT id FROM app_role WHERE role_key = 'superadmin' AND is_superadmin = 1 AND status = 'Aktif' LIMIT 1;",
   );
   const roleId = Number(role.rows[0]?.id);
-  if (!Number.isSafeInteger(roleId)) {
+  if (!Number.isSafeInteger(roleId) || roleId < 1) {
     throw new Error("Role Superadmin aktif belum tersedia.");
   }
-  return insertOperator(client, { ...draft, roleId }, true);
+
+  const recoveryCodes = generateRecoveryCodes();
+  const recoveryHashes = await Promise.all(
+    recoveryCodes.map((code) => hashSessionToken(normalizeRecoveryCode(code))),
+  );
+  const passwordHash = await hashPassword(draft.password ?? "");
+
+  let operatorId: number;
+  try {
+    const results = await client.batch(
+      [
+        "INSERT INTO app_bootstrap_state (bootstrap_key, claimed_at) VALUES ('superadmin', datetime('now'));",
+        {
+          sql: `
+            INSERT INTO master_operator (
+              kode_operator, nama_operator, username, email, no_hp, password_hash,
+              role, role_id, status,
+              password_recovery_codes, password_recovery_created_at,
+              created_at, updated_at
+            ) VALUES (
+              ?, ?, ?, ?, ?, ?, 'Admin', ?, 'Aktif',
+              ?, datetime('now'), datetime('now'), datetime('now')
+            );
+          `,
+          args: [
+            draft.kodeOperator.trim().toUpperCase(),
+            draft.name.trim(),
+            draft.username.trim(),
+            normalizeOperatorEmail(draft.email),
+            normalizeOperatorPhone(draft.noHp),
+            passwordHash,
+            roleId,
+            JSON.stringify(recoveryHashes),
+          ],
+        },
+      ],
+      "write",
+    );
+    operatorId = Number(results[1]?.lastInsertRowid);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("app_bootstrap_state")) {
+      throw new Error(
+        "Bootstrap ditutup karena sudah pernah diklaim pada database ini.",
+      );
+    }
+    if (/UNIQUE|constraint/i.test(message)) {
+      throw new Error(
+        "Kode operator, username, atau email itu sudah dipakai akun lain.",
+      );
+    }
+    throw error;
+  }
+
+  return { success: true, id: operatorId, recoveryCodes };
 }
 
 export async function editOperator(

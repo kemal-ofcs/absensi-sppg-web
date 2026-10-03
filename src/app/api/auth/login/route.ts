@@ -3,13 +3,19 @@ import {
   clearLoginFailures,
   consumeLoginAttempt,
 } from "@/lib/auth/login-rate-limit";
+import { AuthorizationError } from "@/lib/auth/permission-assertion";
 import {
   getWebSessionCookieOptions,
   WEB_SESSION_COOKIE,
 } from "@/lib/auth/web-session";
 import { authenticateWebOperator } from "@/lib/server/auth/authenticate";
+import { assertWebLicense } from "@/lib/server/auth/authorize";
 import { createWebSession } from "@/lib/server/auth/session";
 import { evaluateTwoFactorGate } from "@/lib/server/auth/two-factor";
+import {
+  DATABASE_NOT_CONFIGURED_MESSAGE,
+  databaseConfigIssue,
+} from "@/lib/server/database-config";
 import {
   ensureServerDatabaseInitialized,
   getServerDatabase,
@@ -40,109 +46,135 @@ function errorResponse(message: string, status: number) {
 }
 
 export async function POST(request: NextRequest) {
-  if (!isSameOriginMutation(request)) {
-    return errorResponse("Origin permintaan tidak diizinkan.", 403);
-  }
-  let body: LoginBody;
   try {
-    body = await readBoundedJsonBody<LoginBody>(request, 4_096);
-  } catch (error) {
-    if (error instanceof JsonBodyError) {
-      const message =
-        error.status === 413
-          ? "Payload login terlalu besar."
-          : error.status === 415
-            ? "Content-Type harus application/json."
-            : "Payload login tidak valid.";
-      return errorResponse(message, error.status);
+    if (!isSameOriginMutation(request)) {
+      return errorResponse("Origin permintaan tidak diizinkan.", 403);
     }
-    return errorResponse("Payload login tidak valid.", 400);
-  }
+    let body: LoginBody;
+    try {
+      body = await readBoundedJsonBody<LoginBody>(request, 4_096);
+    } catch (error) {
+      if (error instanceof JsonBodyError) {
+        const message =
+          error.status === 413
+            ? "Payload login terlalu besar."
+            : error.status === 415
+              ? "Content-Type harus application/json."
+              : "Payload login tidak valid.";
+        return errorResponse(message, error.status);
+      }
+      return errorResponse("Payload login tidak valid.", 400);
+    }
 
-  const username =
-    typeof body.username === "string" ? body.username.trim() : "";
-  const password = typeof body.password === "string" ? body.password : "";
-  if (username.length < 3 || username.length > 64 || password.length > 256) {
-    return errorResponse("Username atau password tidak sesuai.", 401);
-  }
+    const username =
+      typeof body.username === "string" ? body.username.trim() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (username.length < 3 || username.length > 64 || password.length > 256) {
+      return errorResponse("Username atau password tidak sesuai.", 401);
+    }
 
-  await ensureServerDatabaseInitialized();
-  const database = getServerDatabase();
-  const clientAddress = getClientAddress(request);
-  const rateLimit = await consumeLoginAttempt(
-    database,
-    clientAddress,
-    username,
-  );
-  if (!rateLimit.allowed) {
-    const minutes = Math.floor(rateLimit.retryAfterSeconds / 60);
-    const seconds = rateLimit.retryAfterSeconds % 60;
-    const timeStr =
-      minutes > 0
-        ? `${minutes} menit${seconds > 0 ? ` ${seconds} detik` : ""}`
-        : `${seconds} detik`;
-    const response = errorResponse(
-      `Terlalu banyak percobaan login. Akun dikunci sementara untuk keamanan. Silakan tunggu ${timeStr} lagi sebelum mencoba kembali.`,
-      429,
+    // Tanpa ini, server yang belum diberi alamat database menjawab 500 umum
+    // dan pemasangnya tidak tahu bahwa yang kurang hanya satu variabel.
+    if (databaseConfigIssue(process.env) !== null) {
+      return errorResponse(DATABASE_NOT_CONFIGURED_MESSAGE, 503);
+    }
+
+    await ensureServerDatabaseInitialized();
+    const database = getServerDatabase();
+
+    // Gerbang lisensi di awal login, sebelum password diperiksa, sama seperti
+    // `gate_login` di Rust: tanpa lisensi yang sah untuk server ini tidak ada
+    // sesi yang dibuat. Lisensi yang habis tetap boleh masuk (mode baca-saja).
+    try {
+      await assertWebLicense(request, null);
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        return errorResponse(error.message, 403);
+      }
+      throw error;
+    }
+
+    const clientAddress = getClientAddress(request);
+    const rateLimit = await consumeLoginAttempt(
+      database,
+      clientAddress,
+      username,
     );
-    response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
+    if (!rateLimit.allowed) {
+      const minutes = Math.floor(rateLimit.retryAfterSeconds / 60);
+      const seconds = rateLimit.retryAfterSeconds % 60;
+      const timeStr =
+        minutes > 0
+          ? `${minutes} menit${seconds > 0 ? ` ${seconds} detik` : ""}`
+          : `${seconds} detik`;
+      const response = errorResponse(
+        `Terlalu banyak percobaan login. Akun dikunci sementara untuk keamanan. Silakan tunggu ${timeStr} lagi sebelum mencoba kembali.`,
+        429,
+      );
+      response.headers.set("Retry-After", String(rateLimit.retryAfterSeconds));
+      return response;
+    }
+
+    const operator = await authenticateWebOperator(username, password);
+    if (!operator) {
+      return errorResponse("Username atau password tidak sesuai.", 401);
+    }
+
+    // Gerbang 2FA dijalankan SETELAH password terbukti benar, supaya layar login
+    // tidak bisa dipakai memetakan akun mana yang memakai verifikasi dua langkah.
+    const gate = await evaluateTwoFactorGate(
+      database,
+      operator.id,
+      typeof body.totpCode === "string" ? body.totpCode : undefined,
+    );
+    if (gate.outcome === "code_required" || gate.outcome === "code_invalid") {
+      const response = errorResponse(
+        gate.outcome === "code_required"
+          ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
+          : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
+        401,
+      );
+      // Penanda ini yang membuat form login menampilkan kolom kode; password
+      // sudah benar, jadi memberitahukannya di sini tidak membocorkan apa pun.
+      return NextResponse.json(
+        {
+          sukses: false,
+          pesan:
+            gate.outcome === "code_required"
+              ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
+              : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
+          requiresTotp: true,
+        },
+        { status: 401, headers: response.headers },
+      );
+    }
+    if (gate.outcome === "enrollment_required") {
+      return errorResponse(
+        "Role akun ini mewajibkan verifikasi dua langkah, tetapi akun Anda belum mendaftarkannya. Hubungi Admin untuk membuka pendaftaran 2FA.",
+        403,
+      );
+    }
+
+    await clearLoginFailures(database, clientAddress, username);
+
+    const session = await createWebSession(
+      operator,
+      request.headers.get("user-agent"),
+    );
+    const response = NextResponse.json(
+      { sukses: true, pesan: "Login berhasil.", operator },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+    response.cookies.set(
+      WEB_SESSION_COOKIE,
+      session.token,
+      getWebSessionCookieOptions(process.env.NODE_ENV === "production"),
+    );
     return response;
+  } catch (error) {
+    // Galat tak terduga di jalur login tidak pernah diteruskan ke klien: layar
+    // login terbuka untuk siapa pun, dan pesan mentahnya bisa membocorkan skema.
+    console.error("Login route error:", error);
+    return errorResponse("Terjadi kesalahan internal server.", 500);
   }
-
-  const operator = await authenticateWebOperator(username, password);
-  if (!operator) {
-    return errorResponse("Username atau password tidak sesuai.", 401);
-  }
-
-  // Gerbang 2FA dijalankan SETELAH password terbukti benar, supaya layar login
-  // tidak bisa dipakai memetakan akun mana yang memakai verifikasi dua langkah.
-  const gate = await evaluateTwoFactorGate(
-    database,
-    operator.id,
-    typeof body.totpCode === "string" ? body.totpCode : undefined,
-  );
-  if (gate.outcome === "code_required" || gate.outcome === "code_invalid") {
-    const response = errorResponse(
-      gate.outcome === "code_required"
-        ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
-        : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
-      401,
-    );
-    // Penanda ini yang membuat form login menampilkan kolom kode; password
-    // sudah benar, jadi memberitahukannya di sini tidak membocorkan apa pun.
-    return NextResponse.json(
-      {
-        sukses: false,
-        pesan:
-          gate.outcome === "code_required"
-            ? "Masukkan kode 6 digit dari aplikasi autentikator Anda."
-            : "Kode verifikasi tidak cocok. Periksa kode terbaru di aplikasi autentikator.",
-        requiresTotp: true,
-      },
-      { status: 401, headers: response.headers },
-    );
-  }
-  if (gate.outcome === "enrollment_required") {
-    return errorResponse(
-      "Role akun ini mewajibkan verifikasi dua langkah, tetapi akun Anda belum mendaftarkannya. Hubungi Admin untuk membuka pendaftaran 2FA.",
-      403,
-    );
-  }
-
-  await clearLoginFailures(database, clientAddress, username);
-
-  const session = await createWebSession(
-    operator,
-    request.headers.get("user-agent"),
-  );
-  const response = NextResponse.json(
-    { sukses: true, pesan: "Login berhasil.", operator },
-    { headers: { "Cache-Control": "no-store" } },
-  );
-  response.cookies.set(
-    WEB_SESSION_COOKIE,
-    session.token,
-    getWebSessionCookieOptions(process.env.NODE_ENV === "production"),
-  );
-  return response;
 }

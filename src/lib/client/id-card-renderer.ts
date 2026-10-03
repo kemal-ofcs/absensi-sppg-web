@@ -2,8 +2,9 @@
 
 import QRCode from "qrcode";
 import {
-  buildDefaultFrontSlots,
-  computeMirroredBackLayout,
+  buildPrintPages,
+  getCardTrimSizeMm,
+  getCropMarkLinesMm,
 } from "@/lib/client/print-layout-store";
 import { BRANDING } from "@/lib/constants/branding";
 import type { CompanyProfile } from "@/types/company-profile";
@@ -12,7 +13,6 @@ import type {
   IdCardElement,
   IdCardPrintLayoutConfig,
   IdCardTemplateConfig,
-  PrintSlotAssignment,
 } from "@/types/id-card";
 
 // Memory caches to eliminate async lag & re-render latency
@@ -314,6 +314,12 @@ export interface RenderCardParams {
   dpiScale?: number; // default 1 (300 DPI = 1011x638)
   selectedElementId?: string | null;
   showBoundingBoxes?: boolean;
+  /**
+   * Hanya perancang template yang menyalakannya: data yang kosong diganti
+   * contoh supaya elemennya terlihat dan bisa diposisikan. Pratinjau dan cetak
+   * kartu sungguhan tidak pernah menyalakannya.
+   */
+  designMode?: boolean;
 }
 
 export async function drawIdCardToCanvas(
@@ -329,6 +335,7 @@ export async function drawIdCardToCanvas(
     dpiScale = 1,
     selectedElementId,
     showBoundingBoxes,
+    designMode = false,
   } = params;
 
   const isPortrait = template.orientation === "portrait";
@@ -381,6 +388,7 @@ export async function drawIdCardToCanvas(
       employee,
       company,
       qrPngOverride,
+      designMode,
     );
   }
 
@@ -539,6 +547,63 @@ function drawFallbackBackground(
   ctx.strokeRect(10, 10, width - 20, height - 20);
 }
 
+/**
+ * Jenis kelamin untuk kartu. Data induk menyimpannya sebagai kode `L`/`P`
+ * (`master_data.lp`); teks lain dipakai apa adanya.
+ */
+function genderLabel(employee: Record<string, unknown>): string {
+  const raw = String(
+    employee.jenis_kelamin || employee.gender || employee.lp || "",
+  ).trim();
+  const kode = raw.toUpperCase();
+  if (kode === "L") return "Laki-laki";
+  if (kode === "P") return "Perempuan";
+  return raw;
+}
+
+/**
+ * Teks yang ditulis sebuah elemen kartu untuk satu orang.
+ *
+ * Data yang kosong TETAP KOSONG di kartu sungguhan. Contohnya hanya muncul
+ * saat `designMode`, supaya elemen itu terlihat dan bisa diposisikan di
+ * perancang template. Dulu contohnya ikut tercetak: karyawan tanpa jabatan
+ * tercetak "Staff", dan setiap orang tercetak "Laki-laki" karena daftar ID
+ * Card tidak membawa jenis kelamin sama sekali.
+ */
+export function resolveElementText(
+  el: IdCardElement,
+  employee: Record<string, unknown>,
+  company?: CompanyProfile | null,
+  designMode = false,
+): string {
+  const contoh = (teks: string) => (designMode ? teks : "");
+  switch (el.sourceKey) {
+    case "employee.name":
+      return String(employee.nama || contoh("NAMA KARYAWAN"));
+    case "employee.nik":
+      return String(
+        employee.kode_karyawan || employee.id_unik || contoh("EMP-001"),
+      );
+    case "employee.gender":
+      return genderLabel(employee) || contoh("Laki-laki");
+    case "employee.position":
+      return String(employee.jabatan_status || contoh("Staff"));
+    case "employee.department":
+      return String(employee.divisi || contoh("Operasional"));
+    case "company.name":
+      return String(company?.company_name || BRANDING.defaultCompanyName);
+    case "company.terms":
+      return String(
+        company?.card_terms ||
+          "1. Kartu ini milik instansi penerbit.\n2. Wajib dibawa setiap hari kerja.",
+      );
+    case "static_text":
+      return el.staticValue || el.label || "";
+    default:
+      return el.label || "";
+  }
+}
+
 async function renderSingleElement(
   ctx: CanvasRenderingContext2D,
   el: IdCardElement,
@@ -547,6 +612,7 @@ async function renderSingleElement(
   employee: Record<string, unknown>,
   company?: CompanyProfile | null,
   qrPngOverride?: string,
+  designMode = false,
 ) {
   if (el.visible === false) return;
 
@@ -623,39 +689,7 @@ async function renderSingleElement(
     }
   } else {
     // Text rendering
-    let val = "";
-    switch (el.sourceKey) {
-      case "employee.name":
-        val = String(employee.nama || "NAMA KARYAWAN");
-        break;
-      case "employee.nik":
-        val = String(employee.kode_karyawan || employee.id_unik || "EMP-001");
-        break;
-      case "employee.gender":
-        val = String(employee.jenis_kelamin || employee.gender || "Laki-laki");
-        break;
-      case "employee.position":
-        val = String(employee.jabatan_status || "Staff");
-        break;
-      case "employee.department":
-        val = String(employee.divisi || "Operasional");
-        break;
-      case "company.name":
-        val = String(company?.company_name || BRANDING.defaultCompanyName);
-        break;
-      case "company.terms":
-        val = String(
-          company?.card_terms ||
-            "1. Kartu ini milik instansi penerbit.\n2. Wajib dibawa setiap hari kerja.",
-        );
-        break;
-      case "static_text":
-        val = el.staticValue || el.label || "";
-        break;
-      default:
-        val = el.label || "";
-        break;
-    }
+    let val = resolveElementText(el, employee, company, designMode);
 
     if (el.isUppercase) {
       val = val.toUpperCase();
@@ -696,42 +730,36 @@ export interface PrintOptions {
 // Helper: Custom Layout Print Engine (mm-precise)
 // ===========================================================================
 
-/** Ukuran kartu CR80 standar dalam mm berdasarkan orientasi */
-function getCardDimensionsMm(
-  orientation?: "landscape" | "portrait",
-  bleedMm = 0,
-): { cardWMm: number; cardHMm: number } {
-  const isPortrait = orientation === "portrait";
-  const baseW = isPortrait ? 54 : 85.6;
-  const baseH = isPortrait ? 85.6 : 54;
-  return {
-    cardWMm: baseW + bleedMm * 2,
-    cardHMm: baseH + bleedMm * 2,
-  };
+/**
+ * Nama personil diketik operator (atau datang dari impor Excel) lalu disisipkan
+ * ke `innerHTML` cetak. Tanpa escape, nama `"><img src=x onerror=…>` menjalankan
+ * script di sesi siapa pun yang mencetak ID card di Web.
+ */
+export function escapeAttr(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ] ?? c,
+  );
 }
 
-/** CSS @page dan grid positioning untuk satu halaman cetak kustom. */
+/**
+ * CSS halaman cetak kustom. Setiap kartu diposisikan mutlak terhadap sudut
+ * kiri-atas kertas; angkanya datang dari `buildPrintPages`.
+ */
 function buildCustomLayoutCss(
   layout: IdCardPrintLayoutConfig,
-  pageType: "front" | "back",
   orientation?: "landscape" | "portrait",
 ): string {
   const {
     paperWidthMm: pW,
     paperHeightMm: pH,
-    marginTopMm: mT,
-    marginLeftMm: mL,
-    printerOffsetXMm: oX,
-    printerOffsetYMm: oY,
-    cropMarkLengthMm: cmL,
-    cropMarkOffsetMm: cmO,
     bleedMm,
     showCardBorder,
   } = layout;
-
-  const { cardWMm, cardHMm } = getCardDimensionsMm(orientation, bleedMm);
-  const offsetX = (oX ?? 0) + (pageType === "back" ? 0 : 0);
-  const offsetY = oY ?? 0;
+  const { width, height } = getCardTrimSizeMm(orientation);
 
   return `
     @page { size: ${pW}mm ${pH}mm; margin: 0; }
@@ -750,194 +778,79 @@ function buildCustomLayoutCss(
         width: ${pW}mm;
         height: ${pH}mm;
         page-break-after: always;
+        break-after: page;
         overflow: hidden;
         box-sizing: border-box;
       }
-      .print-page:last-child { page-break-after: auto; }
-      .card-slot {
+      .print-page:last-child { page-break-after: auto; break-after: auto; }
+      .card-bleed {
         position: absolute;
-        width: ${cardWMm}mm;
-        height: ${cardHMm}mm;
+        width: ${width + bleedMm * 2}mm;
+        height: ${height + bleedMm * 2}mm;
         overflow: hidden;
-        box-sizing: border-box;
-        ${showCardBorder ? `outline: 0.2mm solid #94a3b8;` : ""}
       }
-      .card-slot img {
+      .card-bleed img {
         width: 100%; height: 100%;
         object-fit: cover; display: block;
+      }
+      .card-trim {
+        position: absolute;
+        width: ${width}mm;
+        height: ${height}mm;
+        object-fit: cover; display: block;
+        ${showCardBorder ? "outline: 0.2mm solid #94a3b8;" : ""}
       }
       .crop-line {
         position: absolute;
         background: #64748b;
         pointer-events: none;
       }
-      /* Margin + offset kalibrasi */
-      .page-content {
-        position: absolute;
-        top: ${mT + offsetY}mm;
-        left: ${mL + offsetX}mm;
-      }
     }
     #sppg-print-root { display: none; }
-    .card-slot img { width: ${cardWMm}mm; height: ${cardHMm}mm; object-fit: cover; display: block; }
-    @media (max-width: 9999px) {
-      .crop-line { background: #64748b; position: absolute; pointer-events: none; }
-    }
-    /* Dimensi elemen crop mark: ${cmL}mm panjang, ${cmO}mm offset */
   `;
 }
 
-/** Menghasilkan elemen HTML crop marks CSS untuk setiap sudut kartu. */
-function buildCustomCropMarkHtml(
-  colMm: number,
-  rowMm: number,
-  layout: IdCardPrintLayoutConfig,
-  orientation?: "landscape" | "portrait",
-): string {
-  if (!layout.showCropMarks) return "";
-  const cmL = layout.cropMarkLengthMm;
-  const cmO = layout.cropMarkOffsetMm;
-  const { cardWMm: cW, cardHMm: cH } = getCardDimensionsMm(
-    orientation,
-    layout.bleedMm,
-  );
-
-  // 4 sudut × 2 garis per sudut = 8 elemen
-  const corners = [
-    // [x_start_mm, y_start_mm, width_mm, height_mm]
-    // Kiri-Atas: garis atas & garis kiri
-    [colMm - cmO - cmL, rowMm - cmO, cmL, 0.2],
-    [colMm - cmO, rowMm - cmO - cmL, 0.2, cmL],
-    // Kanan-Atas
-    [colMm + cW + cmO, rowMm - cmO, cmL, 0.2],
-    [colMm + cW + cmO, rowMm - cmO - cmL, 0.2, cmL],
-    // Kiri-Bawah
-    [colMm - cmO - cmL, rowMm + cH + cmO, cmL, 0.2],
-    [colMm - cmO, rowMm + cH + cmO, 0.2, cmL],
-    // Kanan-Bawah
-    [colMm + cW + cmO, rowMm + cH + cmO, cmL, 0.2],
-    [colMm + cW + cmO, rowMm + cH + cmO, 0.2, cmL],
-  ];
-
-  return corners
-    .map(
-      ([x, y, w, h]) =>
-        `<div class="crop-line" style="left:${x}mm;top:${y}mm;width:${w}mm;height:${h}mm;"></div>`,
-    )
-    .join("");
-}
-
 /**
- * Menghasilkan HTML semua slot kartu pada satu halaman berdasarkan slot assignment.
- * cards = array renderedCards (frontPng/backPng)
- * slots = array PrintSlotAssignment untuk halaman ini
- */
-function buildCustomSlotHtml(
-  cards: { frontPng: string; backPng?: string; name: string }[],
-  slots: PrintSlotAssignment[],
-  layout: IdCardPrintLayoutConfig,
-  orientation?: "landscape" | "portrait",
-): string {
-  const { gridCols, gapColMm, gapRowMm, bleedMm } = layout;
-  const { cardWMm, cardHMm } = getCardDimensionsMm(orientation, bleedMm);
-
-  let html = "";
-  for (const slot of slots) {
-    if (slot.cardIndex < 0 || slot.cardIndex >= cards.length) continue;
-    const card = cards[slot.cardIndex];
-    if (!card) continue;
-
-    const row = Math.floor(slot.slotIndex / gridCols);
-    const col = slot.slotIndex % gridCols;
-
-    const colMm = col * (cardWMm + gapColMm);
-    const rowMm = row * (cardHMm + gapRowMm);
-
-    const imgSrc =
-      slot.side === "back" ? (card.backPng ?? card.frontPng) : card.frontPng;
-    const altText = `${card.name} ${slot.side === "back" ? "Belakang" : "Depan"}`;
-
-    html += `
-      <div class="card-slot" style="left:${colMm}mm;top:${rowMm}mm;">
-        <img src="${imgSrc}" alt="${altText}" />
-      </div>
-      ${buildCustomCropMarkHtml(colMm, rowMm, layout, orientation)}
-    `;
-  }
-  return html;
-}
-
-/**
- * Membangun HTML lengkap dua halaman cetak (depan + belakang) berdasarkan
- * IdCardPrintLayoutConfig dengan duplex position matrix.
+ * HTML seluruh halaman cetak. Pembagian halaman, cermin sisi belakang, dan
+ * posisi tiap kartu diputuskan `buildPrintPages`; di sini hanya digambar.
  */
 function buildCustomPrintHtml(
   cards: { frontPng: string; backPng?: string; name: string }[],
   layout: IdCardPrintLayoutConfig,
   orientation?: "landscape" | "portrait",
 ): string {
-  const { duplexMode, duplexPositionMode, gridCols, gridRows, flipAxis } =
-    layout;
-
-  // Tentukan slot assignments
-  const totalSlots = gridCols * gridRows;
-  const frontSlotsDefault = buildDefaultFrontSlots(gridCols, gridRows);
-
-  // Hanya gunakan slot sebanyak cards tersedia
-  const cappedFrontSlots = frontSlotsDefault
-    .slice(0, Math.min(totalSlots, cards.length))
-    .map((s) => ({ ...s, cardIndex: s.slotIndex }));
-
-  let frontSlots: PrintSlotAssignment[];
-  let backSlots: PrintSlotAssignment[];
-
-  if (duplexPositionMode === "manual_matrix" && layout.frontPageSlots?.length) {
-    frontSlots = layout.frontPageSlots;
-    backSlots =
-      layout.backPageSlots ??
-      computeMirroredBackLayout(frontSlots, gridCols, gridRows, flipAxis);
-  } else {
-    frontSlots = cappedFrontSlots;
-    backSlots = computeMirroredBackLayout(
-      frontSlots,
-      gridCols,
-      gridRows,
-      flipAxis,
-    );
-  }
-
-  const frontHtml = buildCustomSlotHtml(cards, frontSlots, layout, orientation);
-
-  if (duplexMode === "front_only") {
-    return `<div class="print-page"><div class="page-content">${frontHtml}</div></div>`;
-  }
-
-  if (duplexMode === "back_only") {
-    const backHtml = buildCustomSlotHtml(cards, backSlots, layout, orientation);
-    return `<div class="print-page"><div class="page-content">${backHtml}</div></div>`;
-  }
-
-  if (duplexMode === "side_by_side") {
-    // Sisi depan dan belakang di halaman yang sama — slot sudah di-arrange untuk laminasi
-    const sideBySideSlots: PrintSlotAssignment[] = cards.flatMap((_, i) => [
-      { slotIndex: i * 2, cardIndex: i, side: "front" as const },
-      { slotIndex: i * 2 + 1, cardIndex: i, side: "back" as const },
-    ]);
-    const sbsHtml = buildCustomSlotHtml(
-      cards,
-      sideBySideSlots,
-      layout,
-      orientation,
-    );
-    return `<div class="print-page"><div class="page-content">${sbsHtml}</div></div>`;
-  }
-
-  // duplex: dua halaman terpisah
-  const backHtml = buildCustomSlotHtml(cards, backSlots, layout, orientation);
-  return (
-    `<div class="print-page"><div class="page-content">${frontHtml}</div></div>` +
-    `<div class="print-page"><div class="page-content">${backHtml}</div></div>`
-  );
+  const bleed = layout.bleedMm;
+  return buildPrintPages(layout, cards.length, orientation)
+    .map((page) => {
+      // Tiga lapis berurutan: bleed, kartu, tanda potong. Bleed kartu
+      // sebelah tidak boleh menimpa kartu yang sudah digambar.
+      let bleeds = "";
+      let trims = "";
+      let marks = "";
+      for (const item of page) {
+        const card = cards[item.cardIndex];
+        if (!card) continue;
+        const back = item.side === "back";
+        const src = back ? (card.backPng ?? card.frontPng) : card.frontPng;
+        const alt = escapeAttr(`${card.name} ${back ? "Belakang" : "Depan"}`);
+        if (bleed > 0) {
+          // ponytail: gambar yang sama dimuat dua kali saat bleed aktif;
+          // pakai satu sumber bersama bila lembar besar terasa berat.
+          bleeds += `<div class="card-bleed" style="left:${(item.xMm - bleed).toFixed(3)}mm;top:${(item.yMm - bleed).toFixed(3)}mm;"><img src="${src}" alt="" /></div>`;
+        }
+        trims += `<img class="card-trim" style="left:${item.xMm}mm;top:${item.yMm}mm;" src="${src}" alt="${alt}" />`;
+        for (const [x, y, w, h] of getCropMarkLinesMm(
+          layout,
+          item.xMm,
+          item.yMm,
+          orientation,
+        )) {
+          marks += `<div class="crop-line" style="left:${x}mm;top:${y}mm;width:${w}mm;height:${h}mm;"></div>`;
+        }
+      }
+      return `<div class="print-page">${bleeds}${trims}${marks}</div>`;
+    })
+    .join("");
 }
 
 // ===========================================================================
@@ -958,7 +871,7 @@ export function printCardsDirectly(
     const printRoot = document.createElement("div");
     printRoot.id = "sppg-print-root";
     printRoot.innerHTML = `
-      <style>${buildCustomLayoutCss(layout, "front", orientation)}</style>
+      <style>${buildCustomLayoutCss(layout, orientation)}</style>
       ${buildCustomPrintHtml(cards, layout, orientation)}
     `;
     document.body.appendChild(printRoot);
@@ -1038,10 +951,10 @@ export function printCardsDirectly(
           .map((c) => {
             let html = "";
             if (mode === "front_only" || mode === "duplex") {
-              html += `<div class="cr80-card-page"><img src="${c.frontPng}" alt="${c.name} Front" /></div>`;
+              html += `<div class="cr80-card-page"><img src="${c.frontPng}" alt="${escapeAttr(c.name)} Front" /></div>`;
             }
             if ((mode === "back_only" || mode === "duplex") && c.backPng) {
-              html += `<div class="cr80-card-page"><img src="${c.backPng}" alt="${c.name} Back" /></div>`;
+              html += `<div class="cr80-card-page"><img src="${c.backPng}" alt="${escapeAttr(c.name)} Back" /></div>`;
             }
             return html;
           })
@@ -1066,7 +979,7 @@ export function printCardsDirectly(
                 <div class="crop-mark top-right"></div>
                 <div class="crop-mark bottom-left"></div>
                 <div class="crop-mark bottom-right"></div>
-                <img src="${c.frontPng}" alt="${c.name}" class="card-img" />
+                <img src="${c.frontPng}" alt="${escapeAttr(c.name)}" class="card-img" />
               </div>
             `,
               )
@@ -1086,7 +999,7 @@ export function printCardsDirectly(
                 <div class="crop-mark top-right"></div>
                 <div class="crop-mark bottom-left"></div>
                 <div class="crop-mark bottom-right"></div>
-                <img src="${c.backPng || c.frontPng}" alt="${c.name}" class="card-img" />
+                <img src="${c.backPng || c.frontPng}" alt="${escapeAttr(c.name)}" class="card-img" />
               </div>
             `,
               )
@@ -1106,7 +1019,7 @@ export function printCardsDirectly(
                 <div class="crop-mark top-right"></div>
                 <div class="crop-mark bottom-left"></div>
                 <div class="crop-mark bottom-right"></div>
-                <img src="${c.frontPng}" alt="${c.name}" class="card-img" />
+                <img src="${c.frontPng}" alt="${escapeAttr(c.name)}" class="card-img" />
               </div>
             `,
               )
@@ -1123,7 +1036,7 @@ export function printCardsDirectly(
                 <div class="crop-mark top-right"></div>
                 <div class="crop-mark bottom-left"></div>
                 <div class="crop-mark bottom-right"></div>
-                <img src="${c.backPng || c.frontPng}" alt="${c.name}" class="card-img" />
+                <img src="${c.backPng || c.frontPng}" alt="${escapeAttr(c.name)}" class="card-img" />
               </div>
             `,
               )

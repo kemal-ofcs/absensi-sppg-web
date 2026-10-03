@@ -13,32 +13,9 @@ use crate::desktop::config::DesktopState;
 use crate::desktop::models::CommandError;
 use crate::desktop::storage;
 use crate::desktop::sync;
-
-fn require_permission(
-    state: &DesktopState,
-    permission: &str,
-) -> Result<crate::desktop::models::OperatorUser, CommandError> {
-    let session = state.session.lock().map_err(|_| CommandError::internal())?;
-    let session = session.as_ref().ok_or_else(|| {
-        CommandError::new(
-            "DESKTOP_SESSION_MISSING",
-            "Session Desktop tidak tersedia. Silakan login kembali.",
-        )
-    })?;
-    if !session.operator.is_superadmin
-        && !session
-            .operator
-            .permissions
-            .iter()
-            .any(|key| key == permission)
-    {
-        return Err(CommandError::new(
-            "DESKTOP_ACCESS_DENIED",
-            "Akses ditolak untuk tindakan ini.",
-        ));
-    }
-    Ok(session.operator.clone())
-}
+// Gerbang izin yang SAMA dengan seluruh command lain: salinan sendiri di sini
+// akan meloloskan payroll dari mode baca-saja lisensi.
+use crate::desktop::commands::require_permission;
 
 fn iso_now_tx(tx: &rusqlite::Transaction<'_>) -> String {
     tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now');", [], |r| {
@@ -1795,7 +1772,7 @@ fn load_payroll_components(conn: &Connection) -> Result<Vec<PayrollComponent>, C
 /// sudah berlaku, per kategori. `COALESCE` ke generasi terawal menjaga periode
 /// yang lebih tua daripada seluruh tarif tetap punya tarif, alih-alih diam-diam
 /// menghasilkan potongan nol. Cerminan TS-nya: `loadTaxRules` di
-/// `payroll-recap.ts` (dibawa dari Project Meksa).
+/// `payroll-recap.ts`.
 fn load_tax_rules(conn: &Connection, period_end: &str) -> Result<Vec<TaxRule>, CommandError> {
     let mut stmt = conn
         .prepare(

@@ -24,6 +24,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop::commands::desktop_get_session,
             desktop::commands::desktop_get_runtime_status,
+            desktop::commands::desktop_get_license_status,
+            desktop::commands::desktop_install_license,
             desktop::commands::desktop_get_bootstrap_status,
             desktop::commands::desktop_bootstrap_superadmin,
             desktop::commands::desktop_check_bootstrap_database,
@@ -127,8 +129,6 @@ pub fn run() {
             desktop::commands::desktop_save_alfa_settings,
             desktop::commands::desktop_trigger_generate_alfa,
             desktop::commands::desktop_get_attendance_audit,
-            desktop::commands::desktop_get_server_url,
-            desktop::commands::desktop_set_server_url,
             desktop::commands::desktop_get_company_profile,
             desktop::commands::desktop_update_company_profile,
             desktop::commands::desktop_get_id_card_template,

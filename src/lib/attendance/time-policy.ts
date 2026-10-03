@@ -388,7 +388,7 @@ export interface HasilHitungDariJam {
 
 /**
  * Perhitungan ulang untuk jalur admin (edit riwayat, koreksi, import, hapus
- * log, sync-push) yang hanya memegang jam masuk "HH:mm" dan durasi hadir yang
+ * log) yang hanya memegang jam masuk "HH:mm" dan durasi hadir yang
  * sudah dihitung pemanggilnya (termasuk lintas tengah malam). Rumusnya sama
  * dengan scanner: terlambat/datang awal diukur dari Jam Masuk, jam kerja
  * dimulai dari Jam Masuk, istirahat dipotong penuh setelah Jam Masuk + Offset.

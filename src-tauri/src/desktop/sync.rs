@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::{
     config::DesktopState,
     models::{CommandError, DesktopSyncStatus},
-    payroll_seed, remote, storage,
+    payroll_seed, storage,
     turso::TursoClient,
 };
 
@@ -1204,6 +1204,7 @@ fn load_revision_hashes(
     Ok(hashes)
 }
 
+#[cfg(test)]
 pub fn apply_snapshot(state: &DesktopState, payload: &Value) -> Result<usize, CommandError> {
     apply_snapshot_with_pulse(state, payload, None)
 }
@@ -1339,78 +1340,58 @@ pub fn apply_snapshot_with_pulse(
         .map(|()| written)
 }
 
-pub async fn pull_snapshot(
-    state: &DesktopState,
-    token: &str,
-) -> Result<DesktopSyncStatus, CommandError> {
-    if let Ok(turso) = state.get_turso_client() {
-        let (last_rev, _) = {
-            let connection = storage::database(&state.data_dir)?;
-            connection
-                .query_row(
-                    "SELECT last_revision, updated_at FROM desktop_sync_cursor WHERE domain = 'operational';",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
-                )
-                .unwrap_or((0, None))
-        };
+pub async fn pull_snapshot(state: &DesktopState) -> Result<DesktopSyncStatus, CommandError> {
+    let turso = state.get_turso_client()?;
+    let (last_rev, _) = {
+        let connection = storage::database(&state.data_dir)?;
+        connection
+            .query_row(
+                "SELECT last_revision, updated_at FROM desktop_sync_cursor WHERE domain = 'operational';",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap_or((0, None))
+    };
 
-        // Probe murah sebelum menarik apa pun: satu query kecil ke `sync_pulse`
-        // memberi tahu tabel mana saja yang berubah sejak pull terakhir. Trigger
-        // pulse di cloud ikut naik untuk penulisan dari perangkat lain MAUPUN
-        // dari route handler Web yang menulis langsung ke Turso, jadi probe ini
-        // tidak bisa melewatkan perubahan. Bila tidak ada yang berubah, siklus
-        // sync selesai tanpa menarik satu baris pun.
-        let pulse = turso.fetch_sync_pulse().await?;
-        let wanted = match pulse.as_ref() {
-            Some(pulse) => {
-                let local = load_table_cursors(state)?;
-                let stale = pulse
-                    .iter()
-                    .filter(|(table, remote)| local.get(table.as_str()) != Some(remote))
-                    .map(|(table, _)| table.clone())
-                    .collect::<HashSet<String>>();
-                if stale.is_empty() {
-                    return status(state);
-                }
-                Some(stale)
-            }
-            // Database cloud lama tanpa tabel pulse: jatuh ke pull penuh.
-            None => None,
-        };
-
-        let payload = turso.pull_snapshot_tables(last_rev, wanted.as_ref()).await?;
-        let applied_pulse = pulse.as_ref().map(|pulse| {
-            pulse
+    // Probe murah sebelum menarik apa pun: satu query kecil ke `sync_pulse`
+    // memberi tahu tabel mana saja yang berubah sejak pull terakhir. Trigger
+    // pulse di cloud ikut naik untuk penulisan dari perangkat lain MAUPUN
+    // dari route handler Web yang menulis langsung ke Turso, jadi probe ini
+    // tidak bisa melewatkan perubahan. Bila tidak ada yang berubah, siklus
+    // sync selesai tanpa menarik satu baris pun.
+    let pulse = turso.fetch_sync_pulse().await?;
+    let wanted = match pulse.as_ref() {
+        Some(pulse) => {
+            let local = load_table_cursors(state)?;
+            let stale = pulse
                 .iter()
-                .filter(|(table, _)| match wanted.as_ref() {
-                    None => true,
-                    Some(stale) => stale.contains(table.as_str()),
-                })
-                .map(|(table, revision)| (table.clone(), *revision))
-                .collect::<HashMap<String, i64>>()
-        });
-        let written = apply_snapshot_with_pulse(state, &payload, applied_pulse.as_ref())?;
-        let mut result = status(state)?;
-        result.changed_rows = i64::try_from(written).unwrap_or(i64::MAX);
-        return Ok(result);
-    }
+                .filter(|(table, remote)| local.get(table.as_str()) != Some(remote))
+                .map(|(table, _)| table.clone())
+                .collect::<HashSet<String>>();
+            if stale.is_empty() {
+                return status(state);
+            }
+            Some(stale)
+        }
+        // Database cloud lama tanpa tabel pulse: jatuh ke pull penuh.
+        None => None,
+    };
 
-    if !token.is_empty() {
-        let payload = remote::authorized_json(
-            state,
-            reqwest::Method::POST,
-            "/api/sync/snapshot",
-            None,
-            token,
-        )
-        .await?;
-        let written = apply_snapshot(state, &payload)?;
-        let mut result = status(state)?;
-        result.changed_rows = i64::try_from(written).unwrap_or(i64::MAX);
-        return Ok(result);
-    }
-    status(state)
+    let payload = turso.pull_snapshot_tables(last_rev, wanted.as_ref()).await?;
+    let applied_pulse = pulse.as_ref().map(|pulse| {
+        pulse
+            .iter()
+            .filter(|(table, _)| match wanted.as_ref() {
+                None => true,
+                Some(stale) => stale.contains(table.as_str()),
+            })
+            .map(|(table, revision)| (table.clone(), *revision))
+            .collect::<HashMap<String, i64>>()
+    });
+    let written = apply_snapshot_with_pulse(state, &payload, applied_pulse.as_ref())?;
+    let mut result = status(state)?;
+    result.changed_rows = i64::try_from(written).unwrap_or(i64::MAX);
+    Ok(result)
 }
 
 fn mark_batch_failed(state: &DesktopState, event_ids: &[String], message: &str) {
@@ -2234,100 +2215,49 @@ fn ensure_unsynced_payroll_data_enqueued(state: &DesktopState) -> Result<(), Com
 /// siklus selalu selesai; sisa antrean ikut siklus berikutnya.
 const MAX_PUSH_BATCHES_PER_CYCLE: usize = 40;
 
-pub async fn push_outbox(state: &DesktopState, token: &str) -> Result<(), CommandError> {
+pub async fn push_outbox(state: &DesktopState) -> Result<(), CommandError> {
     let _ = ensure_unsynced_payroll_data_enqueued(state);
-    if let Ok(turso) = state.get_turso_client() {
-        // Diperiksa sekali per siklus push, dan hanya bila benar-benar ada yang
-        // dikirim, supaya sync idle tidak menambah round-trip ke Turso.
-        let mut schema_checked = false;
-        for _ in 0..MAX_PUSH_BATCHES_PER_CYCLE {
-            let (_client_id, events) = pending_events(state)?;
-            if events.is_empty() {
-                return Ok(());
-            }
-            if !schema_checked {
-                // Sengaja sebelum mark_batch_failed mana pun: event tetap
-                // `pending` dan akan terkirim lagi setelah aplikasi diperbarui.
-                assert_cloud_schema_compatible(&turso).await?;
-                schema_checked = true;
-            }
-            let event_ids = events
-                .iter()
-                .filter_map(|event| event.get("eventId").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
+    let turso = state.get_turso_client()?;
+    // Diperiksa sekali per siklus push, dan hanya bila benar-benar ada yang
+    // dikirim, supaya sync idle tidak menambah round-trip ke Turso.
+    let mut schema_checked = false;
+    for _ in 0..MAX_PUSH_BATCHES_PER_CYCLE {
+        let (_client_id, events) = pending_events(state)?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        if !schema_checked {
+            // Sengaja sebelum mark_batch_failed mana pun: event tetap
+            // `pending` dan akan terkirim lagi setelah aplikasi diperbarui.
+            assert_cloud_schema_compatible(&turso).await?;
+            schema_checked = true;
+        }
+        let event_ids = events
+            .iter()
+            .filter_map(|event| event.get("eventId").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
 
-            let results = match turso.push_events(&events).await {
-                Ok(res) => res,
-                Err(error) => {
-                    mark_batch_failed(state, &event_ids, &error.message);
-                    return Err(error);
-                }
-            };
-
-            if let Err(error) = apply_push_results(state, &event_ids, &results) {
-                mark_batch_failed(
-                    state,
-                    &event_ids,
-                    "Respons database Turso tidak lengkap atau tidak valid.",
-                );
+        let results = match turso.push_events(&events).await {
+            Ok(res) => res,
+            Err(error) => {
+                mark_batch_failed(state, &event_ids, &error.message);
                 return Err(error);
             }
-            if event_ids.len() < 50 {
-                return Ok(());
-            }
-        }
-        return Ok(());
-    }
+        };
 
-    if !token.is_empty() {
-        for _ in 0..MAX_PUSH_BATCHES_PER_CYCLE {
-            let (client_id, events) = pending_events(state)?;
-            if events.is_empty() {
-                return Ok(());
-            }
-            let event_ids = events
-                .iter()
-                .filter_map(|event| event.get("eventId").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let response = remote::authorized_json(
+        if let Err(error) = apply_push_results(state, &event_ids, &results) {
+            mark_batch_failed(
                 state,
-                reqwest::Method::POST,
-                "/api/sync/push",
-                Some(json!({
-                    "clientId": client_id,
-                    "schemaVersion": CLIENT_SCHEMA_VERSION,
-                    "events": events,
-                })),
-                token,
-            )
-            .await;
-            let response = match response {
-                Ok(response) => response,
-                Err(error) => {
-                    mark_batch_failed(state, &event_ids, &error.message);
-                    return Err(error);
-                }
-            };
-            let results = response
-                .get("results")
-                .and_then(Value::as_array)
-                .ok_or_else(CommandError::internal)?;
-            if let Err(error) = apply_push_results(state, &event_ids, results) {
-                mark_batch_failed(
-                    state,
-                    &event_ids,
-                    "Respons server tidak lengkap atau tidak valid.",
-                );
-                return Err(error);
-            }
-            if event_ids.len() < 50 {
-                return Ok(());
-            }
+                &event_ids,
+                "Respons database Turso tidak lengkap atau tidak valid.",
+            );
+            return Err(error);
+        }
+        if event_ids.len() < 50 {
+            return Ok(());
         }
     }
-
     Ok(())
 }
 
@@ -2353,10 +2283,7 @@ impl Drop for SyncInFlightGuard {
     }
 }
 
-pub async fn synchronize(
-    state: &DesktopState,
-    token: &str,
-) -> Result<DesktopSyncStatus, CommandError> {
+pub async fn synchronize(state: &DesktopState) -> Result<DesktopSyncStatus, CommandError> {
     if SYNC_IN_FLIGHT
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -2366,8 +2293,8 @@ pub async fn synchronize(
     }
     let _in_flight = SyncInFlightGuard;
 
-    let push_error = push_outbox(state, token).await.err();
-    let pulled = pull_snapshot(state, token).await;
+    let push_error = push_outbox(state).await.err();
+    let pulled = pull_snapshot(state).await;
 
     // Penegakan RBAC dinamis untuk jalur 2-tier. Sesi Desktop/Mobile hidup di
     // memori sampai aplikasi ditutup, jadi tanpa langkah ini operator yang baru

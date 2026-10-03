@@ -11,6 +11,10 @@ import {
   watchCoordinates,
 } from "@/lib/client/geolocation";
 import {
+  CARD_RELEASE_MS,
+  createQrReleaseGate,
+} from "@/lib/client/qr-release-gate";
+import {
   captureScanPhoto,
   isFaceVisible,
   openFaceCamera,
@@ -38,6 +42,9 @@ interface ScanLogItem {
   pesan: string;
   sukses: boolean;
 }
+
+const KARTU_MASIH_TERBACA =
+  "Kartu yang sama masih terbaca. Jauhkan dari kamera sebentar untuk memindai ulang.";
 
 export default function ScannerPage() {
   const isHydrated = useHydrated();
@@ -106,6 +113,11 @@ export default function ScannerPage() {
   const faceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Kamera QR sedang hidup sebelum penahanan, jadi wajib dinyalakan lagi. */
   const resumeCameraRef = useRef(false);
+  /** Kartu yang baru ditahan tidak memicu jendela foto lagi sebelum dijauhkan. */
+  const releaseGateRef = useRef(createQrReleaseGate());
+  const releaseHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   /** `startCamera` didefinisikan setelah blok ini; ref menjembataninya. */
   const startCameraRef = useRef<((deviceId?: string) => Promise<void>) | null>(
     null,
@@ -422,24 +434,26 @@ export default function ScannerPage() {
   /**
    * Nyalakan kembali kamera pemindai setelah penahanan selesai.
    *
-   * Debounce QR terakhir ikut disegarkan: kartu yang sama masih berada di depan
-   * lensa saat kamera hidup lagi, dan tanpa ini ia langsung terbaca ulang lalu
-   * ditolak backend sebagai scan ganda — terlihat seperti kegagalan bagi
-   * operator, padahal absensinya sudah tercatat.
+   * Kartu yang sama biasanya masih di depan lensa saat kamera hidup lagi. Jeda
+   * waktu saja tidak cukup: setelah Batal atau scan ditolak, kartu yang masih
+   * dipegang terbaca lagi dan jendela foto terbuka berulang tanpa akhir. Karena
+   * itu QR-nya ditahan sampai kartunya TIDAK terlihat `CARD_RELEASE_MS`
+   * berturut-turut (`qr-release-gate.ts`).
    */
-  const resumeQrCamera = useCallback(() => {
+  const resumeQrCamera = useCallback((qr: string) => {
     if (!resumeCameraRef.current) return;
     resumeCameraRef.current = false;
-    lastScannedTimeRef.current = Date.now();
+    releaseGateRef.current.block(qr, Date.now());
     void startCameraRef.current?.();
   }, []);
 
   const closePhotoHold = useCallback(() => {
+    const qr = pendingScan;
     stopFaceCamera();
     setPendingScan(null);
-    resumeQrCamera();
+    if (qr) resumeQrCamera(qr);
     if (mode === "reader") inputRef.current?.focus();
-  }, [mode, stopFaceCamera, resumeQrCamera]);
+  }, [mode, pendingScan, stopFaceCamera, resumeQrCamera]);
 
   const capturePhotoAndSubmit = useCallback(async () => {
     const qr = pendingScan;
@@ -454,7 +468,7 @@ export default function ScannerPage() {
     await submitScan(qr, photo);
     // Kamera pemindai baru dinyalakan SETELAH scan terkirim, supaya kartu yang
     // masih menempel di lensa tidak terbaca ulang selagi permintaan berjalan.
-    resumeQrCamera();
+    resumeQrCamera(qr);
   }, [pendingScan, stopFaceCamera, resumeQrCamera, submitScan]);
 
   // Fase membidik lalu menahan diam sejenak sebelum memotret sendiri.
@@ -563,6 +577,20 @@ export default function ScannerPage() {
         if (!qrContent) return;
 
         const now = Date.now();
+        if (!releaseGateRef.current.allows(qrContent, now)) {
+          // Pesannya hilang sendiri begitu kartu dianggap sudah dijauhkan:
+          // setelah itu kamera tidak membaca apa pun yang bisa menghapusnya.
+          setCameraMessage(KARTU_MASIH_TERBACA);
+          if (releaseHintTimerRef.current) {
+            clearTimeout(releaseHintTimerRef.current);
+          }
+          releaseHintTimerRef.current = setTimeout(() => {
+            setCameraMessage((pesan) =>
+              pesan === KARTU_MASIH_TERBACA ? null : pesan,
+            );
+          }, CARD_RELEASE_MS);
+          return;
+        }
         // Only lock the SAME card — different cards queue instantly
         const isSameQrTooSoon =
           qrContent === lastScannedQrRef.current &&

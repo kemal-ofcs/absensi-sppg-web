@@ -18,7 +18,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - DIWAJIBKAN untuk mempertahankan dan TIDAK mengubah/menghapus struktur maupun arsitektur lama yang sudah berjalan stabil.
    - Jika memang terdapat kebutuhan perubahan arsitektur atau breaking change, WAJIB meminta konfirmasi dan persetujuan User terlebih dahulu sebelum dieksekusi.
 4. **Tri-Platform Schema Synchronization (Zero-Drift)**:
-   - When creating or modifying tables/columns, you MUST update all schemas simultaneously: Web Turso (`src/lib/db-schema.ts`), Desktop & Mobile SQLite (`src-tauri/src/desktop/storage.rs`), and Sync Contracts (`src/lib/server/operational/sync-push.ts`, `src-tauri/src/desktop/sync.rs`).
+   - When creating or modifying tables/columns, you MUST update all schemas simultaneously: Web Turso (`src/lib/db-schema.ts`), Desktop & Mobile SQLite (`src-tauri/src/desktop/storage.rs`), and Sync Contracts (`SNAPSHOT_TABLES` in `src-tauri/src/desktop/sync.rs`, `SNAPSHOT_SOURCES` in `src-tauri/src/desktop/turso.rs`).
 5. **Ironclad Backend & Sync Security**:
    - All multi-table mutations must execute inside a single atomic transaction (`connection.transaction()` / `db.batch()`).
    - Every local mutation on Desktop/Mobile must enqueue an outbox event in `desktop_sync_outbox`.

@@ -9,12 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Client, createClient } from "@libsql/client";
-import type { OperatorUser } from "@/lib/auth/operator-user";
 import { initDatabaseSchema } from "@/lib/db-schema";
-import {
-  type OperationalSyncEvent,
-  processOperationalSyncEvent,
-} from "@/lib/server/operational/sync-push";
 
 /**
  * Regresi bug "id melompat" (mis. tbl_shift.id_shift 7 -> 69 -> 111).
@@ -28,25 +23,6 @@ import {
  * klausa VALUES dan memakai primary key itu sebagai conflict target, sehingga
  * jalur UPDATE tidak pernah mengalokasikan rowid baru.
  */
-
-const actor: OperatorUser = {
-  id: 1,
-  kode_operator: "SPD001",
-  nama_operator: "Superadmin",
-  username: "superadmin",
-  role: "Superadmin",
-  roleId: 1,
-  roleKey: "superadmin",
-  isSuperadmin: true,
-  permissions: [
-    "sync.view",
-    "employees.manage",
-    "shifts.manage",
-    "scanner.use",
-    "corrections.manage",
-  ],
-  permissionRevision: 1,
-};
 
 const clients: Client[] = [];
 const directories: string[] = [];
@@ -86,96 +62,7 @@ async function fixture() {
   return client;
 }
 
-function attendanceEvent(
-  sessionId: string,
-  sequence: number,
-): OperationalSyncEvent {
-  return {
-    eventId: `evt-${sequence.toString(16).padStart(64, "0")}`,
-    clientId: `desktop-${"e".repeat(64)}`,
-    domain: "attendance",
-    operation: "create",
-    entityKey: sessionId,
-    payload: {
-      attendance: {
-        tanggal: "2026-08-10",
-        id_karyawan: "K001",
-        nama: "Karyawan Test",
-        kelas_divisi: "Dapur",
-        jam_masuk: "2026-08-10 07:00:00",
-        jam_pulang: "",
-        status_kehadiran: "Hadir",
-        status_absen: "Belum Pulang",
-        keterangan: `Revisi ${sequence}`,
-        sumber: "Scanner",
-        update_terakhir: "2026-08-10 07:00:00",
-        menit_terlambat: 0,
-        menit_datang_awal: 0,
-        jam_kerja: 0,
-        lembur: 0,
-        jam_kerja_kurang: 0,
-        id_shift: 1,
-        bulan: "Agustus",
-        tahun: 2026,
-        id_sesi: sessionId,
-        mode_tugas: "NORMAL",
-        id_backup: "",
-        id_karyawan_asal: "",
-        tanggal_tugas: "2026-08-10",
-      },
-    },
-    baseRevision: null,
-    createdAt: 1_786_300_000,
-  } satisfies OperationalSyncEvent;
-}
-
-async function idFor(client: Client, sessionId: string) {
-  const res = await client.execute({
-    sql: "SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?;",
-    args: [sessionId],
-  });
-  return Number(res.rows[0]?.id_absensi);
-}
-
 describe("AUTOINCREMENT sequence guard", () => {
-  test("upsert absensi_harian yang berulang tidak membuat id baris berikutnya melompat", async () => {
-    const client = await fixture();
-
-    const first = await processOperationalSyncEvent(
-      client,
-      actor,
-      attendanceEvent("SESI-A", 1),
-    );
-    expect(first.status).not.toBe("rejected");
-    const firstId = await idFor(client, "SESI-A");
-    expect(firstId).toBeGreaterThan(0);
-
-    // Push ulang sesi yang sama berkali-kali: semuanya harus berujung UPDATE.
-    for (let i = 0; i < 25; i++) {
-      const result = await processOperationalSyncEvent(
-        client,
-        actor,
-        attendanceEvent("SESI-A", 100 + i),
-      );
-      expect(result.status).not.toBe("rejected");
-    }
-
-    const rowCount = await client.execute(
-      "SELECT COUNT(*) AS total FROM absensi_harian;",
-    );
-    expect(Number(rowCount.rows[0]?.total)).toBe(1);
-    expect(await idFor(client, "SESI-A")).toBe(firstId);
-
-    // Baris benar-benar baru harus lanjut berurutan, bukan melompat 25 nomor.
-    const second = await processOperationalSyncEvent(
-      client,
-      actor,
-      attendanceEvent("SESI-B", 2),
-    );
-    expect(second.status).not.toBe("rejected");
-    expect(await idFor(client, "SESI-B")).toBe(firstId + 1);
-  });
-
   test("tbl_shift kosong setelah inisialisasi agar counter AUTOINCREMENT belum terpakai", async () => {
     // Shift tidak lagi di-seed secara otomatis. Pengguna membuat shift secara manual
     // agar tidak ada inkonsistensi antara data default desktop vs cloud.

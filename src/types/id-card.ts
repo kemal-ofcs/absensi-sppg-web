@@ -139,4 +139,21 @@ export interface IdCardPrintLayoutConfig {
   // --- Kalibrasi Offset Fisik Printer (mm) ---
   printerOffsetXMm: number; // offset horizontal (-5 s.d. +5)
   printerOffsetYMm: number; // offset vertikal (-5 s.d. +5)
+
+  /**
+   * Kalibrasi sisi belakang: seberapa jauh gambar belakang meleset dari gambar
+   * depan saat lembar diterawang DARI SISI DEPAN, diukur di baris teratas dan
+   * baris terbawah. Positif = belakang terlalu ke kanan / terlalu ke bawah.
+   *
+   * Dua titik ukur, bukan satu offset: kertas tebal menyusut atau miring di
+   * lintasan kedua printer, sehingga selisihnya membesar dari atas ke bawah
+   * dan satu angka geser tidak bisa mengoreksinya.
+   *
+   * Opsional karena preset yang sudah tersimpan di localStorage belum
+   * memilikinya; nilai yang hilang dibaca sebagai 0.
+   */
+  backDriftTopXMm?: number;
+  backDriftTopYMm?: number;
+  backDriftBottomXMm?: number;
+  backDriftBottomYMm?: number;
 }

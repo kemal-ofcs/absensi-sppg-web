@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,8 +58,9 @@ pub struct OfflineCredential {
 #[derive(Debug)]
 pub struct DesktopSession {
     pub operator: OperatorUser,
-    pub token: Option<Zeroizing<String>>,
     pub mode: SessionMode,
+    /// Hak lisensi yang berlaku untuk sesi ini (lihat `license.rs`).
+    pub license: super::license::LicenseGrant,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -148,17 +148,4 @@ impl CommandError {
             "Data lokal Desktop tidak dapat diproses.",
         )
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginApiResponse {
-    pub sukses: bool,
-    pub pesan: Option<String>,
-    pub operator: Option<OperatorUser>,
-}
-
-pub struct RemoteLogin {
-    pub operator: OperatorUser,
-    pub token: Zeroizing<String>,
-    pub message: String,
 }

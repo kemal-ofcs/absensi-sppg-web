@@ -25,6 +25,9 @@ const TURSO_VAULT_FILE: &str = "turso_config.vault";
 const TURSO_SALT_FILE: &str = "turso_config.salt";
 const LEGACY_TURSO_SECRET_PASSPHRASE: &str = "sppg-vault-master-turso-v1";
 const TURSO_VAULT_MAGIC_V2: &[u8] = b"SPPGTV2";
+/// Vault yang kuncinya disimpan di penyimpanan kredensial OS.
+const TURSO_VAULT_MAGIC_V3: &[u8] = b"SPPGTV3";
+const OS_VAULT_SERVICE: &str = "id.absensi.perusahaan.turso-vault";
 
 fn device_id(state: &DesktopState) -> Result<String, CommandError> {
     storage::get_or_create_device_id(&state.data_dir)
@@ -62,6 +65,50 @@ fn device_turso_passphrase(device_id: &str) -> Zeroizing<Vec<u8>> {
     hash.update(b"sppg-vault-master-turso-v2:");
     hash.update(device_id.as_bytes());
     Zeroizing::new(hash.finalize().to_vec())
+}
+
+/// Nama akun keyring per folder data, supaya dua pemasangan (atau folder uji)
+/// tidak saling menimpa kunci.
+fn os_vault_account(state: &DesktopState) -> String {
+    let mut hash = Sha256::new();
+    hash.update(state.data_dir.to_string_lossy().as_bytes());
+    hex::encode(hash.finalize())[..32].to_owned()
+}
+
+/// Kunci vault dari Credential Manager (Windows) / Keychain (macOS).
+///
+/// Kunci v2 diturunkan dari `device_id`, yang tersimpan polos di SQLite pada
+/// folder yang sama dengan vault-nya: siapa pun yang menyalin folder itu dari
+/// terminal di lobi bisa mendekripsi token database akses penuh. Kunci di sini
+/// dilindungi akun Windows pemiliknya dan tidak ikut tersalin bersama folder.
+/// `None` berarti penyimpanan OS tidak tersedia; pemanggil jatuh ke v2.
+#[cfg(any(windows, target_os = "macos"))]
+fn os_vault_secret(state: &DesktopState, create: bool) -> Option<Zeroizing<Vec<u8>>> {
+    let entry = keyring::Entry::new(OS_VAULT_SERVICE, &os_vault_account(state)).ok()?;
+    match entry.get_secret() {
+        Ok(secret) if secret.len() == 32 => Some(Zeroizing::new(secret)),
+        Err(keyring::Error::NoEntry) if create => {
+            let mut secret = Zeroizing::new(vec![0u8; 32]);
+            rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, secret.as_mut_slice());
+            entry.set_secret(&secret).ok()?;
+            Some(secret)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn os_vault_secret(_state: &DesktopState, _create: bool) -> Option<Zeroizing<Vec<u8>>> {
+    None
+}
+
+fn delete_os_vault_secret(state: &DesktopState) {
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Ok(entry) = keyring::Entry::new(OS_VAULT_SERVICE, &os_vault_account(state)) {
+        let _ = entry.delete_credential();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = state;
 }
 
 fn credential_paths(
@@ -290,7 +337,13 @@ pub fn save_turso_config(state: &DesktopState, config: &TursoConfig) -> Result<(
     };
 
     let current_device_id = device_id(state)?;
-    let passphrase = device_turso_passphrase(&current_device_id);
+    let (magic, passphrase) = match os_vault_secret(state, true) {
+        Some(secret) => (TURSO_VAULT_MAGIC_V3, secret),
+        None => (
+            TURSO_VAULT_MAGIC_V2,
+            device_turso_passphrase(&current_device_id),
+        ),
+    };
     let mut key = derive_turso_key(&passphrase, &salt)?;
 
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| CommandError::internal())?;
@@ -312,8 +365,8 @@ pub fn save_turso_config(state: &DesktopState, config: &TursoConfig) -> Result<(
         )
         .map_err(|_| CommandError::internal())?;
 
-    let mut file_payload = Vec::with_capacity(TURSO_VAULT_MAGIC_V2.len() + 12 + ciphertext.len());
-    file_payload.extend_from_slice(TURSO_VAULT_MAGIC_V2);
+    let mut file_payload = Vec::with_capacity(magic.len() + 12 + ciphertext.len());
+    file_payload.extend_from_slice(magic);
     file_payload.extend_from_slice(&nonce_bytes);
     file_payload.extend_from_slice(&ciphertext);
 
@@ -351,7 +404,10 @@ pub fn load_turso_config(state: &DesktopState) -> Result<Option<TursoConfig>, Co
     }
 
     let current_device_id = device_id(state)?;
-    let is_v2 = payload.starts_with(TURSO_VAULT_MAGIC_V2);
+    let is_v3 = payload.starts_with(TURSO_VAULT_MAGIC_V3);
+    // v2 dan v3 sama-sama mengikat vault ke `device_id` lewat AAD; bedanya
+    // hanya asal kuncinya.
+    let is_v2 = is_v3 || payload.starts_with(TURSO_VAULT_MAGIC_V2);
     let encrypted_payload = if is_v2 {
         &payload[TURSO_VAULT_MAGIC_V2.len()..]
     } else {
@@ -366,7 +422,14 @@ pub fn load_turso_config(state: &DesktopState) -> Result<Option<TursoConfig>, Co
     let (nonce_bytes, ciphertext) = encrypted_payload.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let passphrase = if is_v2 {
+    let passphrase = if is_v3 {
+        os_vault_secret(state, false).ok_or_else(|| {
+            CommandError::new(
+                "TURSO_VAULT_KEY_MISSING",
+                "Kunci vault database tidak ditemukan di penyimpanan kredensial sistem. Atur ulang koneksi database.",
+            )
+        })?
+    } else if is_v2 {
         device_turso_passphrase(&current_device_id)
     } else {
         Zeroizing::new(LEGACY_TURSO_SECRET_PASSPHRASE.as_bytes().to_vec())
@@ -398,7 +461,10 @@ pub fn load_turso_config(state: &DesktopState) -> Result<Option<TursoConfig>, Co
     let config: TursoConfig =
         serde_json::from_slice(&decrypted).map_err(|_| CommandError::internal())?;
     drop(_guard);
-    if !is_v2 {
+    // Vault lama ditulis ulang begitu terbuka: v1 selalu, v2 hanya di OS yang
+    // punya penyimpanan kredensial (di tempat lain penulisan ulang menghasilkan
+    // v2 yang sama).
+    if !is_v2 || (!is_v3 && cfg!(any(windows, target_os = "macos"))) {
         save_turso_config(state, &config)?;
     }
     Ok(Some(config))
@@ -414,6 +480,7 @@ pub fn clear_turso_config(state: &DesktopState) -> Result<(), CommandError> {
     if salt_path.exists() {
         fs::remove_file(salt_path).map_err(|_| CommandError::internal())?;
     }
+    delete_os_vault_secret(state);
     Ok(())
 }
 
@@ -426,14 +493,44 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        credential_paths, device_id, identity_key, legacy_identity_key, load_offline, provision,
+        clear_turso_config, credential_paths, delete_os_vault_secret, device_id, identity_key,
+        legacy_identity_key, load_offline, load_turso_config, provision, save_turso_config,
         write_snapshot,
     };
     use crate::desktop::{
         config::DesktopState,
         models::{OfflineCredential, OperatorUser},
         storage,
+        turso::TursoConfig,
     };
+
+    /// Vault token database memakai kunci dari Credential Manager / Keychain
+    /// bila ada; kunci itu yang hilang berarti vault tidak bisa dibuka, dengan
+    /// kode yang ditangani `config.rs` sebagai vault rusak, bukan gagal start.
+    #[test]
+    fn turso_vault_key_lives_in_os_credential_store() {
+        let directory = TempDir::new().expect("temporary directory");
+        let state = test_state(&directory, "https://vault-uji.invalid", 24);
+        let config = TursoConfig::turso("libsql://uji.turso.io".into(), "token-uji".into());
+        save_turso_config(&state, &config).expect("simpan vault");
+
+        let vault = directory.path().join("credentials").join("turso_config.vault");
+        let magic: &[u8] = if cfg!(any(windows, target_os = "macos")) {
+            b"SPPGTV3"
+        } else {
+            b"SPPGTV2"
+        };
+        assert!(std::fs::read(&vault).expect("baca vault").starts_with(magic));
+        let terbaca = load_turso_config(&state).expect("buka vault").expect("ada");
+        assert_eq!(terbaca.auth_token, "token-uji");
+
+        if cfg!(any(windows, target_os = "macos")) {
+            delete_os_vault_secret(&state);
+            let galat = load_turso_config(&state).expect_err("kunci OS hilang");
+            assert_eq!(galat.code, "TURSO_VAULT_KEY_MISSING");
+        }
+        clear_turso_config(&state).expect("bersihkan vault");
+    }
 
     fn test_state(directory: &TempDir, origin: &str, hours: u64) -> DesktopState {
         storage::initialize(directory.path()).expect("test schema");

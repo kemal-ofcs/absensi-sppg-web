@@ -75,6 +75,285 @@ export function buildDefaultFrontSlots(
 }
 
 // ===========================================================================
+// Geometri Lembar Cetak
+// ===========================================================================
+
+type CardOrientation = "landscape" | "portrait" | undefined;
+
+/** Posisi dibulatkan ke mikron supaya CSS tidak memuat `13.799999999mm`. */
+function roundMm(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+/**
+ * Ukuran POTONG kartu CR80. Bleed sengaja tidak ikut: bleed melebarkan gambar
+ * ke luar garis potong, tidak mengubah ukuran maupun jarak kartu. Versi yang
+ * menambahkan bleed ke ukuran kartu menggeser setiap baris 2 × bleed lebih
+ * jauh dari baris di atasnya.
+ */
+export function getCardTrimSizeMm(orientation: CardOrientation): {
+  width: number;
+  height: number;
+} {
+  return orientation === "portrait"
+    ? { width: 54, height: 85.6 }
+    : { width: 85.6, height: 54 };
+}
+
+/**
+ * Titik kiri-atas grid kartu pada satu sisi kertas, termasuk offset kalibrasi.
+ *
+ * Sisi belakang dihitung dari tepi kertas yang BERLAWANAN. Mencerminkan urutan
+ * kolom saja tidak cukup: selama grid tidak persis di tengah kertas, kartu
+ * belakang bergeser sejauh selisih ruang kiri dan kanannya (9,8 mm pada A4
+ * dua kolom bermargin 10).
+ */
+export function getGridOriginMm(
+  layout: IdCardPrintLayoutConfig,
+  pageSide: "front" | "back",
+  orientation: CardOrientation,
+): { x: number; y: number } {
+  const { width, height } = getCardTrimSizeMm(orientation);
+  const cols = Math.max(1, layout.gridCols);
+  const rows = Math.max(1, layout.gridRows);
+  let x = layout.marginLeftMm;
+  let y = layout.marginTopMm;
+  if (pageSide === "back") {
+    if (layout.flipAxis === "long_edge") {
+      const gridWidth = cols * width + (cols - 1) * layout.gapColMm;
+      x = layout.paperWidthMm - layout.marginLeftMm - gridWidth;
+    } else {
+      const gridHeight = rows * height + (rows - 1) * layout.gapRowMm;
+      y = layout.paperHeightMm - layout.marginTopMm - gridHeight;
+    }
+  }
+  return {
+    x: roundMm(x + (layout.printerOffsetXMm ?? 0)),
+    y: roundMm(y + (layout.printerOffsetYMm ?? 0)),
+  };
+}
+
+/**
+ * Margin yang menaruh grid kartu persis di tengah kertas. Grid yang lebih
+ * besar dari kertas mendapat margin 0; peringatan meluapnya tampil di panel.
+ */
+export function getCenteredMarginsMm(
+  layout: IdCardPrintLayoutConfig,
+  orientation: CardOrientation,
+): Pick<
+  IdCardPrintLayoutConfig,
+  "marginTopMm" | "marginBottomMm" | "marginLeftMm" | "marginRightMm"
+> {
+  const { width, height } = getCardTrimSizeMm(orientation);
+  const cols = Math.max(1, layout.gridCols);
+  const rows = Math.max(1, layout.gridRows);
+  const gridWidth = cols * width + (cols - 1) * layout.gapColMm;
+  const gridHeight = rows * height + (rows - 1) * layout.gapRowMm;
+  const x = Math.max(0, roundMm((layout.paperWidthMm - gridWidth) / 2));
+  const y = Math.max(0, roundMm((layout.paperHeightMm - gridHeight) / 2));
+  return {
+    marginTopMm: y,
+    marginBottomMm: y,
+    marginLeftMm: x,
+    marginRightMm: x,
+  };
+}
+
+/** Posisi kiri-atas garis potong kartu di sebuah slot, terhadap sudut kertas. */
+export function getSlotPositionMm(
+  layout: IdCardPrintLayoutConfig,
+  pageSide: "front" | "back",
+  slotIndex: number,
+  orientation: CardOrientation,
+): { x: number; y: number } {
+  const { width, height } = getCardTrimSizeMm(orientation);
+  const cols = Math.max(1, layout.gridCols);
+  const rows = Math.max(1, layout.gridRows);
+  const row = Math.floor(slotIndex / cols);
+  const origin = getGridOriginMm(layout, pageSide, orientation);
+  let x = origin.x + (slotIndex % cols) * (width + layout.gapColMm);
+  let y = origin.y + row * (height + layout.gapRowMm);
+
+  if (pageSide === "back") {
+    // Kalibrasi sisi belakang diukur dari sisi depan, jadi dihitung menurut
+    // baris FISIK kartu: balik sisi pendek menukar atas dan bawah.
+    const longEdge = layout.flipAxis === "long_edge";
+    const physicalRow = longEdge ? row : rows - 1 - row;
+    const t = rows > 1 ? Math.min(1, Math.max(0, physicalRow / (rows - 1))) : 0;
+    const topX = layout.backDriftTopXMm ?? 0;
+    const topY = layout.backDriftTopYMm ?? 0;
+    const driftX = topX + t * ((layout.backDriftBottomXMm ?? 0) - topX);
+    const driftY = topY + t * ((layout.backDriftBottomYMm ?? 0) - topY);
+    // Gambar belakang digeser BERLAWANAN dengan selisih yang terukur. Sumbu
+    // yang dicerminkan pembalikan kertas berbalik tanda di koordinat halaman
+    // belakang: "ke kiri" dilihat dari depan adalah "ke kanan" di sana.
+    x += longEdge ? driftX : -driftX;
+    y += longEdge ? -driftY : driftY;
+  }
+  return { x: roundMm(x), y: roundMm(y) };
+}
+
+/**
+ * Delapan garis tanda potong sebuah kartu, masing-masing `[x, y, lebar, tinggi]`
+ * dalam mm terhadap sudut kertas. Kosong bila tanda potong dimatikan.
+ *
+ * Garisnya segaris dengan GARIS POTONG kartu dan dimulai di luarnya. Versi
+ * sebelumnya menggeser garis sejauh offset pada kedua sumbu, sehingga memotong
+ * mengikuti tandanya menghasilkan kartu yang lebih besar 2 × offset.
+ */
+export function getCropMarkLinesMm(
+  layout: IdCardPrintLayoutConfig,
+  xMm: number,
+  yMm: number,
+  orientation: CardOrientation,
+): [number, number, number, number][] {
+  if (!layout.showCropMarks) return [];
+  const length = layout.cropMarkLengthMm;
+  // Tanda potong tidak boleh menimpa bleed kartunya sendiri.
+  const offset = Math.max(layout.cropMarkOffsetMm, layout.bleedMm);
+  const { width, height } = getCardTrimSizeMm(orientation);
+  const tebal = 0.2;
+  const kiri = xMm - offset - length;
+  const kanan = xMm + width + offset;
+  const atas = yMm - offset - length;
+  const bawah = yMm + height + offset;
+  const lines: [number, number, number, number][] = [
+    [kiri, yMm, length, tebal],
+    [xMm, atas, tebal, length],
+    [kanan, yMm, length, tebal],
+    [xMm + width, atas, tebal, length],
+    [kiri, yMm + height, length, tebal],
+    [xMm, bawah, tebal, length],
+    [kanan, yMm + height, length, tebal],
+    [xMm + width, bawah, tebal, length],
+  ];
+  return lines.map(
+    ([x, y, w, h]) =>
+      [roundMm(x), roundMm(y), w, h] as [number, number, number, number],
+  );
+}
+
+function usesManualMatrix(layout: IdCardPrintLayoutConfig): boolean {
+  return (
+    layout.duplexPositionMode === "manual_matrix" &&
+    Boolean(layout.frontPageSlots?.length)
+  );
+}
+
+/**
+ * Jumlah kartu yang muat di satu halaman. Mode berdampingan memakai dua slot
+ * per kartu (depan dan belakang bersebelahan), jadi kapasitasnya separuh grid.
+ */
+export function getCardsPerPage(layout: IdCardPrintLayoutConfig): number {
+  const cols = Math.max(1, layout.gridCols);
+  const rows = Math.max(1, layout.gridRows);
+  if (layout.duplexMode === "side_by_side") {
+    return Math.max(
+      1,
+      cols >= 2 ? Math.floor(cols / 2) * rows : Math.floor(rows / 2),
+    );
+  }
+  if (usesManualMatrix(layout)) {
+    const highest = Math.max(
+      -1,
+      ...(layout.frontPageSlots ?? []).map((slot) => slot.cardIndex),
+    );
+    if (highest >= 0) return highest + 1;
+  }
+  return cols * rows;
+}
+
+/** Satu kartu pada satu halaman: sisi yang dicetak dan posisi garis potongnya. */
+export interface PrintedCard {
+  cardIndex: number;
+  side: "front" | "back";
+  xMm: number;
+  yMm: number;
+}
+
+/**
+ * Bagi kartu ke halaman-halaman cetak.
+ *
+ * Sebelum ini hanya ada SATU halaman: kartu di luar kapasitas grid dibuang
+ * diam-diam (bolak-balik) atau terpotong di tepi bawah kertas (berdampingan),
+ * sementara semuanya tetap ditandai tercetak.
+ *
+ * Urutan untuk bolak-balik: depan-1, belakang-1, depan-2, belakang-2, sehingga
+ * printer duplex memasangkan tiap lembar dengan benar.
+ */
+export function buildPrintPages(
+  layout: IdCardPrintLayoutConfig,
+  cardCount: number,
+  orientation: CardOrientation,
+): PrintedCard[][] {
+  const cols = Math.max(1, layout.gridCols);
+  const rows = Math.max(1, layout.gridRows);
+  const perPage = getCardsPerPage(layout);
+  const pages: PrintedCard[][] = [];
+
+  for (let start = 0; start < cardCount; start += perPage) {
+    const count = Math.min(perPage, cardCount - start);
+    const place = (
+      slot: PrintSlotAssignment,
+      pageSide: "front" | "back",
+    ): PrintedCard => {
+      const position = getSlotPositionMm(
+        layout,
+        pageSide,
+        slot.slotIndex,
+        orientation,
+      );
+      return {
+        cardIndex: start + slot.cardIndex,
+        side: slot.side,
+        xMm: position.x,
+        yMm: position.y,
+      };
+    };
+
+    if (layout.duplexMode === "side_by_side") {
+      const pairsPerRow = Math.floor(cols / 2);
+      const page: PrintedCard[] = [];
+      for (let i = 0; i < count; i++) {
+        // Satu kolom: depan dan belakang ditumpuk atas-bawah.
+        const frontSlot =
+          pairsPerRow >= 1
+            ? Math.floor(i / pairsPerRow) * cols + (i % pairsPerRow) * 2
+            : i * 2;
+        page.push(
+          place({ slotIndex: frontSlot, cardIndex: i, side: "front" }, "front"),
+          place(
+            { slotIndex: frontSlot + 1, cardIndex: i, side: "back" },
+            "front",
+          ),
+        );
+      }
+      pages.push(page);
+      continue;
+    }
+
+    const onThisPage = (slot: PrintSlotAssignment) =>
+      slot.cardIndex >= 0 && slot.cardIndex < count;
+    const manual = usesManualMatrix(layout);
+    const frontSlots = manual
+      ? (layout.frontPageSlots ?? []).filter(onThisPage)
+      : buildDefaultFrontSlots(cols, rows).slice(0, count);
+    const backSlots =
+      manual && layout.backPageSlots
+        ? layout.backPageSlots.filter(onThisPage)
+        : computeMirroredBackLayout(frontSlots, cols, rows, layout.flipAxis);
+
+    if (layout.duplexMode !== "back_only") {
+      pages.push(frontSlots.map((slot) => place(slot, "front")));
+    }
+    if (layout.duplexMode !== "front_only") {
+      pages.push(backSlots.map((slot) => place(slot, "back")));
+    }
+  }
+  return pages;
+}
+
+// ===========================================================================
 // Dimensi Kertas Standar
 // ===========================================================================
 

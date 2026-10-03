@@ -25,7 +25,12 @@ import {
   deletePrintLayoutPreset,
   generatePresetId,
   getActivePrintLayout,
+  getCardsPerPage,
+  getCardTrimSizeMm,
+  getCenteredMarginsMm,
+  getCropMarkLinesMm,
   getPaperDimensionsMm,
+  getSlotPositionMm,
   loadPrintLayoutPresets,
   setActivePrintLayoutId,
   upsertPrintLayoutPreset,
@@ -535,6 +540,7 @@ export default function IdCardsPage() {
         company: companyProfile,
         selectedElementId,
         showBoundingBoxes,
+        designMode: true,
       });
     });
 
@@ -1152,17 +1158,21 @@ export default function IdCardsPage() {
       {/* TAB 1: DAFTAR & CETAK KARTU */}
       {activeTab === "cards" ? (
         <div className="space-y-5">
-          {/* Filter & Batch Actions Bar */}
-          <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-slate-900/80 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-1 flex-wrap items-center gap-2">
+          {/* Filter & Batch Actions Bar. Satu baris yang membungkus: tombol
+              aksi ikut dalam barisan kontrol, bukan kolom tersendiri yang
+              ditengahkan terhadap filter. */}
+          <div className="rounded-2xl border border-white/10 bg-slate-900/80 p-4">
+            <div className="flex flex-wrap items-center gap-2">
               <input
+                aria-label="Cari personil"
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Cari nama karyawan, NIK, atau divisi..."
-                className="min-h-10 flex-1 min-w-[200px] rounded-xl border border-white/10 bg-slate-950 px-3 text-xs text-white outline-none focus:border-sky-400"
+                className="min-h-10 min-w-[180px] flex-1 rounded-xl border border-white/10 bg-slate-950 px-3 text-xs text-white outline-none focus:border-sky-400"
               />
               <select
+                aria-label="Filter status kartu"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="min-h-10 rounded-xl border border-white/10 bg-slate-950 px-3 text-xs text-white outline-none focus:border-sky-400"
@@ -1171,40 +1181,37 @@ export default function IdCardsPage() {
                 <option value="Belum">Belum Dicetak</option>
                 <option value="Berhasil">Sudah Dicetak</option>
               </select>
-            </div>
 
-            {selectedIds.size > 0 ? (
-              <div className="flex items-center gap-2 animate-in fade-in">
-                <span className="text-xs font-bold text-sky-300">
-                  {selectedIds.size} dipilih
-                </span>
+              {selectedIds.size > 0 ? (
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleOpenPrintBatch}
+                    disabled={printBusy}
+                    className="min-h-10 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 shadow-md hover:bg-sky-300 disabled:opacity-50 inline-flex items-center gap-2"
+                  >
+                    <Icon name="scanner" className="size-3.5" />
+                    <span>Cetak Pilihan ({selectedIds.size})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds(new Set())}
+                    className="min-h-10 rounded-xl border border-white/10 bg-slate-800 px-3 text-xs font-bold text-slate-300 hover:bg-slate-700"
+                  >
+                    Batal
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleOpenPrintBatch}
-                  disabled={printBusy}
-                  className="rounded-xl bg-sky-400 px-4 py-2 text-xs font-black text-slate-950 shadow-md hover:bg-sky-300 disabled:opacity-50 inline-flex items-center gap-2"
+                  onClick={toggleSelectAll}
+                  className="ml-auto min-h-10 rounded-xl border border-white/10 bg-slate-800 px-3 text-xs font-bold text-slate-300 hover:bg-slate-700 inline-flex items-center gap-2"
                 >
-                  <Icon name="scanner" className="size-3.5" />
-                  <span>Cetak Pilihan ({selectedIds.size})</span>
+                  <Icon name="check" className="size-3.5" />
+                  <span>Pilih Semua ({filteredRows.length})</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedIds(new Set())}
-                  className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-700"
-                >
-                  Batal
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={toggleSelectAll}
-                className="rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-700 inline-flex items-center gap-2"
-              >
-                <Icon name="check" className="size-3.5" />
-                <span>Pilih Semua ({filteredRows.length})</span>
-              </button>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Cards Grid */}
@@ -2429,7 +2436,7 @@ export default function IdCardsPage() {
                   </span>
                   <div className="text-slate-200 font-bold">
                     {activeLayout.gridCols}×{activeLayout.gridRows} (
-                    {activeLayout.gridCols * activeLayout.gridRows} slot)
+                    {getCardsPerPage(activeLayout)} kartu per halaman)
                   </div>
                 </div>
                 <div className="space-y-0.5">
@@ -2519,11 +2526,7 @@ export default function IdCardsPage() {
                 <span>Estimasi Lembar Kertas:</span>
                 <strong className="text-violet-300 font-bold font-mono">
                   {Math.ceil(
-                    printTargetRows.length /
-                      Math.max(
-                        1,
-                        activeLayout.gridCols * activeLayout.gridRows,
-                      ),
+                    printTargetRows.length / getCardsPerPage(activeLayout),
                   )}{" "}
                   lembar
                   {activeLayout.duplexMode === "duplex"
@@ -2752,11 +2755,9 @@ export default function IdCardsPage() {
                 const L = activeLayout;
                 const pW = L.paperWidthMm;
                 const pH = L.paperHeightMm;
-                const isPortrait = template?.orientation === "portrait";
-                const baseW = isPortrait ? 54 : 85.6;
-                const baseH = isPortrait ? 85.6 : 54;
-                const cardWMm = baseW + L.bleedMm * 2;
-                const cardHMm = baseH + L.bleedMm * 2;
+                const orientation = template?.orientation;
+                const { width: cardWMm, height: cardHMm } =
+                  getCardTrimSizeMm(orientation);
                 const totalSlots = L.gridCols * L.gridRows;
 
                 // Scale: fit preview ke max 320px lebar per halaman
@@ -2783,12 +2784,16 @@ export default function IdCardsPage() {
                   page: "front" | "back",
                 ) =>
                   slots.map((slot) => {
-                    const row = Math.floor(slot.slotIndex / L.gridCols);
-                    const col = slot.slotIndex % L.gridCols;
-                    const x =
-                      (L.marginLeftMm + col * (cardWMm + L.gapColMm)) * scale;
-                    const y =
-                      (L.marginTopMm + row * (cardHMm + L.gapRowMm)) * scale;
+                    // Posisi yang sama persis dengan yang dipakai mesin
+                    // cetak, termasuk cermin sisi belakang terhadap kertas.
+                    const posisi = getSlotPositionMm(
+                      L,
+                      page,
+                      slot.slotIndex,
+                      orientation,
+                    );
+                    const x = posisi.x * scale;
+                    const y = posisi.y * scale;
                     const w = cardWMm * scale;
                     const h = cardHMm * scale;
                     const label = `K${slot.cardIndex + 1}${page === "front" ? "D" : "B"}`;
@@ -2816,115 +2821,21 @@ export default function IdCardsPage() {
                         >
                           {label}
                         </text>
-                        {/* Crop marks di sudut jika aktif */}
-                        {L.showCropMarks && (
-                          <>
-                            {/* Kiri-Atas */}
-                            <line
-                              x1={
-                                x -
-                                L.cropMarkOffsetMm * scale -
-                                L.cropMarkLengthMm * scale
-                              }
-                              y1={y - L.cropMarkOffsetMm * scale}
-                              x2={x - L.cropMarkOffsetMm * scale}
-                              y2={y - L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            <line
-                              x1={x - L.cropMarkOffsetMm * scale}
-                              y1={
-                                y -
-                                L.cropMarkOffsetMm * scale -
-                                L.cropMarkLengthMm * scale
-                              }
-                              x2={x - L.cropMarkOffsetMm * scale}
-                              y2={y - L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            {/* Kanan-Atas */}
-                            <line
-                              x1={x + w + L.cropMarkOffsetMm * scale}
-                              y1={y - L.cropMarkOffsetMm * scale}
-                              x2={
-                                x +
-                                w +
-                                L.cropMarkOffsetMm * scale +
-                                L.cropMarkLengthMm * scale
-                              }
-                              y2={y - L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            <line
-                              x1={x + w + L.cropMarkOffsetMm * scale}
-                              y1={
-                                y -
-                                L.cropMarkOffsetMm * scale -
-                                L.cropMarkLengthMm * scale
-                              }
-                              x2={x + w + L.cropMarkOffsetMm * scale}
-                              y2={y - L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            {/* Kiri-Bawah */}
-                            <line
-                              x1={
-                                x -
-                                L.cropMarkOffsetMm * scale -
-                                L.cropMarkLengthMm * scale
-                              }
-                              y1={y + h + L.cropMarkOffsetMm * scale}
-                              x2={x - L.cropMarkOffsetMm * scale}
-                              y2={y + h + L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            <line
-                              x1={x - L.cropMarkOffsetMm * scale}
-                              y1={y + h + L.cropMarkOffsetMm * scale}
-                              x2={x - L.cropMarkOffsetMm * scale}
-                              y2={
-                                y +
-                                h +
-                                L.cropMarkOffsetMm * scale +
-                                L.cropMarkLengthMm * scale
-                              }
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            {/* Kanan-Bawah */}
-                            <line
-                              x1={x + w + L.cropMarkOffsetMm * scale}
-                              y1={y + h + L.cropMarkOffsetMm * scale}
-                              x2={
-                                x +
-                                w +
-                                L.cropMarkOffsetMm * scale +
-                                L.cropMarkLengthMm * scale
-                              }
-                              y2={y + h + L.cropMarkOffsetMm * scale}
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                            <line
-                              x1={x + w + L.cropMarkOffsetMm * scale}
-                              y1={y + h + L.cropMarkOffsetMm * scale}
-                              x2={x + w + L.cropMarkOffsetMm * scale}
-                              y2={
-                                y +
-                                h +
-                                L.cropMarkOffsetMm * scale +
-                                L.cropMarkLengthMm * scale
-                              }
-                              stroke="#64748b"
-                              strokeWidth={0.5}
-                            />
-                          </>
-                        )}
+                        {getCropMarkLinesMm(
+                          L,
+                          posisi.x,
+                          posisi.y,
+                          orientation,
+                        ).map(([lx, ly, lw, lh]) => (
+                          <rect
+                            key={`${lx}-${ly}-${lw}`}
+                            x={lx * scale}
+                            y={ly * scale}
+                            width={Math.max(lw * scale, 0.75)}
+                            height={Math.max(lh * scale, 0.75)}
+                            fill="#94a3b8"
+                          />
+                        ))}
                       </g>
                     );
                   });
@@ -2982,34 +2893,22 @@ export default function IdCardsPage() {
                               (b) => b.cardIndex === fSlot.cardIndex,
                             );
                             if (!bSlot) return null;
-                            const fRow = Math.floor(
-                              fSlot.slotIndex / L.gridCols,
+                            const depan = getSlotPositionMm(
+                              L,
+                              "front",
+                              fSlot.slotIndex,
+                              orientation,
                             );
-                            const fCol = fSlot.slotIndex % L.gridCols;
-                            const bRow = Math.floor(
-                              bSlot.slotIndex / L.gridCols,
+                            const belakang = getSlotPositionMm(
+                              L,
+                              "back",
+                              bSlot.slotIndex,
+                              orientation,
                             );
-                            const bCol = bSlot.slotIndex % L.gridCols;
-                            const fx =
-                              (L.marginLeftMm +
-                                fCol * (cardWMm + L.gapColMm) +
-                                cardWMm) *
-                              scale;
-                            const fy =
-                              (L.marginTopMm +
-                                fRow * (cardHMm + L.gapRowMm) +
-                                cardHMm / 2) *
-                              scale;
-                            const bx =
-                              svgW +
-                              gap +
-                              (L.marginLeftMm + bCol * (cardWMm + L.gapColMm)) *
-                                scale;
-                            const by =
-                              (L.marginTopMm +
-                                bRow * (cardHMm + L.gapRowMm) +
-                                cardHMm / 2) *
-                              scale;
+                            const fx = (depan.x + cardWMm) * scale;
+                            const fy = (depan.y + cardHMm / 2) * scale;
+                            const bx = svgW + gap + belakang.x * scale;
+                            const by = (belakang.y + cardHMm / 2) * scale;
                             return (
                               <line
                                 key={`arrow-${fSlot.cardIndex}`}
@@ -3096,11 +2995,9 @@ export default function IdCardsPage() {
             {/* Info Overflow Warning */}
             {(() => {
               const L = activeLayout;
-              const isPortrait = template?.orientation === "portrait";
-              const baseW = isPortrait ? 54 : 85.6;
-              const baseH = isPortrait ? 85.6 : 54;
-              const cardWMm = baseW + L.bleedMm * 2;
-              const cardHMm = baseH + L.bleedMm * 2;
+              const { width: cardWMm, height: cardHMm } = getCardTrimSizeMm(
+                template?.orientation,
+              );
               const usedW =
                 L.marginLeftMm +
                 L.marginRightMm +
@@ -3383,6 +3280,23 @@ export default function IdCardsPage() {
                   </label>
                 ))}
               </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveLayout((prev) => ({
+                    ...prev,
+                    ...getCenteredMarginsMm(prev, template?.orientation),
+                  }))
+                }
+                className="min-h-10 w-full rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 text-xs font-bold text-sky-300 transition hover:bg-sky-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              >
+                Tengahkan kartu di kertas
+              </button>
+              <p className="text-[10px] text-slate-400">
+                Mengisi keempat margin supaya grid kartu berada persis di
+                tengah. Tekan lagi setelah mengubah kertas, kolom, baris, atau
+                jarak.
+              </p>
             </div>
 
             {/* Tanda Potong & Finishing */}
@@ -3812,7 +3726,10 @@ export default function IdCardsPage() {
               ) : null}
             </div>
 
-            {/* Kalibrasi Printer */}
+            {/* Kalibrasi Printer. Kolom angkanya tidak dikendalikan React:
+                input angka terkendali menghapus tanda minus yang baru diketik,
+                sehingga mengetik -1.5 tersimpan sebagai 5. `key` mengisi ulang
+                kolomnya saat preset berganti. */}
             <div className="rounded-2xl border border-white/10 bg-slate-900/80 p-4 space-y-3">
               <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
                 Kalibrasi Offset Printer (mm)
@@ -3826,45 +3743,98 @@ export default function IdCardsPage() {
                 <label className="block space-y-1 text-[11px] font-bold text-slate-400">
                   Offset Horizontal (X)
                   <input
+                    key={activeLayout.presetId}
                     type="number"
                     min={-5}
                     max={5}
                     step={0.1}
-                    value={activeLayout.printerOffsetXMm}
-                    onChange={(e) =>
+                    defaultValue={activeLayout.printerOffsetXMm}
+                    onChange={(e) => {
+                      const nilai = Number(e.target.value);
+                      if (!Number.isFinite(nilai)) return;
                       setActiveLayout((prev) => ({
                         ...prev,
-                        printerOffsetXMm: Math.max(
-                          -5,
-                          Math.min(5, Number(e.target.value)),
-                        ),
-                      }))
-                    }
+                        printerOffsetXMm: Math.max(-5, Math.min(5, nilai)),
+                      }));
+                    }}
                     className="min-h-9 w-full rounded-xl border border-white/10 bg-slate-950 px-2 text-xs text-white"
                   />
                 </label>
                 <label className="block space-y-1 text-[11px] font-bold text-slate-400">
                   Offset Vertikal (Y)
                   <input
+                    key={activeLayout.presetId}
                     type="number"
                     min={-5}
                     max={5}
                     step={0.1}
-                    value={activeLayout.printerOffsetYMm}
-                    onChange={(e) =>
+                    defaultValue={activeLayout.printerOffsetYMm}
+                    onChange={(e) => {
+                      const nilai = Number(e.target.value);
+                      if (!Number.isFinite(nilai)) return;
                       setActiveLayout((prev) => ({
                         ...prev,
-                        printerOffsetYMm: Math.max(
-                          -5,
-                          Math.min(5, Number(e.target.value)),
-                        ),
-                      }))
-                    }
+                        printerOffsetYMm: Math.max(-5, Math.min(5, nilai)),
+                      }));
+                    }}
                     className="min-h-9 w-full rounded-xl border border-white/10 bg-slate-950 px-2 text-xs text-white"
                   />
                 </label>
               </div>
             </div>
+
+            {/* Kalibrasi Sisi Belakang */}
+            {activeLayout.duplexMode === "duplex" ||
+            activeLayout.duplexMode === "back_only" ? (
+              <div className="rounded-2xl border border-white/10 bg-slate-900/80 p-4 space-y-3">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Kalibrasi Sisi Belakang (mm)
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Untuk kertas yang sisi belakangnya meleset walau ukurannya
+                  sudah benar, biasanya kertas tebal. Cetak satu lembar,
+                  terawang dari sisi depan, lalu isi seberapa jauh gambar
+                  belakang meleset dari gambar depan di baris teratas dan baris
+                  terbawah. Positif = belakang terlalu ke kanan atau terlalu ke
+                  bawah. Baris di antaranya dihitung otomatis. Simpan sebagai
+                  preset tersendiri per jenis kertas.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      ["backDriftTopXMm", "Baris atas: ke kanan"],
+                      ["backDriftTopYMm", "Baris atas: ke bawah"],
+                      ["backDriftBottomXMm", "Baris bawah: ke kanan"],
+                      ["backDriftBottomYMm", "Baris bawah: ke bawah"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label
+                      key={key}
+                      className="block space-y-1 text-[11px] font-bold text-slate-400"
+                    >
+                      {label}
+                      <input
+                        key={activeLayout.presetId}
+                        type="number"
+                        min={-10}
+                        max={10}
+                        step={0.1}
+                        defaultValue={activeLayout[key] ?? 0}
+                        onChange={(e) => {
+                          const nilai = Number(e.target.value);
+                          if (!Number.isFinite(nilai)) return;
+                          setActiveLayout((prev) => ({
+                            ...prev,
+                            [key]: Math.max(-10, Math.min(10, nilai)),
+                          }));
+                        }}
+                        className="min-h-9 w-full rounded-xl border border-white/10 bg-slate-950 px-2 text-xs text-white"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {/* Tombol Simpan */}
             <button

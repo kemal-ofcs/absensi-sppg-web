@@ -1,5 +1,6 @@
 "use client";
 
+import { LicenseHolderLabel } from "@/components/license/LicenseNotice";
 import { BRANDING } from "@/lib/constants/branding";
 import type { PayrollItemRow, PayrollRunRow } from "@/lib/gateways/payroll";
 
@@ -275,6 +276,9 @@ export function SlipGajiPrintView({
           </p>
         </div>
       </div>
+
+      {/* Hanya di Desktop/Mobile; di Web tidak merender apa pun. */}
+      <LicenseHolderLabel className="mt-6 block text-center text-[9px] text-slate-400" />
     </div>
   );
 }

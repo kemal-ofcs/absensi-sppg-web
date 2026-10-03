@@ -1,0 +1,22 @@
+# Yang TIDAK boleh masuk konteks build image.
+#
+# `.env*` yang paling penting: build standalone Next.js menyalin `.env` ke dalam
+# `.next/standalone/`, sehingga tanpa baris ini alamat dan token database milik
+# pengembang ikut terkirim ke setiap pembeli image. Dockerfile memeriksa hal
+# yang sama sekali lagi dan menggagalkan build bila ada yang lolos.
+.env
+.env.*
+!.env.example
+
+node_modules
+.next
+out
+src-tauri
+tests
+playwright
+playwright-report
+test-results
+*.tsbuildinfo
+.git
+Dockerfile
+.dockerignore

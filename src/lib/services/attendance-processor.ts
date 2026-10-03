@@ -63,7 +63,7 @@ export interface WebScanContext {
 
 /**
  * Batas panjang foto bukti (karakter base64) — angka yang sama dieja di
- * `scanner.rs` (`MAX_SCAN_PHOTO_BASE64`) dan validator Zod `sync-schema.ts`.
+ * `scanner.rs` (`MAX_SCAN_PHOTO_BASE64`).
  */
 const MAX_SCAN_PHOTO_BASE64 = 2_000_000;
 const ALLOWED_PHOTO_MIME = ["image/jpeg", "image/png", "image/webp"];

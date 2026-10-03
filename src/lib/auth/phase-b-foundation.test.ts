@@ -89,7 +89,7 @@ describe("Phase B web security foundation", () => {
     };
 
     expect(() => resolveServerDatabaseConfig(insecureEnvironment)).toThrow(
-      "TURSO_DATABASE_URL tidak dapat dipakai",
+      "Alamat database tidak dapat dipakai",
     );
     expect(
       resolveServerDatabaseConfig({
@@ -110,6 +110,6 @@ describe("Phase B web security foundation", () => {
         SPPG_DATABASE_PROVIDER: "self-hostedd",
         SPPG_ALLOW_INSECURE_DATABASE: "1",
       }),
-    ).toThrow("TURSO_DATABASE_URL tidak dapat dipakai");
+    ).toThrow("Alamat database tidak dapat dipakai");
   });
 });

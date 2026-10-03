@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { AutoAlfaRunner } from "./AutoAlfaRunner";
 import { AutoSyncRunner } from "./AutoSyncRunner";
 import { HeaderBar } from "./HeaderBar";
+import { LicenseNotice } from "./license/LicenseNotice";
 import { AuroraBackground } from "./visual/AuroraBackground";
 import { VisualProvider } from "./visual/VisualProvider";
 
@@ -26,6 +27,7 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
         Lewati ke konten utama
       </a>
       <HeaderBar />
+      <LicenseNotice />
       <main
         id="main-content"
         className={`visual-page-enter relative z-10 flex min-h-0 flex-1 flex-col pb-24 lg:pb-0 ${contentClassName}`}

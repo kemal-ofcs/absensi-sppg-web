@@ -18,7 +18,7 @@ export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
     await requireWebPermission(request, "payroll.view");
-    // Sama dengan Project Meksa: rekap berisi gaji seluruh karyawan, jadi
+    // Rekap berisi gaji seluruh karyawan, jadi
     // permintaan lintas situs yang menumpang cookie sesi ditolak.
     assertSameOriginMutation(request);
     await ensureServerDatabaseInitialized();

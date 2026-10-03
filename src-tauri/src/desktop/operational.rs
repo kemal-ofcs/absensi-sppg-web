@@ -937,7 +937,7 @@ pub fn list_id_cards(state: &DesktopState, filter: &Value) -> Result<Value, Comm
         // langsung ke renderer kartu, dan tanpa kolom itu setiap kartu yang
         // dicetak dari sana berjabatan bawaan "Staff". Sama dengan
         // `getDaftarIdCard` di `lib/services/idcard.ts`.
-        "SELECT c.id_card_id, m.id_unik, m.nama, m.divisi, COALESCE(c.idcard_status, 'Belum'), c.idcard_pdf_url, c.idcard_last_generate, c.idcard_catatan, c.tanggal_generate, c.link_qr_png, m.kode_karyawan, m.status_aktif, m.token_absensi, m.qr_code, m.jabatan_status FROM master_data m LEFT JOIN id_card c ON c.id_unik = m.id_unik ORDER BY m.nama;"
+        "SELECT c.id_card_id, m.id_unik, m.nama, m.divisi, COALESCE(c.idcard_status, 'Belum'), c.idcard_pdf_url, c.idcard_last_generate, c.idcard_catatan, c.tanggal_generate, c.link_qr_png, m.kode_karyawan, m.status_aktif, m.token_absensi, m.qr_code, m.jabatan_status, m.lp FROM master_data m LEFT JOIN id_card c ON c.id_unik = m.id_unik ORDER BY m.nama;"
     ).map_err(|_| CommandError::internal())?;
     let search = text(filter, "search").to_lowercase();
     let status = text(filter, "status");
@@ -950,6 +950,9 @@ pub fn list_id_cards(state: &DesktopState, filter: &Value) -> Result<Value, Comm
         "kode_karyawan": row.get::<_, Option<String>>(10)?, "status_aktif": row.get::<_, Option<String>>(11)?,
         "token_absensi": row.get::<_, Option<String>>(12)?, "qr_code": row.get::<_, Option<String>>(13)?,
         "jabatan_status": row.get::<_, Option<String>>(14)?,
+        // Jenis kelamin (`L`/`P`). Tanpa kolom ini elemen jenis kelamin di
+        // kartu selalu jatuh ke nilai contohnya, "Laki-laki", untuk semua orang.
+        "lp": row.get::<_, Option<String>>(15)?,
     }))).map_err(|_| CommandError::internal())?;
     let values = rows
         .collect::<Result<Vec<_>, _>>()

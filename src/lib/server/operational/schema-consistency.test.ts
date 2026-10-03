@@ -53,24 +53,4 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
     expect(CURRENT_SCHEMA_VERSION).toBe(maxMigrationVersion);
     expect(await isDatabaseSchemaReady(client)).toBe(true);
   });
-
-  test("readOperationalSnapshot dapat membaca seluruh tabel snapshot tanpa error", async () => {
-    const { readOperationalSnapshot } = await import(
-      "@/lib/server/operational/snapshot"
-    );
-    const snapshot = await readOperationalSnapshot(client);
-    expect(snapshot).toHaveProperty("revision");
-    expect(snapshot).toHaveProperty("employees");
-    expect(snapshot).toHaveProperty("idCards");
-    expect(snapshot).toHaveProperty("shifts");
-    expect(snapshot).toHaveProperty("holidays");
-    expect(snapshot).toHaveProperty("settings");
-    expect(snapshot).toHaveProperty("companyProfiles");
-    expect(snapshot).toHaveProperty("idCardTemplates");
-    expect(snapshot).toHaveProperty("backups");
-    expect(snapshot).toHaveProperty("corrections");
-    expect(snapshot).toHaveProperty("imports");
-    expect(snapshot).toHaveProperty("attendance");
-    expect(snapshot).toHaveProperty("scanLogs");
-  });
 });

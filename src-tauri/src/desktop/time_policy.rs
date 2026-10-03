@@ -771,6 +771,30 @@ fn civil_from_days(mut days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// Tanggal kalender WIB dari detik epoch — nilai yang sama dengan
+/// `date('now','+7 hours')`. Pemeriksa lisensi memakainya di setiap gerbang
+/// izin, sehingga ia tidak boleh membuka koneksi SQLite hanya untuk bertanya
+/// tanggal.
+pub fn wib_date_from_epoch(epoch_seconds: i64) -> String {
+    let (year, month, day) = civil_from_days((epoch_seconds + 7 * 3600).div_euclid(86_400));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// `YYYY-MM-DD` persis (4-2-2 digit) DAN tanggal yang benar-benar ada.
+/// `parse_date` saja menerima `2026-9-3`; penerbit lisensi tidak.
+pub fn is_calendar_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 4 | 7) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_digit()
+            }
+        })
+        && parse_date(value).is_ok()
+}
+
 /// Menit terakhir sebuah hari kalender (23:59).
 ///
 /// Dipakai sebagai penutup jendela untuk shift fleksibel: shift itu berjalan

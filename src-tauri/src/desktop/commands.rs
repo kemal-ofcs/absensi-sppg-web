@@ -1,5 +1,4 @@
 use base64::prelude::*;
-use reqwest::Method;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use zeroize::Zeroizing;
@@ -8,18 +7,14 @@ use super::{
     portability,
     administration,
     config::DesktopState,
+    license,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
     },
     operational,
-    remote::{self, RemoteLoginError},
     scanner, secrets, storage, sync, turso,
 };
-
-struct OnlineAccess {
-    token: Zeroizing<String>,
-}
 
 /// Sesi login yang sah, tanpa menuntut izin tertentu.
 ///
@@ -46,8 +41,18 @@ pub(crate) fn require_permission(
     state: &DesktopState,
     permission: &str,
 ) -> Result<OperatorUser, CommandError> {
-    let session = state.session.lock().map_err(|_| CommandError::internal())?;
-    let session = session.as_ref().ok_or_else(|| {
+    require_any_permission(state, &[permission])
+}
+
+// Gerbang izin TUNGGAL untuk seluruh command, termasuk administrasi payroll:
+// mode baca-saja lisensi ditegakkan di sini, sehingga command yang memakai
+// gerbang lain akan lolos darinya.
+pub(crate) fn require_any_permission(
+    state: &DesktopState,
+    permissions: &[&str],
+) -> Result<OperatorUser, CommandError> {
+    let mut session = state.session.lock().map_err(|_| CommandError::internal())?;
+    let session = session.as_mut().ok_or_else(|| {
         CommandError::new(
             "DESKTOP_SESSION_MISSING",
             "Session Desktop tidak tersedia. Silakan login kembali.",
@@ -58,73 +63,15 @@ pub(crate) fn require_permission(
             .operator
             .permissions
             .iter()
-            .any(|key| key == permission)
+            .any(|key| permissions.contains(&key.as_str()))
     {
         return Err(CommandError::new(
             "DESKTOP_ACCESS_DENIED",
             "Akses ditolak untuk tindakan ini.",
         ));
     }
+    license::enforce_any(state, &mut session.license, permissions)?;
     Ok(session.operator.clone())
-}
-
-fn require_online_access(
-    state: &DesktopState,
-    permission: &str,
-) -> Result<OnlineAccess, CommandError> {
-    let session = state.session.lock().map_err(|_| CommandError::internal())?;
-    let session = session.as_ref().ok_or_else(|| {
-        CommandError::new(
-            "DESKTOP_SESSION_MISSING",
-            "Session Desktop tidak tersedia. Silakan login kembali.",
-        )
-    })?;
-    if !session.operator.is_superadmin
-        || !session
-            .operator
-            .permissions
-            .iter()
-            .any(|key| key == permission)
-    {
-        return Err(CommandError::new(
-            "DESKTOP_ACCESS_DENIED",
-            "Akses ditolak untuk tindakan ini.",
-        ));
-    }
-    let token = session.token.as_ref().ok_or_else(|| {
-        CommandError::new(
-            "DESKTOP_ONLINE_REQUIRED",
-            "Master Operator dan perubahan role wajib dilakukan saat online.",
-        )
-    })?;
-    Ok(OnlineAccess {
-        token: Zeroizing::new(token.to_string()),
-    })
-}
-
-/// Token sesi bila ada, atau string kosong.
-///
-/// Kosong BUKAN alasan untuk membatalkan sinkronisasi: jalur Turso 2-tier tidak
-/// memakai token sama sekali. Hanya jalur HTTP legacy yang membutuhkannya.
-fn session_token(state: &DesktopState) -> String {
-    state
-        .session
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            guard
-                .as_ref()
-                .and_then(|session| session.token.as_ref().map(|token| token.to_string()))
-        })
-        .unwrap_or_default()
-}
-
-fn clear_expired_session(state: &DesktopState, error: &CommandError) {
-    if error.code == "DESKTOP_SESSION_EXPIRED" {
-        if let Ok(mut session) = state.session.lock() {
-            *session = None;
-        }
-    }
 }
 
 fn ensure_login_not_locked(state: &DesktopState, identifier: &str) -> Result<(), CommandError> {
@@ -155,21 +102,6 @@ fn reject_login(state: &DesktopState, identifier: &str) -> Result<(), CommandErr
     Ok(())
 }
 
-async fn secured_api(
-    state: &DesktopState,
-    permission: &str,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> Result<Value, CommandError> {
-    let access = require_online_access(state, permission)?;
-    let result = remote::authorized_json(state, method, path, body, &access.token).await;
-    if let Err(error) = &result {
-        clear_expired_session(state, error);
-    }
-    result
-}
-
 #[tauri::command]
 pub fn desktop_get_session(
     state: State<'_, DesktopState>,
@@ -190,6 +122,27 @@ pub fn desktop_get_runtime_status(
         has_active_session: session.is_some(),
         mode: session.as_ref().map(|session| session.mode),
     })
+}
+
+/// Status lisensi perangkat ini. Sengaja tanpa sesi: layar login perlu tahu
+/// apakah harus menampilkan layar aktivasi (beserta nama dan kode perangkat)
+/// sebelum siapa pun bisa masuk.
+#[tauri::command]
+pub async fn desktop_get_license_status(
+    state: State<'_, DesktopState>,
+) -> Result<license::LicenseStatus, CommandError> {
+    license::status(&state).await
+}
+
+/// Pasang lisensi. Tanpa sesi hanya bila lisensi saat ini tidak aktif penuh
+/// (belum ada, tidak sah, perangkat tidak terdaftar, atau baca-saja);
+/// mengganti lisensi yang masih aktif menuntut Superadmin.
+#[tauri::command]
+pub async fn desktop_install_license(
+    state: State<'_, DesktopState>,
+    license: String,
+) -> Result<license::LicenseStatus, CommandError> {
+    license::install(&state, &license).await
 }
 
 #[tauri::command]
@@ -228,6 +181,7 @@ pub async fn desktop_bootstrap_superadmin(
     auth_token: Option<String>,
     provider: Option<turso::DatabaseProvider>,
     allow_insecure_transport: Option<bool>,
+    license: Option<String>,
 ) -> Result<Value, CommandError> {
     if state
         .session
@@ -240,6 +194,11 @@ pub async fn desktop_bootstrap_superadmin(
             "Bootstrap hanya tersedia sebelum sesi pengguna aktif.",
         ));
     }
+    // Lisensi diverifikasi SEBELUM Superadmin dibuat: lisensi yang ditolak
+    // setelahnya meninggalkan database yang tidak bisa dipakai login sekaligus
+    // tidak bisa diprovisioning ulang.
+    let license_text = license::bootstrap_license_text(&state, license)?;
+    let device_code = license::current_device_code(&state)?;
 
     // Kredensial dari form SELALU menang atas kredensial yang sudah tersimpan.
     // Dulu cabang "sudah terkonfigurasi" langsung memakai klien vault dan
@@ -260,12 +219,17 @@ pub async fn desktop_bootstrap_superadmin(
     // Karena itu ia ikut dalam balasan ini, dan layar bootstrap wajib
     // menampilkannya sampai pengguna menyatakan sudah menyimpannya.
     let recovery_codes = if status.required {
-        client.bootstrap_superadmin(draft).await?
+        license::check_installable(&license_text, &device_code)?;
+        let codes = client.bootstrap_superadmin(draft).await?;
+        license::store_bootstrap_license(&state, &client, &license_text).await?;
+        codes
     } else {
+        // Database yang sudah berisi: lisensinya (bila ada) sudah di sana, dan
+        // yang belum berlisensi ditangani layar lisensi sebelum login.
         Vec::new()
     };
     state.set_database_config(&config)?;
-    let _ = sync::pull_snapshot(&state, "").await;
+    let _ = sync::pull_snapshot(&state).await;
     storage::audit(&state.data_dir, None, "bootstrap-superadmin-success", None);
     Ok(json!({ "sukses": true, "recoveryCodes": recovery_codes }))
 }
@@ -430,8 +394,13 @@ pub async fn desktop_link_bootstrap_database(
             "Database ini belum memiliki Superadmin aktif. Lanjutkan provisioning untuk membuat akun pertama.",
         ));
     }
+    // SEBELUM pull: pull menimpa setting lokal dengan isi database, termasuk
+    // lisensi yang dipasang di layar aktivasi sebelum provisioning.
+    if let Err(error) = license::publish_local_if_cloud_missing(&state, &client).await {
+        eprintln!("[link-database] Lisensi lokal gagal dibawa ke database: {}", error.code);
+    }
     state.set_database_config(&config)?;
-    let _ = sync::pull_snapshot(&state, "").await;
+    let _ = sync::pull_snapshot(&state).await;
     storage::audit(&state.data_dir, None, "bootstrap-database-linked", None);
     Ok(check)
 }
@@ -476,6 +445,10 @@ pub async fn desktop_login(
         ));
     }
     ensure_login_not_locked(&state, &identifier)?;
+    // Lisensi diperiksa SEBELUM kredensial, satu kali untuk jalur Turso, server
+    // aplikasi, dan offline sekaligus. Statusnya sudah terbuka lewat
+    // `desktop_get_license_status`, jadi urutan ini tidak membocorkan apa pun.
+    let license_grant = license::gate_login(&state).await?;
     let password = Zeroizing::new(password);
 
     // Alasan kegagalan koneksi cloud, disimpan supaya pesan error terakhir bisa
@@ -521,7 +494,7 @@ pub async fn desktop_login(
                     .iter()
                     .any(|permission| permission == "sync.view")
                 {
-                    match sync::synchronize(&state, "").await {
+                    match sync::synchronize(&state).await {
                         Ok(_) => {
                             message.push_str(" Data operasional lokal berhasil disinkronkan.");
                         }
@@ -541,8 +514,8 @@ pub async fn desktop_login(
                 *state.session.lock().map_err(|_| CommandError::internal())? =
                     Some(DesktopSession {
                         operator: operator.clone(),
-                        token: Some(Zeroizing::new("turso-direct-session".into())),
                         mode: SessionMode::Online,
+                        license: license_grant,
                     });
 
                 return Ok(DesktopLoginResult {
@@ -603,88 +576,7 @@ pub async fn desktop_login(
         }
     }
 
-    // 2. Login remote HTTP legacy — HANYA untuk instalasi yang memang memakai
-    //    server aplikasi, bukan database langsung.
-    //
-    //    Saat database dikonfigurasi, `server_origin` menunjuk host database itu
-    //    sendiri. Menjalankan fallback ini di sana berarti mem-POST username dan
-    //    password plaintext ke `<host-database>/api/auth/login` — endpoint yang
-    //    tidak pernah ada di sana. Pada Turso permintaan itu hanya 404, tetapi
-    //    pada server libSQL milik pengguna, body request bisa ikut tercatat di
-    //    log reverse proxy di depannya. Kredensial tidak boleh dikirim ke tempat
-    //    yang bukan endpoint autentikasi.
-    let legacy_http_login_available = state.turso_config().is_none();
-    match if legacy_http_login_available {
-        remote::login(&state, &identifier, &password).await
-    } else {
-        Err(RemoteLoginError::Unavailable)
-    } {
-        Ok(login) => {
-            storage::clear_login_failures(&state.data_dir, &identifier)?;
-            let provisioned = secrets::provision(&state, login.operator.clone(), &password);
-            let (offline_ready, offline_valid_until, mut message) = match provisioned {
-                Ok(credential) => (
-                    true,
-                    Some(credential.offline_valid_until),
-                    format!(
-                        "{} Akses offline perangkat berhasil diperbarui.",
-                        login.message
-                    ),
-                ),
-                Err(_) => (
-                    false,
-                    None,
-                    format!(
-                        "{} Penyimpanan offline belum dapat diperbarui.",
-                        login.message
-                    ),
-                ),
-            };
-            if login
-                .operator
-                .permissions
-                .iter()
-                .any(|permission| permission == "sync.view")
-                && sync::synchronize(&state, &login.token).await.is_ok()
-            {
-                message.push_str(" Data operasional lokal berhasil diperbarui.");
-            }
-            storage::audit(
-                &state.data_dir,
-                Some(login.operator.id),
-                "login-online-success",
-                None,
-            );
-            *state.session.lock().map_err(|_| CommandError::internal())? = Some(DesktopSession {
-                operator: login.operator.clone(),
-                token: Some(login.token),
-                mode: SessionMode::Online,
-            });
-            return Ok(DesktopLoginResult {
-                sukses: true,
-                pesan: message,
-                operator: login.operator,
-                mode: SessionMode::Online,
-                offline_ready,
-                offline_valid_until,
-            });
-        }
-        Err(RemoteLoginError::Rejected(error)) => {
-            storage::audit(
-                &state.data_dir,
-                None,
-                "login-online-rejected",
-                Some(&error.code),
-            );
-            reject_login(&state, &identifier)?;
-            return Err(error);
-        }
-        Err(RemoteLoginError::Unavailable) => {
-            // Fallback offline
-        }
-    }
-
-    // 3. Fallback offline credential snapshot
+    // 2. Fallback offline credential snapshot
     let credential = match secrets::load_offline(&state, &identifier, &password) {
         Ok(credential) => credential,
         Err(error) => {
@@ -735,8 +627,8 @@ pub async fn desktop_login(
     );
     *state.session.lock().map_err(|_| CommandError::internal())? = Some(DesktopSession {
         operator: credential.operator.clone(),
-        token: None,
         mode: SessionMode::Offline,
+        license: license_grant,
     });
     Ok(DesktopLoginResult {
         sukses: true,
@@ -758,11 +650,6 @@ pub async fn desktop_logout(state: State<'_, DesktopState>) -> Result<(), Comman
         .take();
     if let Some(session) = previous {
         storage::audit(&state.data_dir, Some(session.operator.id), "logout", None);
-        if let Some(token) = session.token {
-            if token.as_str() != "turso-direct-session" {
-                remote::logout(&state, &token).await;
-            }
-        }
     }
     Ok(())
 }
@@ -1108,21 +995,7 @@ pub async fn desktop_get_master_operators(
     state: State<'_, DesktopState>,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "operators.view")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.get_master_operators().await;
-    }
-    let payload = secured_api(
-        &state,
-        "operators.view",
-        Method::POST,
-        "/api/operators/query",
-        None,
-    )
-    .await?;
-    Ok(payload
-        .get("operators")
-        .cloned()
-        .unwrap_or_else(|| json!([])))
+    state.get_turso_client()?.get_master_operators().await
 }
 
 #[tauri::command]
@@ -1131,17 +1004,7 @@ pub async fn desktop_create_operator(
     draft: Value,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "operators.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.create_operator(&draft).await;
-    }
-    secured_api(
-        &state,
-        "operators.manage",
-        Method::POST,
-        "/api/operators",
-        Some(json!({ "draft": draft })),
-    )
-    .await
+    state.get_turso_client()?.create_operator(&draft).await
 }
 
 #[tauri::command]
@@ -1151,17 +1014,10 @@ pub async fn desktop_update_operator(
     draft: Value,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "operators.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.update_operator(operator_id, &draft).await;
-    }
-    secured_api(
-        &state,
-        "operators.manage",
-        Method::PATCH,
-        "/api/operators",
-        Some(json!({ "operatorId": operator_id, "draft": draft })),
-    )
-    .await
+    state
+        .get_turso_client()?
+        .update_operator(operator_id, &draft)
+        .await
 }
 
 #[tauri::command]
@@ -1170,27 +1026,16 @@ pub async fn desktop_delete_operator(
     operator_id: i64,
 ) -> Result<Value, CommandError> {
     let actor = require_permission(&state, "operators.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.delete_operator(actor.id, operator_id).await;
-    }
-    secured_api(
-        &state,
-        "operators.manage",
-        Method::DELETE,
-        "/api/operators",
-        Some(json!({ "operatorId": operator_id })),
-    )
-    .await
+    state
+        .get_turso_client()?
+        .delete_operator(actor.id, operator_id)
+        .await
 }
 
 #[tauri::command]
 pub async fn desktop_get_roles(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
     require_permission(&state, "roles.view")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.get_roles().await;
-    }
-    let payload = secured_api(&state, "roles.view", Method::POST, "/api/roles/query", None).await?;
-    Ok(payload.get("roles").cloned().unwrap_or_else(|| json!([])))
+    state.get_turso_client()?.get_roles().await
 }
 
 #[tauri::command]
@@ -1200,19 +1045,9 @@ pub async fn desktop_create_role(
     permission_keys: Vec<String>,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "roles.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        let mut full_draft = draft.clone();
-        full_draft["permissions"] = json!(permission_keys);
-        return turso.create_role(&full_draft).await;
-    }
-    secured_api(
-        &state,
-        "roles.manage",
-        Method::POST,
-        "/api/roles",
-        Some(json!({ "draft": draft, "permissionKeys": permission_keys })),
-    )
-    .await
+    let mut full_draft = draft;
+    full_draft["permissions"] = json!(permission_keys);
+    state.get_turso_client()?.create_role(&full_draft).await
 }
 
 #[tauri::command]
@@ -1222,17 +1057,7 @@ pub async fn desktop_update_role(
     draft: Value,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "roles.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.update_role(role_id, &draft).await;
-    }
-    secured_api(
-        &state,
-        "roles.manage",
-        Method::PATCH,
-        "/api/roles",
-        Some(json!({ "roleId": role_id, "draft": draft })),
-    )
-    .await
+    state.get_turso_client()?.update_role(role_id, &draft).await
 }
 
 #[tauri::command]
@@ -1242,17 +1067,10 @@ pub async fn desktop_set_role_permissions(
     permission_keys: Vec<String>,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "roles.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.set_role_permissions(role_id, &permission_keys).await;
-    }
-    secured_api(
-        &state,
-        "roles.manage",
-        Method::PUT,
-        "/api/roles",
-        Some(json!({ "roleId": role_id, "permissionKeys": permission_keys })),
-    )
-    .await
+    state
+        .get_turso_client()?
+        .set_role_permissions(role_id, &permission_keys)
+        .await
 }
 
 #[tauri::command]
@@ -1261,17 +1079,7 @@ pub async fn desktop_delete_role(
     role_id: i64,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "roles.manage")?;
-    if let Ok(turso) = state.get_turso_client() {
-        return turso.delete_role(role_id).await;
-    }
-    secured_api(
-        &state,
-        "roles.manage",
-        Method::DELETE,
-        "/api/roles",
-        Some(json!({ "roleId": role_id })),
-    )
-    .await
+    state.get_turso_client()?.delete_role(role_id).await
 }
 
 #[tauri::command]
@@ -1546,7 +1354,7 @@ pub async fn desktop_update_scan_security(
     }
     let data = payload.get("data").cloned().unwrap_or(payload);
     let result = operational::save_scan_security(&state, &data)?;
-    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    let _ = sync::push_outbox(&state).await;
     Ok(result)
 }
 
@@ -1730,7 +1538,7 @@ pub async fn desktop_update_geofence_settings(
     }
     let data = settings.get("data").cloned().unwrap_or(settings);
     operational::save_geofence_settings(&state, &data)?;
-    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    let _ = sync::push_outbox(&state).await;
     Ok(data)
 }
 
@@ -1760,7 +1568,7 @@ pub async fn desktop_update_scanner_settings(
     }
     let data = settings.get("data").cloned().unwrap_or(settings);
     operational::save_scanner_settings(&state, &data)?;
-    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    let _ = sync::push_outbox(&state).await;
     Ok(data)
 }
 
@@ -1794,7 +1602,7 @@ pub async fn desktop_update_app_display_name(
     require_permission(&state, "settings.manage")?;
     let saved = operational::save_app_display_name(&state, &name)?;
     apply_window_title(&app, &state);
-    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    let _ = sync::push_outbox(&state).await;
     Ok(saved)
 }
 
@@ -1822,23 +1630,9 @@ pub async fn desktop_sync_now(
             error
         }
     })?;
-    // Token hanya relevan untuk jalur HTTP legacy. Pada arsitektur 2-tier,
-    // `sync::synchronize` bicara langsung ke Turso dan tidak memerlukan token
-    // sama sekali. Dulu perintah ini menolak sesi tanpa token, sehingga siapa
-    // pun yang pernah login lewat snapshot offline (token = None) tidak pernah
-    // lagi auto-sync sampai logout — persis gejala "push & pull mati".
-    let token = session_token(&state);
-    if token.is_empty() && state.turso_config().is_none() {
-        return Err(CommandError::new(
-            "DESKTOP_ONLINE_REQUIRED",
-            "Database cloud belum dikonfigurasi dan sesi ini tidak punya token online. Sinkronisasi tidak dapat dijalankan.",
-        ));
-    }
-    let result = sync::synchronize(&state, &token).await;
-    if let Err(error) = &result {
-        clear_expired_session(&state, error);
-    }
-    result
+    // Tanpa database, `synchronize` menjawab TURSO_NOT_CONFIGURED dan outbox
+    // tetap `pending` sampai perangkat dihubungkan ke database.
+    sync::synchronize(&state).await
 }
 
 #[tauri::command]
@@ -2081,7 +1875,7 @@ pub async fn desktop_save_alfa_settings(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "settings.manage")?;
     let res = operational::save_alfa_settings(&state, enabled)?;
-    let _ = sync::push_outbox(&state, &session_token(&state)).await;
+    let _ = sync::push_outbox(&state).await;
     Ok(res)
 }
 
@@ -2101,33 +1895,6 @@ pub fn desktop_get_attendance_audit(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "attendance_audit.view")?;
     operational::get_attendance_audit(&state, tanggal)
-}
-
-#[tauri::command]
-pub fn desktop_get_server_url(state: State<'_, DesktopState>) -> Result<String, CommandError> {
-    Ok(state.server_origin())
-}
-
-/// Mengganti origin server HTTP (jalur login lama). Tanpa sesi HANYA selama
-/// database belum dikonfigurasi, karena layar login Mobile memang harus bisa
-/// memilih server sebelum ada akun. Setelah itu wajib Superadmin: origin ikut
-/// menentukan identitas vault offline dan client id, dan dulu command ini
-/// terbuka sepenuhnya sehingga siapa pun bisa mengarahkan login ke host lain.
-#[tauri::command]
-pub fn desktop_set_server_url(
-    state: State<'_, DesktopState>,
-    url: String,
-) -> Result<String, CommandError> {
-    if state.turso_config().is_some() {
-        let operator = require_session(&state)?;
-        if !operator.is_superadmin {
-            return Err(CommandError::new(
-                "DESKTOP_ACCESS_DENIED",
-                "Alamat server hanya dapat diubah Superadmin setelah database dikonfigurasi.",
-            ));
-        }
-    }
-    state.set_server_url(&url)
 }
 
 #[tauri::command]
@@ -2179,31 +1946,16 @@ pub async fn desktop_force_resync_settings(
             "Kirim ulang pengaturan lokal hanya dapat dilakukan Superadmin.",
         ));
     }
-    let token = session_token(&state);
-    if token.is_empty() && state.turso_config().is_none() {
-        return Err(CommandError::new(
-            "DESKTOP_ONLINE_REQUIRED",
-            "Database cloud belum dikonfigurasi dan sesi ini tidak punya token online. Sinkronisasi tidak dapat dijalankan.",
-        ));
-    }
-
     // Tarik dulu: event di bawah dikirim tanpa revisi dasar (last-writer-wins),
     // jadi salinan lokal WAJIB sudah segar. Tanpa pull yang berhasil, snapshot
     // basi perangkat ini akan menimpa perubahan perangkat lain.
-    if let Err(error) = sync::pull_snapshot(&state, &token).await {
-        clear_expired_session(&state, &error);
-        return Err(error);
-    }
+    sync::pull_snapshot(&state).await?;
 
     // Enqueue ulang pengaturan dari data lokal
     let enqueue_result = operational::force_enqueue_settings(&state)?;
 
     // Langsung sinkronisasi ke server
-    let sync_result = sync::synchronize(&state, &token).await;
-    if let Err(error) = &sync_result {
-        clear_expired_session(&state, error);
-    }
-    let status = sync_result?;
+    let status = sync::synchronize(&state).await?;
 
     Ok(json!({
         "enqueue": enqueue_result,
@@ -2284,7 +2036,7 @@ pub async fn desktop_save_turso_config(
         provider,
         allow_insecure_transport,
     ))?;
-    let _ = sync::pull_snapshot(&state, "").await;
+    let _ = sync::pull_snapshot(&state).await;
     Ok(origin)
 }
 

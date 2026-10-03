@@ -4,6 +4,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { LicenseHolderLabel } from "@/components/license/LicenseNotice";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -733,6 +734,7 @@ export default function Home() {
           <Icon name="settings" className="size-3.5" />
           <span>Atur Kualitas Visual</span>
         </Link>
+        <LicenseHolderLabel className="w-full text-[10px] text-slate-500" />
       </footer>
     </AppShell>
   );

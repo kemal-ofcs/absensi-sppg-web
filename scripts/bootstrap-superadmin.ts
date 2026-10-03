@@ -3,16 +3,21 @@ import { initDatabaseSchema } from "../src/lib/db-schema";
 import { bootstrapSuperadmin } from "../src/lib/operators/operator-admin";
 import { resolveServerDatabaseConfig } from "../src/lib/server/database-config";
 
-const name = process.env.SPPG_SUPERADMIN_NAME?.trim();
-const username = process.env.SPPG_SUPERADMIN_USERNAME?.trim();
-const password = process.env.SPPG_SUPERADMIN_PASSWORD;
-const email = process.env.SPPG_SUPERADMIN_EMAIL?.trim();
-const noHp = process.env.SPPG_SUPERADMIN_PHONE?.trim();
+// Nama lama `SPPG_SUPERADMIN_*` tetap dibaca supaya `.env` yang sudah ada tidak
+// perlu disunting; nama `KOS_*` yang menang bila keduanya diisi.
+const env = (key: string) =>
+  process.env[`KOS_SUPERADMIN_${key}`] ?? process.env[`SPPG_SUPERADMIN_${key}`];
+
+const name = env("NAME")?.trim();
+const username = env("USERNAME")?.trim();
+const password = env("PASSWORD");
+const email = env("EMAIL")?.trim();
+const noHp = env("PHONE")?.trim();
 
 if (!name || !username || !password || !email || !noHp) {
   throw new Error(
-    "Lengkapi SPPG_SUPERADMIN_NAME, SPPG_SUPERADMIN_USERNAME, SPPG_SUPERADMIN_PASSWORD, " +
-      "SPPG_SUPERADMIN_EMAIL, dan SPPG_SUPERADMIN_PHONE sebelum menjalankan bootstrap.",
+    "Lengkapi KOS_SUPERADMIN_NAME, KOS_SUPERADMIN_USERNAME, KOS_SUPERADMIN_PASSWORD, " +
+      "KOS_SUPERADMIN_EMAIL, dan KOS_SUPERADMIN_PHONE sebelum menjalankan bootstrap.",
   );
 }
 
@@ -30,6 +35,11 @@ try {
     status: "Aktif",
   });
   console.log(`Superadmin SPD001 berhasil dibuat dengan ID ${result.id}.`);
+  // Database hanya memegang hash-nya: inilah satu-satunya saat kode ini terbaca.
+  console.log(
+    "\nKode pemulihan password (simpan sekarang, tidak dapat ditampilkan ulang):",
+  );
+  for (const code of result.recoveryCodes) console.log(`  ${code}`);
 } finally {
   client.close();
 }

@@ -5,6 +5,7 @@ import type { ChangeEvent, FormEvent } from "react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { DatabaseBackupCard } from "@/components/DatabaseBackupCard";
+import { LicenseCard } from "@/components/license/LicenseCard";
 import { MailSettingsCard } from "@/components/MailSettingsCard";
 import { PasswordRecoveryCard } from "@/components/PasswordRecoveryCard";
 import { TwoFactorCard } from "@/components/TwoFactorCard";
@@ -1245,6 +1246,7 @@ export default function SettingsPage() {
           operator berhak mengamankan akunnya — termasuk role paling terbatas. */}
       <TwoFactorCard />
       <PasswordRecoveryCard />
+      <LicenseCard />
 
       {hasPermission(user, "settings.manage") ? <MailSettingsCard /> : null}
 

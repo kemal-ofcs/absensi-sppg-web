@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  databaseConfigIssue,
   resolveServerDatabaseConfig,
   type ServerDatabaseEnvironment,
 } from "@/lib/server/database-config";
@@ -165,6 +166,44 @@ describe("nilai bawaan dan alias", () => {
     expect(config.authToken).toBe("token");
   });
 
+  /**
+   * Pemasangan baru memakai nama `KOS_*`. Nama itu harus MENANG, bukan sekadar
+   * dibaca: `.env` yang masih menyimpan nama lama di samping nama baru tidak
+   * boleh diam-diam menunjuk ke database yang lama.
+   */
+  test("KOS_* menang atas TURSO_* dan SPPG_*", () => {
+    const config = resolveServerDatabaseConfig(
+      env({
+        KOS_DATABASE_URL: "http://192.168.1.10:8080",
+        KOS_DATABASE_AUTH_TOKEN: "token-baru",
+        KOS_DATABASE_PROVIDER: "self_hosted",
+        TURSO_DATABASE_URL: "libsql://lama.turso.io",
+        TURSO_AUTH_TOKEN: "token-lama",
+        SPPG_DATABASE_URL: "libsql://lebih-lama.turso.io",
+        SPPG_DATABASE_PROVIDER: "turso",
+      }),
+    );
+    expect(config.url).toBe("http://192.168.1.10:8080");
+    expect(config.authToken).toBe("token-baru");
+    expect(config.provider).toBe("self_hosted");
+  });
+
+  test("KOS_ALLOW_INSECURE_DATABASE dibaca seperti nama lamanya", () => {
+    const publik = {
+      KOS_DATABASE_URL: "http://203.0.113.10:8080",
+      KOS_DATABASE_PROVIDER: "self_hosted",
+      KOS_DATABASE_AUTH_TOKEN: "token",
+    };
+    expect(() => resolveServerDatabaseConfig(env(publik))).toThrow(
+      "Alamat database tidak dapat dipakai",
+    );
+    expect(
+      resolveServerDatabaseConfig(
+        env({ ...publik, KOS_ALLOW_INSECURE_DATABASE: "1" }),
+      ).url,
+    ).toBe("http://203.0.113.10:8080");
+  });
+
   test("URL kosong ditolak di production", () => {
     expect(() => resolveServerDatabaseConfig(env({}))).toThrow(
       /wajib tersedia/,
@@ -180,5 +219,54 @@ describe("nilai bawaan dan alias", () => {
     const config = resolveServerDatabaseConfig({ NODE_ENV: "development" });
     expect(config.url.startsWith("file:")).toBe(true);
     expect(config.isRemote).toBe(false);
+  });
+});
+
+/**
+ * `databaseConfigIssue` adalah `resolveServerDatabaseConfig` yang ditanya tanpa
+ * melempar. Pesannya tampil di halaman login dan `/setup` SEBELUM siapa pun
+ * login, jadi ia tidak boleh memuat nilai alamat atau token.
+ */
+describe("databaseConfigIssue", () => {
+  test("konfigurasi yang sah tidak punya masalah", () => {
+    expect(
+      databaseConfigIssue(
+        env({
+          KOS_DATABASE_URL: "libsql://db.turso.io",
+          KOS_DATABASE_AUTH_TOKEN: "token",
+        }),
+      ),
+    ).toBeNull();
+    // Pengembangan tanpa URL jatuh ke berkas lokal, bukan salah konfigurasi.
+    expect(databaseConfigIssue({ NODE_ENV: "development" })).toBeNull();
+  });
+
+  test("production tanpa alamat menyebut variabel yang kurang", () => {
+    expect(databaseConfigIssue(env({}))).toContain("KOS_DATABASE_URL");
+  });
+
+  test("pesan tidak pernah memuat nilai alamat atau token", () => {
+    const alamat = "http://203.0.113.10:8080";
+    const token = "token-sangat-rahasia";
+    const kasus = [
+      env({ KOS_DATABASE_URL: "libsql://db-rahasia.turso.io" }),
+      env({
+        KOS_DATABASE_URL: alamat,
+        KOS_DATABASE_PROVIDER: "self_hosted",
+        KOS_DATABASE_AUTH_TOKEN: token,
+      }),
+      env({
+        KOS_DATABASE_URL: "libsql://db-rahasia.turso.io",
+        KOS_DATABASE_AUTH_TOKEN: token,
+        KOS_DATABASE_PROVIDER: "local_file",
+      }),
+    ];
+    for (const lingkungan of kasus) {
+      const masalah = databaseConfigIssue(lingkungan);
+      expect(masalah).not.toBeNull();
+      expect(masalah).not.toContain("db-rahasia");
+      expect(masalah).not.toContain("203.0.113.10");
+      expect(masalah).not.toContain(token);
+    }
   });
 });
