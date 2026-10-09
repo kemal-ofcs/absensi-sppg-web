@@ -3795,6 +3795,18 @@ impl TursoClient {
                     )
                 })?;
             batch_revisions.insert((domain.to_owned(), entity_key.to_owned()), server_revision);
+            if let Some((id_sesi, row)) =
+                attendance_guard_after(domain, operation, &parsed_payload, entity_key)
+            {
+                match row {
+                    Some(row) => {
+                        attendance_guard.insert(id_sesi, row);
+                    }
+                    None => {
+                        attendance_guard.remove(&id_sesi);
+                    }
+                }
+            }
             // Event berikutnya di batch yang sama wajib melihat kode yang baru
             // saja dipakai, bukan keadaan sebelum batch.
             if let Some(identity) = employee {
@@ -4944,6 +4956,61 @@ fn attendance_session_of(domain: &str, operation: &str, payload: &Value) -> Opti
         .and_then(Value::as_str)
         .filter(|id_sesi| !id_sesi.is_empty())
         .map(str::to_owned)
+}
+
+/// Kondisi baris absensi cloud SETELAH sebuah event berhasil diterapkan.
+///
+/// `attendance_guard` dibaca sekali di awal batch. Tanpa pembaruan ini, event
+/// kedua untuk sesi yang sama di batch yang sama — mis. koreksi Lupa Absen
+/// Masuk lalu Lupa Absen Pulang sebelum sempat sinkron — dibandingkan dengan
+/// keadaan SEBELUM event pertama dan ditolak sebagai "server berubah", padahal
+/// yang mengubahnya adalah perangkat itu sendiri. Nilainya diambil dari
+/// `extract_attendance_row_params`, parameter yang sama yang ditulis handler,
+/// supaya default-nya tidak pernah berbeda. `None` berarti barisnya dihapus.
+fn attendance_guard_after(
+    domain: &str,
+    operation: &str,
+    payload: &Value,
+    entity_key: &str,
+) -> Option<(String, Option<AttendanceGuardRow>)> {
+    let (row, fallback_key) = match (domain, operation) {
+        ("attendance", "scan") | ("correction", "create") | ("offline-import", "row") => {
+            (payload.get("attendance").filter(|value| !value.is_null())?, "")
+        }
+        ("attendance", "create" | "update") => {
+            (payload.get("attendance").unwrap_or(payload), entity_key)
+        }
+        ("attendance", "delete") => (payload, entity_key),
+        _ => return None,
+    };
+    let id_sesi = row
+        .get("id_sesi")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_key)
+        .to_owned();
+    if id_sesi.is_empty() {
+        return None;
+    }
+    if operation == "delete" {
+        return Some((id_sesi, None));
+    }
+    let params = extract_attendance_row_params(row, &id_sesi);
+    let text = |index: usize| {
+        params
+            .get(index)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let guard = AttendanceGuardRow {
+        jam_masuk: text(5),
+        jam_pulang: text(6),
+        status_kehadiran: text(7),
+        sumber: text(10),
+        update_terakhir: text(11),
+    };
+    Some((id_sesi, Some(guard)))
 }
 
 /// Menegakkan hierarki prioritas absensi dan pemeriksaan konkurensi optimistis.
@@ -9945,6 +10012,99 @@ mod tests {
             "Data absensi sudah dikoreksi admin dan tidak boleh ditimpa sumber lain."
         ));
         assert!(!is_recoverable_schema_error("UNIQUE constraint failed: tbl_shift.kode_shift"));
+    }
+
+    /// Regresi konflik "Data absensi server berubah..." dari HP: koreksi Lupa
+    /// Absen Masuk lalu Lupa Absen Pulang pada sesi yang sama dibuat sebelum
+    /// sempat sinkron, lalu terkirim dalam SATU batch. Event kedua membawa basis
+    /// hasil event pertama, jadi pembanding cloud wajib ikut maju — tetapi basis
+    /// yang memang usang tetap harus ditolak.
+    #[test]
+    fn koreksi_beruntun_pada_sesi_sama_dalam_satu_batch_tidak_konflik() {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        let hub = dir.path().join("sppg-hub.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        let client = TursoClient::local_file(
+            Url::parse(LOCAL_FILE_ORIGIN).expect("origin lokal"),
+            &hub,
+            Client::new(),
+        );
+        let client_id = format!("desktop-{}", "a".repeat(64));
+        let sesi = "NORMAL-20260810-K001-1";
+        let koreksi = |n: u8, base: Option<&str>, update: &str, masuk: &str, pulang: &str| {
+            let reference = format!("KOR-{n}");
+            json!({
+                "eventId": format!("evt-{}", format!("{n:02x}").repeat(32)),
+                "clientId": client_id,
+                "domain": "correction",
+                "operation": "create",
+                "entityKey": reference,
+                "payload": {
+                    "correction": {
+                        "id_referensi": reference, "tanggal": "2026-08-10",
+                        "id_karyawan": "K001", "nama": "Budi", "divisi": "Dapur",
+                        "jenis_koreksi": "Lupa Absen Masuk", "jam_koreksi": "07:00",
+                        "keterangan_admin": "uji", "status_proses": "Sudah Diproses",
+                        "timestamp": update, "kode_operator": "OP1"
+                    },
+                    "attendance": {
+                        "id_sesi": sesi, "tanggal": "2026-08-10", "id_karyawan": "K001",
+                        "nama": "Budi", "kelas_divisi": "Dapur", "jam_masuk": masuk,
+                        "jam_pulang": pulang, "status_kehadiran": "Hadir",
+                        "status_absen": "Lengkap", "sumber": "Koreksi Admin",
+                        "update_terakhir": update, "id_shift": 1
+                    },
+                    "attendanceBaseUpdatedAt": base
+                }
+            })
+        };
+        let events = vec![
+            // Sesi belum ada di cloud: basis kosong.
+            koreksi(1, None, "2026-08-10 09:00:00", "2026-08-10 07:00:00", ""),
+            // Basis = hasil event pertama.
+            koreksi(
+                2,
+                Some("2026-08-10 09:00:00"),
+                "2026-08-10 09:05:00",
+                "2026-08-10 07:00:00",
+                "2026-08-10 15:00:00",
+            ),
+            // Basis usang (sebelum event kedua): tetap konflik.
+            koreksi(
+                3,
+                Some("2026-08-10 09:00:00"),
+                "2026-08-10 09:10:00",
+                "2026-08-10 07:30:00",
+                "2026-08-10 15:00:00",
+            ),
+        ];
+        let results = runtime.block_on(async {
+            client.ensure_schema().await.expect("provisioning lokal");
+            client.push_events(&events).await.expect("push batch")
+        });
+        let status = |index: usize| {
+            results[index]
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(status(0), "applied", "{:?}", results[0]);
+        assert_eq!(status(1), "applied", "{:?}", results[1]);
+        assert_eq!(status(2), "conflict", "basis usang tetap harus ditolak");
+
+        let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+        let (pulang, update): (String, String) = connection
+            .query_row(
+                "SELECT jam_pulang, update_terakhir FROM absensi_harian WHERE id_sesi = ?;",
+                [sesi],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("baris absensi cloud");
+        assert_eq!(pulang, "2026-08-10 15:00:00");
+        assert_eq!(update, "2026-08-10 09:05:00");
     }
 
     #[test]

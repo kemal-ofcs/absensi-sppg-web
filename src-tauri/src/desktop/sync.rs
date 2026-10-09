@@ -1485,14 +1485,22 @@ fn pending_events(state: &DesktopState) -> Result<(String, Vec<Value>), CommandE
          -- lintas perangkat berhenti dan tetap muncul sebagai konflik yang harus
          -- diselesaikan operator, bukan berputar selamanya.
          --
-         -- Pesan lain sengaja TIDAK ikut: "Data absensi server berubah setelah
-         -- event lokal dibuat." membandingkan `attendanceBaseUpdatedAt` yang
-         -- tertanam di payload dan tidak bisa disegarkan oleh retry, sedangkan
+         --
+         -- "Data absensi server berubah setelah event lokal dibuat." ikut jalur
+         -- yang sama. `attendanceBaseUpdatedAt` di payload memang beku, tetapi
+         -- konflik ini dulu lahir dari batch yang membandingkan event kedua
+         -- dengan keadaan cloud SEBELUM event pertama diterapkan — cloud
+         -- sekarang justru sudah sama dengan basisnya, jadi kiriman ulang
+         -- diterima. Konflik lintas perangkat yang sungguhan tetap ditolak
+         -- pemeriksaan yang sama dan berhenti setelah lima percobaan.
          -- "Data absensi sudah dikoreksi admin..." memang harus tetap ditolak.
          OR (status = 'conflict'
              AND attempt_count < 5
              AND (next_retry_at IS NULL OR next_retry_at <= ?)
-             AND last_error = 'Data server berubah setelah snapshot lokal dibuat.')
+             AND last_error IN (
+               'Data server berubah setelah snapshot lokal dibuat.',
+               'Data absensi server berubah setelah event lokal dibuat.'
+             ))
       ORDER BY
         CASE WHEN domain = 'shift' AND operation = 'create' THEN 0 ELSE 1 END,
         created_at ASC,
@@ -2513,6 +2521,8 @@ pub fn resolve_conflicts(state: &DesktopState, event_id: Option<&str>) -> Result
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let now = storage::now_epoch_seconds();
+    // Dibaca sebelum statusnya berubah menjadi `synced`.
+    let targets = conflicted_events(&transaction, event_id)?;
     if let Some(event_id) = event_id {
         transaction
             .execute(
@@ -2540,7 +2550,180 @@ pub fn resolve_conflicts(state: &DesktopState, event_id: Option<&str>) -> Result
             )
             .map_err(|_| CommandError::internal())?;
     }
+    // Setelah status diubah, supaya event yang sedang diselesaikan tidak lagi
+    // dihitung sebagai "masih antre" untuk sesinya sendiri.
+    discard_local_changes(&transaction, &targets)?;
     transaction.commit().map_err(|_| CommandError::internal())
+}
+
+/// Event konflik yang akan diselesaikan: (domain, operation, entity_key, payload).
+fn conflicted_events(
+    transaction: &Transaction<'_>,
+    event_id: Option<&str>,
+) -> Result<Vec<(String, String, String, Value)>, CommandError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT domain, operation, entity_key, payload_json FROM desktop_sync_outbox WHERE status = 'conflict' AND (?1 IS NULL OR event_id = ?1);",
+        )
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map(params![event_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                serde_json::from_str::<Value>(&row.get::<_, String>(3)?).unwrap_or(Value::Null),
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandError::internal())
+}
+
+/// "Ikuti Cloud": buang jejak lokal event yang ditolak cloud.
+///
+/// Dulu event hanya ditandai `synced`, sehingga perubahan yang tidak pernah
+/// diterima cloud tetap tinggal di perangkat: pull melewatinya karena isi
+/// cloud tidak berubah sejak pull terakhir (cache hash), dan `delete_missing`
+/// tidak menyentuhnya karena tidak punya jejak revisi. Perangkat lalu memegang
+/// versi berbeda selamanya, dan setiap koreksi atau scan berikutnya pada sesi
+/// itu membawa `attendanceBaseUpdatedAt` yang tidak pernah ada di cloud —
+/// konflik baru tanpa akhir.
+///
+/// Baris yang hanya ada di perangkat dihapus; sisanya dipaksa ditulis ulang
+/// dari cloud oleh pull yang langsung dijalankan pemanggil. Hash dikosongkan,
+/// bukan dihapus, supaya jejak "berasal dari server" yang dipakai
+/// `delete_missing` tetap ada.
+fn discard_local_changes(
+    transaction: &Transaction<'_>,
+    targets: &[(String, String, String, Value)],
+) -> Result<(), CommandError> {
+    let run = |sql: &str, values: &[&dyn rusqlite::ToSql]| {
+        transaction
+            .execute(sql, values)
+            .map(|_| ())
+            .map_err(|_| CommandError::internal())
+    };
+    let mut domains: HashSet<&str> = HashSet::new();
+    for (domain, operation, entity_key, payload) in targets {
+        domains.insert(domain.as_str());
+        let field = |value: &Value, key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        match (domain.as_str(), operation.as_str()) {
+            ("correction", "create") => {
+                run(
+                    "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+                    &[entity_key],
+                )?;
+                if let Some(log) = payload.get("log").filter(|log| log.is_object()) {
+                    run(
+                        "DELETE FROM log_scan WHERE id_log < 0 AND sumber_data = 'Koreksi Admin' AND tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND COALESCE(id_referensi, '') = ?;",
+                        &[
+                            &field(log, "tanggal_kerja"),
+                            &field(log, "id_karyawan"),
+                            &field(log, "jenis_scan"),
+                            &field(log, "id_referensi"),
+                        ],
+                    )?;
+                }
+            }
+            ("attendance", "scan") => {
+                if let Some(local_log_id) = entity_key
+                    .strip_prefix("scan:")
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .filter(|id| *id < 0)
+                {
+                    run("DELETE FROM log_scan WHERE id_log = ?;", &[&local_log_id])?;
+                }
+                if let Some(photo) = payload.get("photo").filter(|photo| photo.is_object()) {
+                    run(
+                        "DELETE FROM absensi_foto WHERE id_foto = ?;",
+                        &[&field(photo, "id_foto")],
+                    )?;
+                }
+            }
+            ("offline-import", "row") => {
+                run(
+                    "DELETE FROM import_offline WHERE event_key = ?;",
+                    &[entity_key],
+                )?;
+                for log in payload
+                    .get("logs")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    run(
+                        "DELETE FROM log_scan WHERE id_log < 0 AND sumber_data = 'Import Offline' AND timestamp_scan = ? AND id_karyawan = ? AND jenis_scan = ?;",
+                        &[
+                            &field(log, "timestamp_scan"),
+                            &field(log, "id_karyawan"),
+                            &field(log, "jenis_scan"),
+                        ],
+                    )?;
+                }
+            }
+            _ => {}
+        }
+
+        let session = match (domain.as_str(), operation.as_str()) {
+            ("attendance", "create" | "update" | "delete") => {
+                let row = payload.get("attendance").unwrap_or(payload);
+                Some(field(row, "id_sesi"))
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| entity_key.clone())
+            }
+            _ => payload
+                .get("attendance")
+                .map(|row| field(row, "id_sesi"))
+                .unwrap_or_default(),
+        };
+        if matches!(domain.as_str(), "attendance" | "correction" | "offline-import") {
+            domains.extend(["attendance", "log-scan"]);
+        }
+        if session.is_empty() {
+            continue;
+        }
+        // Event lain untuk sesi yang sama masih menunggu: baris lokalnya adalah
+        // dasar event itu dan tidak boleh ikut dibuang.
+        let still_pending: bool = transaction
+            .query_row(
+                r#"
+          SELECT EXISTS(
+            SELECT 1 FROM desktop_sync_outbox
+            WHERE status IN ('pending', 'failed', 'conflict')
+              AND (json_extract(payload_json, '$.attendance.id_sesi') = ?1
+                   OR (domain = 'attendance' AND entity_key = ?1))
+          );
+          "#,
+                [&session],
+                |row| row.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        if !still_pending {
+            run("DELETE FROM absensi_harian WHERE id_sesi = ?;", &[&session])?;
+        }
+    }
+
+    let tables = SNAPSHOT_TABLES
+        .iter()
+        .filter(|definition| domains.contains(definition.domain));
+    for definition in tables {
+        run(
+            "UPDATE desktop_entity_revision SET payload_hash = '' WHERE domain = ?;",
+            &[&definition.domain],
+        )?;
+        run(
+            "DELETE FROM desktop_sync_table_cursor WHERE table_name = ?;",
+            &[&definition.table],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn resolve_conflicts_local(
@@ -2875,10 +3058,54 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    /// Koreksi yang terlanjur ditolak sebagai "server berubah" karena batch
+    /// lama membandingkannya dengan keadaan sebelum event sebelumnya harus
+    /// pulih sendiri lewat retry terbatas, bukan macet sampai operator turun
+    /// tangan.
+    #[test]
+    fn konflik_basis_absensi_dicoba_ulang_sampai_batas_percobaan() {
+        let (_directory, state) = fixture();
+        let client_id = ensure_client_id(&state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        let transaction = connection.transaction().expect("transaction");
+        let event_id = enqueue(
+            &transaction,
+            &client_id,
+            "correction",
+            "create",
+            "KOR-1",
+            &json!({"attendance": {"id_sesi": "NORMAL-20260810-K001-1"}}),
+            None,
+        )
+        .expect("correction event");
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'conflict', attempt_count = 1,
+                   next_retry_at = ?, last_error = 'Data absensi server berubah setelah event lokal dibuat.'
+                 WHERE event_id = ?;",
+                rusqlite::params![storage::now_epoch_seconds() - 60, event_id],
+            )
+            .expect("mark conflict");
+        transaction.commit().expect("commit");
+        drop(connection);
+
+        let (_client, events) = pending_events(&state).expect("pending events");
+        assert_eq!(events.len(), 1);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute(
+                "UPDATE desktop_sync_outbox SET attempt_count = 5 WHERE event_id = ?;",
+                rusqlite::params![event_id],
+            )
+            .expect("exhaust attempts");
+        drop(connection);
+        let (_client, events) = pending_events(&state).expect("pending events");
+        assert!(events.is_empty());
+    }
+
     /// Konflik jenis lain TIDAK boleh ikut jalur retry ini: pesan prioritas
-    /// Koreksi Admin memang harus tetap ditolak, dan pemeriksaan
-    /// `attendanceBaseUpdatedAt` tertanam di payload sehingga retry tidak
-    /// pernah bisa menyegarkannya.
+    /// Koreksi Admin memang harus tetap ditolak.
     #[test]
     fn konflik_selain_revisi_basi_tidak_dicoba_ulang() {
         let (_directory, state) = fixture();
@@ -3217,6 +3444,170 @@ mod tests {
             .expect("local log");
         assert_eq!(attendance_note, "Data scanner lokal");
         assert_eq!(log, (1, -10, "Log scanner lokal".into()));
+    }
+
+    fn snapshot_absensi_cloud(sesi: &str) -> Value {
+        json!({
+            "snapshot": {
+                "revision": 13,
+                "attendance": [{
+                    "tanggal": "2026-08-10", "id_karyawan": "K001",
+                    "nama": "Budi", "kelas_divisi": "Dapur",
+                    "jam_masuk": "", "jam_pulang": "",
+                    "status_kehadiran": "Alfa", "status_absen": "Tidak Hadir",
+                    "keterangan": "Versi cloud", "sumber": "Generate Sistem",
+                    "update_terakhir": "2026-08-10 23:00:00",
+                    "menit_terlambat": 0, "menit_datang_awal": 0,
+                    "jam_kerja": 0, "lembur": 0, "jam_kerja_kurang": 0,
+                    "id_shift": 1, "bulan": "Agustus", "tahun": 2026,
+                    "id_sesi": sesi, "mode_tugas": "NORMAL",
+                    "id_backup": "", "id_karyawan_asal": "", "tanggal_tugas": ""
+                }],
+                "corrections": [],
+                "scanLogs": []
+            }
+        })
+    }
+
+    /// Koreksi lokal di atas baris cloud, lalu ditolak cloud sebagai konflik.
+    fn koreksi_lokal_yang_konflik(state: &DesktopState, reference: &str, sesi: &str) -> String {
+        let client_id = ensure_client_id(state).expect("client identity");
+        let mut connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(&format!(
+                r#"
+        UPDATE absensi_harian SET jam_masuk = '2026-08-10 07:00:00',
+          status_kehadiran = 'Hadir', keterangan = 'Koreksi lokal',
+          sumber = 'Koreksi Admin', update_terakhir = '2026-08-11 08:00:00'
+        WHERE id_sesi = '{sesi}';
+        INSERT INTO koreksi_admin (
+          id_koreksi, id_referensi, tanggal, id_karyawan, nama, divisi,
+          jenis_koreksi, jam_koreksi, keterangan_admin, status_proses,
+          timestamp, kode_operator
+        ) VALUES (
+          (SELECT COALESCE(MIN(id_koreksi), 0) - 1 FROM koreksi_admin),
+          '{reference}', '2026-08-10', 'K001', 'Budi', 'Dapur',
+          'Lupa Absen Masuk', '07:00', 'Koreksi lokal', 'Sudah Diproses',
+          '2026-08-11 08:00:00', 'OP1'
+        );
+        INSERT INTO log_scan (
+          id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
+          nama, divisi, jenis_scan, status_proses, sumber_data,
+          catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
+          id_referensi, kode_operator
+        ) VALUES (
+          (SELECT COALESCE(MIN(id_log), 0) - 1 FROM log_scan),
+          '2026-08-11 08:00:00', '2026-08-10', '07:00', 'K001',
+          'Budi', 'Dapur', 'Masuk', 'Berhasil', 'Koreksi Admin',
+          'Koreksi Admin - Lupa Absen Masuk', 'Koreksi lokal', 0, 0,
+          '{reference}', 'OP1'
+        );
+        INSERT OR REPLACE INTO desktop_sync_table_cursor (table_name, remote_revision, updated_at)
+        VALUES ('absensi_harian', 7, 0);
+        "#
+            ))
+            .expect("koreksi lokal");
+        let transaction = connection.transaction().expect("transaction");
+        let event_id = enqueue(
+            &transaction,
+            &client_id,
+            "correction",
+            "create",
+            reference,
+            &json!({
+                "correction": {"id_referensi": reference},
+                "attendance": {"id_sesi": sesi},
+                "attendanceBaseUpdatedAt": "2026-08-10 22:00:00",
+                "log": {
+                    "tanggal_kerja": "2026-08-10", "id_karyawan": "K001",
+                    "jenis_scan": "Masuk", "id_referensi": reference
+                }
+            }),
+            None,
+        )
+        .expect("correction event");
+        transaction
+            .execute(
+                "UPDATE desktop_sync_outbox SET status = 'conflict',
+                   last_error = 'Data absensi server berubah setelah event lokal dibuat.'
+                 WHERE event_id = ?;",
+                rusqlite::params![event_id],
+            )
+            .expect("mark conflict");
+        transaction.commit().expect("commit");
+        event_id
+    }
+
+    /// "Ikuti Cloud" dulu hanya menandai event `synced`: koreksi yang ditolak
+    /// tetap tinggal di perangkat, pull melewatinya karena isi cloud tidak
+    /// berubah, lalu setiap koreksi berikutnya pada sesi itu membawa basis
+    /// yang tidak pernah ada di cloud dan konflik lagi tanpa akhir.
+    #[test]
+    fn ikuti_cloud_membuang_koreksi_lokal_dan_menarik_ulang_versi_cloud() {
+        let (_directory, state) = fixture();
+        let sesi = "NORMAL-20260810-K001-1";
+        let snapshot = snapshot_absensi_cloud(sesi);
+        apply_snapshot(&state, &snapshot).expect("snapshot awal");
+        let event_id = koreksi_lokal_yang_konflik(&state, "KOR-9", sesi);
+
+        super::resolve_conflicts(&state, Some(&event_id)).expect("ikuti cloud");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let count = |sql: &str| -> i64 {
+            connection
+                .query_row(sql, [], |row| row.get(0))
+                .expect("hitung baris")
+        };
+        assert_eq!(count("SELECT COUNT(*) FROM koreksi_admin;"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM log_scan;"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM desktop_sync_table_cursor WHERE table_name = 'absensi_harian';"),
+            0,
+            "tabel absensi wajib ditarik ulang"
+        );
+        drop(connection);
+
+        // Pull berikutnya menulis ulang baris dari cloud.
+        apply_snapshot(&state, &snapshot).expect("snapshot ulang");
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let (keterangan, update): (String, String) = connection
+            .query_row(
+                "SELECT keterangan, update_terakhir FROM absensi_harian WHERE id_sesi = ?;",
+                [sesi],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("baris cloud kembali");
+        assert_eq!(keterangan, "Versi cloud");
+        assert_eq!(update, "2026-08-10 23:00:00");
+    }
+
+    #[test]
+    fn ikuti_cloud_tidak_membuang_sesi_yang_masih_punya_event_antre() {
+        let (_directory, state) = fixture();
+        let sesi = "NORMAL-20260810-K001-1";
+        apply_snapshot(&state, &snapshot_absensi_cloud(sesi)).expect("snapshot awal");
+        let pertama = koreksi_lokal_yang_konflik(&state, "KOR-1", sesi);
+        let _kedua = koreksi_lokal_yang_konflik(&state, "KOR-2", sesi);
+
+        super::resolve_conflicts(&state, Some(&pertama)).expect("ikuti cloud satu event");
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let keterangan: String = connection
+            .query_row(
+                "SELECT keterangan FROM absensi_harian WHERE id_sesi = ?;",
+                [sesi],
+                |row| row.get(0),
+            )
+            .expect("baris lokal tetap ada");
+        assert_eq!(keterangan, "Koreksi lokal");
+        let sisa: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM koreksi_admin WHERE id_referensi = 'KOR-2';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("koreksi kedua");
+        assert_eq!(sisa, 1, "koreksi yang masih konflik tidak ikut dibuang");
     }
 
     #[test]
