@@ -19,12 +19,25 @@ if (tests.length === 0) {
   throw new Error("Tidak ada file test aplikasi utama yang ditemukan.");
 }
 
+// Tes WAJIB terisolasi dari `.env` pengembang. Bun memuat `.env` otomatis, dan
+// `KOS_DATABASE_URL` di sana mengalahkan `TURSO_DATABASE_URL` yang disetel tes
+// ke berkas sementara — tes lalu menulis data uji ke database SUNGGUHAN.
+// Proses ini sendiri sudah memuat `.env`, jadi kuncinya juga dibuang dari env
+// anak, bukan hanya `--no-env-file`.
+const isolatedEnv = { ...process.env };
+for (const key of Object.keys(isolatedEnv)) {
+  if (/^(KOS_DATABASE_|TURSO_|SPPG_DATABASE_PROVIDER$)/.test(key)) {
+    delete isolatedEnv[key];
+  }
+}
+
 for (const test of tests) {
   const result = spawnSync(
     process.execPath,
-    ["test", "--timeout", "30000", test],
+    ["test", "--no-env-file", "--timeout", "30000", test],
     {
       cwd: process.cwd(),
+      env: isolatedEnv,
       stdio: "inherit",
     },
   );
