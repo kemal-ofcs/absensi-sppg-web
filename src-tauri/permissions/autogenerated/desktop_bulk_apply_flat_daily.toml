@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-bulk-apply-flat-daily"
+description = "Enables the desktop_bulk_apply_flat_daily command without any pre-configured scope."
+commands.allow = ["desktop_bulk_apply_flat_daily"]
+
+[[permission]]
+identifier = "deny-desktop-bulk-apply-flat-daily"
+description = "Denies the desktop_bulk_apply_flat_daily command without any pre-configured scope."
+commands.deny = ["desktop_bulk_apply_flat_daily"]

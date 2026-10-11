@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-test-turso-connection"
+description = "Enables the desktop_test_turso_connection command without any pre-configured scope."
+commands.allow = ["desktop_test_turso_connection"]
+
+[[permission]]
+identifier = "deny-desktop-test-turso-connection"
+description = "Denies the desktop_test_turso_connection command without any pre-configured scope."
+commands.deny = ["desktop_test_turso_connection"]

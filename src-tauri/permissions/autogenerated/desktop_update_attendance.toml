@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-update-attendance"
+description = "Enables the desktop_update_attendance command without any pre-configured scope."
+commands.allow = ["desktop_update_attendance"]
+
+[[permission]]
+identifier = "deny-desktop-update-attendance"
+description = "Denies the desktop_update_attendance command without any pre-configured scope."
+commands.deny = ["desktop_update_attendance"]

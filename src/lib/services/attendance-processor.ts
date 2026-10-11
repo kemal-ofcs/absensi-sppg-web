@@ -1,0 +1,1332 @@
+import type { Client, Transaction } from "@libsql/client";
+import {
+  diDalamJendelaScanMasuk,
+  type ExplicitInstant,
+  formatJamOperasional,
+  formatTanggalOperasional,
+  formatTimestampOperasional,
+  isShiftFleksibel,
+  OPERATIONAL_TIME_ZONE,
+  putuskanScanWaktu,
+  type ScanHistory,
+  type ShiftTimePolicy,
+  type TimeScanDecision,
+  tentukanTanggalKerja,
+} from "@/lib/attendance/time-policy";
+import type { AttendanceSource, ScanResult } from "@/lib/contracts/scanner";
+import { evaluateHolidayScan } from "@/lib/validations/holiday-whitelist";
+import {
+  IP_ALLOWLIST_SETTING_KEY,
+  ipMatchesAllowlist,
+  parseIpAllowlist,
+} from "@/lib/validations/ip-allowlist";
+import {
+  SCAN_IP_RESTRICTION_ENABLED_KEY,
+  SCAN_PHOTO_ENABLED_KEY,
+  settingEnabled,
+} from "@/lib/validations/scan-security";
+import { hitungJarakHaversine, parseQrToken } from "@/lib/validations/scanner";
+
+export interface ScanPayload {
+  qrText: string;
+  lat?: number | null;
+  lng?: number | null;
+  sumberScan?: AttendanceSource;
+  kodeOperator?: string;
+  /**
+   * Alamat IP pemanggil, dibaca route handler dari header proxy.
+   *
+   * Sengaja TIDAK dibaca dari body: nilai yang dikirim klien bisa dikarang.
+   */
+  ipAddress?: string | null;
+  /** Foto bukti absensi (base64 murni, tanpa awalan data URL). */
+  fotoBase64?: string | null;
+  fotoMime?: string | null;
+}
+
+/**
+ * Sakelar keamanan absensi milik role operator yang sedang login.
+ *
+ * Dibaca dari sesi server, bukan dari body permintaan — sama seperti jalur
+ * Desktop yang mengambilnya dari sesi vault, bukan dari payload scan.
+ */
+export interface ScanSecurityPolicy {
+  requirePhoto?: boolean;
+  requireIpAllowlist?: boolean;
+}
+
+export interface WebScanContext {
+  waktuScan: ExplicitInstant;
+  actorOperatorId?: number;
+  policy?: ScanSecurityPolicy;
+}
+
+/**
+ * Batas panjang foto bukti (karakter base64) — angka yang sama dieja di
+ * `scanner.rs` (`MAX_SCAN_PHOTO_BASE64`).
+ */
+const MAX_SCAN_PHOTO_BASE64 = 2_000_000;
+const ALLOWED_PHOTO_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+type SourceData = NonNullable<ScanPayload["sumberScan"]>;
+type Row = Record<string, unknown>;
+
+interface EmployeeContext {
+  id: string;
+  nama: string;
+  divisi: string;
+  idShift: number;
+  row: Row;
+}
+
+interface BackupContext {
+  row: Row;
+  shiftRow: Row | null;
+}
+
+interface SessionContext {
+  modeTugas: "NORMAL" | "PENGGANTI";
+  shiftEfektif: number;
+  idBackup: string;
+  idKaryawanAsal: string;
+  tanggalTugas: string;
+}
+
+const DEFAULT_MULTI_SCAN_MINUTES = 5;
+const MONTHS = [
+  "Januari",
+  "Februari",
+  "Maret",
+  "April",
+  "Mei",
+  "Juni",
+  "Juli",
+  "Agustus",
+  "September",
+  "Oktober",
+  "November",
+  "Desember",
+];
+
+export async function processWebAttendanceScan(
+  client: Client,
+  payload: ScanPayload,
+  context: WebScanContext,
+): Promise<ScanResult> {
+  const waktuScan = explicitDate(context.waktuScan);
+  const transaction = await client.transaction("write");
+
+  try {
+    const result = await processInTransaction(
+      transaction,
+      payload,
+      waktuScan,
+      context.policy ?? {},
+    );
+    const revision = context.actorOperatorId
+      ? await recordScanChange(
+          transaction,
+          result,
+          context.actorOperatorId,
+          waktuScan,
+        )
+      : undefined;
+    await transaction.commit();
+    return revision === undefined ? result : { ...result, revision };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  } finally {
+    transaction.close();
+  }
+}
+
+async function processInTransaction(
+  transaction: Transaction,
+  payload: ScanPayload,
+  waktuScan: Date,
+  policy: ScanSecurityPolicy,
+): Promise<ScanResult> {
+  const sumberData: SourceData = payload.sumberScan ?? "Scanner";
+  const kodeOperator = payload.kodeOperator?.trim() ?? "";
+  const parsed = parseQrToken(payload.qrText);
+
+  if (!parsed.valid) {
+    return resultDitolak({
+      pesan: parsed.pesan,
+      id: "",
+      nama: "-",
+      divisi: "-",
+    });
+  }
+
+  const masterResult = await transaction.execute({
+    sql: "SELECT * FROM master_data WHERE id_unik = ? OR kode_karyawan = ? LIMIT 1;",
+    args: [parsed.idUnik, parsed.idUnik],
+  });
+  const master = masterResult.rows[0] as Row | undefined;
+
+  if (!master) {
+    return resultDitolak({
+      pesan: `Gagal: ID Karyawan '${parsed.idUnik}' tidak ditemukan.`,
+      id: parsed.idUnik,
+      nama: "-",
+      divisi: "-",
+    });
+  }
+
+  const employee: EmployeeContext = {
+    id: String(master.id_unik),
+    nama: String(master.nama),
+    divisi: String(master.divisi),
+    idShift: Number(master.id_shift),
+    row: master,
+  };
+  const baseShiftRow = await getShiftRow(transaction, employee.idShift);
+  const tanggalLogAwal = safeWorkDate(waktuScan, baseShiftRow);
+
+  // Terisi ketika scan jatuh pada hari libur DAN karyawan lolos whitelist.
+  // Dipakai untuk menandai jejak scan-nya, supaya laporan bisa menjelaskan
+  // kenapa ada absensi pada tanggal yang terdaftar sebagai hari libur.
+  let holidayClearance: string | null = null;
+
+  if (String(master.status_aktif ?? "").toLowerCase() !== "aktif") {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Karyawan berstatus nonaktif",
+      pesan: "Scan ditolak: Karyawan berstatus non-aktif.",
+    });
+  }
+
+  if (String(master.token_absensi ?? "").trim() !== parsed.token) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Token QR tidak valid atau sudah diperbarui",
+      pesan: "Akses ditolak: Token QR tidak valid / sudah diperbarui.",
+    });
+  }
+
+  const settings = await getSettings(transaction);
+  const geofenceEnabled =
+    settings.geofence_enabled === "true" ||
+    (settings.geofence_enabled === undefined &&
+      (settingNumber(settings.lat_kantor, 0) !== 0 ||
+        settingNumber(settings.lng_kantor, 0) !== 0));
+
+  if (geofenceEnabled && (payload.lat == null || payload.lng == null)) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "GPS Tidak Terdeteksi",
+      pesan:
+        "Scan ditolak: Lokasi GPS perangkat Anda tidak terdeteksi. Wajib mengaktifkan izin lokasi/GPS pada perangkat.",
+    });
+  }
+
+  if (geofenceEnabled && payload.lat != null && payload.lng != null) {
+    const latKantor = settingNumber(settings.lat_kantor, 0);
+    const lngKantor = settingNumber(settings.lng_kantor, 0);
+    const radiusMax = settingNumber(settings.radius_meter, 100);
+    const jarak = hitungJarakHaversine(
+      payload.lat,
+      payload.lng,
+      latKantor,
+      lngKantor,
+    );
+
+    if (jarak > radiusMax) {
+      return logKnownRejection(transaction, {
+        waktuScan,
+        tanggalKerja: tanggalLogAwal,
+        employee,
+        sumberData,
+        kodeOperator,
+        catatanSistem: `Di luar radius kantor (${jarak}m > ${radiusMax}m)`,
+        pesan: `Scan ditolak: Posisi Anda di luar area kantor (${jarak}m dari kantor, batas max: ${radiusMax}m).`,
+      });
+    }
+  }
+
+  // Fitur berlaku hanya bila perusahaan menghidupkannya DAN role-nya
+  // menyalakannya. Sakelar induk dieja sama persis di `scanner.rs`; kalau
+  // keduanya berbeda, Web akan menuntut foto untuk sesuatu yang tidak pernah
+  // diminta terminal Desktop.
+  const ipRestrictionRequired =
+    policy.requireIpAllowlist === true &&
+    settingEnabled(settings[SCAN_IP_RESTRICTION_ENABLED_KEY]);
+  const photoRequired =
+    policy.requirePhoto === true &&
+    settingEnabled(settings[SCAN_PHOTO_ENABLED_KEY]);
+
+  // ── Pembatasan alamat IP (sakelar induk + sakelar role) ─────────────────
+  // Daftar kosong berarti BELUM DIATUR, bukan "tidak ada IP yang boleh":
+  // pembatasan baru berlaku setelah daftarnya diisi. Aturan ini dieja sama
+  // persis di `scanner.rs` — kalau keduanya berbeda, satu scan yang sama akan
+  // diterima Web tetapi ditolak terminal Desktop tanpa penjelasan apa pun.
+  // Setelah daftarnya ada, kedua cabang sisanya tetap fail-closed.
+  if (ipRestrictionRequired) {
+    const allowlist = parseIpAllowlist(settings[IP_ALLOWLIST_SETTING_KEY]);
+    const clientIp = (payload.ipAddress ?? "").trim();
+    const penolakan =
+      allowlist.length === 0
+        ? null
+        : !clientIp || clientIp === "unknown"
+          ? {
+              catatanSistem: "Alamat IP perangkat tidak terdeteksi",
+              pesan:
+                "Scan ditolak: Alamat IP perangkat tidak terdeteksi. Pastikan perangkat terhubung ke jaringan kantor.",
+            }
+          : !ipMatchesAllowlist([clientIp], allowlist)
+            ? {
+                catatanSistem: `IP perangkat di luar daftar (${clientIp})`,
+                pesan: `Scan ditolak: Alamat IP perangkat (${clientIp}) tidak terdaftar sebagai jaringan absensi yang diizinkan.`,
+              }
+            : null;
+    if (penolakan) {
+      return logKnownRejection(transaction, {
+        waktuScan,
+        tanggalKerja: tanggalLogAwal,
+        employee,
+        sumberData,
+        kodeOperator,
+        ...penolakan,
+      });
+    }
+  }
+
+  // ── Foto bukti absensi (sakelar per role) ───────────────────────────────
+  const fotoBase64 = (payload.fotoBase64 ?? "").trim();
+  if (
+    fotoBase64.startsWith("data:") ||
+    fotoBase64.length > MAX_SCAN_PHOTO_BASE64
+  ) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Foto bukti absensi tidak valid",
+      pesan: fotoBase64.startsWith("data:")
+        ? "Scan ditolak: Foto bukti absensi harus base64 murni tanpa awalan data URL."
+        : "Scan ditolak: Foto bukti absensi terlalu besar.",
+    });
+  }
+  if (photoRequired && !fotoBase64) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: tanggalLogAwal,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Foto bukti absensi wajib",
+      pesan:
+        "Scan ditolak: Role Anda mewajibkan foto bukti absensi. Aktifkan kamera terminal lalu ulangi scan.",
+    });
+  }
+
+  const backup = await findEffectiveBackup(transaction, employee.id, waktuScan);
+  if (backup && String(backup.row.id_karyawan_asal) === employee.id) {
+    const idBackup = String(backup.row.id_backup);
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: String(backup.row.tanggal_tugas),
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: `Karyawan asal sedang digantikan. ID Backup: ${idBackup}`,
+      pesan: `Scan ditolak: Anda sedang digantikan oleh ${backup.row.nama_karyawan_pengganti} (ID Backup: ${idBackup}).`,
+      idReferensi: idBackup,
+    });
+  }
+
+  let session: SessionContext = {
+    modeTugas: "NORMAL",
+    shiftEfektif: employee.idShift,
+    idBackup: "",
+    idKaryawanAsal: "",
+    tanggalTugas: "",
+  };
+  let shiftRow: Row | null = baseShiftRow;
+
+  if (backup) {
+    session = {
+      modeTugas: "PENGGANTI",
+      shiftEfektif: Number(backup.row.id_shift_backup),
+      idBackup: String(backup.row.id_backup),
+      idKaryawanAsal: String(backup.row.id_karyawan_asal),
+      tanggalTugas: String(backup.row.tanggal_tugas),
+    };
+    shiftRow = backup.shiftRow ?? baseShiftRow;
+  } else {
+    const openRes = await transaction.execute({
+      sql: `SELECT id_sesi, id_shift, tanggal, jam_masuk, mode_tugas, id_backup, id_karyawan_asal, tanggal_tugas
+            FROM absensi_harian
+            WHERE id_karyawan = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '')
+              AND (sumber IS NULL OR sumber != 'Koreksi Admin')
+            ORDER BY tanggal DESC LIMIT 1;`,
+      args: [employee.id],
+    });
+    let openSession = openRes.rows[0] as Row | undefined;
+
+    if (openSession) {
+      const openShiftId = Number(openSession.id_shift);
+      const openShiftRow = await getShiftRow(transaction, openShiftId);
+      const expired = isCheckoutWindowExpired(
+        String(openSession.tanggal),
+        waktuScan,
+        openShiftRow,
+      );
+
+      if (expired) {
+        // Auto-seal expired session as Belum Pulang
+        await transaction.execute({
+          sql: `UPDATE absensi_harian
+                SET status_absen = 'Belum Pulang',
+                    keterangan = CASE WHEN keterangan IS NULL OR keterangan = '' OR keterangan = '-' THEN 'Belum Pulang' ELSE keterangan END,
+                    update_terakhir = strftime('%Y-%m-%d %H:%M:%S', 'now', '+7 hours')
+                WHERE id_sesi = ?;`,
+          args: [String(openSession.id_sesi)],
+        });
+        openSession = undefined;
+      } else {
+        session = {
+          modeTugas:
+            (openSession.mode_tugas as "NORMAL" | "PENGGANTI") || "NORMAL",
+          shiftEfektif: openShiftId,
+          idBackup: String(openSession.id_backup || ""),
+          idKaryawanAsal: String(openSession.id_karyawan_asal || ""),
+          tanggalTugas: String(
+            openSession.tanggal_tugas || openSession.tanggal || "",
+          ),
+        };
+        shiftRow = openShiftRow;
+      }
+    }
+
+    if (!openSession) {
+      const holidayRes = await transaction.execute({
+        sql: "SELECT nama_libur, jenis_libur FROM tbl_hari_libur WHERE tanggal = ? AND status_aktif = 1 LIMIT 1;",
+        args: [tanggalLogAwal],
+      });
+      if (holidayRes.rows.length > 0) {
+        const holiday = holidayRes.rows[0];
+        const namaLibur = String(holiday.nama_libur || "Hari Libur");
+        const jenisLibur = String(holiday.jenis_libur || "Libur Nasional");
+
+        // Hari libur TIDAK lagi mematikan scanner untuk semua orang. Sebagian
+        // peran memang tetap masuk saat libur — Satpam, Keamanan, Maintenance,
+        // Teknisi — dan mereka didaftarkan lewat whitelist Shift/Divisi.
+        //
+        // Cakupan dinilai dari SHIFT DAN DIVISI milik karyawan menurut
+        // `master_data`/`tbl_shift`, tidak pernah dari body request: klien
+        // tidak boleh bisa memasukkan dirinya sendiri ke whitelist.
+        //
+        // Aturannya dieja dua kali dan WAJIB tetap identik — di sini dan pada
+        // `evaluate_holiday_scan` di `scanner.rs`.
+        const whitelistRes = await transaction.execute({
+          sql: `SELECT id, scope_type, scope_value, tanggal_libur, keterangan, status_aktif
+                FROM hari_libur_whitelist
+                WHERE status_aktif = 1
+                  AND (tanggal_libur IS NULL OR TRIM(tanggal_libur) = '' OR tanggal_libur LIKE ?);`,
+          args: [`${tanggalLogAwal}%`],
+        });
+        const kodeShiftRes = await transaction.execute({
+          sql: "SELECT kode_shift FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+          args: [employee.idShift],
+        });
+        const kodeShift =
+          kodeShiftRes.rows.length > 0
+            ? Number(kodeShiftRes.rows[0].kode_shift)
+            : null;
+
+        const keputusanLibur = evaluateHolidayScan(
+          (whitelistRes.rows as Row[]).map((row) => ({
+            id: String(row.id ?? ""),
+            scope_type: String(row.scope_type ?? ""),
+            scope_value: String(row.scope_value ?? ""),
+            tanggal_libur:
+              row.tanggal_libur === null || row.tanggal_libur === undefined
+                ? null
+                : String(row.tanggal_libur),
+            keterangan:
+              row.keterangan === null || row.keterangan === undefined
+                ? null
+                : String(row.keterangan),
+            status_aktif: Number(row.status_aktif ?? 0),
+          })),
+          {
+            tanggal: tanggalLogAwal,
+            divisi: employee.divisi,
+            kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
+          },
+        );
+
+        if (!keputusanLibur.allowed) {
+          return logKnownRejection(transaction, {
+            waktuScan,
+            tanggalKerja: tanggalLogAwal,
+            employee,
+            sumberData,
+            kodeOperator,
+            catatanSistem: `Hari Libur: ${namaLibur} (${jenisLibur})`,
+            pesan: `Hari ini Hari Libur (${namaLibur} - ${jenisLibur}), jadi Anda tidak perlu absen. Selamat beristirahat! Bila Anda memang bertugas hari ini, minta Admin mendaftarkan Shift atau Divisi Anda pada Whitelist Hari Libur.`,
+          });
+        }
+
+        // Lolos whitelist: scan diteruskan seperti hari biasa, dengan jejak
+        // izinnya dicatat supaya laporan bisa menjelaskan kenapa ada absensi
+        // pada tanggal yang terdaftar sebagai hari libur.
+        holidayClearance = `Hari Libur: ${namaLibur} (${jenisLibur}) - Whitelist ${keputusanLibur.reason}`;
+      }
+
+      const baseDate = safeWorkDate(waktuScan, baseShiftRow);
+      const baseIdSesi = `NORMAL-${baseDate.replaceAll("-", "")}-${employee.id}-${employee.idShift}`;
+      const baseSessionRes = await transaction.execute({
+        sql: "SELECT jam_masuk, jam_pulang FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
+        args: [baseIdSesi],
+      });
+      const baseCompleted =
+        baseSessionRes.rows.length > 0 &&
+        Boolean(baseSessionRes.rows[0]?.jam_masuk) &&
+        Boolean(baseSessionRes.rows[0]?.jam_pulang);
+
+      if (baseCompleted) {
+        const allShiftsRes = await transaction.execute({
+          sql: `SELECT * FROM tbl_shift
+                WHERE id_shift != ? AND kode_shift != 4 AND jam_kerja_normal_menit > 0
+                  AND (izinkan_multi_sesi = 1 OR izinkan_multi_sesi = '1' OR izinkan_multi_sesi = 'true')
+                ORDER BY id_shift ASC;`,
+          args: [employee.idShift],
+        });
+
+        let matchedShiftRow: Row | null = null;
+        for (const cand of allShiftsRes.rows as Row[]) {
+          if (isCheckInWindowMatch(waktuScan, cand)) {
+            matchedShiftRow = cand;
+            break;
+          }
+        }
+
+        if (matchedShiftRow) {
+          session = {
+            modeTugas: "NORMAL",
+            shiftEfektif: Number(matchedShiftRow.id_shift),
+            idBackup: "",
+            idKaryawanAsal: "",
+            tanggalTugas: "",
+          };
+          shiftRow = matchedShiftRow;
+        } else {
+          session = {
+            modeTugas: "NORMAL",
+            shiftEfektif: employee.idShift,
+            idBackup: "",
+            idKaryawanAsal: "",
+            tanggalTugas: "",
+          };
+          shiftRow = baseShiftRow;
+        }
+      } else {
+        session = {
+          modeTugas: "NORMAL",
+          shiftEfektif: employee.idShift,
+          idBackup: "",
+          idKaryawanAsal: "",
+          tanggalTugas: "",
+        };
+        shiftRow = baseShiftRow;
+      }
+    }
+  }
+
+  if (!shiftRow) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: formatTanggalOperasional(waktuScan),
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: `Konfigurasi shift ${session.shiftEfektif} tidak ditemukan`,
+      pesan: "Absensi ditolak. Konfigurasi shift tidak valid.",
+      idReferensi: session.idBackup,
+      shiftEfektif: session.shiftEfektif,
+      modeTugas: session.modeTugas,
+    });
+  }
+
+  let shiftPolicy: ShiftTimePolicy;
+  let tanggalKerja: string;
+
+  try {
+    shiftPolicy = mapShiftPolicy(shiftRow);
+    tanggalKerja = tentukanTanggalKerja(waktuScan, shiftPolicy);
+  } catch (error) {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja: formatTanggalOperasional(waktuScan),
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: `Konfigurasi shift tidak valid: ${errorMessage(error)}`,
+      pesan: "Absensi ditolak. Konfigurasi shift tidak valid.",
+      idReferensi: session.idBackup,
+      shiftEfektif: session.shiftEfektif,
+      modeTugas: session.modeTugas,
+    });
+  }
+
+  const idSesi =
+    session.modeTugas === "PENGGANTI"
+      ? `${session.idBackup}-PENGGANTI-${employee.id}`
+      : `NORMAL-${tanggalKerja.replaceAll("-", "")}-${employee.id}-${session.shiftEfektif}`;
+
+  const cooldownSeconds = settingNumber(settings.anti_double_scan_seconds, 60);
+  const latestScanResult = await transaction.execute({
+    sql: `SELECT timestamp_scan FROM log_scan
+          WHERE id_karyawan = ? AND sumber_data = ?
+            AND status_proses IN ('Berhasil', 'Perlu Verifikasi')
+          ORDER BY id_log DESC LIMIT 1;`,
+    args: [employee.id, sumberData],
+  });
+  const latestScanTimestamp = latestScanResult.rows[0]?.timestamp_scan;
+
+  if (latestScanTimestamp && cooldownSeconds > 0) {
+    const latestScan = explicitDate(
+      storedOperationalInstant(latestScanTimestamp),
+    );
+    const elapsedSeconds = (waktuScan.getTime() - latestScan.getTime()) / 1000;
+    if (elapsedSeconds >= 0 && elapsedSeconds < cooldownSeconds) {
+      const remaining = Math.ceil(cooldownSeconds - elapsedSeconds);
+      return logKnownRejection(transaction, {
+        waktuScan,
+        tanggalKerja,
+        employee,
+        sumberData,
+        kodeOperator,
+        catatanSistem: `Scan ganda dalam masa cooldown (${cooldownSeconds} detik)`,
+        keterangan: "Duplikat diabaikan",
+        pesan: `Scan ganda terdeteksi. Silakan tunggu ${remaining} detik sebelum scan ulang.`,
+        idReferensi: session.idBackup,
+        idSesi,
+        shiftEfektif: session.shiftEfektif,
+        modeTugas: session.modeTugas,
+      });
+    }
+  }
+
+  const attendanceResult = await transaction.execute({
+    sql: "SELECT * FROM absensi_harian WHERE id_sesi = ? LIMIT 1;",
+    args: [idSesi],
+  });
+  const attendance = attendanceResult.rows[0] as Row | undefined;
+
+  if (attendance && String(attendance.sumber) === "Koreksi Admin") {
+    return logKnownRejection(transaction, {
+      waktuScan,
+      tanggalKerja,
+      employee,
+      sumberData,
+      kodeOperator,
+      catatanSistem: "Data absensi sudah dikoreksi admin",
+      pesan:
+        "Scan ditolak: Data absensi sudah dikoreksi Admin dan tidak boleh ditimpa scanner.",
+      idReferensi: session.idBackup,
+      idSesi,
+      shiftEfektif: session.shiftEfektif,
+      modeTugas: session.modeTugas,
+    });
+  }
+
+  const scanHistory = await getScanHistory(transaction, {
+    attendance,
+    tanggalKerja,
+    employeeId: employee.id,
+    idReferensi: session.idBackup,
+  });
+  const multiScanMinutes = settingNumber(
+    settings.batas_multi_scan_menit ?? settings.BATAS_MULTI_SCAN_MENIT,
+    DEFAULT_MULTI_SCAN_MINUTES,
+  );
+  const keputusan = putuskanScanWaktu({
+    waktuScan,
+    shift: shiftPolicy,
+    riwayat: scanHistory,
+    batasMultiScanMenit: Math.max(0, Math.trunc(multiScanMinutes)),
+  });
+
+  if (!keputusan.boleh) {
+    await insertLog(transaction, {
+      waktuScan,
+      tanggalKerja,
+      employee,
+      jenisScan: keputusan.jenisScan,
+      statusProses: keputusan.statusProses,
+      sumberData,
+      catatanSistem: keputusan.catatanSistem,
+      keterangan: keputusan.keterangan,
+      menitTerlambat: keputusan.menitTerlambat,
+      menitDatangAwal: keputusan.menitDatangAwal,
+      idReferensi: session.idBackup,
+      kodeOperator,
+    });
+    return resultFromDecision(keputusan, employee, session, idSesi);
+  }
+
+  await writeAttendance(transaction, {
+    attendance,
+    keputusan,
+    waktuScan,
+    tanggalKerja,
+    employee,
+    sumberData,
+    session: {
+      ...session,
+      tanggalTugas: session.tanggalTugas || tanggalKerja,
+    },
+    idSesi,
+  });
+  await insertLog(transaction, {
+    waktuScan,
+    tanggalKerja,
+    employee,
+    jenisScan: keputusan.jenisScan,
+    statusProses: keputusan.statusProses,
+    sumberData,
+    catatanSistem: withHolidayClearance(
+      session.modeTugas === "PENGGANTI"
+        ? `${keputusan.catatanSistem}. ID Backup: ${session.idBackup}`
+        : keputusan.catatanSistem,
+      holidayClearance,
+    ),
+    keterangan: keputusan.keterangan,
+    menitTerlambat: keputusan.menitTerlambat,
+    menitDatangAwal: keputusan.menitDatangAwal,
+    idReferensi: session.idBackup,
+    kodeOperator,
+  });
+
+  // Foto bukti disimpan setelah absensi tercatat, di dalam transaksi yang sama:
+  // baris foto tanpa absensi yang berhasil hanya akan menjadi bukti palsu.
+  if (fotoBase64) {
+    await transaction.execute({
+      sql: `INSERT INTO absensi_foto (
+              id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi,
+              jenis_scan, timestamp_scan, sumber_data, kode_operator,
+              ip_perangkat, client_id, foto_mime, foto_base64, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id_foto) DO NOTHING;`,
+      args: [
+        `web:${idSesi}:${formatTimestampOperasional(waktuScan)}`,
+        idSesi,
+        tanggalKerja,
+        employee.id,
+        employee.nama,
+        employee.divisi,
+        keputusan.jenisScan,
+        formatTimestampOperasional(waktuScan),
+        sumberData,
+        kodeOperator,
+        (payload.ipAddress ?? "").trim(),
+        "web",
+        ALLOWED_PHOTO_MIME.includes(payload.fotoMime ?? "")
+          ? (payload.fotoMime as string)
+          : "image/jpeg",
+        fotoBase64,
+        formatTimestampOperasional(waktuScan),
+      ],
+    });
+  }
+
+  return resultFromDecision(keputusan, employee, session, idSesi);
+}
+
+/** Menambahkan jejak izin hari libur ke catatan sistem, bila ada. */
+function withHolidayClearance(note: string, clearance: string | null): string {
+  if (!clearance) return note;
+  return note.trim() === "" ? clearance : `${note}. ${clearance}`;
+}
+
+function isCheckInWindowMatch(waktuScan: Date, shiftRow: Row | null): boolean {
+  if (!shiftRow) return false;
+  try {
+    const policy = mapShiftPolicy(shiftRow);
+    const timeStr = formatJamOperasional(waktuScan);
+    const parts = timeStr.trim().split(":");
+    const userMin = Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+    const shiftInParts = policy.jamMasuk.trim().split(":");
+    const shiftIn =
+      Number(shiftInParts[0] || 0) * 60 + Number(shiftInParts[1] || 0);
+    let diff = userMin - shiftIn;
+    if (diff < -720) diff += 1440;
+    if (diff > 720) diff -= 1440;
+    return diDalamJendelaScanMasuk(diff, policy);
+  } catch {
+    return false;
+  }
+}
+
+function isCheckoutWindowExpired(
+  sessionDate: string,
+  waktuScan: Date,
+  shiftRow: Row | null,
+): boolean {
+  if (!shiftRow) return true;
+  const policy = mapShiftPolicy(shiftRow);
+  if (policy.kind === "flexible") return false;
+
+  const parseClock = (clock: string) => {
+    const parts = clock.split(":");
+    return Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+  };
+
+  const jamMasuk = parseClock(policy.jamMasuk);
+  const jamPulangDasar = parseClock(policy.jamPulang);
+  const jamPulang =
+    jamPulangDasar < jamMasuk ? jamPulangDasar + 1440 : jamPulangDasar;
+  const batasAkhirPulang =
+    jamPulang +
+    policy.batasPulangMenit +
+    (jamPulangDasar < jamMasuk ? policy.bufferShiftMalamMenit : 0);
+
+  const scanFormatted = formatTanggalOperasional(waktuScan);
+  const diffDays = Math.round(
+    (new Date(scanFormatted).getTime() - new Date(sessionDate).getTime()) /
+      86400000,
+  );
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: OPERATIONAL_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .format(waktuScan)
+    .split(":");
+  const currentMinuteOfDay = Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+  const currentMinuteOnTimeline = diffDays * 1440 + currentMinuteOfDay;
+
+  return currentMinuteOnTimeline > batasAkhirPulang;
+}
+
+async function findEffectiveBackup(
+  transaction: Transaction,
+  employeeId: string,
+  waktuScan: Date,
+): Promise<BackupContext | null> {
+  const calendarDate = formatTanggalOperasional(waktuScan);
+  const previousDate = addDays(calendarDate, -1);
+  const result = await transaction.execute({
+    sql: `SELECT * FROM backup_karyawan
+          WHERE status_tugas = 'Aktif'
+            AND tanggal_tugas IN (?, ?)
+            AND (id_karyawan_asal = ? OR id_karyawan_pengganti = ?)
+          ORDER BY tanggal_tugas DESC, id_backup DESC;`,
+    args: [calendarDate, previousDate, employeeId, employeeId],
+  });
+
+  for (const candidate of result.rows as Row[]) {
+    const shiftRow = await getShiftRow(
+      transaction,
+      Number(candidate.id_shift_backup),
+    );
+
+    if (!shiftRow) {
+      if (String(candidate.tanggal_tugas) === calendarDate) {
+        return { row: candidate, shiftRow: null };
+      }
+      continue;
+    }
+
+    if (String(candidate.id_karyawan_asal) === employeeId) {
+      try {
+        const date = tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow));
+        if (date === String(candidate.tanggal_tugas)) {
+          return { row: candidate, shiftRow };
+        }
+      } catch {
+        if (String(candidate.tanggal_tugas) === calendarDate) {
+          return { row: candidate, shiftRow };
+        }
+      }
+      continue;
+    }
+
+    // Employee is replacement (pengganti)
+    const backupSessionId = `${candidate.id_backup}-PENGGANTI-${employeeId}`;
+    const openRes = await transaction.execute({
+      sql: "SELECT 1 FROM absensi_harian WHERE id_sesi = ? AND jam_masuk != '' AND (jam_pulang IS NULL OR jam_pulang = '') LIMIT 1;",
+      args: [backupSessionId],
+    });
+    if (openRes.rows.length > 0) {
+      if (
+        !isCheckoutWindowExpired(
+          String(candidate.tanggal_tugas),
+          waktuScan,
+          shiftRow,
+        )
+      ) {
+        return { row: candidate, shiftRow };
+      }
+    }
+
+    try {
+      const date = tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow));
+      if (date === String(candidate.tanggal_tugas)) {
+        return { row: candidate, shiftRow };
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+async function getScanHistory(
+  transaction: Transaction,
+  input: {
+    attendance?: Row;
+    tanggalKerja: string;
+    employeeId: string;
+    idReferensi: string;
+  },
+): Promise<ScanHistory> {
+  const result = await transaction.execute({
+    sql: `SELECT timestamp_scan, jenis_scan FROM log_scan
+          WHERE tanggal_kerja = ? AND id_karyawan = ?
+            AND COALESCE(id_referensi, '') = ?
+            AND status_proses IN ('Berhasil', 'Perlu Verifikasi')
+            AND jenis_scan IN ('Masuk', 'Pulang')
+          ORDER BY id_log DESC LIMIT 1;`,
+    args: [input.tanggalKerja, input.employeeId, input.idReferensi],
+  });
+
+  const latest = result.rows[0];
+
+  return {
+    waktuMasuk: input.attendance?.jam_masuk
+      ? storedOperationalInstant(input.attendance.jam_masuk)
+      : null,
+    waktuPulang: input.attendance?.jam_pulang
+      ? storedOperationalInstant(input.attendance.jam_pulang)
+      : null,
+    scanTerakhir: latest?.timestamp_scan
+      ? storedOperationalInstant(latest.timestamp_scan)
+      : null,
+    jenisScanTerakhir:
+      latest?.jenis_scan === "Masuk" || latest?.jenis_scan === "Pulang"
+        ? latest.jenis_scan
+        : null,
+  };
+}
+
+async function writeAttendance(
+  transaction: Transaction,
+  input: {
+    attendance?: Row;
+    keputusan: TimeScanDecision;
+    waktuScan: Date;
+    tanggalKerja: string;
+    employee: EmployeeContext;
+    sumberData: SourceData;
+    session: SessionContext;
+    idSesi: string;
+  },
+): Promise<void> {
+  const timestamp = formatTimestampOperasional(input.waktuScan);
+  const [year, month] = input.tanggalKerja.split("-").map(Number);
+  const isEntry = input.keputusan.jenisScan === "Masuk";
+  const statusAbsen = isEntry
+    ? "Belum Pulang"
+    : input.keputusan.statusProses === "Perlu Verifikasi"
+      ? "Perlu Verifikasi"
+      : "Lengkap";
+
+  if (!input.attendance) {
+    await transaction.execute({
+      sql: `INSERT INTO absensi_harian (
+              tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
+              status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
+              menit_terlambat, menit_datang_awal, jam_kerja, lembur,
+              jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas,
+              id_backup, id_karyawan_asal, tanggal_tugas
+            ) VALUES (?, ?, ?, ?, ?, ?, 'Hadir', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      args: [
+        input.tanggalKerja,
+        input.employee.id,
+        input.employee.nama,
+        input.employee.divisi,
+        isEntry ? timestamp : "",
+        isEntry ? "" : timestamp,
+        statusAbsen,
+        input.keputusan.keterangan,
+        input.sumberData,
+        timestamp,
+        input.keputusan.menitTerlambat,
+        input.keputusan.menitDatangAwal,
+        input.keputusan.perhitungan.jamKerjaMenit,
+        input.keputusan.perhitungan.lemburMenit,
+        input.keputusan.perhitungan.jamKerjaKurangMenit,
+        input.session.shiftEfektif,
+        MONTHS[month - 1] ?? "Januari",
+        year,
+        input.idSesi,
+        input.session.modeTugas,
+        input.session.idBackup,
+        input.session.idKaryawanAsal,
+        input.session.tanggalTugas,
+      ],
+    });
+    return;
+  }
+
+  const updateResult = isEntry
+    ? await transaction.execute({
+        sql: `UPDATE absensi_harian SET
+              jam_masuk = ?, status_kehadiran = 'Hadir', status_absen = ?,
+              keterangan = ?, sumber = ?, update_terakhir = ?,
+              menit_terlambat = ?, menit_datang_awal = ?, id_shift = ?,
+              mode_tugas = ?, id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
+              WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';`,
+        args: [
+          timestamp,
+          statusAbsen,
+          input.keputusan.keterangan,
+          input.sumberData,
+          timestamp,
+          input.keputusan.menitTerlambat,
+          input.keputusan.menitDatangAwal,
+          input.session.shiftEfektif,
+          input.session.modeTugas,
+          input.session.idBackup,
+          input.session.idKaryawanAsal,
+          input.session.tanggalTugas,
+          input.idSesi,
+        ],
+      })
+    : await transaction.execute({
+        sql: `UPDATE absensi_harian SET
+              jam_pulang = ?, status_kehadiran = 'Hadir', status_absen = ?,
+              keterangan = ?, sumber = ?, update_terakhir = ?, jam_kerja = ?,
+              lembur = ?, jam_kerja_kurang = ?, id_shift = ?, mode_tugas = ?,
+              id_backup = ?, id_karyawan_asal = ?, tanggal_tugas = ?
+              WHERE id_sesi = ? AND sumber <> 'Koreksi Admin';`,
+        args: [
+          timestamp,
+          statusAbsen,
+          input.keputusan.keterangan,
+          input.sumberData,
+          timestamp,
+          input.keputusan.perhitungan.jamKerjaMenit,
+          input.keputusan.perhitungan.lemburMenit,
+          input.keputusan.perhitungan.jamKerjaKurangMenit,
+          input.session.shiftEfektif,
+          input.session.modeTugas,
+          input.session.idBackup,
+          input.session.idKaryawanAsal,
+          input.session.tanggalTugas,
+          input.idSesi,
+        ],
+      });
+
+  if (updateResult.rowsAffected !== 1) {
+    throw new Error(
+      "ABSENSI_HARIAN tidak dapat diperbarui karena data berubah selama scan.",
+    );
+  }
+}
+
+async function logKnownRejection(
+  transaction: Transaction,
+  input: {
+    waktuScan: Date;
+    tanggalKerja: string;
+    employee: EmployeeContext;
+    sumberData: SourceData;
+    kodeOperator: string;
+    catatanSistem: string;
+    pesan: string;
+    keterangan?: string;
+    idReferensi?: string;
+    idSesi?: string;
+    shiftEfektif?: number;
+    modeTugas?: "NORMAL" | "PENGGANTI";
+  },
+): Promise<ScanResult> {
+  await insertLog(transaction, {
+    waktuScan: input.waktuScan,
+    tanggalKerja: input.tanggalKerja,
+    employee: input.employee,
+    jenisScan: "Scan Ditolak",
+    statusProses: "Ditolak",
+    sumberData: input.sumberData,
+    catatanSistem: input.catatanSistem,
+    keterangan: input.keterangan ?? "",
+    menitTerlambat: 0,
+    menitDatangAwal: 0,
+    idReferensi: input.idReferensi ?? "",
+    kodeOperator: input.kodeOperator,
+  });
+  return resultDitolak({
+    pesan: input.pesan,
+    id: input.employee.id,
+    nama: input.employee.nama,
+    divisi: input.employee.divisi,
+    catatanSistem: input.catatanSistem,
+    keterangan: input.keterangan,
+    idSesi: input.idSesi,
+    shiftEfektif: input.shiftEfektif,
+    modeTugas: input.modeTugas,
+  });
+}
+
+async function insertLog(
+  transaction: Transaction,
+  input: {
+    waktuScan: Date;
+    tanggalKerja: string;
+    employee: EmployeeContext;
+    jenisScan: string;
+    statusProses: string;
+    sumberData: SourceData;
+    catatanSistem: string;
+    keterangan: string;
+    menitTerlambat: number;
+    menitDatangAwal: number;
+    idReferensi: string;
+    kodeOperator: string;
+  },
+): Promise<void> {
+  await transaction.execute({
+    sql: `INSERT INTO log_scan (
+            timestamp_scan, tanggal_kerja, jam_scan, id_karyawan, nama, divisi,
+            jenis_scan, status_proses, sumber_data, catatan_sistem, keterangan,
+            menit_terlambat, menit_datang_awal, id_referensi, kode_operator
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    args: [
+      formatTimestampOperasional(input.waktuScan),
+      input.tanggalKerja,
+      formatJamOperasional(input.waktuScan),
+      input.employee.id,
+      input.employee.nama,
+      input.employee.divisi,
+      input.jenisScan,
+      input.statusProses,
+      input.sumberData,
+      input.catatanSistem,
+      input.keterangan,
+      input.menitTerlambat,
+      input.menitDatangAwal,
+      input.idReferensi,
+      input.kodeOperator,
+    ],
+  });
+}
+
+async function recordScanChange(
+  transaction: Transaction,
+  result: ScanResult,
+  actorOperatorId: number,
+  waktuScan: Date,
+): Promise<number> {
+  const entityKey =
+    result.idSesi ??
+    `scan:${waktuScan.getTime()}:${result.idKaryawan || "tidak-dikenal"}`;
+  const changeResult = await transaction.execute({
+    sql: `INSERT INTO sync_change_log (
+            domain, entity_key, operation, payload_json, changed_at,
+            actor_operator_id
+          ) VALUES ('attendance', ?, 'scan', ?, ?, ?);`,
+    args: [
+      entityKey,
+      JSON.stringify(result),
+      waktuScan.toISOString(),
+      actorOperatorId,
+    ],
+  });
+  return Number(changeResult.lastInsertRowid);
+}
+
+async function getSettings(
+  transaction: Transaction,
+): Promise<Record<string, string>> {
+  const result = await transaction.execute(
+    "SELECT key, value FROM setting_gex_system;",
+  );
+  return Object.fromEntries(
+    result.rows.map((row) => [String(row.key), String(row.value)]),
+  );
+}
+
+async function getShiftRow(
+  transaction: Transaction,
+  idShift: number,
+): Promise<Row | null> {
+  const result = await transaction.execute({
+    sql: "SELECT * FROM tbl_shift WHERE id_shift = ? OR kode_shift = ? LIMIT 1;",
+    args: [idShift, idShift],
+  });
+  return (result.rows[0] as Row | undefined) ?? null;
+}
+
+function mapShiftPolicy(row: Row): ShiftTimePolicy {
+  const normalMinutes = Number(row.jam_kerja_normal_menit ?? 0);
+  const flexible = isShiftFleksibel(
+    String(row.jam_masuk ?? ""),
+    String(row.jam_pulang ?? ""),
+    normalMinutes,
+  );
+  return {
+    kind: flexible ? "flexible" : "regular",
+    jamMasuk: String(row.jam_masuk ?? ""),
+    jamPulang: String(row.jam_pulang ?? ""),
+    awalAbsenMenit: Number(row.awal_absen_menit ?? 120),
+    batasMasukMenit: Number(row.batas_masuk_menit ?? 60),
+    toleransiMasukMenit: Number(row.toleransi_masuk_menit ?? 0),
+    batasPulangMenit: Number(row.batas_pulang_menit ?? 240),
+    bufferShiftMalamMenit: Number(row.buffer_shift_malam_menit ?? 120),
+    offsetIstirahatMulai: Number(row.offset_istirahat_mulai ?? 240),
+    jamKerjaNormalMenit: normalMinutes,
+    istirahatMenit: Number(row.istirahat_menit ?? 60),
+  };
+}
+
+function safeWorkDate(waktuScan: Date, shiftRow: Row | null): string {
+  if (!shiftRow) return formatTanggalOperasional(waktuScan);
+  try {
+    return tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow));
+  } catch {
+    return formatTanggalOperasional(waktuScan);
+  }
+}
+
+function resultFromDecision(
+  keputusan: TimeScanDecision,
+  employee: EmployeeContext,
+  session: SessionContext,
+  idSesi: string,
+): ScanResult {
+  let pesan = keputusan.boleh
+    ? `Jam ${keputusan.jenisScan} ${employee.nama} (${employee.id}) berhasil dicatat.\nStatus: ${keputusan.keterangan}`
+    : rejectedDecisionMessage(keputusan);
+  if (keputusan.menitTerlambat > 0) {
+    pesan += `\nTerlambat: ${keputusan.menitTerlambat} menit.`;
+  }
+  if (keputusan.menitDatangAwal > 0) {
+    pesan += `\nDatang awal: ${keputusan.menitDatangAwal} menit.`;
+  }
+  if (keputusan.perhitungan.lemburMenit > 0) {
+    pesan += `\nLembur: ${keputusan.perhitungan.lemburMenit} menit.`;
+  }
+  if (keputusan.perhitungan.jamKerjaKurangMenit > 0) {
+    pesan += `\nJam kerja kurang: ${keputusan.perhitungan.jamKerjaKurangMenit} menit.`;
+  }
+
+  return {
+    sukses: keputusan.boleh,
+    status: keputusan.statusProses,
+    jenisScan: keputusan.jenisScan,
+    idKaryawan: employee.id,
+    nama: employee.nama,
+    divisi: employee.divisi,
+    pesan,
+    catatanSistem: keputusan.catatanSistem,
+    keterangan: keputusan.keterangan,
+    menitTerlambat: keputusan.menitTerlambat,
+    menitDatangAwal: keputusan.menitDatangAwal,
+    jamKerja: keputusan.perhitungan.jamKerjaMenit,
+    lembur: keputusan.perhitungan.lemburMenit,
+    jamKerjaKurang: keputusan.perhitungan.jamKerjaKurangMenit,
+    shiftEfektif: session.shiftEfektif,
+    modeTugas: session.modeTugas,
+    idSesi,
+  };
+}
+
+function resultDitolak(input: {
+  pesan: string;
+  id: string;
+  nama: string;
+  divisi: string;
+  catatanSistem?: string;
+  keterangan?: string;
+  idSesi?: string;
+  shiftEfektif?: number;
+  modeTugas?: "NORMAL" | "PENGGANTI";
+}): ScanResult {
+  return {
+    sukses: false,
+    status: "Ditolak",
+    jenisScan: "Scan Ditolak",
+    idKaryawan: input.id,
+    nama: input.nama,
+    divisi: input.divisi,
+    pesan: input.pesan,
+    catatanSistem: input.catatanSistem,
+    keterangan: input.keterangan,
+    idSesi: input.idSesi,
+    shiftEfektif: input.shiftEfektif,
+    modeTugas: input.modeTugas,
+  };
+}
+
+function rejectedDecisionMessage(keputusan: TimeScanDecision): string {
+  switch (keputusan.alasan) {
+    case "TOO_EARLY":
+      return "Absensi belum dibuka untuk shift ini.";
+    case "ENTRY_WINDOW_CLOSED":
+      return "Anda melewati batas toleransi keterlambatan. Silakan hubungi Admin atau Operator.";
+    case "MULTI_SCAN":
+      return "Scan ditolak. Kemungkinan Anda melakukan scan masuk ulang.";
+    case "CHECKOUT_TOO_LATE":
+      return "Scan ditolak. Batas waktu pulang shift sudah berakhir.";
+    case "ALREADY_CHECKED_OUT":
+      return "Scan pulang sudah tercatat sebelumnya.";
+    default:
+      return "Scan ditolak oleh aturan waktu shift.";
+  }
+}
+
+function explicitDate(value: ExplicitInstant): Date {
+  const date =
+    value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("Waktu scan tidak valid.");
+  return date;
+}
+
+function storedOperationalInstant(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (/(?:Z|[+-]\d{2}:\d{2})$/i.test(text)) return text;
+  const normalized = text.replace(" ", "T");
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(normalized)) {
+    return `${normalized.length === 16 ? `${normalized}:00` : normalized}+07:00`;
+  }
+  throw new Error("Timestamp riwayat absensi tidak valid.");
+}
+
+function settingNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Error tidak dikenal";
+}

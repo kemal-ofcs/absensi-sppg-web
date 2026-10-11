@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trigger-generate-alfa"
+description = "Enables the desktop_trigger_generate_alfa command without any pre-configured scope."
+commands.allow = ["desktop_trigger_generate_alfa"]
+
+[[permission]]
+identifier = "deny-desktop-trigger-generate-alfa"
+description = "Denies the desktop_trigger_generate_alfa command without any pre-configured scope."
+commands.deny = ["desktop_trigger_generate_alfa"]

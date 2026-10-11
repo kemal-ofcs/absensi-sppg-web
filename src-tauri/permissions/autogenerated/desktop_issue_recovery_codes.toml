@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-issue-recovery-codes"
+description = "Enables the desktop_issue_recovery_codes command without any pre-configured scope."
+commands.allow = ["desktop_issue_recovery_codes"]
+
+[[permission]]
+identifier = "deny-desktop-issue-recovery-codes"
+description = "Denies the desktop_issue_recovery_codes command without any pre-configured scope."
+commands.deny = ["desktop_issue_recovery_codes"]

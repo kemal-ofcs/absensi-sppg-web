@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-import-database-bytes"
+description = "Enables the desktop_import_database_bytes command without any pre-configured scope."
+commands.allow = ["desktop_import_database_bytes"]
+
+[[permission]]
+identifier = "deny-desktop-import-database-bytes"
+description = "Denies the desktop_import_database_bytes command without any pre-configured scope."
+commands.deny = ["desktop_import_database_bytes"]

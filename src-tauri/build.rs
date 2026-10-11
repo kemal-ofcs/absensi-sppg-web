@@ -1,0 +1,228 @@
+use std::{collections::HashMap, env, path::PathBuf};
+
+const DESKTOP_COMMANDS: &[&str] = &[
+    "desktop_get_session",
+    "desktop_get_runtime_status",
+    "desktop_get_license_status",
+    "desktop_install_license",
+    "desktop_get_bootstrap_status",
+    "desktop_bootstrap_superadmin",
+    "desktop_check_bootstrap_database",
+    "desktop_link_bootstrap_database",
+    "desktop_login",
+    "desktop_logout",
+    "desktop_password_reset_approve",
+    "desktop_password_recovery_with_code",
+    "desktop_password_reset_route",
+    "desktop_list_password_reset_history",
+    "desktop_get_password_reset_photo",
+    "desktop_delete_password_reset_history",
+    "desktop_purge_password_reset_history",
+    "desktop_list_attendance_photos",
+    "desktop_get_attendance_photo",
+    "desktop_delete_attendance_photo",
+    "desktop_purge_attendance_photos",
+    "desktop_get_scan_security",
+    "desktop_update_scan_security",
+    "desktop_password_reset_lookup",
+    "desktop_password_reset_confirm",
+    "desktop_password_reset_swap_challenge",
+    "desktop_password_reset_verify",
+    "desktop_password_reset_inspect",
+    "desktop_password_reset_complete",
+    "desktop_send_test_mail",
+    "desktop_get_mail_config",
+    "desktop_save_mail_config",
+    "desktop_get_two_factor_status",
+    "desktop_issue_recovery_codes",
+    "desktop_begin_two_factor_setup",
+    "desktop_confirm_two_factor_setup",
+    "desktop_disable_two_factor",
+    "desktop_admin_disable_two_factor",
+    "desktop_get_master_operators",
+    "desktop_create_operator",
+    "desktop_update_operator",
+    "desktop_delete_operator",
+    "desktop_get_roles",
+    "desktop_create_role",
+    "desktop_update_role",
+    "desktop_set_role_permissions",
+    "desktop_delete_role",
+    "desktop_get_employees",
+    "desktop_create_employee",
+    "desktop_import_employees",
+    "desktop_update_employee",
+    "desktop_set_employee_status",
+    "desktop_generate_employee_tokens",
+    "desktop_save_personnel_photo",
+    "desktop_get_personnel_photo",
+    "desktop_delete_personnel_photo",
+    "desktop_get_shifts",
+    "desktop_create_shift",
+    "desktop_update_shift",
+    "desktop_delete_shift",
+    "desktop_submit_qr_scan",
+    "desktop_get_corrections",
+    "desktop_create_correction",
+    "desktop_delete_correction",
+    "desktop_update_attendance",
+    "desktop_delete_attendance",
+    "desktop_delete_log_scan",
+    "desktop_delete_import_offline",
+    "desktop_get_backups",
+    "desktop_create_backup",
+    "desktop_cancel_backup",
+    "desktop_delete_backup",
+    "desktop_get_imports",
+    "desktop_import_offline",
+    "desktop_get_dashboard_data",
+    "desktop_get_id_cards",
+    "desktop_update_id_card",
+    "desktop_get_geofence_settings",
+    "desktop_update_geofence_settings",
+    "desktop_get_scanner_settings",
+    "desktop_update_scanner_settings",
+    "desktop_get_app_display_name",
+    "desktop_update_app_display_name",
+    "desktop_get_sync_status",
+    "desktop_sync_now",
+    "desktop_get_sync_conflicts",
+    "desktop_retry_failed_sync",
+    "desktop_resolve_sync_conflicts",
+    "desktop_resolve_sync_conflicts_local",
+    "desktop_clear_failed_sync",
+    "desktop_export_database",
+    "desktop_import_database",
+    "desktop_import_database_bytes",
+    "desktop_get_data_folder",
+    "desktop_save_file",
+    "desktop_get_holidays",
+    "desktop_get_holiday_whitelist",
+    "desktop_create_holiday_whitelist",
+    "desktop_update_holiday_whitelist",
+    "desktop_delete_holiday_whitelist",
+    "desktop_create_holiday",
+    "desktop_update_holiday",
+    "desktop_delete_holiday",
+    "desktop_get_alfa_settings",
+    "desktop_save_alfa_settings",
+    "desktop_trigger_generate_alfa",
+    "desktop_get_attendance_audit",
+    "desktop_get_company_profile",
+    "desktop_update_company_profile",
+    "desktop_get_id_card_template",
+    "desktop_save_id_card_template",
+    "desktop_force_resync_settings",
+    "desktop_get_turso_url",
+    "desktop_get_database_config",
+    "desktop_save_turso_config",
+    "desktop_test_turso_connection",
+    "desktop_clear_turso_config",
+    "desktop_get_salary_configs",
+    "desktop_save_salary_config",
+    "desktop_bulk_apply_flat_daily",
+    "desktop_delete_salary_config",
+    "desktop_get_overtime_rules",
+    "desktop_save_overtime_rule",
+    "desktop_delete_overtime_rule",
+    "desktop_save_overtime_rules",
+    "desktop_get_payroll_components",
+    "desktop_save_payroll_component",
+    "desktop_delete_payroll_component",
+    "desktop_get_tax_rules",
+    "desktop_save_tax_rule",
+    "desktop_delete_tax_rule",
+    "desktop_save_tax_rules",
+    "desktop_get_bpjs_rules",
+    "desktop_save_bpjs_rule",
+    "desktop_delete_bpjs_rule",
+    "desktop_save_bpjs_rules",
+    "desktop_get_payroll_recap",
+    "desktop_create_payroll_run",
+    "desktop_list_payroll_runs",
+    "desktop_get_payroll_run_detail",
+    "desktop_transition_payroll_status",
+];
+
+fn local_build_values() -> HashMap<String, String> {
+    let path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
+        .join("..")
+        .join(".env");
+    dotenvy::from_path_iter(path)
+        .map(|entries| entries.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+fn expose_build_value(name: &str, local: &HashMap<String, String>) -> Option<String> {
+    let value = env::var(name)
+        .ok()
+        .or_else(|| local.get(name).cloned())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if let Some(value) = &value {
+        println!("cargo:rustc-env={name}={value}");
+    }
+    println!("cargo:rerun-if-env-changed={name}");
+    value
+}
+
+/// Tanggal build (WIB) untuk pemeriksa lisensi (`license.rs`): versi yang
+/// dibangun setelah masa pembaruan sebuah lisensi habis tidak tercakup olehnya.
+///
+/// `SPPG_BUILD_DATE` di environment menang, supaya membangun ulang versi lama
+/// bisa memakai tanggal rilis aslinya. `rerun-if-changed=src` memaksa tanggal
+/// dihitung ulang setiap kali kodenya berubah — tanpa itu build inkremental
+/// menyimpan tanggal build PERTAMA selamanya, dan versi baru akan tampak lama.
+fn expose_build_date() {
+    println!("cargo:rerun-if-env-changed=SPPG_BUILD_DATE");
+    println!("cargo:rerun-if-changed=src");
+    let date = env::var("SPPG_BUILD_DATE")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs() as i64)
+                .unwrap_or_default();
+            // civil_from_days (Howard Hinnant), sama dengan time_policy.rs.
+            let days = (seconds + 7 * 3600).div_euclid(86_400) + 719_468;
+            let era = days.div_euclid(146_097);
+            let day_of_era = days - era * 146_097;
+            let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524
+                - day_of_era / 146_096)
+                / 365;
+            let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+            let month_prime = (5 * day_of_year + 2) / 153;
+            let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+            let month = if month_prime < 10 { month_prime + 3 } else { month_prime - 9 };
+            let year = year_of_era + era * 400 + i64::from(month <= 2);
+            format!("{year:04}-{month:02}-{day:02}")
+        });
+    let bytes = date.as_bytes();
+    let valid = bytes.len() == 10
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 4 | 7) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_digit()
+            }
+        });
+    assert!(valid, "SPPG_BUILD_DATE harus berformat YYYY-MM-DD, bukan '{date}'.");
+    println!("cargo:rustc-env=SPPG_BUILD_DATE={date}");
+}
+
+fn main() {
+    println!("cargo:rerun-if-changed=../.env");
+    let local = local_build_values();
+    expose_build_value("TURSO_DATABASE_URL", &local);
+    expose_build_value("TURSO_AUTH_TOKEN", &local);
+    expose_build_value("SPPG_OFFLINE_AUTH_MAX_AGE_HOURS", &local);
+    expose_build_date();
+
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(DESKTOP_COMMANDS)),
+    )
+    .expect("gagal membangun manifest Tauri");
+}

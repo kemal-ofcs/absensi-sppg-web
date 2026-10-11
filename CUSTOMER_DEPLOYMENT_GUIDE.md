@@ -1,0 +1,247 @@
+# Panduan Deployment & Distribusi Customer — Web & Desktop Absensi SPPG
+
+Dokumen ini adalah panduan resmi penyiapan lingkungan server (*Web Cloud*) dan pembuatan installer (*Desktop Client*) khusus untuk **setiap customer/pembeli aplikasi**.
+
+---
+
+## 0. Memilih Mode Database
+
+Aplikasi mendukung tiga mode. Pilihannya disimpan **eksplisit** di
+`TursoConfig.provider` dan tidak pernah ditebak dari bentuk URL — sebuah salah
+ketik tidak boleh diam-diam melonggarkan aturan keamanan alamat.
+
+| Mode | Nilai provider | Cocok untuk | Biaya berulang |
+| :--- | :--- | :--- | :--- |
+| **Database Lokal** | `local_file` | Satu perangkat berdiri sendiri, tanpa internet sama sekali | Nol |
+| **Server Sendiri** | `self_hosted` | 2–3 perangkat berbagi data lewat `sqld` di komputer kantor/NAS | Nol |
+| **Turso Cloud** | `turso` | Beberapa cabang, akses dari luar kantor | Langganan Turso |
+
+### Database Lokal — yang perlu diketahui sebelum menjual
+
+- Berlaku untuk **Desktop (.exe) dan Mobile (.apk) saja**. Sisi **Web selalu
+  memakai database remote**; kebutuhan offline kantor dilayani kedua aplikasi
+  Tauri itu, dan `SPPG_DATABASE_PROVIDER=local_file` sengaja **ditolak** di sisi
+  server.
+- Datanya hidup di dua berkas berdampingan di folder data aplikasi:
+  `sppg-hub.db` (seluruh data perusahaan) dan database perangkat (vault,
+  outbox, cermin operasional). Hanya berkas pertama yang ikut dicadangkan.
+- **Tidak ada cadangan otomatis di mana pun.** Menu **Pengaturan → Cadangan
+  database** adalah satu-satunya jaring pengaman — pastikan customer tahu cara
+  memakainya sebelum serah terima.
+- Akun ber-verifikasi dua langkah **tetap bisa masuk tanpa internet** pada mode
+  ini, karena kodenya diperiksa langsung terhadap berkas lokal.
+
+### Mencadangkan dan memulihkan
+
+- **Ekspor** menghasilkan satu berkas mandiri. Isilah frasa sandi: tanpa itu,
+  berkasnya memuat hash password, rahasia verifikasi dua langkah, dan foto
+  absensi dalam bentuk yang bisa dibuka siapa pun.
+- Salinan otomatis diletakkan di folder **Unduhan**. Bila perangkat menolaknya
+  (lazim pada Android 10), aplikasi mengatakannya apa adanya dan menyebut lokasi
+  aslinya — bukan melaporkan sukses palsu.
+- **Pemulihan MENIMPA** seluruh data, bukan menggabungkan. Database yang lama
+  disimpan berdampingan sebagai `sppg-hub.pre-restore-<stempel>.db`, sehingga
+  salah pilih berkas masih bisa dibatalkan secara manual.
+- Berkas cadangan dari aplikasi versi lebih baru **ditolak**, agar kolom yang
+  belum dikenal tidak terbuang diam-diam.
+
+### Naik dari satu perangkat ke banyak perangkat
+
+Menggabungkan dua database yang pernah berjalan sendiri-sendiri **bukan** operasi
+pemulihan: keduanya hampir pasti memakai `id` yang sama untuk baris berbeda, dan
+bisa memakai kode karyawan atau username yang sama untuk orang berbeda. Jalur
+promosi memetakan ulang id dan **berhenti melapor** bila menemukan tabrakan nilai
+unik — tidak pernah menggabung diam-diam. Rencana dan aturannya ada di
+`src/lib/server/database-promotion.ts`.
+
+---
+
+## 1. Prinsip Isolasi & Keamanan Data (Tenant Isolation)
+
+Setiap customer/organisasi wajib memiliki lingkungan yang terisolasi 100%:
+
+```text
+┌────────────────────────┐      ┌────────────────────────┐
+│  CUSTOMER A (PT ABC)   │      │  CUSTOMER B (CV XYZ)   │
+├────────────────────────┤      ├────────────────────────┤
+│ • Vercel: sppg-abc.app │      │ • Vercel: sppg-xyz.app │
+│ • Turso DB: db-abc     │      │ • Turso DB: db-xyz     │
+│ • Installer Desktop A  │      │ • Installer Desktop B  │
+└────────────────────────┘      └────────────────────────┘
+```
+
+> [!CAUTION]
+> **JANGAN PERNAH** menggabungkan token database, secret credentials, atau installer client antar customer yang berbeda. Pemisahan ini mencegah kebocoran data karyawan, audit log, sesi login offline, template ID Card kustom, profil instansi, serta risiko operasional.
+
+### Batas keamanan arsitektur 2-tier
+
+Desktop dan mobile 2-tier mengakses Turso secara langsung. Karena itu, token database
+tetap harus tersedia di perangkat pada saat aplikasi berjalan. Vault terenkripsi dan
+device binding melindungi token saat tersimpan, tetapi tidak dapat menggantikan kontrol
+otorisasi server: pihak yang sudah menguasai perangkat/runtime dan berhasil mengambil
+token dapat melewati guard UI/Rust lalu mengakses database secara langsung.
+
+Untuk distribusi customer, wajib gunakan satu database dan satu token berbeda per
+customer, rotasi token ketika perangkat hilang/terkompromi, dan jangan pernah memakai
+token organisasi/global. Jika dibutuhkan jaminan bahwa operator tidak mungkin melewati
+RBAC aplikasi, gunakan gateway penerbit token singkat atau backend policy terpisah;
+perubahan tersebut merupakan penguatan arsitektur opsional dan harus disetujui sebelum
+diterapkan.
+
+### Bootstrap akun pertama
+
+Build 2-tier tidak lagi membuat akun `admin`/`superadmin` dengan password bawaan.
+Pada database tanpa Superadmin aktif, halaman login otomatis berubah menjadi form
+provisioning satu kali. Isi URL dan Auth Token Turso hanya bila instalasi belum memiliki
+konfigurasi, lalu buat akun `SPD001` dengan password kuat. Klaim bootstrap, pembuatan
+akun, dan penutupan bootstrap dilakukan dalam satu transaksi; setelah berhasil, form
+tidak dapat dipakai kembali.
+
+Variabel Turso dari `.env` hanya menjadi fallback pada build debug. Build release
+memaksa konfigurasi tersebut menjadi kosong agar token mesin developer tidak tertanam
+di installer atau APK. Instalasi release baru harus memakai provisioning database
+customer masing-masing.
+
+---
+
+## 2. Persiapan Database Turso (Cloud LibSQL)
+
+Setiap customer memerlukan satu database Turso mandiri.
+
+### 2.1 Pembuatan Database via Turso CLI / Web Console
+
+```powershell
+# 1. Login ke akun Turso Anda
+turso auth login
+
+# 2. Buat database baru khusus customer (contoh: sppg-pt-abc)
+turso db create sppg-pt-abc --location sin
+
+# 3. Tampilkan URL database
+turso db show sppg-pt-abc --url
+# Contoh output: libsql://sppg-pt-abc-youruser.turso.io
+
+# 4. Buat auth token permanen untuk server
+turso db tokens create sppg-pt-abc
+# Simpan token panjang ini dengan aman di password manager
+```
+
+---
+
+## 3. Deployment Server Backend / Web Admin ke Vercel
+
+Backend Next.js 16 bertindak sebagai server API pusat, Dashboard Web Superadmin/Admin, Dynamic ID Card Studio, serta Master Data Management.
+
+### 3.1 Konfigurasi Environment Variable di Vercel
+
+Pada project dashboard Vercel customer baru, tambahkan Environment Variables (**HANYA SERVER-SIDE, tanpa prefix NEXT_PUBLIC_**):
+
+| Nama Variable | Contoh Nilai | Keterangan |
+| :--- | :--- | :--- |
+| `TURSO_DATABASE_URL` | `libsql://sppg-pt-abc-youruser.turso.io` | URL database Turso customer |
+| `TURSO_AUTH_TOKEN` | `eyJhbGciOi...` | Auth token server Turso |
+| `NODE_ENV` | `production` | Mode produksi |
+
+### 3.2 Deploy & Verifikasi Domain
+
+1. Hubungkan repository ke project Vercel.
+2. Build Settings: Root Directory `web-desktop`, Framework Preset: `Next.js`.
+3. Deploy project dan pasang Custom Domain customer (contoh: `https://absensi.pt-abc.com` atau subdomain Vercel `https://sppg-pt-abc.vercel.app`).
+4. Pastikan SSL/HTTPS aktif dengan sempurna.
+
+---
+
+## 4. Inisialisasi Database & Bootstrap Akun Superadmin Pertama
+
+Setelah database dan server cloud siap, inisialisasi skema tabel (termasuk 12 tabel snapshot operasional: `master_data`, `id_card`, `tbl_shift`, `tbl_hari_libur`, `setting_gex_system`, `company_profile`, `id_card_template`, `backup_karyawan`, `koreksi_admin`, `import_offline`, `absensi_harian`, `log_scan`) dan buat akun **Superadmin Master** (`SPD001`) via CLI lokal developer.
+
+### 4.1 Eksekusi Skrip Bootstrap
+
+Buka terminal di folder `web-desktop/`:
+
+```powershell
+cd e:\Freelance\absensi-sppg-app\web-desktop
+
+# 1. Set environment sementara di terminal
+$env:TURSO_DATABASE_URL="libsql://sppg-pt-abc-youruser.turso.io"
+$env:TURSO_AUTH_TOKEN="<token-turso-customer>"
+$env:SPPG_SUPERADMIN_NAME="Superadmin PT ABC"
+$env:SPPG_SUPERADMIN_USERNAME="superadmin"
+$env:SPPG_SUPERADMIN_PASSWORD="PasswordKuatSuperadmin2026!"
+
+# 2. Jalankan migrasi & bootstrap
+bun run bootstrap:superadmin
+```
+
+Output sukses:
+```text
+✓ Schema database berhasil diinisialisasi (zero schema drift).
+✓ Superadmin SPD001 berhasil dibuat dengan ID 1.
+```
+
+> [!IMPORTANT]
+> Segera bersihkan environment variable password dari terminal PowerShell dengan menutup terminal atau menjalankan `$env:SPPG_SUPERADMIN_PASSWORD=""`.
+
+---
+
+## 5. Build Installer Desktop Client (Tauri v2 Windows)
+
+Desktop client dirancang khusus untuk laptop/PC operasional kantor/front desk yang mendukung **mode offline-first**, scanning barcode USB/Webcam, serta Studio Desain ID Card mandiri.
+
+### 5.1 Tentukan Kebijakan Offline Session
+
+Diskusikan dengan customer mengenai masa berlaku login offline:
+- Nilai rekomendasi: `720` jam (30 hari).
+- Nilai yang didukung: `1` s/d `720` jam.
+
+### 5.2 Jalankan Build Release Desktop
+
+```powershell
+cd e:\Freelance\absensi-sppg-app\web-desktop
+
+# Set konfigurasi build terikat ke origin server customer
+$env:SPPG_API_BASE_URL="https://absensi.pt-abc.com"
+$env:SPPG_OFFLINE_AUTH_MAX_AGE_HOURS="720"
+
+# Build static frontend & compile Tauri Rust binary
+bun run tauri:build
+```
+
+Hasil file installer berada di:
+`web-desktop/src-tauri/target/release/bundle/msi/Absensi SPPG_0.1.0_x64_en-US.msi`
+atau
+`web-desktop/src-tauri/target/release/bundle/nsis/Absensi SPPG_0.1.0_x64-setup.exe`
+
+> [!NOTE]
+> `SPPG_API_BASE_URL` wajib berupa URL HTTPS valid tanpa trailing slash. Token database `TURSO_AUTH_TOKEN` **TIDAK PERNAH** dimasukkan ke dalam build Desktop.
+
+---
+
+## 6. Acceptance Test & Checklist Serah Terima (Web & Desktop)
+
+Lakukan pengujian berikut sebelum mengirimkan paket ke customer:
+
+| No | Komponen | Pengujian | Target Hasil |
+| :---: | :--- | :--- | :--- |
+| 1 | **Web Admin** | Buka URL HTTPS di browser | Halaman login tampil bersih, aman (HTTPS hijau) |
+| 2 | **Web Login** | Login dengan akun `superadmin` | Masuk ke Dashboard, cookie session HttpOnly terpasang |
+| 3 | **Profil Instansi** | Buka menu *Pengaturan* | Upload Logo Instansi, Tanda Tangan, dan Stempel berhasil tersimpan |
+| 4 | **ID Card Studio** | Buka menu *Cetak ID Card* → *Kustomisasi Desain* | Live preview CR80 berfungsi, background kustom dapat diunggah, template tersimpan |
+| 5 | **Web Shift** | Buka menu *Data Shift* | Buat Shift Pagi, Siang, dan Malam (lintas hari) |
+| 6 | **Web Karyawan** | Buka menu *Data Karyawan* | Tambah karyawan baru & Generate Token QR |
+| 7 | **Desktop Install** | Install `.msi` / `.exe` di PC pengujian | Aplikasi terinstall rapi dan terbuka tanpa error |
+| 8 | **Desktop Online** | Login pertama kali saat terhubung internet | Berhasil login, 12 snapshot tabel offline ter-download ke SQLite lokal |
+| 9 | **Desktop Offline** | Putuskan koneksi internet (Airplane mode), buka aplikasi & login | Berhasil login via Vault offline (AES-256-GCM + Argon2id) |
+| 10 | **Desktop Scan** | Lakukan scan QR karyawan saat offline | Absensi tersimpan di SQLite lokal dan antrean Outbox bertambah |
+| 11 | **Desktop Sync** | Hubungkan kembali internet | Data absensi offline otomatis tersinkron ke cloud server |
+| 12 | **Cetak Massal** | Cetak Lembar Grid A4 di menu ID Card | Kartu tertata rapi dalam format lembar A4 siap cetak |
+
+---
+
+## 7. Paket Serah Terima ke Customer
+
+Kirimkan file dan informasi berikut kepada customer:
+1. **URL Web Portal**: `https://absensi.pt-abc.com`
+2. **Kredensial Superadmin Awal**: Username & Password sementara (minta customer langsung mengganti password).
+3. **File Installer Desktop**: `Absensi SPPG_0.1.0_x64-setup.exe`
+4. **Buku Manual Panduan Operasional**: `PANDUAN_LENGKAP_APLIKASI_SPPG.md`

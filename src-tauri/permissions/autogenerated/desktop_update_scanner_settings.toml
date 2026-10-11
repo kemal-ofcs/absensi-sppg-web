@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-update-scanner-settings"
+description = "Enables the desktop_update_scanner_settings command without any pre-configured scope."
+commands.allow = ["desktop_update_scanner_settings"]
+
+[[permission]]
+identifier = "deny-desktop-update-scanner-settings"
+description = "Denies the desktop_update_scanner_settings command without any pre-configured scope."
+commands.deny = ["desktop_update_scanner_settings"]

@@ -1,0 +1,2755 @@
+"use client";
+
+import { redirect } from "next/navigation";
+import type { ChangeEvent, FormEvent } from "react";
+import { useEffect, useState } from "react";
+import { AppShell } from "@/components/AppShell";
+import { DatabaseBackupCard } from "@/components/DatabaseBackupCard";
+import { LicenseCard } from "@/components/license/LicenseCard";
+import { MailSettingsCard } from "@/components/MailSettingsCard";
+import { PasswordRecoveryCard } from "@/components/PasswordRecoveryCard";
+import { TwoFactorCard } from "@/components/TwoFactorCard";
+import { BrandLogo } from "@/components/ui/BrandLogo";
+import { Icon } from "@/components/ui/Icon";
+import { Modal } from "@/components/ui/Modal";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { DeviceProfileCard } from "@/components/visual/DeviceProfileCard";
+import { VisualTierControl } from "@/components/visual/VisualTierControl";
+import { canAccessArea, hasPermission } from "@/lib/auth/access";
+import {
+  calculateDistanceMeters,
+  getCurrentCoordinates,
+} from "@/lib/client/geolocation";
+import { formatBytes, optimizeImageFile } from "@/lib/client/image-optimizer";
+import { BRANDING } from "@/lib/constants/branding";
+import { useAuth } from "@/lib/context/AuthContext";
+import {
+  getAutoAlfaSetting,
+  type RingkasanAlfa,
+  saveAutoAlfaSetting,
+  triggerGenerateAlfa,
+} from "@/lib/gateways/alfa";
+import {
+  getAppDisplayName,
+  saveAppDisplayName,
+} from "@/lib/gateways/app-setting";
+import {
+  type CompanyProfile,
+  getCompanyProfile,
+  updateCompanyProfile,
+} from "@/lib/gateways/company-profile";
+import {
+  type GeofenceSettings,
+  getGeofenceSettings,
+  saveGeofenceSettings,
+} from "@/lib/gateways/geofence";
+import {
+  getScanSecurity,
+  saveScanSecurity,
+} from "@/lib/gateways/scan-security";
+import {
+  getScannerSafetySettings,
+  type ScannerSafetySettings,
+  saveScannerSafetySettings,
+} from "@/lib/gateways/scanner-settings";
+import {
+  clearFailedSync,
+  forceResyncSettings,
+  getSyncConflicts,
+  getSyncStatus,
+  isDesktopSyncAvailable,
+  resolveSyncConflicts,
+  resolveSyncConflictsLocal,
+  retryFailedSync,
+  SYNC_COMPLETED_EVENT,
+  SYNC_FAILED_EVENT,
+  type SyncConflict,
+  type SyncStatus,
+  syncNow,
+} from "@/lib/gateways/sync-status";
+import {
+  clearTursoConfig,
+  getDatabaseConfig,
+  saveTursoConfig,
+  type TursoConnectionStatus,
+  testTursoConnection,
+} from "@/lib/gateways/turso-config";
+import { syncAppLogoCache, useAppLogo } from "@/lib/hooks/useAppLogo";
+import { syncAppNameCache, useAppName } from "@/lib/hooks/useAppName";
+import { syncCompanyNameCache } from "@/lib/hooks/useCompanyName";
+import { useHydrated } from "@/lib/hooks/useHydrated";
+import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
+import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
+import {
+  DATABASE_PROVIDER_OPTIONS,
+  type DatabaseProvider,
+  describeProvider,
+  providerNeedsEndpoint,
+  reviewDatabaseEndpoint,
+} from "@/lib/validations/database-endpoint";
+import { validateGeofenceSettings } from "@/lib/validations/geofence";
+import { validateIpAllowlistEntries } from "@/lib/validations/ip-allowlist";
+import { validateScannerSafetySettings } from "@/lib/validations/scanner-settings";
+
+const MAX_LOGO_SIZE = 1024 * 1024;
+const ALLOWED_LOGO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const SYNC_TABLE_LABELS = [
+  ["employees", "Karyawan"],
+  ["idCards", "ID Card"],
+  ["shifts", "Shift"],
+  ["holidays", "Hari Libur"],
+  ["settings", "Pengaturan"],
+  ["companyProfiles", "Profil Instansi"],
+  ["idCardTemplates", "Template ID Card"],
+  ["backups", "Penugasan backup"],
+  ["corrections", "Koreksi"],
+  ["imports", "Import offline"],
+  ["attendance", "Absensi harian"],
+  ["scanLogs", "Riwayat scan"],
+  ["payrollRuns", "Batch Payroll"],
+  ["payrollItems", "Slip Gaji"],
+  ["salaryConfigs", "Rate Gaji"],
+] as const;
+
+function formatSyncTime(timestamp: number | null | undefined) {
+  if (!timestamp) return "Belum pernah berhasil";
+  return new Intl.DateTimeFormat("id-ID", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(new Date(timestamp * 1000));
+}
+
+interface FeedbackMessage {
+  message: string;
+  type: "success" | "error";
+}
+
+export default function SettingsPage() {
+  const isHydrated = useHydrated();
+  const isOnline = useOnlineStatus();
+  const logoUrl = useAppLogo();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [tursoUrl, setTursoUrl] = useState<string>("");
+  const [tursoProvider, setTursoProvider] = useState<DatabaseProvider>("turso");
+  const [tursoAllowInsecure, setTursoAllowInsecure] = useState<boolean>(false);
+  const [tursoTokenSaved, setTursoTokenSaved] = useState<boolean>(false);
+  const [tursoToken, setTursoToken] = useState<string>("");
+  const [showTursoToken, setShowTursoToken] = useState<boolean>(false);
+  const [tursoTestStatus, setTursoTestStatus] =
+    useState<TursoConnectionStatus | null>(null);
+  const [tursoBusy, setTursoBusy] = useState<boolean>(false);
+  const [tursoTesting, setTursoTesting] = useState<boolean>(false);
+  const [geofence, setGeofence] = useState<GeofenceSettings>({
+    enabled: false,
+    latitude: 0,
+    longitude: 0,
+    radiusMeter: 100,
+  });
+  const [geofenceBusy, setGeofenceBusy] = useState(false);
+  // Daftar IP absensi. Disimpan sebagai teks per baris di form supaya
+  // Superadmin bisa menempel banyak alamat sekaligus; normalisasi dan
+  // pembuangan entri tidak valid dilakukan saat disimpan.
+  const [ipAllowlist, setIpAllowlist] = useState<string[]>([]);
+  const [ipAllowlistDraft, setIpAllowlistDraft] = useState("");
+  const [ipDeviceAddresses, setIpDeviceAddresses] = useState<string[]>([]);
+  const [ipAllowlistBusy, setIpAllowlistBusy] = useState(false);
+  // Sakelar induk tingkat perusahaan. Sakelar per role di Master Operator hanya
+  // berlaku ketika fiturnya dihidupkan di sini.
+  const [scanPhotoEnabled, setScanPhotoEnabled] = useState(false);
+  const [scanIpEnabled, setScanIpEnabled] = useState(false);
+  const [currentDeviceCoords, setCurrentDeviceCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [scannerSafety, setScannerSafety] = useState<ScannerSafetySettings>({
+    antiDoubleScanSeconds: 60,
+    batasMultiScanMenit: 5,
+  });
+  const [scannerSafetyBusy, setScannerSafetyBusy] = useState(false);
+  const [autoAlfaEnabled, setAutoAlfaEnabled] = useState(true);
+  const [autoAlfaBusy, setAutoAlfaBusy] = useState(false);
+  const [alfaTriggerBusy, setAlfaTriggerBusy] = useState(false);
+  const [alfaModalResult, setAlfaModalResult] = useState<RingkasanAlfa | null>(
+    null,
+  );
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile>({
+    id: "default_company",
+    company_name: BRANDING.defaultCompanyName,
+    branch_name: BRANDING.defaultBranchName,
+    logo_url: null,
+    signature_url: null,
+    address: null,
+    phone: null,
+    email: null,
+    website: null,
+    leader_name: null,
+    leader_title: null,
+    leader_nip: null,
+    card_terms: null,
+    timezone: "Asia/Jakarta",
+    updated_at: "",
+  });
+  const [appDisplayName, setAppDisplayName] = useState<string>(
+    BRANDING.appDisplayName,
+  );
+  // Baris info memakai nama yang SUDAH tersimpan, bukan isi kolom yang sedang
+  // diketik: kalau memakai draft, baris itu ikut berubah sebelum disimpan dan
+  // seolah-olah perubahan sudah berlaku.
+  const savedAppName = useAppName();
+  const [companyProfileBusy, setCompanyProfileBusy] = useState(false);
+
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+    let cancelled = false;
+
+    getCompanyProfile()
+      .then((profile) => {
+        if (!cancelled) setCompanyProfile(profile);
+      })
+      .catch(() => undefined);
+
+    getAppDisplayName()
+      .then((name) => {
+        if (!cancelled) setAppDisplayName(name);
+      })
+      .catch(() => undefined);
+
+    if (isDesktopSyncAvailable()) {
+      getSyncStatus()
+        .then((status) => {
+          if (!cancelled) setSyncStatus(status);
+        })
+        .catch(() => undefined);
+    }
+
+    getAutoAlfaSetting()
+      .then((enabled) => {
+        if (!cancelled) setAutoAlfaEnabled(enabled);
+      })
+      .catch(() => undefined);
+
+    if (user?.isSuperadmin) {
+      // Provider ikut dimuat: tanpa itu perangkat yang terhubung ke server LAN
+      // selalu menampilkan ulang formulir dalam mode Turso, dan penyimpanan
+      // berikutnya akan menolak alamat LAN-nya sendiri.
+      getDatabaseConfig()
+        .then((config) => {
+          if (cancelled || !config.configured) return;
+          setTursoUrl(config.databaseUrl);
+          setTursoProvider(config.provider);
+          setTursoAllowInsecure(config.allowInsecureTransport);
+          setTursoTokenSaved(config.authTokenSaved);
+        })
+        .catch(() => undefined);
+    }
+
+    setGeofenceBusy(true);
+    setScannerSafetyBusy(true);
+    setIpAllowlistBusy(true);
+    getGeofenceSettings()
+      .then((settings) => {
+        if (!cancelled) setGeofence(settings);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeedback({
+            type: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Pengaturan geofencing tidak dapat dibaca.",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setGeofenceBusy(false);
+      });
+
+    getScannerSafetySettings()
+      .then((settings) => {
+        if (!cancelled) setScannerSafety(settings);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeedback({
+            type: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Pengaturan keamanan scanner tidak dapat dibaca.",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setScannerSafetyBusy(false);
+      });
+
+    // Hanya Superadmin yang boleh membaca daftar ini (sama seperti geofencing),
+    // jadi jangan memicu pesan "akses ditolak" untuk operator biasa.
+    if (!user?.isSuperadmin) {
+      setIpAllowlistBusy(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    getScanSecurity()
+      .then((settings) => {
+        if (cancelled) return;
+        setScanPhotoEnabled(settings.photoEnabled);
+        setScanIpEnabled(settings.ipRestrictionEnabled);
+        setIpAllowlist(settings.entries);
+        setIpAllowlistDraft(settings.entries.join("\n"));
+        setIpDeviceAddresses(settings.deviceAddresses);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeedback({
+            type: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Pengaturan keamanan absensi tidak dapat dibaca.",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIpAllowlistBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, isHydrated, user?.isSuperadmin]);
+
+  // Dengarkan event auto-sync selesai untuk memperbarui status Cloud Sync secara real-time
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+    const onSyncCompleted = (event: Event) => {
+      const detail = (event as CustomEvent<SyncStatus>).detail;
+      if (detail && !detail.pushError) setAutoSyncError(null);
+      if (isDesktopSyncAvailable()) {
+        getSyncStatus()
+          .then((status) => setSyncStatus(status))
+          .catch(() => undefined);
+        getSyncConflicts()
+          .then((items) => setConflicts(items))
+          .catch(() => undefined);
+      }
+    };
+    // Kegagalan auto-sync dulu ditelan diam-diam sehingga tidak ada cara tahu
+    // sync sedang mati. Sekarang alasannya ditampilkan di panel Cloud Sync.
+    const onSyncFailed = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      setAutoSyncError(detail?.message ?? "Sinkronisasi otomatis gagal.");
+    };
+    window.addEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+    window.addEventListener(SYNC_FAILED_EVENT, onSyncFailed);
+    return () => {
+      window.removeEventListener(SYNC_COMPLETED_EVENT, onSyncCompleted);
+      window.removeEventListener(SYNC_FAILED_EVENT, onSyncFailed);
+    };
+  }, [isHydrated, isAuthenticated]);
+
+  const handleAutoAlfaToggle = async (enabled: boolean) => {
+    setAutoAlfaBusy(true);
+    try {
+      await saveAutoAlfaSetting(enabled);
+      setAutoAlfaEnabled(enabled);
+      setFeedback({
+        type: "success",
+        message: `Pengaturan Auto Alfa berhasil diubah menjadi ${enabled ? "Aktif" : "Nonaktif"}.`,
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan pengaturan Auto Alfa.",
+      });
+    } finally {
+      setAutoAlfaBusy(false);
+    }
+  };
+
+  const handleTriggerAlfaNow = async () => {
+    setAlfaTriggerBusy(true);
+    try {
+      const result = await triggerGenerateAlfa();
+      setAlfaModalResult(result);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menjalankan Generate Alfa manual.",
+      });
+    } finally {
+      setAlfaTriggerBusy(false);
+    }
+  };
+
+  const refreshSync = async (synchronize = false) => {
+    setSyncBusy(true);
+    try {
+      const status = synchronize ? await syncNow() : await getSyncStatus();
+      const conflictItems = await getSyncConflicts();
+      setSyncStatus(status);
+      setConflicts(conflictItems);
+      if (synchronize)
+        setFeedback({
+          type: "success",
+          message:
+            "Sinkronisasi berhasil: event lokal terkirim dan snapshot server diterapkan ke database Desktop.",
+        });
+    } catch (error) {
+      try {
+        const [currentStatus, currentConflicts] = await Promise.all([
+          getSyncStatus(),
+          getSyncConflicts(),
+        ]);
+        setSyncStatus(currentStatus);
+        setConflicts(currentConflicts);
+      } catch {
+        // Pesan utama tetap berasal dari kegagalan sinkronisasi.
+      }
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Status sinkronisasi tidak dapat dibaca.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const retryFailed = async () => {
+    setSyncBusy(true);
+    try {
+      const status = await retryFailedSync();
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: "Antrean gagal sudah dicoba ulang.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error ? error.message : "Retry sinkronisasi gagal.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const resolveConflicts = async (eventId?: string) => {
+    setSyncBusy(true);
+    try {
+      const status = await resolveSyncConflicts(eventId);
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: eventId
+          ? "Konflik berhasil diselesaikan (mengikuti master cloud)."
+          : "Semua konflik berhasil diselesaikan (mengikuti master cloud).",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyelesaikan konflik sinkronisasi.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const resolveConflictsLocal = async (eventId?: string) => {
+    setSyncBusy(true);
+    try {
+      const status = await resolveSyncConflictsLocal(eventId);
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: eventId
+          ? "Data lokal berhasil diprioritaskan dan dikirim ke cloud."
+          : "Semua data lokal berhasil diprioritaskan dan dikirim ke cloud.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal memprioritaskan data lokal ke cloud.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const clearFailed = async () => {
+    setSyncBusy(true);
+    try {
+      const status = await clearFailedSync();
+      setSyncStatus(status);
+      setConflicts(await getSyncConflicts());
+      setFeedback({
+        type: "success",
+        message: "Antrean gagal berhasil dibersihkan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal membersihkan antrean gagal.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  const resyncSettings = async () => {
+    setSyncBusy(true);
+    try {
+      const result = await forceResyncSettings();
+      if (result) {
+        setSyncStatus(result.status);
+        setConflicts(await getSyncConflicts());
+        setFeedback({
+          type: "success",
+          message: `${result.enqueue.pesan} Sinkronisasi ke server berhasil.`,
+        });
+      }
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyinkronkan ulang pengaturan ke server.",
+      });
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  // Cermin sisi klien dari `normalize_database_url` di Rust. Backend tetap
+  // penjaga sebenarnya; ini hanya supaya formulir bisa menjelaskan lebih awal.
+  const tursoEndpoint = reviewDatabaseEndpoint(
+    tursoUrl,
+    tursoProvider,
+    tursoAllowInsecure,
+  );
+  const tursoProviderInfo = describeProvider(tursoProvider);
+
+  const handleTursoSave = async (e: FormEvent) => {
+    e.preventDefault();
+    // Tahan input yang jelas salah di sini supaya pengguna melihat alasannya di
+    // sebelah field, bukan sebagai kegagalan IPC generik setelah penyimpanan.
+    // Mode Database Lokal tidak punya alamat maupun token, dan validator
+    // endpoint memang MENOLAKNYA secara sengaja — kalau ia diloloskan, alamat
+    // remote yang dipasangkan dengan mode lokal akan melewati seluruh aturan
+    // transport. Karena itu kedua pemeriksaan di bawah hanya berlaku untuk
+    // provider yang benar-benar memakai endpoint.
+    const needsEndpoint = providerNeedsEndpoint(tursoProvider);
+    if (needsEndpoint && !tursoEndpoint.valid) {
+      setFeedback({
+        type: "error",
+        message:
+          tursoEndpoint.issue?.message ?? "URL database tidak dapat dipakai.",
+      });
+      return;
+    }
+    if (
+      needsEndpoint &&
+      tursoEndpoint.tokenRequired &&
+      !tursoToken.trim() &&
+      !tursoTokenSaved
+    ) {
+      setFeedback({
+        type: "error",
+        message: "Auth Token wajib diisi untuk alamat database ini.",
+      });
+      return;
+    }
+    setTursoBusy(true);
+    try {
+      await saveTursoConfig(
+        needsEndpoint ? tursoUrl.trim() : "",
+        needsEndpoint ? tursoToken.trim() : "",
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
+      );
+      setTursoTokenSaved(tursoToken.trim().length > 0 ? true : tursoTokenSaved);
+      setFeedback({
+        type: "success",
+        message: `Konfigurasi ${describeProvider(tursoProvider).label} berhasil disimpan ke vault terenkripsi!`,
+      });
+      const status = await testTursoConnection(
+        tursoUrl.trim(),
+        tursoToken.trim(),
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
+      );
+      setTursoTestStatus(status);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan konfigurasi database cloud Turso.",
+      });
+    } finally {
+      setTursoBusy(false);
+    }
+  };
+
+  const handleTursoTest = async () => {
+    setTursoTesting(true);
+    try {
+      const status = await testTursoConnection(
+        tursoUrl.trim() || undefined,
+        tursoToken.trim() || undefined,
+        {
+          provider: tursoProvider,
+          allowInsecureTransport: tursoAllowInsecure,
+        },
+      );
+      setTursoTestStatus(status);
+      if (status.connected) {
+        setFeedback({
+          type: "success",
+          message: `Koneksi ke database berhasil! Latensi: ${status.latency_ms ?? 0} ms`,
+        });
+      } else {
+        setFeedback({
+          type: "error",
+          message: `Koneksi database gagal: ${status.error_message ?? "Tidak dapat terhubung"}`,
+        });
+      }
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menguji koneksi ke database cloud.",
+      });
+    } finally {
+      setTursoTesting(false);
+    }
+  };
+
+  const handleTursoClear = async () => {
+    if (
+      !confirm(
+        "Apakah Anda yakin ingin menghapus konfigurasi database cloud Turso dari perangkat ini?",
+      )
+    ) {
+      return;
+    }
+    setTursoBusy(true);
+    try {
+      await clearTursoConfig();
+      setTursoUrl("");
+      setTursoToken("");
+      setTursoProvider("turso");
+      setTursoAllowInsecure(false);
+      setTursoTokenSaved(false);
+      setTursoTestStatus(null);
+      setFeedback({
+        type: "success",
+        message: "Konfigurasi database cloud Turso berhasil direset.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal mereset konfigurasi database cloud.",
+      });
+    } finally {
+      setTursoBusy(false);
+    }
+  };
+
+  const handleLogoUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!ALLOWED_LOGO_TYPES.has(file.type)) {
+      setFeedback({
+        type: "error",
+        message: "Gunakan gambar PNG, JPG, atau WebP.",
+      });
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > MAX_LOGO_SIZE) {
+      setFeedback({
+        type: "error",
+        message: "Ukuran logo maksimal 1 MB agar aplikasi tetap ringan.",
+      });
+      event.target.value = "";
+      return;
+    }
+
+    // Logo disimpan ke `company_profile.logo_url` supaya ikut outbox dan
+    // tersebar ke cloud, Desktop lain, dan Mobile. Sebelumnya logo hanya
+    // ditulis ke localStorage perangkat ini sehingga tidak pernah tersinkron.
+    setLogoBusy(true);
+    try {
+      const optimized = await optimizeImageFile(file, {
+        maxWidth: 600,
+        maxHeight: 600,
+        quality: 0.92,
+        mimeType: "image/png",
+        fit: "contain",
+      });
+      const updated = await updateCompanyProfile({
+        ...companyProfile,
+        logo_url: optimized.dataUrl,
+      });
+      setCompanyProfile(updated);
+      syncAppLogoCache(updated.logo_url);
+      setFeedback({
+        type: "success",
+        message: `Logo tersimpan di profil instansi (${formatBytes(optimized.originalSizeBytes)} ➔ ${formatBytes(optimized.optimizedSizeBytes)}) dan akan tersinkron ke perangkat lain.`,
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Logo tidak dapat disimpan. Silakan coba file lain.",
+      });
+    } finally {
+      setLogoBusy(false);
+      event.target.value = "";
+    }
+  };
+
+  const handleResetLogo = async () => {
+    setLogoBusy(true);
+    try {
+      const updated = await updateCompanyProfile({
+        ...companyProfile,
+        logo_url: null,
+      });
+      setCompanyProfile(updated);
+      syncAppLogoCache(updated.logo_url);
+      setFeedback({
+        type: "success",
+        message:
+          "Logo dikembalikan ke identitas default untuk semua perangkat.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal mengembalikan logo ke default.",
+      });
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
+  const handleCompanyProfileSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!companyProfile.company_name.trim()) {
+      setFeedback({
+        type: "error",
+        message: "Nama instansi tidak boleh kosong.",
+      });
+      return;
+    }
+    setCompanyProfileBusy(true);
+    try {
+      const [updated, updatedAppName] = await Promise.all([
+        updateCompanyProfile(companyProfile),
+        saveAppDisplayName(appDisplayName),
+      ]);
+      setCompanyProfile(updated);
+      setAppDisplayName(updatedAppName);
+      syncAppLogoCache(updated.logo_url);
+      syncCompanyNameCache(updated.company_name);
+      syncAppNameCache(updatedAppName);
+      setFeedback({
+        type: "success",
+        message: "Profil instansi & identitas ID Card berhasil disimpan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Gagal menyimpan profil instansi.",
+      });
+    } finally {
+      setCompanyProfileBusy(false);
+    }
+  };
+
+  const handleCompanyLogoUpload = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!ALLOWED_LOGO_TYPES.has(file.type)) {
+      setFeedback({
+        type: "error",
+        message: "Gunakan format PNG, JPG, atau WebP.",
+      });
+      event.target.value = "";
+      return;
+    }
+    try {
+      const optimized = await optimizeImageFile(file, {
+        maxWidth: 600,
+        maxHeight: 600,
+        quality: 0.92,
+        mimeType: "image/png",
+        fit: "contain",
+      });
+      setCompanyProfile((prev) => ({
+        ...prev,
+        logo_url: optimized.dataUrl,
+      }));
+      setFeedback({
+        type: "success",
+        message: `Logo instansi berhasil dioptimasi (${formatBytes(optimized.originalSizeBytes)} ➔ ${formatBytes(optimized.optimizedSizeBytes)}).`,
+      });
+    } catch {
+      setFeedback({
+        type: "error",
+        message: "Gagal memproses file logo.",
+      });
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const handleSignatureUpload = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!ALLOWED_LOGO_TYPES.has(file.type)) {
+      setFeedback({
+        type: "error",
+        message: "Gunakan format PNG transparan atau JPG.",
+      });
+      event.target.value = "";
+      return;
+    }
+    try {
+      const optimized = await optimizeImageFile(file, {
+        maxWidth: 600,
+        maxHeight: 400,
+        quality: 0.92,
+        mimeType: "image/png",
+        fit: "contain",
+      });
+      setCompanyProfile((prev) => ({
+        ...prev,
+        signature_url: optimized.dataUrl,
+      }));
+      setFeedback({
+        type: "success",
+        message: `Tanda tangan berhasil dioptimasi (${formatBytes(optimized.originalSizeBytes)} ➔ ${formatBytes(optimized.optimizedSizeBytes)}).`,
+      });
+    } catch {
+      setFeedback({
+        type: "error",
+        message: "Gagal memproses file tanda tangan.",
+      });
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const useCurrentLocation = async () => {
+    setGeofenceBusy(true);
+    const coordinates = await getCurrentCoordinates();
+    setGeofenceBusy(false);
+    if (!coordinates) {
+      const isDesktop =
+        typeof window !== "undefined" &&
+        (window.navigator.userAgent.includes("Tauri") ||
+          !window.navigator.onLine ||
+          window.location.protocol === "tauri:");
+      setFeedback({
+        type: "error",
+        message: isDesktop
+          ? "Lokasi tidak dapat dideteksi. Di Desktop/Windows, pastikan izin 'Lokasi' untuk aplikasi ini sudah diaktifkan di Pengaturan Windows → Privasi & keamanan → Lokasi, lalu coba lagi."
+          : "Lokasi tidak dapat dideteksi. Pastikan Anda mengizinkan akses lokasi di browser (klik ikon kunci / info di bilah alamat), lalu coba lagi. Jika menggunakan VPN atau firewall, nonaktifkan sementara.",
+      });
+      return;
+    }
+    setCurrentDeviceCoords({
+      lat: coordinates.lat,
+      lng: coordinates.lng,
+    });
+    setGeofence((current) => ({
+      ...current,
+      latitude: Number(coordinates.lat.toFixed(7)),
+      longitude: Number(coordinates.lng.toFixed(7)),
+    }));
+    setFeedback({
+      type: "success",
+      message: "Koordinat perangkat berhasil dimasukkan ke form.",
+    });
+  };
+
+  const handleScanSecuritySubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const entries = ipAllowlistDraft
+      .split(/[\n,;]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const validationMessage = Object.values(
+      validateIpAllowlistEntries(entries),
+    )[0];
+    if (validationMessage) {
+      setFeedback({ type: "error", message: validationMessage });
+      return;
+    }
+    setIpAllowlistBusy(true);
+    try {
+      const saved = await saveScanSecurity({
+        photoEnabled: scanPhotoEnabled,
+        ipRestrictionEnabled: scanIpEnabled,
+        entries,
+      });
+      setScanPhotoEnabled(saved.photoEnabled);
+      setScanIpEnabled(saved.ipRestrictionEnabled);
+      setIpAllowlist(saved.entries);
+      setIpAllowlistDraft(saved.entries.join("\n"));
+      setIpDeviceAddresses(saved.deviceAddresses);
+      setFeedback({
+        type: "success",
+        message:
+          !saved.photoEnabled && !saved.ipRestrictionEnabled
+            ? "Kedua fitur keamanan absensi dimatikan. Absensi berjalan seperti biasa."
+            : saved.ipRestrictionEnabled && saved.entries.length === 0
+              ? "Tersimpan. Pembatasan IP aktif tetapi daftarnya masih kosong, jadi belum ada yang dibatasi."
+              : "Pengaturan keamanan absensi tersimpan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Pengaturan keamanan absensi gagal disimpan.",
+      });
+    } finally {
+      setIpAllowlistBusy(false);
+    }
+  };
+
+  const handleGeofenceSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const validationMessage = Object.values(
+      validateGeofenceSettings(geofence),
+    )[0];
+    if (validationMessage) {
+      setFeedback({ type: "error", message: validationMessage });
+      return;
+    }
+    setGeofenceBusy(true);
+    try {
+      setGeofence(await saveGeofenceSettings(geofence));
+      setFeedback({
+        type: "success",
+        message: geofence.enabled
+          ? "Geofencing aktif. Scan kini wajib berada di dalam radius kantor."
+          : "Geofencing dinonaktifkan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Pengaturan geofencing gagal disimpan.",
+      });
+    } finally {
+      setGeofenceBusy(false);
+    }
+  };
+
+  const handleScannerSafetySubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const validationMessage = Object.values(
+      validateScannerSafetySettings(scannerSafety),
+    )[0];
+    if (validationMessage) {
+      setFeedback({ type: "error", message: validationMessage });
+      return;
+    }
+    setScannerSafetyBusy(true);
+    try {
+      setScannerSafety(await saveScannerSafetySettings(scannerSafety));
+      setFeedback({
+        type: "success",
+        message:
+          "Pengaturan keamanan scanner dan multi-scan berhasil disimpan.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Pengaturan keamanan scanner gagal disimpan.",
+      });
+    } finally {
+      setScannerSafetyBusy(false);
+    }
+  };
+
+  if (!isHydrated || authLoading) {
+    return (
+      <div className="grid min-h-dvh place-items-center bg-slate-950 p-6 text-slate-100">
+        <output className="flex flex-col items-center gap-3">
+          <div className="size-10 animate-spin rounded-full border-4 border-sky-400 border-t-transparent" />
+          <p className="text-xs font-medium text-slate-400">
+            Memuat pengaturan aplikasi...
+          </p>
+        </output>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) redirect("/login");
+  if (!canAccessArea(user, "settings")) redirect("/forbidden");
+
+  return (
+    <AppShell contentClassName="mx-auto w-full max-w-6xl gap-7 px-4 py-6 sm:px-6 lg:px-8 lg:py-9">
+      <PageHeader
+        eyebrow="Identitas & preferensi aplikasi"
+        title="Pengaturan aplikasi"
+        description="Kelola identitas visual dan lihat status runtime. Pengaturan operasional lain akan ditambahkan bertahap tanpa mengubah fondasi data yang ada."
+        actions={
+          <StatusBadge tone={isOnline ? "info" : "warning"}>
+            <Icon name={isOnline ? "wifi" : "wifi-off"} className="size-3.5" />
+            {isOnline ? "Jaringan tersedia" : "Bekerja offline"}
+          </StatusBadge>
+        }
+      />
+
+      {feedback ? (
+        <div
+          role={feedback.type === "error" ? "alert" : "status"}
+          className={`flex items-start gap-3 rounded-2xl border p-4 text-sm ${
+            feedback.type === "success"
+              ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100"
+              : "border-rose-400/25 bg-rose-400/10 text-rose-100"
+          }`}
+        >
+          <Icon
+            name={feedback.type === "success" ? "check" : "tools"}
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <span>{feedback.message}</span>
+          <button
+            type="button"
+            onClick={() => setFeedback(null)}
+            className="ml-auto rounded-lg px-2 py-1 text-xs font-bold hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            Tutup
+          </button>
+        </div>
+      ) : null}
+
+      <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex items-start gap-4">
+            <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+              <Icon name="upload" className="size-5" />
+            </span>
+            <div>
+              <h2 className="text-base font-black text-white">Logo aplikasi</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+                Gunakan logo persegi atau horizontal dengan latar transparan
+                agar tampil konsisten pada header dan laporan.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 grid min-h-56 place-items-center rounded-2xl border border-dashed border-white/15 bg-slate-950/60 p-6 text-center">
+            <div className="flex flex-col items-center gap-3">
+              <BrandLogo size={96} />
+              <div>
+                <p className="text-sm font-bold text-white">
+                  {logoUrl ? "Logo khusus terpasang" : "Logo default"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  PNG, JPG, atau WebP · Maksimal 1 MB
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+            <label
+              htmlFor="logo-upload-input"
+              className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 focus-within:ring-2 focus-within:ring-sky-200"
+            >
+              <Icon name="upload" className="size-4" />
+              {logoBusy ? "Menyimpan logo…" : "Pilih logo baru"}
+              <input
+                id="logo-upload-input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                disabled={logoBusy}
+                onChange={handleLogoUpload}
+                className="sr-only"
+              />
+            </label>
+            {logoUrl ? (
+              <button
+                type="button"
+                disabled={logoBusy}
+                onClick={handleResetLogo}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.05] px-4 text-sm font-bold text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              >
+                <Icon name="reset" className="size-4" />
+                Gunakan default
+              </button>
+            ) : null}
+          </div>
+
+          <p className="mt-4 text-xs leading-5 text-slate-400">
+            Logo disimpan pada profil instansi dan ikut antrean sinkronisasi,
+            sehingga otomatis diterapkan di Desktop lain maupun Mobile setelah
+            sync berikutnya.
+          </p>
+        </section>
+
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex items-start gap-4">
+            <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+              <Icon name="palette" className="size-5" />
+            </span>
+            <div>
+              <h2 className="text-base font-black text-white">Tema & visual</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+                Pilih tema tampilan aplikasi dan palet warna visual.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <p className="text-xs font-bold text-slate-300 mb-2">
+              Mode Tema Tampilan:
+            </p>
+            <ThemeToggle
+              variant="segmented"
+              className="w-full justify-between"
+            />
+          </div>
+
+          <div className="mt-4">
+            <DeviceProfileCard />
+          </div>
+
+          <div className="mt-4">
+            <VisualTierControl />
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {[
+              ["Putih", "bg-white", "#F8FAFC"],
+              ["Biru muda", "bg-sky-400", "#38BDF8"],
+              ["Gold", "bg-amber-300", "#F6C453"],
+            ].map(([label, color, value]) => (
+              <div
+                key={label}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] p-3"
+              >
+                <span className={`block h-14 rounded-xl ${color}`} />
+                <p className="mt-3 text-xs font-bold text-white">{label}</p>
+                <p className="mt-0.5 text-[10px] text-slate-500">{value}</p>
+              </div>
+            ))}
+          </div>
+
+          <dl className="mt-6 divide-y divide-white/10 rounded-2xl border border-white/10 bg-slate-950/50 px-4">
+            <div className="flex items-center justify-between gap-4 py-3 text-xs">
+              <dt className="text-slate-400">Aplikasi</dt>
+              <dd className="font-bold text-white">{savedAppName} v0.1.0</dd>
+            </div>
+            <div className="flex items-center justify-between gap-4 py-3 text-xs">
+              <dt className="text-slate-400">Frontend</dt>
+              <dd className="font-bold text-sky-200">Next.js 16 · React 19</dd>
+            </div>
+            <div className="flex items-center justify-between gap-4 py-3 text-xs">
+              <dt className="text-slate-400">Desktop</dt>
+              <dd className="font-bold text-sky-200">Tauri 2</dd>
+            </div>
+            <div className="flex items-center justify-between gap-4 py-3 text-xs">
+              <dt className="text-slate-400">Jaringan</dt>
+              <dd
+                className={
+                  isOnline
+                    ? "font-bold text-sky-200"
+                    : "font-bold text-amber-200"
+                }
+              >
+                {isOnline ? "Tersedia" : "Tidak tersedia"}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+
+      {/* Keamanan akun sendiri: tidak dijaga izin apa pun, karena setiap
+          operator berhak mengamankan akunnya — termasuk role paling terbatas. */}
+      <TwoFactorCard />
+      <PasswordRecoveryCard />
+      <LicenseCard />
+
+      {hasPermission(user, "settings.manage") ? <MailSettingsCard /> : null}
+
+      {hasPermission(user, "settings.manage") ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+                <Icon name="tools" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Profil Instansi & Identitas ID Card
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Data resmi organisasi, kontak instansi, tanda tangan pimpinan,
+                  dan ketentuan kartu yang akan tercetak otomatis pada ID Card
+                  Karyawan dan laporan resmi.
+                </p>
+              </div>
+            </div>
+            <StatusBadge tone="info">
+              {companyProfile.timezone || "Asia/Jakarta"}
+            </StatusBadge>
+          </div>
+
+          <form
+            onSubmit={handleCompanyProfileSubmit}
+            className="mt-6 space-y-6"
+          >
+            {/* 1. Informasi Utama */}
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-3">
+                Nama Tampilan Aplikasi / Sistem
+                <input
+                  type="text"
+                  value={appDisplayName}
+                  onChange={(e) => setAppDisplayName(e.target.value)}
+                  placeholder={`Contoh: ${BRANDING.appDisplayName}`}
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+                <span className="text-[11px] font-normal text-slate-400 block">
+                  Nama sistem aplikasi yang ditampilkan pada judul aplikasi,
+                  form login, dan header.
+                </span>
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                Nama Resmi Instansi / Organisasi *
+                <input
+                  type="text"
+                  required
+                  value={companyProfile.company_name}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      company_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Contoh: PT Maju Bersama / Nama Instansi"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300">
+                Unit / Cabang / Wilayah
+                <input
+                  type="text"
+                  value={companyProfile.branch_name || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      branch_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Contoh: Kantor Pusat / Cabang 1"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+            </div>
+
+            {/* 2. Logo & Tanda Tangan */}
+            <div className="grid gap-6 sm:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white">
+                    Logo Resmi Instansi (Untuk ID Card)
+                  </span>
+                  {companyProfile.logo_url ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCompanyProfile((c) => ({ ...c, logo_url: null }))
+                      }
+                      className="text-[11px] text-rose-400 hover:underline"
+                    >
+                      Hapus Logo
+                    </button>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="grid size-20 shrink-0 place-items-center rounded-xl border border-dashed border-white/20 bg-slate-900 overflow-hidden">
+                    {companyProfile.logo_url ? (
+                      /* biome-ignore lint/performance/noImgElement: Data URL preview */
+                      <img
+                        src={companyProfile.logo_url}
+                        alt="Logo Instansi"
+                        className="max-h-full max-w-full object-contain p-1"
+                      />
+                    ) : (
+                      <span className="text-[10px] text-slate-500">
+                        Belum ada logo
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-1.5">
+                    <label className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-xl bg-slate-800 px-3 text-xs font-bold text-white border border-white/10 hover:bg-slate-700">
+                      <Icon name="upload" className="size-3.5" />
+                      Pilih Logo PNG
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleCompanyLogoUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Format PNG transparan resolusi tinggi disarankan (Maks 2
+                      MB).
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white">
+                    Tanda Tangan & Stempel Pimpinan (ID Card)
+                  </span>
+                  {companyProfile.signature_url ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCompanyProfile((c) => ({
+                          ...c,
+                          signature_url: null,
+                        }))
+                      }
+                      className="text-[11px] text-rose-400 hover:underline"
+                    >
+                      Hapus Tanda Tangan
+                    </button>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="grid size-20 shrink-0 place-items-center rounded-xl border border-dashed border-white/20 bg-slate-900 overflow-hidden">
+                    {companyProfile.signature_url ? (
+                      /* biome-ignore lint/performance/noImgElement: Data URL preview */
+                      <img
+                        src={companyProfile.signature_url}
+                        alt="Tanda Tangan"
+                        className="max-h-full max-w-full object-contain p-1"
+                      />
+                    ) : (
+                      <span className="text-[10px] text-slate-500">
+                        Belum ada
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-1.5">
+                    <label className="inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-xl bg-slate-800 px-3 text-xs font-bold text-white border border-white/10 hover:bg-slate-700">
+                      <Icon name="upload" className="size-3.5" />
+                      Pilih TTD / Stempel
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={handleSignatureUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Gambar scan tanda tangan/stempel transparan di belakang ID
+                      card.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Kontak & Alamat */}
+            <div className="grid gap-4 sm:grid-cols-4">
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-4">
+                Alamat Lengkap Kantor / Instansi
+                <textarea
+                  rows={2}
+                  value={companyProfile.address || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      address: e.target.value,
+                    }))
+                  }
+                  placeholder="Contoh: Jl. Jend. Sudirman Kav. 52-53, Senayan, Jakarta Selatan"
+                  className="w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-white outline-none focus:border-sky-400 text-xs"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-1">
+                No. Telepon / Hotline
+                <input
+                  type="text"
+                  value={companyProfile.phone || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      phone: e.target.value,
+                    }))
+                  }
+                  placeholder="021-5550123"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400 font-mono"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-1">
+                Email Resmi
+                <input
+                  type="email"
+                  value={companyProfile.email || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      email: e.target.value,
+                    }))
+                  }
+                  placeholder="info@instansi.id"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-1">
+                Website
+                <input
+                  type="text"
+                  value={companyProfile.website || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      website: e.target.value,
+                    }))
+                  }
+                  placeholder="https://instansi.id"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-1">
+                Zona Waktu
+                <select
+                  value={companyProfile.timezone || "Asia/Jakarta"}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      timezone: e.target.value,
+                    }))
+                  }
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                >
+                  <option value="Asia/Jakarta">WIB (Asia/Jakarta)</option>
+                  <option value="Asia/Makassar">WITA (Asia/Makassar)</option>
+                  <option value="Asia/Jayapura">WIT (Asia/Jayapura)</option>
+                </select>
+              </label>
+            </div>
+
+            {/* 4. Data Pimpinan */}
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="space-y-1.5 text-xs font-bold text-slate-300">
+                Nama Lengkap Pimpinan / Penandatangan
+                <input
+                  type="text"
+                  value={companyProfile.leader_name || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      leader_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Contoh: Dr. H. Ahmad Fauzi, M.M."
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300">
+                Jabatan Pimpinan
+                <input
+                  type="text"
+                  value={companyProfile.leader_title || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      leader_title: e.target.value,
+                    }))
+                  }
+                  placeholder="Contoh: Direktur Utama / Kepala Kantor"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400"
+                />
+              </label>
+              <label className="space-y-1.5 text-xs font-bold text-slate-300">
+                NIP / NIK / No. Registrasi
+                <input
+                  type="text"
+                  value={companyProfile.leader_nip || ""}
+                  onChange={(e) =>
+                    setCompanyProfile((c) => ({
+                      ...c,
+                      leader_nip: e.target.value,
+                    }))
+                  }
+                  placeholder="19750815 200003 1 002"
+                  className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-white outline-none focus:border-sky-400 font-mono"
+                />
+              </label>
+            </div>
+
+            {/* 5. Ketentuan Kartu */}
+            <label className="block space-y-1.5 text-xs font-bold text-slate-300">
+              Syarat & Ketentuan Default di Belakang ID Card
+              <textarea
+                rows={4}
+                value={companyProfile.card_terms || ""}
+                onChange={(e) =>
+                  setCompanyProfile((c) => ({
+                    ...c,
+                    card_terms: e.target.value,
+                  }))
+                }
+                placeholder="Tuliskan butir-butir syarat & ketentuan ID card..."
+                className="w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-white outline-none focus:border-sky-400 text-xs font-mono leading-5"
+              />
+            </label>
+
+            <div>
+              <button
+                type="submit"
+                disabled={companyProfileBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-6 text-xs font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                <Icon name="check" className="size-4" />
+                <span>
+                  {companyProfileBusy
+                    ? "Menyimpan Profil..."
+                    : "Simpan Profil Instansi"}
+                </span>
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-cyan-400/20 bg-cyan-400/10 text-cyan-200">
+                <Icon name="database" className="size-5" />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-black text-white">
+                    Konfigurasi Database (LibSQL)
+                  </h2>
+                  <span className="rounded-md bg-cyan-400/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-300 border border-cyan-400/20">
+                    Superadmin Only
+                  </span>
+                </div>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Aplikasi Desktop dan Mobile terhubung langsung ke database
+                  LibSQL lewat HTTP Pipeline — baik Turso Cloud maupun server
+                  libSQL milik Anda sendiri di kantor, rumah, atau VPS.
+                  Kredensial disimpan aman di dalam Vault terenkripsi
+                  AES-256-GCM pada perangkat ini.
+                </p>
+              </div>
+            </div>
+            <StatusBadge
+              tone={
+                tursoTestStatus?.connected
+                  ? "success"
+                  : tursoUrl
+                    ? "info"
+                    : "neutral"
+              }
+            >
+              {tursoTestStatus?.connected
+                ? `Terhubung (${tursoTestStatus.latency_ms ?? 0} ms)`
+                : tursoUrl
+                  ? tursoProviderInfo.label
+                  : "Database Lokal"}
+            </StatusBadge>
+          </div>
+
+          <form onSubmit={handleTursoSave} className="mt-6 space-y-4">
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-bold text-slate-300">
+                Jenis Database
+              </legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {DATABASE_PROVIDER_OPTIONS.map((option) => (
+                  <label
+                    key={option.value}
+                    className={`grid min-w-0 cursor-pointer gap-1 rounded-xl border p-3 text-xs leading-4 transition ${
+                      tursoProvider === option.value
+                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-100"
+                        : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 font-black">
+                      <input
+                        type="radio"
+                        name="settings-database-provider"
+                        value={option.value}
+                        checked={tursoProvider === option.value}
+                        onChange={() => {
+                          setTursoProvider(option.value);
+                          setTursoAllowInsecure(false);
+                          setTursoTestStatus(null);
+                        }}
+                        className="size-4 shrink-0 accent-cyan-400"
+                      />
+                      <span className="min-w-0 truncate">{option.label}</span>
+                    </span>
+                    <span className="font-normal opacity-80">
+                      {option.description}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {providerNeedsEndpoint(tursoProvider) ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                  {tursoProvider === "turso"
+                    ? "URL Database Cloud Turso"
+                    : "Alamat Server Database Anda"}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="url"
+                      value={tursoUrl}
+                      onChange={(e) => {
+                        setTursoUrl(e.target.value);
+                        setTursoTestStatus(null);
+                      }}
+                      placeholder={tursoProviderInfo.urlPlaceholder}
+                      className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                  {tursoUrl.trim().length > 0 && tursoEndpoint.issue ? (
+                    <span className="block text-[11px] font-normal text-amber-300">
+                      {tursoEndpoint.issue.message}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-normal text-slate-500">
+                      {tursoProvider === "turso" ? (
+                        <>
+                          Contoh format:{" "}
+                          <code className="text-slate-400">
+                            libsql://nama-db-org.turso.io
+                          </code>{" "}
+                          atau{" "}
+                          <code className="text-slate-400">
+                            https://nama-db-org.turso.io
+                          </code>
+                        </>
+                      ) : (
+                        <>
+                          Contoh format:{" "}
+                          <code className="text-slate-400">
+                            http://192.168.1.10:8080
+                          </code>{" "}
+                          (LAN) atau{" "}
+                          <code className="text-slate-400">
+                            https://db.kantor-anda.com
+                          </code>{" "}
+                          (VPS ber-TLS)
+                        </>
+                      )}
+                    </span>
+                  )}
+                </label>
+
+                <label className="space-y-1.5 text-xs font-bold text-slate-300 sm:col-span-2">
+                  {tursoEndpoint.tokenRequired
+                    ? "Auth Token Database (Bearer Token)"
+                    : "Auth Token Database (opsional untuk server tanpa autentikasi)"}
+                  <div className="relative">
+                    <input
+                      type={showTursoToken ? "text" : "password"}
+                      value={tursoToken}
+                      onChange={(e) => setTursoToken(e.target.value)}
+                      placeholder={
+                        tursoUrl
+                          ? "•••••••••••••••• (Tersimpan aman di vault - kosongkan jika tidak ingin diubah)"
+                          : "eyJhbGciOiJFZERTQ..."
+                      }
+                      className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 pr-24 font-mono text-xs text-white outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowTursoToken((prev) => !prev)}
+                      className="absolute right-2 top-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:text-white"
+                    >
+                      {showTursoToken ? "Sembunyikan" : "Tampilkan"}
+                    </button>
+                  </div>
+                  <span className="text-[11px] font-normal text-slate-500">
+                    {tursoUrl ? (
+                      <span className="text-cyan-400">
+                        Token otentikasi tersimpan aman di vault lokal. Biarkan
+                        kosong jika tidak ingin mengganti token.
+                      </span>
+                    ) : (
+                      <>
+                        Token otentikasi Turso dari command CLI{" "}
+                        <code className="text-slate-400">
+                          turso db tokens create &lt;db-name&gt;
+                        </code>
+                      </>
+                    )}
+                  </span>
+                </label>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-cyan-400/30 bg-cyan-400/5 p-4 text-[11px] font-bold leading-4 text-cyan-100">
+                Seluruh data disimpan pada berkas SQLite di perangkat ini. Tidak
+                ada alamat server maupun Auth Token yang perlu diisi, dan
+                aplikasi tetap berjalan penuh tanpa internet. Lokasi berkasnya
+                ditentukan otomatis di folder data aplikasi — gunakan menu
+                Cadangan untuk menyalinnya keluar.
+              </div>
+            )}
+
+            {tursoProvider === "self_hosted" &&
+            (tursoEndpoint.issue?.code === "INSECURE_PUBLIC" ||
+              tursoAllowInsecure) ? (
+              <label className="flex items-start gap-2 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-[11px] font-bold leading-4 text-rose-200">
+                <input
+                  type="checkbox"
+                  checked={tursoAllowInsecure}
+                  onChange={(e) => {
+                    setTursoAllowInsecure(e.target.checked);
+                    setTursoTestStatus(null);
+                  }}
+                  className="mt-0.5 size-4 shrink-0 accent-rose-400"
+                />
+                <span>
+                  Izinkan koneksi tanpa enkripsi ke alamat publik. Auth Token
+                  dan seluruh data absensi akan dikirim sebagai teks biasa dan
+                  dapat dibaca siapa pun di jalur jaringan. Pakai ini hanya bila
+                  Anda benar-benar memercayai jaringannya; jalur yang aman
+                  adalah memasang HTTPS di server atau memakai alamat LAN/VPN.
+                </span>
+              </label>
+            ) : null}
+
+            {tursoTestStatus ? (
+              <div
+                className={`rounded-2xl border p-4 ${
+                  tursoTestStatus.connected
+                    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                    : "border-rose-500/20 bg-rose-500/10 text-rose-300"
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-xs">
+                  <Icon
+                    name={tursoTestStatus.connected ? "check" : "alert"}
+                    className="size-4"
+                  />
+                  <span>
+                    {tursoTestStatus.connected
+                      ? `Koneksi Database Cloud Berhasil (Latensi: ${tursoTestStatus.latency_ms ?? 0} ms)`
+                      : `Gagal Terhubung ke Database Cloud: ${tursoTestStatus.error_message || "Periksa URL dan Token"}`}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button
+                type="submit"
+                disabled={tursoBusy || tursoTesting}
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-cyan-400 px-5 text-xs font-black text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-300 disabled:opacity-50"
+              >
+                <Icon name="check" className="size-4" />
+                <span>
+                  {tursoBusy
+                    ? "Menyimpan ke Vault..."
+                    : "Simpan Konfigurasi Database"}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTursoTest}
+                disabled={tursoBusy || tursoTesting}
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 text-xs font-bold text-cyan-200 hover:bg-cyan-400/20 disabled:opacity-50"
+              >
+                <Icon
+                  name={tursoTesting ? "clock" : "sync"}
+                  className={`size-4 ${tursoTesting ? "animate-spin" : ""}`}
+                />
+                <span>
+                  {tursoTesting ? "Menguji Koneksi..." : "Uji Koneksi Database"}
+                </span>
+              </button>
+
+              {tursoUrl ? (
+                <button
+                  type="button"
+                  onClick={handleTursoClear}
+                  disabled={tursoBusy || tursoTesting}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 text-xs font-bold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                >
+                  <Icon name="trash" className="size-4" />
+                  <span>Reset Konfigurasi</span>
+                </button>
+              ) : null}
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {/* Cadangan berkas hanya ada artinya bila databasenya memang berada di
+          perangkat ini. Pada Web datanya di database remote, dan seluruh
+          perintah portabilitas adalah command Tauri yang tidak terdaftar di
+          sana — menampilkan kartunya hanya menjanjikan tombol yang pasti
+          gagal. isHydrated menjaga agar render server dan render pertama di
+          peramban tetap sama. */}
+      {isHydrated && user?.isSuperadmin && isDesktopRuntime() ? (
+        <DatabaseBackupCard provider={tursoProvider} />
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+                <Icon name="scanner" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Keamanan absensi
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Dua fitur opsional: memaksa setiap scan menyertakan foto
+                  wajah, dan membatasi absensi ke jaringan tertentu. Matikan
+                  keduanya bila perusahaan tidak memerlukannya — selama mati,
+                  sakelar per role di halaman Master Operator tidak berpengaruh
+                  apa pun.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={handleScanSecuritySubmit} className="mt-6 space-y-4">
+            <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <input
+                type="checkbox"
+                checked={scanPhotoEnabled}
+                onChange={(event) => setScanPhotoEnabled(event.target.checked)}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="text-xs leading-5 text-slate-300">
+                <strong className="text-white">
+                  Aktifkan foto bukti absensi
+                </strong>
+                <br />
+                Terminal menahan scan sesaat setelah QR terbaca, membuka kamera
+                hadap-depan, lalu memotret wajah dan latar orang yang absen
+                sebelum data dikirim. Role mana yang diwajibkan diatur di
+                halaman Master Operator.
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <input
+                type="checkbox"
+                checked={scanIpEnabled}
+                onChange={(event) => setScanIpEnabled(event.target.checked)}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="text-xs leading-5 text-slate-300">
+                <strong className="text-white">
+                  Aktifkan pembatasan alamat IP
+                </strong>
+                <br />
+                Absensi hanya diterima dari alamat yang terdaftar di bawah. Role
+                mana yang dibatasi diatur di halaman Master Operator.
+              </span>
+            </label>
+
+            {scanIpEnabled ? (
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-black text-white">
+                    Alamat IP yang diizinkan
+                  </p>
+                  <StatusBadge
+                    tone={ipAllowlist.length > 0 ? "info" : "warning"}
+                  >
+                    {ipAllowlist.length > 0
+                      ? `${ipAllowlist.length} entri aktif`
+                      : "Kosong — belum membatasi"}
+                  </StatusBadge>
+                </div>
+                <textarea
+                  value={ipAllowlistDraft}
+                  onChange={(event) => setIpAllowlistDraft(event.target.value)}
+                  rows={5}
+                  spellCheck={false}
+                  placeholder={"192.168.1.0/24\n10.10.0.7"}
+                  className="w-full rounded-xl border border-white/10 bg-slate-950 p-3 font-mono text-sm text-white outline-none focus:border-sky-400"
+                />
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Satu baris satu alamat, boleh berupa blok CIDR seperti
+                  <span className="font-mono"> 192.168.1.0/24</span>. Selama
+                  daftar ini kosong, pembatasan belum berlaku dan role tersebut
+                  masih bisa absen dari jaringan mana pun.
+                </p>
+
+                {ipDeviceAddresses.length > 0 ? (
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Alamat perangkat ini
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {ipDeviceAddresses.map((address) => (
+                        <button
+                          key={address}
+                          type="button"
+                          onClick={() =>
+                            setIpAllowlistDraft((current) =>
+                              current
+                                .split(/[\n,;]/)
+                                .map((item) => item.trim())
+                                .filter(Boolean)
+                                .includes(address)
+                                ? current
+                                : `${current.trim()}${current.trim() ? "\n" : ""}${address}`,
+                            )
+                          }
+                          className="min-h-9 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 font-mono text-xs font-bold text-sky-200"
+                        >
+                          + {address}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                      Ini alamat yang benar-benar terlihat oleh aplikasi saat
+                      ini. Menebak alamat sendiri adalah cara tercepat mengunci
+                      seluruh terminal di luar.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="submit"
+                disabled={ipAllowlistBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-5 text-sm font-black text-slate-950 disabled:opacity-60"
+              >
+                {ipAllowlistBusy ? "Menyimpan..." : "Simpan keamanan absensi"}
+              </button>
+              <p className="text-xs text-slate-400">
+                {scanPhotoEnabled || scanIpEnabled
+                  ? "Berlaku untuk role yang menyalakannya di Master Operator."
+                  : "Kedua fitur mati — absensi berjalan seperti biasa."}
+              </p>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
+                <Icon name="scanner" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Lokasi kantor & geofencing
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Saat aktif, setiap scan wajib mengirim GPS dan berada di dalam
+                  radius kantor. Scan tanpa lokasi atau di luar area akan
+                  ditolak dan tetap dicatat pada Riwayat.
+                </p>
+              </div>
+            </div>
+            <StatusBadge tone={geofence.enabled ? "info" : "neutral"}>
+              {geofence.enabled ? "Geofencing aktif" : "Geofencing nonaktif"}
+            </StatusBadge>
+          </div>
+
+          <form
+            onSubmit={handleGeofenceSubmit}
+            className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+          >
+            <label className="space-y-1.5 text-xs font-bold text-slate-300">
+              Latitude kantor
+              <input
+                type="number"
+                step="any"
+                min={-90}
+                max={90}
+                value={geofence.latitude}
+                onChange={(event) =>
+                  setGeofence((current) => ({
+                    ...current,
+                    latitude: Number(event.target.value),
+                  }))
+                }
+                className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
+              />
+            </label>
+            <label className="space-y-1.5 text-xs font-bold text-slate-300">
+              Longitude kantor
+              <input
+                type="number"
+                step="any"
+                min={-180}
+                max={180}
+                value={geofence.longitude}
+                onChange={(event) =>
+                  setGeofence((current) => ({
+                    ...current,
+                    longitude: Number(event.target.value),
+                  }))
+                }
+                className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
+              />
+            </label>
+            <div className="space-y-1.5 text-xs font-bold text-slate-300">
+              <span>Radius maksimal (meter)</span>
+              <input
+                type="number"
+                min={10}
+                max={10_000}
+                step={1}
+                value={geofence.radiusMeter}
+                onChange={(event) =>
+                  setGeofence((current) => ({
+                    ...current,
+                    radiusMeter: Number(event.target.value),
+                  }))
+                }
+                className="min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
+              />
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                {[25, 50, 100, 250, 500].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() =>
+                      setGeofence((current) => ({
+                        ...current,
+                        radiusMeter: preset,
+                      }))
+                    }
+                    className={`rounded-lg px-2 py-0.5 text-[11px] font-bold transition-all ${
+                      geofence.radiusMeter === preset
+                        ? "bg-sky-400 text-slate-950 shadow-sm"
+                        : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    {preset}m
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="flex min-h-11 items-center gap-3 self-start rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-xs font-bold text-white mt-5">
+              <input
+                type="checkbox"
+                checked={geofence.enabled}
+                onChange={(event) =>
+                  setGeofence((current) => ({
+                    ...current,
+                    enabled: event.target.checked,
+                  }))
+                }
+                className="size-4 accent-sky-400"
+              />
+              Wajibkan lokasi saat scan
+            </label>
+
+            {currentDeviceCoords ? (
+              <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 sm:col-span-2 sm:flex-row sm:items-center lg:col-span-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
+                    <span>Posisi Perangkat Saat Ini:</span>
+                    <span className="font-mono text-sky-300">
+                      {currentDeviceCoords.lat.toFixed(6)},{" "}
+                      {currentDeviceCoords.lng.toFixed(6)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                    <span>Jarak ke Titik Kantor:</span>
+                    <span className="font-mono font-black text-white">
+                      {calculateDistanceMeters(
+                        currentDeviceCoords.lat,
+                        currentDeviceCoords.lng,
+                        geofence.latitude,
+                        geofence.longitude,
+                      )}{" "}
+                      meter
+                    </span>
+                    <span>(Radius Diizinkan: {geofence.radiusMeter}m)</span>
+                  </div>
+                </div>
+                <StatusBadge
+                  tone={
+                    calculateDistanceMeters(
+                      currentDeviceCoords.lat,
+                      currentDeviceCoords.lng,
+                      geofence.latitude,
+                      geofence.longitude,
+                    ) <= geofence.radiusMeter
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  {calculateDistanceMeters(
+                    currentDeviceCoords.lat,
+                    currentDeviceCoords.lng,
+                    geofence.latitude,
+                    geofence.longitude,
+                  ) <= geofence.radiusMeter
+                    ? "Di Dalam Radius Kantor"
+                    : "Di Luar Radius Kantor"}
+                </StatusBadge>
+              </div>
+            ) : null}
+
+            <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row lg:col-span-4">
+              <button
+                type="button"
+                disabled={geofenceBusy}
+                onClick={useCurrentLocation}
+                className="min-h-11 rounded-xl border border-white/10 bg-white/[0.05] px-4 text-xs font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+              >
+                Ambil & Uji Lokasi Perangkat Ini
+              </button>
+              <button
+                type="submit"
+                disabled={geofenceBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 hover:bg-sky-300 disabled:opacity-50"
+              >
+                {geofenceBusy ? "Menyimpan..." : "Simpan & Sinkronkan ke Cloud"}
+              </button>
+            </div>
+            {!isOnline ? (
+              <p className="text-xs text-amber-200 sm:col-span-2 lg:col-span-4">
+                Perubahan lokasi global memerlukan koneksi online agar konsisten
+                di seluruh perangkat.
+              </p>
+            ) : null}
+          </form>
+        </section>
+      ) : null}
+
+      {user?.isSuperadmin ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-sky-300/20 bg-sky-300/10 text-sky-200">
+                <Icon name="tools" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Keamanan Pemindai & Anti Double-Scan
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Konfigurasikan durasi perlindungan multi-scan dan jeda
+                  cooldown pemindaian untuk mencegah scan ganda atau salah
+                  deteksi shift secara otomatis.
+                </p>
+              </div>
+            </div>
+            <StatusBadge tone="info">
+              {scannerSafety.batasMultiScanMenit > 0
+                ? `Multi-Scan: ${scannerSafety.batasMultiScanMenit} mnt`
+                : "Multi-Scan nonaktif"}
+            </StatusBadge>
+          </div>
+
+          <form
+            onSubmit={handleScannerSafetySubmit}
+            className="mt-6 grid gap-6 sm:grid-cols-2"
+          >
+            <div className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+              <label
+                htmlFor="batas-multi-scan-input"
+                className="block text-xs font-bold text-slate-300"
+              >
+                Batas Multi-Scan Masuk (Menit)
+              </label>
+              <p className="text-[11px] leading-5 text-slate-500">
+                Scan masuk ulang dalam kurun waktu ini akan ditolak agar tidak
+                dianggap sebagai scan pulang atau duplikat (Default: 5 menit).
+              </p>
+              <div className="flex items-center gap-3 pt-1">
+                <input
+                  id="batas-multi-scan-input"
+                  type="number"
+                  min={0}
+                  max={120}
+                  step={1}
+                  value={scannerSafety.batasMultiScanMenit}
+                  onChange={(event) =>
+                    setScannerSafety((current) => ({
+                      ...current,
+                      batasMultiScanMenit: Math.max(
+                        0,
+                        Number(event.target.value),
+                      ),
+                    }))
+                  }
+                  className="min-h-11 w-32 rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
+                />
+                <span className="text-xs font-medium text-slate-400">
+                  Menit
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {[1, 3, 5, 10, 15].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() =>
+                      setScannerSafety((c) => ({
+                        ...c,
+                        batasMultiScanMenit: val,
+                      }))
+                    }
+                    className={`rounded-lg border px-2.5 py-1 font-mono text-xs font-semibold transition ${
+                      scannerSafety.batasMultiScanMenit === val
+                        ? "border-sky-400 bg-sky-400/20 text-sky-200"
+                        : "border-white/10 bg-white/[0.04] text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    {val} mnt
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+              <label
+                htmlFor="cooldown-anti-double-input"
+                className="block text-xs font-bold text-slate-300"
+              >
+                Cooldown Anti Double-Scan (Detik)
+              </label>
+              <p className="text-[11px] leading-5 text-slate-500">
+                Jeda waktu minimal sebelum scanner membaca kembali QR/kartu yang
+                sama guna mencegah scan instan berturut-turut (Default: 60
+                detik).
+              </p>
+              <div className="flex items-center gap-3 pt-1">
+                <input
+                  id="cooldown-anti-double-input"
+                  type="number"
+                  min={0}
+                  max={600}
+                  step={5}
+                  value={scannerSafety.antiDoubleScanSeconds}
+                  onChange={(event) =>
+                    setScannerSafety((current) => ({
+                      ...current,
+                      antiDoubleScanSeconds: Math.max(
+                        0,
+                        Number(event.target.value),
+                      ),
+                    }))
+                  }
+                  className="min-h-11 w-32 rounded-xl border border-white/10 bg-slate-950 px-3 font-mono text-white outline-none focus:border-sky-400"
+                />
+                <span className="text-xs font-medium text-slate-400">
+                  Detik (
+                  {Math.round((scannerSafety.antiDoubleScanSeconds / 60) * 10) /
+                    10}{" "}
+                  mnt)
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {[10, 30, 60, 120, 300].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() =>
+                      setScannerSafety((c) => ({
+                        ...c,
+                        antiDoubleScanSeconds: val,
+                      }))
+                    }
+                    className={`rounded-lg border px-2.5 py-1 font-mono text-xs font-semibold transition ${
+                      scannerSafety.antiDoubleScanSeconds === val
+                        ? "border-sky-400 bg-sky-400/20 text-sky-200"
+                        : "border-white/10 bg-white/[0.04] text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    {val >= 60 ? `${val / 60} mnt` : `${val} dtk`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="sm:col-span-2">
+              <button
+                type="submit"
+                disabled={scannerSafetyBusy}
+                className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 disabled:opacity-50"
+              >
+                {scannerSafetyBusy
+                  ? "Menyimpan..."
+                  : "Simpan Pengaturan Scanner"}
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {hasPermission(user, "settings.manage") ||
+      hasPermission(user, "alfa.trigger") ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-amber-300/20 bg-amber-300/10 text-amber-200">
+                <Icon name="clock" className="size-5" />
+              </span>
+              <div>
+                <h2 className="text-base font-black text-white">
+                  Otomasi Generate Alfa Harian
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
+                  Secara otomatis membuat entri status Alfa untuk karyawan aktif
+                  sesi NORMAL yang belum hadir atau tidak memiliki koreksi
+                  Sakit/Izin/Dispen setelah batas cutoff shift (jam pulang
+                  dikurangi offset). Pada hari libur aktif, Generate Alfa
+                  otomatis dinonaktifkan.
+                </p>
+              </div>
+            </div>
+            <StatusBadge tone={autoAlfaEnabled ? "success" : "neutral"}>
+              {autoAlfaEnabled ? "Auto-Alfa Aktif" : "Auto-Alfa Nonaktif"}
+            </StatusBadge>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-slate-950/60 p-5">
+            <div className="space-y-1">
+              <span className="text-sm font-bold text-white">
+                Status Otomasi Generate Alfa
+              </span>
+              <p className="text-xs text-slate-400">
+                Matikan tombol ini jika Anda ingin menangguhkan penandaan Alfa
+                otomatis di seluruh sistem.
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              {hasPermission(user, "settings.manage") ? (
+                <label className="relative inline-flex cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={autoAlfaEnabled}
+                    disabled={autoAlfaBusy}
+                    onChange={(e) => handleAutoAlfaToggle(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="h-6 w-11 rounded-full bg-slate-800 peer peer-checked:bg-amber-400 peer-focus:outline-none after:absolute after:top-0.5 after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white disabled:opacity-50" />
+                </label>
+              ) : null}
+            </div>
+          </div>
+
+          {hasPermission(user, "alfa.trigger") ? (
+            <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+              <div>
+                <span className="text-sm font-bold text-white">
+                  Jalankan Generate Alfa Sekarang
+                </span>
+                <p className="text-xs text-slate-400">
+                  Evaluasi kehadiran seluruh karyawan aktif saat ini dan tandai
+                  Alfa bagi yang telah melewati batas waktu cutoff.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={alfaTriggerBusy}
+                onClick={handleTriggerAlfaNow}
+                className="flex items-center gap-2 rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-slate-950 shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 disabled:opacity-50 active:scale-95 shrink-0"
+              >
+                {alfaTriggerBusy ? (
+                  <Icon name="clock" className="size-4 animate-spin" />
+                ) : (
+                  <Icon name="check" className="size-4" />
+                )}
+                <span>
+                  {alfaTriggerBusy ? "Memproses..." : "Eksekusi Sekarang"}
+                </span>
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {isDesktopSyncAvailable() && hasPermission(user, "sync.view") ? (
+        <section className="app-panel rounded-3xl p-5 sm:p-7">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-base font-black text-white">
+                Sinkronisasi Desktop
+              </h2>
+              <p className="mt-1 text-sm text-slate-400">
+                Perubahan lokal dikirim ke server, kemudian snapshot operasional
+                server diterapkan kembali ke database Desktop.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={syncBusy}
+                onClick={() => refreshSync(false)}
+                className="min-h-10 rounded-xl border border-white/10 px-4 text-xs font-bold text-slate-200 disabled:opacity-50"
+              >
+                Periksa status
+              </button>
+              <button
+                type="button"
+                disabled={syncBusy || !isOnline}
+                onClick={() => refreshSync(true)}
+                className="min-h-10 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
+              >
+                Sinkronkan sekarang
+              </button>
+              {user?.isSuperadmin ? (
+                <button
+                  type="button"
+                  disabled={syncBusy || !isOnline}
+                  onClick={resyncSettings}
+                  className="min-h-10 rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 text-xs font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
+                  title="Kirim ulang data Profil Perusahaan & Template ID Card lokal ke server"
+                >
+                  Kirim ulang pengaturan lokal
+                </button>
+              ) : null}
+              {hasPermission(user, "sync.retry") &&
+              (syncStatus?.failed ?? 0) > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={syncBusy || !isOnline}
+                    onClick={retryFailed}
+                    className="min-h-10 rounded-xl bg-amber-300 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
+                  >
+                    Coba ulang gagal
+                  </button>
+                  <button
+                    type="button"
+                    disabled={syncBusy}
+                    onClick={clearFailed}
+                    className="min-h-10 rounded-xl border border-rose-400/40 bg-rose-400/10 px-4 text-xs font-bold text-rose-200 hover:bg-rose-400/20 disabled:opacity-50"
+                  >
+                    Bersihkan antrean gagal
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          {autoSyncError ? (
+            <div className="mt-4 rounded-2xl border border-rose-400/40 bg-rose-400/10 p-4">
+              <p className="text-xs font-black text-rose-200">
+                Sinkronisasi otomatis terakhir gagal
+              </p>
+              <p className="mt-1 break-words text-xs text-rose-100/80">
+                {autoSyncError}
+              </p>
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              ["Menunggu", syncStatus?.pending ?? 0],
+              ["Event terkirim (total)", syncStatus?.synced ?? 0],
+              ["Gagal", syncStatus?.failed ?? 0],
+              ["Konflik", syncStatus?.conflict ?? 0],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-2xl border border-white/10 bg-slate-950/50 p-4"
+              >
+                <p className="text-xs text-slate-400">{label}</p>
+                <p className="mt-1 text-2xl font-black text-white">{value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-black text-white">
+                Snapshot operasional lokal
+              </p>
+              <p className="text-xs text-slate-400">
+                Terakhir berhasil: {formatSyncTime(syncStatus?.lastSyncAt)} ·
+                Revisi {syncStatus?.lastRevision ?? 0}
+              </p>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              {SYNC_TABLE_LABELS.map(([key, label]) => (
+                <div
+                  key={key}
+                  className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2"
+                >
+                  <p className="text-[11px] text-slate-400">{label}</p>
+                  <p className="mt-0.5 text-lg font-black text-white">
+                    {syncStatus?.tableCounts?.[key] ?? 0}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-400">
+              Snapshot mencakup sembilan tabel operasional di atas. Riwayat
+              absensi, koreksi, backup, dan import dibatasi 31 hari terakhir;
+              riwayat scan maksimal 5.000 baris. Operator, role, session, dan
+              audit keamanan tetap dikelola server dan tidak disalin ke database
+              operasional offline.
+            </p>
+          </div>
+          {conflicts.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-rose-400/20 bg-rose-400/5 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-black text-rose-100">
+                    Konflik perlu ditinjau ({conflicts.length})
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    Konflik terjadi saat data lokal berbeda versi dengan master
+                    cloud.
+                  </p>
+                </div>
+                {hasPermission(user, "sync.retry") ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={syncBusy}
+                      onClick={() => resolveConflictsLocal()}
+                      className="min-h-9 rounded-xl bg-sky-400/20 px-3.5 text-xs font-black text-sky-200 hover:bg-sky-400/30 disabled:opacity-50"
+                    >
+                      Pakai Semua Data Lokal (Timpa Cloud)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={syncBusy}
+                      onClick={() => resolveConflicts()}
+                      className="min-h-9 rounded-xl bg-rose-400/20 px-3.5 text-xs font-black text-rose-100 hover:bg-rose-400/30 disabled:opacity-50"
+                    >
+                      Selesaikan Semua (Ikuti Cloud)
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <ul className="mt-3 space-y-2 text-xs text-rose-100/80">
+                {conflicts.slice(0, 15).map((item) => (
+                  <li
+                    key={item.eventId}
+                    className="flex flex-col gap-2 rounded-xl border border-rose-400/10 bg-slate-950/60 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-bold text-white">
+                        {item.domain} · {item.entityKey}
+                      </span>{" "}
+                      <span className="text-rose-200/80">— {item.reason}</span>
+                    </div>
+                    {hasPermission(user, "sync.retry") ? (
+                      <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+                        <button
+                          type="button"
+                          disabled={syncBusy}
+                          onClick={() => resolveConflictsLocal(item.eventId)}
+                          className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-200 hover:bg-sky-400/20 disabled:opacity-50"
+                        >
+                          Gunakan Versi Lokal
+                        </button>
+                        <button
+                          type="button"
+                          disabled={syncBusy}
+                          onClick={() => resolveConflicts(item.eventId)}
+                          className="rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[11px] font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+                        >
+                          Ikuti Cloud
+                        </button>
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 text-xs text-slate-400">
+                Pilih <strong>Gunakan Versi Lokal</strong> untuk memaksa data
+                perubahan di perangkat ini terkirim ke server Cloud, atau{" "}
+                <strong>Ikuti Cloud</strong> untuk membuang perubahan lokal dan
+                mengikuti snapshot master server.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {alfaModalResult ? (
+        <Modal
+          titleId="alfa-modal-summary"
+          onClose={() => setAlfaModalResult(null)}
+          title="Ringkasan Eksekusi Generate Alfa"
+        >
+          <div className="space-y-4">
+            <div
+              className={`rounded-2xl border p-4 ${
+                alfaModalResult.status === "SELESAI"
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                  : alfaModalResult.status === "LIBUR"
+                    ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                    : "border-sky-500/20 bg-sky-500/10 text-sky-300"
+              }`}
+            >
+              <div className="flex items-center gap-2 font-bold">
+                <Icon
+                  name={
+                    alfaModalResult.status === "SELESAI" ? "check" : "calendar"
+                  }
+                  className="size-5"
+                />
+                <span>Status: {alfaModalResult.status}</span>
+              </div>
+              <p className="mt-1 text-xs">{alfaModalResult.pesan}</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Alfa Baru Dibuat
+                </div>
+                <div className="text-xl font-black text-amber-400">
+                  {alfaModalResult.jumlahAlfaDibuat}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Sudah Ada / Hadir
+                </div>
+                <div className="text-xl font-black text-emerald-400">
+                  {alfaModalResult.jumlahSudahAda}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Belum Cutoff Shift
+                </div>
+                <div className="text-xl font-black text-sky-400">
+                  {alfaModalResult.jumlahBelumWaktunya}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Shift Fleksibel (dinilai)
+                </div>
+                <div className="text-xl font-black text-purple-400">
+                  {alfaModalResult.jumlahFleksibel}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">Hari Libur</div>
+                <div className="text-xl font-black text-slate-300">
+                  {alfaModalResult.jumlahLibur}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3">
+                <div className="text-[11px] text-slate-400">
+                  Shift Tidak Valid
+                </div>
+                <div className="text-xl font-black text-rose-400">
+                  {alfaModalResult.jumlahShiftTidakValid}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setAlfaModalResult(null)}
+                className="rounded-xl bg-sky-500 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400"
+              >
+                Tutup Ringkasan
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+    </AppShell>
+  );
+}

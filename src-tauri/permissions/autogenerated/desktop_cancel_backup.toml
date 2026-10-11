@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-cancel-backup"
+description = "Enables the desktop_cancel_backup command without any pre-configured scope."
+commands.allow = ["desktop_cancel_backup"]
+
+[[permission]]
+identifier = "deny-desktop-cancel-backup"
+description = "Denies the desktop_cancel_backup command without any pre-configured scope."
+commands.deny = ["desktop_cancel_backup"]

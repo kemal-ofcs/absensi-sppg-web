@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-save-bpjs-rule"
+description = "Enables the desktop_save_bpjs_rule command without any pre-configured scope."
+commands.allow = ["desktop_save_bpjs_rule"]
+
+[[permission]]
+identifier = "deny-desktop-save-bpjs-rule"
+description = "Denies the desktop_save_bpjs_rule command without any pre-configured scope."
+commands.deny = ["desktop_save_bpjs_rule"]

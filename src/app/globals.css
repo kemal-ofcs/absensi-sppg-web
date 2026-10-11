@@ -1,0 +1,1898 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --app-background: #07111f;
+  --app-background-soft: #0b1728;
+  --app-surface: rgba(15, 23, 42, 0.86);
+  --app-surface-raised: rgba(30, 41, 59, 0.72);
+  --app-border: rgba(255, 255, 255, 0.1);
+  --app-primary: #38bdf8;
+  --app-primary-strong: #0284c7;
+  --app-gold: #f6c453;
+  --app-text: #f8fafc;
+  --app-text-muted: #94a3b8;
+  --app-header-bg: rgba(2, 6, 23, 0.92);
+  --app-table-header-bg: #020617;
+  --app-card-bg: #0f172a;
+  --app-input-bg: #020617;
+  --app-input-border: rgba(255, 255, 255, 0.12);
+  --app-input-text: #ffffff;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+}
+
+html[data-theme="light"],
+html.light {
+  color-scheme: light;
+  --app-background: #f8fafc;
+  --app-background-soft: #f1f5f9;
+  --app-surface: #ffffff;
+  --app-surface-raised: #ffffff;
+  --app-border: #e2e8f0;
+  --app-primary: #0284c7;
+  --app-primary-strong: #0369a1;
+  --app-gold: #d97706;
+  --app-text: #0f172a;
+  --app-text-muted: #475569;
+  --app-header-bg: rgba(255, 255, 255, 0.96);
+  --app-table-header-bg: #f8fafc;
+  --app-card-bg: #ffffff;
+  --app-input-bg: #ffffff;
+  --app-input-border: #cbd5e1;
+  --app-input-text: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--app-background);
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      circle at 12% -10%,
+      rgb(56 189 248 / 14%),
+      transparent 32rem
+    ),
+    radial-gradient(circle at 92% 4%, rgb(246 196 83 / 9%), transparent 28rem),
+    linear-gradient(180deg, var(--app-background-soft), var(--app-background));
+  color: var(--app-text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+html[data-theme="light"] body,
+html.light body {
+  background:
+    radial-gradient(
+      circle at 12% -10%,
+      rgb(14 165 233 / 10%),
+      transparent 32rem
+    ),
+    radial-gradient(circle at 92% 4%, rgb(245 158 11 / 7%), transparent 28rem),
+    linear-gradient(180deg, #f8fafc, #f1f5f9);
+  color: var(--app-text);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgb(56 189 248 / 32%);
+  color: white;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 2%), transparent 18rem),
+    transparent;
+}
+
+.app-panel {
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  box-shadow: 0 24px 70px rgb(2 8 23 / 24%);
+  backdrop-filter: blur(18px);
+}
+
+html[data-theme="light"] .app-panel,
+html.light .app-panel {
+  box-shadow: 0 12px 40px rgb(15 23 42 / 6%);
+}
+
+.app-input {
+  min-height: 2.75rem;
+  width: 100%;
+  border: 1px solid var(--app-input-border);
+  border-radius: 0.75rem;
+  background: var(--app-input-bg);
+  padding-inline: 0.75rem;
+  color: var(--app-input-text);
+  outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.app-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgb(56 189 248 / 20%);
+}
+
+.app-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ==========================================================================
+   LIGHT MODE OVERRIDES ONLY (Comprehensive, Harmonious, Tailored)
+   ========================================================================== */
+
+/* 1. Header Navigation */
+html[data-theme="light"] header.sticky,
+html.light header.sticky {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  box-shadow: 0 4px 20px rgb(15 23 42 / 4%) !important;
+}
+
+/* Page Header Seamless Typography in Light Mode */
+html[data-theme="light"] .page-header-title,
+html.light .page-header-title {
+  color: #0f172a !important;
+}
+html[data-theme="light"] .page-header-eyebrow,
+html.light .page-header-eyebrow {
+  color: #b45309 !important;
+}
+html[data-theme="light"] .page-header-description,
+html.light .page-header-description {
+  color: #475569 !important;
+}
+
+/* Inactive navigation links in light mode */
+html[data-theme="light"] header nav a:not(.bg-sky-400):not(.bg-sky-500),
+html.light header nav a:not(.bg-sky-400):not(.bg-sky-500) {
+  color: #334155 !important;
+}
+html[data-theme="light"] header nav a:not(.bg-sky-400):not(.bg-sky-500):hover,
+html.light header nav a:not(.bg-sky-400):not(.bg-sky-500):hover {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* Mobile bottom nav */
+html[data-theme="light"] nav[aria-label="Navigasi mobile"],
+html.light nav[aria-label="Navigasi mobile"] {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  border-top: 1px solid #e2e8f0 !important;
+  box-shadow: 0 -4px 20px rgb(15 23 42 / 6%) !important;
+}
+html[data-theme="light"]
+  nav[aria-label="Navigasi mobile"]
+  button:not(.bg-sky-400\/15),
+html[data-theme="light"]
+  nav[aria-label="Navigasi mobile"]
+  a:not(.bg-sky-400\/15),
+html.light nav[aria-label="Navigasi mobile"] button:not(.bg-sky-400\/15),
+html.light nav[aria-label="Navigasi mobile"] a:not(.bg-sky-400\/15) {
+  color: #64748b !important;
+}
+
+/* 2. Home Hero Section Banner */
+html[data-theme="light"] section.bg-gradient-to-br.from-slate-900,
+html.light section.bg-gradient-to-br.from-slate-900 {
+  background: linear-gradient(
+    135deg,
+    #ffffff 0%,
+    #f0f9ff 55%,
+    #fffbeb 100%
+  ) !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05) !important;
+}
+html[data-theme="light"] section.bg-gradient-to-br.from-slate-900 h1,
+html.light section.bg-gradient-to-br.from-slate-900 h1 {
+  color: #0f172a !important;
+}
+html[data-theme="light"] section.bg-gradient-to-br.from-slate-900 h1 span,
+html.light section.bg-gradient-to-br.from-slate-900 h1 span {
+  color: #0284c7 !important;
+}
+html[data-theme="light"] section.bg-gradient-to-br.from-slate-900 p,
+html.light section.bg-gradient-to-br.from-slate-900 p {
+  color: #475569 !important;
+}
+
+/* "Buka QR Scanner" Hero CTA Button */
+html[data-theme="light"] a[href="/scanner"].bg-sky-400,
+html.light a[href="/scanner"].bg-sky-400 {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3) !important;
+}
+html[data-theme="light"] a[href="/scanner"].bg-sky-400:hover,
+html.light a[href="/scanner"].bg-sky-400:hover {
+  background-color: #0369a1 !important;
+}
+html[data-theme="light"] a[href="/scanner"].bg-sky-400 *,
+html.light a[href="/scanner"].bg-sky-400 * {
+  color: #ffffff !important;
+}
+
+/* 3. Containers & Panels */
+html[data-theme="light"] .bg-slate-900,
+html[data-theme="light"] .bg-slate-950,
+html[data-theme="light"] .bg-slate-900\/98,
+html[data-theme="light"] .bg-slate-900\/95,
+html[data-theme="light"] .bg-slate-900\/90,
+html[data-theme="light"] .bg-slate-900\/85,
+html[data-theme="light"] .bg-slate-900\/80,
+html[data-theme="light"] .bg-slate-900\/70,
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-900\/50,
+html[data-theme="light"] .bg-slate-900\/40,
+html[data-theme="light"] .bg-slate-950\/96,
+html[data-theme="light"] .bg-slate-950\/90,
+html[data-theme="light"] .bg-slate-950\/80,
+html[data-theme="light"] .bg-slate-950\/70,
+html[data-theme="light"] .bg-slate-950\/60,
+html[data-theme="light"] .bg-slate-950\/50,
+html[data-theme="light"] .bg-slate-950\/40,
+html[data-theme="light"] .from-slate-900\/90,
+html[data-theme="light"] .to-slate-950,
+html[data-theme="light"] dl.bg-slate-950\/50,
+html[data-theme="light"] .divide-white\/10,
+html[data-theme="light"] .bg-white\/\[0\.02\],
+html[data-theme="light"] .bg-white\/\[0\.03\],
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.05\],
+html.light .bg-slate-900,
+html.light .bg-slate-950,
+html.light .bg-slate-900\/98,
+html.light .bg-slate-900\/95,
+html.light .bg-slate-900\/90,
+html.light .bg-slate-900\/85,
+html.light .bg-slate-900\/80,
+html.light .bg-slate-900\/70,
+html.light .bg-slate-900\/60,
+html.light .bg-slate-900\/50,
+html.light .bg-slate-900\/40,
+html.light .bg-slate-950\/96,
+html.light .bg-slate-950\/90,
+html.light .bg-slate-950\/80,
+html.light .bg-slate-950\/70,
+html.light .bg-slate-950\/60,
+html.light .bg-slate-950\/50,
+html.light .bg-slate-950\/40,
+html.light .from-slate-900\/90,
+html.light .to-slate-950,
+html.light dl.bg-slate-950\/50,
+html.light .divide-white\/10,
+html.light .bg-white\/\[0\.02\],
+html.light .bg-white\/\[0\.03\],
+html.light .bg-white\/\[0\.04\],
+html.light .bg-white\/\[0\.05\] {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* 4. Segmented Tab Switchers (Dashboard, Scanner, Riwayat) */
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-950\/60,
+html[data-theme="light"] div.bg-slate-950.p-1\.5.rounded-2xl,
+html.light .bg-slate-900\/60,
+html.light .bg-slate-950\/60,
+html.light div.bg-slate-950.p-1\.5.rounded-2xl {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* Active Segmented Tab with Gradient or Sky-500 */
+html[data-theme="light"] button.bg-gradient-to-r.from-sky-600,
+html[data-theme="light"] div.bg-slate-950 button.bg-sky-500,
+html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-500,
+html.light button.bg-gradient-to-r.from-sky-600,
+html.light div.bg-slate-950 button.bg-sky-500,
+html.light div.bg-slate-900\/60 button.bg-sky-500 {
+  background: linear-gradient(to right, #0284c7, #0ea5e9) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25) !important;
+  font-weight: 700 !important;
+}
+html[data-theme="light"] button.bg-gradient-to-r.from-sky-600 *,
+html[data-theme="light"] div.bg-slate-950 button.bg-sky-500 *,
+html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-500 *,
+html.light button.bg-gradient-to-r.from-sky-600 *,
+html.light div.bg-slate-950 button.bg-sky-500 *,
+html.light div.bg-slate-900\/60 button.bg-sky-500 * {
+  color: #ffffff !important;
+}
+
+/* Inactive Segmented Tab Buttons */
+html[data-theme="light"] .bg-slate-900\/60
+  button:not(.bg-gradient-to-r):not(.bg-sky-500),
+html[data-theme="light"]
+  div.bg-slate-950
+  button:not(.bg-gradient-to-r):not(.bg-sky-500),
+html.light .bg-slate-900\/60 button:not(.bg-gradient-to-r):not(.bg-sky-500),
+html.light div.bg-slate-950 button:not(.bg-gradient-to-r):not(.bg-sky-500) {
+  color: #475569 !important;
+}
+html[data-theme="light"]
+  .bg-slate-900\/60
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+html[data-theme="light"]
+  div.bg-slate-950
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+html.light
+  .bg-slate-900\/60
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+html.light
+  div.bg-slate-950
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover {
+  color: #0f172a !important;
+  background-color: #e2e8f0 !important;
+}
+
+/* 5. General Hover & Active States (No dark gray/black hovers) */
+html[data-theme="light"] [class*="hover:bg-slate-800"]:hover,
+html[data-theme="light"] [class*="hover:bg-slate-700"]:hover,
+html[data-theme="light"] [class*="hover:bg-slate-900"]:hover,
+html[data-theme="light"] [class*="hover:bg-white/"]:hover,
+html.light [class*="hover:bg-slate-800"]:hover,
+html.light [class*="hover:bg-slate-700"]:hover,
+html.light [class*="hover:bg-slate-900"]:hover,
+html.light [class*="hover:bg-white/"]:hover {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .hover\:text-white:hover,
+html[data-theme="light"] .hover\:text-slate-100:hover,
+html[data-theme="light"] .hover\:text-slate-200:hover,
+html[data-theme="light"] .hover\:text-slate-950:hover,
+html.light .hover\:text-white:hover,
+html.light .hover\:text-slate-100:hover,
+html.light .hover\:text-slate-200:hover,
+html.light .hover\:text-slate-950:hover {
+  color: #0f172a !important;
+}
+
+/* 6. Action Buttons (CSV, Excel, Scanner Primary/Stop, Refresh, Labels, Steppers) */
+/* Secondary button & labels (Ekspor CSV, Refresh, Label upload, Pratinjau, Reset logo, Steppers) */
+html[data-theme="light"] button.bg-slate-800,
+html[data-theme="light"] button.bg-slate-800\/90,
+html[data-theme="light"] button.bg-slate-800\/80,
+html[data-theme="light"] .bg-slate-800\/90,
+html[data-theme="light"] .bg-slate-800\/80,
+html[data-theme="light"] label.bg-slate-800,
+html[data-theme="light"] a.bg-slate-800,
+html[data-theme="light"] .bg-slate-800.border-slate-700,
+html[data-theme="light"] button.bg-white\/5,
+html[data-theme="light"] button.bg-white\/\[0\.05\],
+html[data-theme="light"] a.bg-white\/\[0\.05\],
+html.light button.bg-slate-800,
+html.light button.bg-slate-800\/90,
+html.light button.bg-slate-800\/80,
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light label.bg-slate-800,
+html.light a.bg-slate-800,
+html.light .bg-slate-800.border-slate-700,
+html.light button.bg-white\/5,
+html.light button.bg-white\/\[0\.05\],
+html.light a.bg-white\/\[0\.05\] {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08) !important;
+}
+html[data-theme="light"] button.bg-slate-800:hover,
+html[data-theme="light"] button.bg-slate-800\/90:hover,
+html[data-theme="light"] button.bg-slate-800\/80:hover,
+html[data-theme="light"] label.bg-slate-800:hover,
+html[data-theme="light"] a.bg-slate-800:hover,
+html[data-theme="light"] button.bg-white\/5:hover,
+html[data-theme="light"] button.bg-white\/\[0\.05\]:hover,
+html[data-theme="light"] a.bg-white\/\[0\.05\]:hover,
+html.light button.bg-slate-800:hover,
+html.light button.bg-slate-800\/90:hover,
+html.light button.bg-slate-800\/80:hover,
+html.light label.bg-slate-800:hover,
+html.light a.bg-slate-800:hover,
+html.light button.bg-white\/5:hover,
+html.light button.bg-white\/\[0\.05\]:hover,
+html.light a.bg-white\/\[0\.05\]:hover {
+  background-color: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+html[data-theme="light"] button.bg-slate-800 *,
+html[data-theme="light"] button.bg-slate-800\/90 *,
+html[data-theme="light"] button.bg-slate-800\/80 *,
+html[data-theme="light"] label.bg-slate-800 *,
+html.light button.bg-slate-800 *,
+html.light button.bg-slate-800\/90 *,
+html.light button.bg-slate-800\/80 *,
+html.light label.bg-slate-800 * {
+  color: inherit !important;
+}
+html[data-theme="light"] button.bg-slate-800 svg,
+html[data-theme="light"] label.bg-slate-800 svg,
+html.light button.bg-slate-800 svg,
+html.light label.bg-slate-800 svg {
+  color: #0284c7 !important;
+}
+
+/* Neutral status badges & Nonaktif indicators */
+html[data-theme="light"] span.bg-slate-800,
+html[data-theme="light"] div.bg-slate-800:not(button),
+html.light span.bg-slate-800,
+html.light div.bg-slate-800:not(button) {
+  background-color: #f1f5f9 !important;
+  color: #64748b !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Excel Export Button */
+html[data-theme="light"] button.bg-gradient-to-r.from-emerald-600,
+html[data-theme="light"] button.bg-emerald-950\/80,
+html.light button.bg-gradient-to-r.from-emerald-600,
+html.light button.bg-emerald-950\/80 {
+  background: linear-gradient(to right, #059669, #0d9488) !important;
+  border-color: transparent !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.25) !important;
+}
+html[data-theme="light"] button.bg-gradient-to-r.from-emerald-600:hover,
+html[data-theme="light"] button.bg-emerald-950\/80:hover,
+html.light button.bg-gradient-to-r.from-emerald-600:hover,
+html.light button.bg-emerald-950\/80:hover {
+  background: linear-gradient(to right, #047857, #0f766e) !important;
+}
+html[data-theme="light"] button.bg-gradient-to-r.from-emerald-600 *,
+html[data-theme="light"] button.bg-emerald-950\/80 *,
+html.light button.bg-gradient-to-r.from-emerald-600 *,
+html.light button.bg-emerald-950\/80 * {
+  color: #ffffff !important;
+}
+
+/* "Mulai pindai QR" Button */
+html[data-theme="light"] button.bg-sky-400,
+html.light button.bg-sky-400 {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 10px rgba(2, 132, 199, 0.25) !important;
+}
+html[data-theme="light"] button.bg-sky-400:hover,
+html.light button.bg-sky-400:hover {
+  background-color: #0369a1 !important;
+}
+html[data-theme="light"] button.bg-sky-400 *,
+html.light button.bg-sky-400 * {
+  color: #ffffff !important;
+}
+
+/* "Hentikan kamera" Button */
+html[data-theme="light"] button.bg-rose-400\/10,
+html.light button.bg-rose-400\/10 {
+  background-color: #fee2e2 !important;
+  border-color: #fecaca !important;
+  color: #dc2626 !important;
+}
+html[data-theme="light"] button.bg-rose-400\/10:hover,
+html.light button.bg-rose-400\/10:hover {
+  background-color: #fecdd3 !important;
+}
+html[data-theme="light"] button.bg-rose-400\/10 *,
+html.light button.bg-rose-400\/10 * {
+  color: #dc2626 !important;
+}
+
+/* 7. Tone Badges & Status Tags (Fix dark red / dark pastel backgrounds) */
+/* RED / ROSE TONE (Ditolak, Alfa, Hapus, Error) */
+html[data-theme="light"] .bg-rose-950,
+html[data-theme="light"] .bg-rose-950\/80,
+html[data-theme="light"] .bg-rose-950\/60,
+html[data-theme="light"] .bg-rose-950\/50,
+html[data-theme="light"] .bg-rose-950\/40,
+html[data-theme="light"] .bg-rose-950\/30,
+html[data-theme="light"] .bg-rose-900,
+html[data-theme="light"] .bg-rose-900\/60,
+html[data-theme="light"] .bg-rose-900\/40,
+html[data-theme="light"] .bg-rose-500\/20,
+html[data-theme="light"] .bg-rose-500\/10,
+html[data-theme="light"] .bg-rose-400\/25,
+html[data-theme="light"] .bg-rose-400\/10,
+html.light .bg-rose-950,
+html.light .bg-rose-950\/80,
+html.light .bg-rose-950\/60,
+html.light .bg-rose-950\/50,
+html.light .bg-rose-950\/40,
+html.light .bg-rose-950\/30,
+html.light .bg-rose-900,
+html.light .bg-rose-900\/60,
+html.light .bg-rose-900\/40,
+html.light .bg-rose-500\/20,
+html.light .bg-rose-500\/10,
+html.light .bg-rose-400\/25,
+html.light .bg-rose-400\/10 {
+  background-color: #ffe4e6 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+html[data-theme="light"] .bg-rose-950:hover,
+html[data-theme="light"] .bg-rose-950\/80:hover,
+html[data-theme="light"] .bg-rose-950\/40:hover,
+html.light .bg-rose-950:hover,
+html.light .bg-rose-950\/80:hover,
+html.light .bg-rose-950\/40:hover {
+  background-color: #fecdd3 !important;
+  color: #9f1239 !important;
+}
+html[data-theme="light"] .bg-rose-950 *,
+html[data-theme="light"] .bg-rose-950\/80 *,
+html.light .bg-rose-950 *,
+html.light .bg-rose-950\/80 * {
+  color: inherit !important;
+}
+
+/* GREEN / EMERALD TONE (Masuk, Hadir, Berhasil) */
+html[data-theme="light"] .bg-emerald-950,
+html[data-theme="light"] .bg-emerald-950\/80,
+html[data-theme="light"] .bg-emerald-950\/40,
+html[data-theme="light"] .bg-emerald-950\/10,
+html[data-theme="light"] .bg-emerald-900,
+html[data-theme="light"] .bg-emerald-500\/20,
+html[data-theme="light"] .bg-emerald-500\/10,
+html[data-theme="light"] .bg-emerald-400\/25,
+html[data-theme="light"] .bg-emerald-400\/10,
+html.light .bg-emerald-950,
+html.light .bg-emerald-950\/80,
+html.light .bg-emerald-950\/40,
+html.light .bg-emerald-950\/10,
+html.light .bg-emerald-900,
+html.light .bg-emerald-500\/20,
+html.light .bg-emerald-500\/10,
+html.light .bg-emerald-400\/25,
+html.light .bg-emerald-400\/10 {
+  background-color: #dcfce7 !important;
+  border-color: #86efac !important;
+  color: #15803d !important;
+}
+html[data-theme="light"] .bg-emerald-950:hover,
+html[data-theme="light"] .bg-emerald-950\/80:hover,
+html.light .bg-emerald-950:hover,
+html.light .bg-emerald-950\/80:hover {
+  background-color: #bbf7d0 !important;
+  color: #166534 !important;
+}
+html[data-theme="light"] .bg-emerald-950 *,
+html[data-theme="light"] .bg-emerald-950\/80 *,
+html.light .bg-emerald-950 *,
+html.light .bg-emerald-950\/80 * {
+  color: inherit !important;
+}
+
+/* BLUE / SKY TONE (Pulang, Info, Command Center) */
+html[data-theme="light"] .bg-sky-950,
+html[data-theme="light"] .bg-sky-950\/80,
+html[data-theme="light"] .bg-sky-950\/60,
+html[data-theme="light"] .bg-sky-950\/40,
+html[data-theme="light"] .bg-sky-950\/20,
+html[data-theme="light"] .bg-sky-900,
+html[data-theme="light"] .bg-sky-500\/20,
+html[data-theme="light"] .bg-sky-500\/10,
+html[data-theme="light"] .bg-sky-400\/25,
+html[data-theme="light"] .bg-sky-400\/10,
+html[data-theme="light"] .bg-sky-400\/5,
+html.light .bg-sky-950,
+html.light .bg-sky-950\/80,
+html.light .bg-sky-950\/60,
+html.light .bg-sky-950\/40,
+html.light .bg-sky-950\/20,
+html.light .bg-sky-900,
+html.light .bg-sky-500\/20,
+html.light .bg-sky-500\/10,
+html.light .bg-sky-400\/25,
+html.light .bg-sky-400\/10,
+html.light .bg-sky-400\/5 {
+  background-color: #e0f2fe !important;
+  border-color: #bae6fd !important;
+  color: #0369a1 !important;
+}
+html[data-theme="light"] .bg-sky-950:hover,
+html[data-theme="light"] .bg-sky-950\/80:hover,
+html.light .bg-sky-950:hover,
+html.light .bg-sky-950\/80:hover {
+  background-color: #bae6fd !important;
+  color: #0284c7 !important;
+}
+html[data-theme="light"] .bg-sky-950 *,
+html[data-theme="light"] .bg-sky-950\/80 *,
+html.light .bg-sky-950 *,
+html.light .bg-sky-950\/80 * {
+  color: inherit !important;
+}
+
+/* AMBER / YELLOW TONE (Terlambat, Perlu Verifikasi, Izin, Sakit) */
+html[data-theme="light"] .bg-amber-950,
+html[data-theme="light"] .bg-amber-950\/80,
+html[data-theme="light"] .bg-amber-950\/60,
+html[data-theme="light"] .bg-amber-950\/50,
+html[data-theme="light"] .bg-amber-950\/40,
+html[data-theme="light"] .bg-amber-900,
+html[data-theme="light"] .bg-amber-500\/20,
+html[data-theme="light"] .bg-amber-500\/10,
+html[data-theme="light"] .bg-amber-400\/30,
+html[data-theme="light"] .bg-amber-400\/25,
+html[data-theme="light"] .bg-amber-400\/20,
+html[data-theme="light"] .bg-amber-400\/10,
+html[data-theme="light"] .bg-amber-300\/30,
+html[data-theme="light"] .bg-amber-300\/25,
+html[data-theme="light"] .bg-amber-300\/10,
+html.light .bg-amber-950,
+html.light .bg-amber-950\/80,
+html.light .bg-amber-950\/60,
+html.light .bg-amber-950\/50,
+html.light .bg-amber-950\/40,
+html.light .bg-amber-900,
+html.light .bg-amber-500\/20,
+html.light .bg-amber-500\/10,
+html.light .bg-amber-400\/30,
+html.light .bg-amber-400\/25,
+html.light .bg-amber-400\/20,
+html.light .bg-amber-400\/10,
+html.light .bg-amber-300\/30,
+html.light .bg-amber-300\/25,
+html.light .bg-amber-300\/10 {
+  background-color: #fef3c7 !important;
+  border-color: #fde68a !important;
+  color: #b45309 !important;
+}
+html[data-theme="light"] .bg-amber-950:hover,
+html[data-theme="light"] .bg-amber-950\/80:hover,
+html.light .bg-amber-950:hover,
+html.light .bg-amber-950\/80:hover {
+  background-color: #fde68a !important;
+  color: #92400e !important;
+}
+html[data-theme="light"] .bg-amber-950 *,
+html[data-theme="light"] .bg-amber-950\/80 *,
+html.light .bg-amber-950 *,
+html.light .bg-amber-950\/80 * {
+  color: inherit !important;
+}
+html[data-theme="light"] .text-amber-100,
+html[data-theme="light"] .text-amber-200,
+html.light .text-amber-100,
+html.light .text-amber-200 {
+  color: #92400e !important;
+}
+html[data-theme="light"] .text-amber-300,
+html.light .text-amber-300 {
+  color: #b45309 !important;
+}
+
+/* VIOLET / PURPLE TONE (Operator, Superadmin, RBAC) */
+html[data-theme="light"] .bg-violet-950,
+html[data-theme="light"] .bg-violet-950\/80,
+html[data-theme="light"] .bg-violet-950\/40,
+html[data-theme="light"] .bg-violet-400\/25,
+html[data-theme="light"] .bg-violet-400\/10,
+html.light .bg-violet-950,
+html.light .bg-violet-950\/80,
+html.light .bg-violet-950\/40,
+html.light .bg-violet-400\/25,
+html.light .bg-violet-400\/10 {
+  background-color: #f3e8ff !important;
+  border-color: #d8b4fe !important;
+  color: #7e22ce !important;
+}
+html[data-theme="light"] .text-violet-300,
+html[data-theme="light"] .text-violet-200,
+html.light .text-violet-300,
+html.light .text-violet-200 {
+  color: #7e22ce !important;
+}
+
+/* 8. Date Range Switcher & Presets */
+html[data-theme="light"] .bg-slate-950\/60.border-white\/10,
+html.light .bg-slate-950\/60.border-white\/10 {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+html[data-theme="light"] .bg-slate-950\/60 button.bg-sky-500,
+html.light .bg-slate-950\/60 button.bg-sky-500 {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+}
+html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-500),
+html.light .bg-slate-950\/60 button:not(.bg-sky-500) {
+  color: #475569 !important;
+}
+html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-500):hover,
+html.light .bg-slate-950\/60 button:not(.bg-sky-500):hover {
+  color: #0f172a !important;
+}
+
+/* Presets: "Hari Ini", "7 Hari", "Bulan Ini" */
+html[data-theme="light"] button.bg-slate-950.text-slate-400.border-slate-800,
+html[data-theme="light"] .bg-white\/\[0\.04\].border-white\/10,
+html.light button.bg-slate-950.text-slate-400.border-slate-800,
+html.light .bg-white\/\[0\.04\].border-white\/10 {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #334155 !important;
+}
+html[data-theme="light"]
+  button.bg-slate-950.text-slate-400.border-slate-800:hover,
+html[data-theme="light"] .bg-white\/\[0\.04\].border-white\/10:hover,
+html.light button.bg-slate-950.text-slate-400.border-slate-800:hover,
+html.light .bg-white\/\[0\.04\].border-white\/10:hover {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* 9. Typography & General Text Hierarchy in Light Mode */
+html[data-theme="light"] h1,
+html[data-theme="light"] h2,
+html[data-theme="light"] h3,
+html[data-theme="light"] h4,
+html[data-theme="light"] h5,
+html[data-theme="light"] h6,
+html.light h1,
+html.light h2,
+html.light h3,
+html.light h4,
+html.light h5,
+html.light h6 {
+  color: #0f172a;
+}
+
+html[data-theme="light"] .text-white,
+html.light .text-white {
+  color: #0f172a !important;
+}
+html[data-theme="light"] .text-slate-100,
+html[data-theme="light"] .text-slate-200,
+html.light .text-slate-100,
+html.light .text-slate-200 {
+  color: #0f172a !important;
+}
+html[data-theme="light"] .text-slate-300,
+html.light .text-slate-300 {
+  color: #1e293b !important;
+}
+html[data-theme="light"] .text-slate-400,
+html.light .text-slate-400 {
+  color: #475569 !important;
+}
+html[data-theme="light"] .text-slate-500,
+html.light .text-slate-500 {
+  color: #64748b !important;
+}
+html[data-theme="light"] label,
+html.light label {
+  color: #334155 !important;
+}
+
+/* Solid colored buttons & gradients retain white text */
+html[data-theme="light"] .bg-sky-500,
+html[data-theme="light"] .bg-sky-600,
+html[data-theme="light"] .bg-blue-600,
+html[data-theme="light"] .bg-emerald-600,
+html[data-theme="light"] .bg-emerald-500,
+html[data-theme="light"] .bg-rose-600,
+html[data-theme="light"] .bg-rose-500,
+html[data-theme="light"] .bg-amber-600,
+html.light .bg-sky-500,
+html.light .bg-sky-600,
+html.light .bg-blue-600,
+html.light .bg-emerald-600,
+html.light .bg-emerald-500,
+html.light .bg-rose-600,
+html.light .bg-rose-500,
+html.light .bg-amber-600 {
+  color: #ffffff !important;
+}
+html[data-theme="light"] .bg-sky-500 *,
+html[data-theme="light"] .bg-sky-600 *,
+html[data-theme="light"] .bg-blue-600 *,
+html[data-theme="light"] .bg-emerald-600 *,
+html[data-theme="light"] .bg-emerald-500 *,
+html[data-theme="light"] .bg-rose-600 *,
+html[data-theme="light"] .bg-rose-500 *,
+html[data-theme="light"] .bg-amber-600 *,
+html.light .bg-sky-500 *,
+html.light .bg-sky-600 *,
+html.light .bg-blue-600 *,
+html.light .bg-emerald-600 *,
+html.light .bg-emerald-500 *,
+html.light .bg-rose-600 *,
+html.light .bg-rose-500 *,
+html.light .bg-amber-600 * {
+  color: #ffffff !important;
+}
+
+/* Status Text Accents in Light Mode */
+html[data-theme="light"] .text-sky-300,
+html[data-theme="light"] .text-sky-200,
+html[data-theme="light"] .text-sky-400,
+html.light .text-sky-300,
+html.light .text-sky-200,
+html.light .text-sky-400 {
+  color: #0284c7 !important;
+}
+html[data-theme="light"] .text-emerald-300,
+html[data-theme="light"] .text-emerald-200,
+html[data-theme="light"] .text-emerald-400,
+html.light .text-emerald-300,
+html.light .text-emerald-200,
+html.light .text-emerald-400 {
+  color: #15803d !important;
+}
+html[data-theme="light"] .text-amber-300,
+html[data-theme="light"] .text-amber-200,
+html[data-theme="light"] .text-amber-400,
+html.light .text-amber-300,
+html.light .text-amber-200,
+html.light .text-amber-400 {
+  color: #b45309 !important;
+}
+html[data-theme="light"] .text-rose-300,
+html[data-theme="light"] .text-rose-200,
+html[data-theme="light"] .text-rose-400,
+html.light .text-rose-300,
+html.light .text-rose-200,
+html.light .text-rose-400 {
+  color: #be123c !important;
+}
+
+/* 10. Borders & Dividers */
+html[data-theme="light"] .border-slate-800,
+html[data-theme="light"] .border-slate-700,
+html[data-theme="light"] .border-white\/10,
+html[data-theme="light"] .border-white\/15,
+html[data-theme="light"] .border-white\/20,
+html.light .border-slate-800,
+html.light .border-slate-700,
+html.light .border-white\/10,
+html.light .border-white\/15,
+html.light .border-white\/20 {
+  border-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .divide-slate-800\/60,
+html[data-theme="light"] .divide-slate-800,
+html[data-theme="light"] .divide-slate-700,
+html.light .divide-slate-800\/60,
+html.light .divide-slate-800,
+html.light .divide-slate-700 {
+  border-color: #f1f5f9 !important;
+}
+
+/* 11. Tables in Light Mode */
+html[data-theme="light"] thead,
+html[data-theme="light"] thead tr,
+html[data-theme="light"] thead th,
+html.light thead,
+html.light thead tr,
+html.light thead th {
+  background-color: #f8fafc !important;
+  color: #475569 !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+html[data-theme="light"] th,
+html.light th {
+  color: #334155 !important;
+  font-weight: 700 !important;
+}
+html[data-theme="light"] td,
+html.light td {
+  color: #1e293b !important;
+}
+html[data-theme="light"] tbody tr:hover,
+html.light tbody tr:hover {
+  background-color: #f8fafc !important;
+}
+html[data-theme="light"] th.sticky,
+html[data-theme="light"] td.sticky,
+html.light th.sticky,
+html.light td.sticky {
+  background-color: #f8fafc !important;
+}
+
+/* 12. Form Controls in Light Mode */
+html[data-theme="light"]
+input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
+html[data-theme="light"] select,
+html[data-theme="light"] textarea,
+html.light
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
+html.light select,
+html.light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+html[data-theme="light"] input.bg-transparent,
+html.light input.bg-transparent {
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #0284c7 !important;
+}
+html[data-theme="light"] input::placeholder,
+html[data-theme="light"] textarea::placeholder,
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+html[data-theme="light"]
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
+html[data-theme="light"] select:focus,
+html[data-theme="light"] textarea:focus,
+html.light
+  input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
+html.light select:focus,
+html.light textarea:focus {
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 0 3px rgb(2 132 199 / 15%) !important;
+}
+
+select option {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+html[data-theme="light"] select option,
+html.light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.mobile-safe-bottom {
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
+    monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  [class*="animate-"],
+  [class*="transition"] {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+  }
+}
+
+/* ==========================================================================
+   LAPISAN VISUAL (aurora, spotlight, tilt, kaca)
+   Seluruh animasi di bawah ini hanya menyentuh `transform` dan `opacity`
+   sehingga dikerjakan compositor GPU tanpa memicu layout atau repaint.
+   ========================================================================== */
+
+:root {
+  --visual-spotlight: rgb(56 189 248 / 16%);
+  --visual-aurora-primary: rgb(56 189 248 / 26%);
+  --visual-aurora-accent: rgb(129 140 248 / 20%);
+  --visual-aurora-gold: rgb(246 196 83 / 14%);
+  --visual-grid-line: rgb(148 163 184 / 7%);
+  --visual-glass-bg: rgb(15 23 42 / 72%);
+  --visual-glass-border: rgb(255 255 255 / 12%);
+}
+
+html[data-theme="light"],
+html.light {
+  --visual-spotlight: rgb(2 132 199 / 12%);
+  --visual-aurora-primary: rgb(2 132 199 / 14%);
+  --visual-aurora-accent: rgb(99 102 241 / 12%);
+  --visual-aurora-gold: rgb(217 119 6 / 10%);
+  --visual-grid-line: rgb(15 23 42 / 5%);
+  --visual-glass-bg: rgb(255 255 255 / 86%);
+  --visual-glass-border: rgb(15 23 42 / 8%);
+}
+
+.visual-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.visual-aurora__blob {
+  position: absolute;
+  display: block;
+  border-radius: 9999px;
+  filter: blur(80px);
+  will-change: transform;
+}
+
+.visual-aurora__blob--primary {
+  top: -20rem;
+  left: -14rem;
+  width: 44rem;
+  height: 44rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-primary),
+    transparent 70%
+  );
+}
+
+.visual-aurora__blob--accent {
+  right: -16rem;
+  bottom: -22rem;
+  width: 42rem;
+  height: 42rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-accent),
+    transparent 70%
+  );
+}
+
+.visual-aurora__blob--gold {
+  top: 22%;
+  right: 8%;
+  width: 26rem;
+  height: 26rem;
+  background: radial-gradient(
+    circle,
+    var(--visual-aurora-gold),
+    transparent 70%
+  );
+}
+
+.visual-aurora__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--visual-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--visual-grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(
+    ellipse 78% 58% at 50% 0%,
+    rgb(0 0 0 / 100%),
+    transparent 100%
+  );
+}
+
+@keyframes visual-drift-primary {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(6rem, 4rem, 0) scale(1.12);
+  }
+}
+
+@keyframes visual-drift-accent {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  to {
+    transform: translate3d(-7rem, -3rem, 0) scale(1);
+  }
+}
+
+@keyframes visual-drift-gold {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-3rem, 5rem, 0);
+  }
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--primary {
+  animation: visual-drift-primary 28s ease-in-out infinite alternate;
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--accent {
+  animation: visual-drift-accent 34s ease-in-out infinite alternate;
+}
+
+.visual-aurora[data-animated="true"] .visual-aurora__blob--gold {
+  animation: visual-drift-gold 24s ease-in-out infinite alternate;
+}
+
+@keyframes visual-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Transisi masuk halaman: pendek, sekali jalan, murni compositor. */
+.visual-page-enter {
+  animation: visual-fade-up 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.visual-fade-in {
+  animation: visual-fade-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes visual-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes visual-pop {
+  from {
+    transform: scale(0.4);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes visual-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.visual-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(148 163 184 / 14%);
+}
+
+.visual-skeleton::after {
+  position: absolute;
+  content: "";
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 9%),
+    transparent
+  );
+  animation: visual-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes visual-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes visual-modal-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.visual-modal-backdrop {
+  animation: visual-backdrop-in 180ms ease-out both;
+}
+
+.visual-modal-panel {
+  animation: visual-modal-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Umpan balik tekan pada seluruh tombol: kecil, cepat, dan hanya transform. */
+@media (prefers-reduced-motion: no-preference) {
+  button:not(:disabled):active {
+    transform: scale(0.985);
+  }
+}
+
+.visual-sync-dot[data-phase="syncing"] {
+  animation: visual-pulse 1.4s ease-in-out infinite;
+}
+
+.visual-sync-dot[data-phase="success"] {
+  animation: visual-pop 420ms ease-out;
+}
+
+.visual-spotlight-card {
+  position: relative;
+  height: 100%;
+}
+
+/* Specificity nol: radius bawaan ini selalu kalah dari utility `rounded-*`
+   yang dipasang di komponen, sehingga sorotan mengikuti sudut kartunya. */
+:where(.visual-spotlight-card) {
+  border-radius: 1rem;
+}
+
+.visual-spotlight-card__glow {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.visual-spotlight-card:hover .visual-spotlight-card__glow {
+  opacity: 1;
+}
+
+.visual-spotlight-card__content {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.visual-tilt {
+  height: 100%;
+  perspective: 1000px;
+}
+
+.visual-tilt__inner {
+  height: 100%;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.visual-glass {
+  border: 1px solid var(--visual-glass-border);
+  background: var(--visual-glass-bg);
+  box-shadow: 0 30px 80px rgb(2 8 23 / 34%);
+  backdrop-filter: blur(20px);
+}
+
+html[data-theme="light"] .visual-glass,
+html.light .visual-glass {
+  box-shadow: 0 18px 50px rgb(15 23 42 / 8%);
+}
+
+/* Tier rendah / mati: seluruh gerakan latar dihentikan, tampilan tetap utuh. */
+html[data-visual-tier="low"] .visual-aurora__blob,
+html[data-visual-tier="off"] .visual-aurora__blob {
+  animation: none;
+}
+
+html[data-visual-tier="off"] .visual-aurora {
+  display: none;
+}
+
+html[data-visual-tier="off"] .visual-page-enter,
+html[data-visual-tier="off"] .visual-fade-in,
+html[data-visual-tier="off"] .visual-sync-dot,
+html[data-visual-tier="off"] .visual-modal-backdrop,
+html[data-visual-tier="off"] .visual-modal-panel {
+  animation: none;
+}
+
+html[data-visual-tier="off"] button:active {
+  transform: none;
+}
+
+html[data-visual-tier="off"] .visual-skeleton::after {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .visual-aurora__blob {
+    animation: none;
+  }
+
+  .visual-page-enter,
+  .visual-fade-in,
+  .visual-sync-dot,
+  .visual-modal-backdrop,
+  .visual-modal-panel,
+  .visual-skeleton::after {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+   DASHBOARD 3D PODIUM & WEEKLY TREND (LIGHT THEME HARMONIZATION)
+   ========================================================================== */
+
+/* Gold Podium Card in Light Mode */
+html[data-theme="light"] .border-amber-400\/60.from-amber-950\/40,
+html.light .border-amber-400\/60.from-amber-950\/40 {
+  background: linear-gradient(to bottom, #fffbeb, #ffffff) !important;
+  border-color: #f59e0b !important;
+  box-shadow: 0 10px 25px rgba(245, 158, 11, 0.15) !important;
+}
+html[data-theme="light"] .border-amber-400\/60.from-amber-950\/40 h4,
+html.light .border-amber-400\/60.from-amber-950\/40 h4 {
+  color: #78350f !important;
+}
+
+/* Silver Podium Card in Light Mode */
+html[data-theme="light"] .border-slate-400\/30.from-slate-800\/90,
+html.light .border-slate-400\/30.from-slate-800\/90 {
+  background: linear-gradient(to bottom, #f8fafc, #ffffff) !important;
+  border-color: #94a3b8 !important;
+  box-shadow: 0 10px 25px rgba(100, 116, 139, 0.12) !important;
+}
+html[data-theme="light"] .border-slate-400\/30.from-slate-800\/90 h4,
+html.light .border-slate-400\/30.from-slate-800\/90 h4 {
+  color: #0f172a !important;
+}
+
+/* Bronze Podium Card in Light Mode */
+html[data-theme="light"] .border-amber-700\/40.from-stone-900\/90,
+html.light .border-amber-700\/40.from-stone-900\/90 {
+  background: linear-gradient(to bottom, #fff7ed, #ffffff) !important;
+  border-color: #d97706 !important;
+  box-shadow: 0 10px 25px rgba(217, 119, 6, 0.12) !important;
+}
+html[data-theme="light"] .border-amber-700\/40.from-stone-900\/90 h4,
+html.light .border-amber-700\/40.from-stone-900\/90 h4 {
+  color: #7c2d12 !important;
+}
+
+/* Weekly Trend Bar Track in Light Mode */
+html[data-theme="light"] .bg-slate-950\/80,
+html.light .bg-slate-950\/80 {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Modal & Dialog in Light Mode (Harmonisasi Tema Terang Sesuai Rule 29) */
+html[data-theme="light"] .visual-modal-backdrop,
+html.light .visual-modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+html[data-theme="light"] .app-modal-panel,
+html.light .app-modal-panel {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+  box-shadow:
+    0 25px 50px -12px rgba(15, 23, 42, 0.25),
+    0 0 0 1px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .app-modal-header,
+html.light .app-modal-header {
+  background-color: #ffffff !important;
+  border-bottom-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-title,
+html.light .app-modal-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-subtitle,
+html.light .app-modal-subtitle {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .app-modal-close,
+html.light .app-modal-close {
+  background-color: #f1f5f9 !important;
+  color: #475569 !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+html[data-theme="light"] .app-modal-close:hover,
+html.light .app-modal-close:hover {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-body,
+html.light .app-modal-body {
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+}
+
+html[data-theme="light"] .app-modal-footer,
+html.light .app-modal-footer {
+  background-color: #f8fafc !important;
+  border-top-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* Form controls inside modal in light mode */
+html[data-theme="light"] .app-modal-panel
+  input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+    [type="button"]
+  ),
+html[data-theme="light"] .app-modal-panel select,
+html[data-theme="light"] .app-modal-panel textarea,
+html.light
+  .app-modal-panel
+  input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not(
+    [type="button"]
+  ),
+html.light .app-modal-panel select,
+html.light .app-modal-panel textarea {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .app-modal-panel input:focus,
+html[data-theme="light"] .app-modal-panel select:focus,
+html[data-theme="light"] .app-modal-panel textarea:focus,
+html.light .app-modal-panel input:focus,
+html.light .app-modal-panel select:focus,
+html.light .app-modal-panel textarea:focus {
+  border-color: #0284c7 !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15) !important;
+}
+
+html[data-theme="light"] .app-modal-panel label,
+html.light .app-modal-panel label {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .app-modal-panel p.text-slate-400,
+html.light .app-modal-panel p.text-slate-400 {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .app-modal-panel select option,
+html.light .app-modal-panel select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Overtime Rules (PP 35/2021) Tier Cards in Light Mode */
+html[data-theme="light"] .overtime-tier-row,
+html.light .overtime-tier-row {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .overtime-tier-row:hover,
+html.light .overtime-tier-row:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .overtime-tier-row span.text-slate-100,
+html.light .overtime-tier-row span.text-slate-100 {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .overtime-multiplier-badge-sky,
+html.light .overtime-multiplier-badge-sky {
+  background-color: #e0f2fe !important;
+  border-color: #bae6fd !important;
+  color: #0284c7 !important;
+}
+
+html[data-theme="light"] .overtime-multiplier-badge-amber,
+html.light .overtime-multiplier-badge-amber {
+  background-color: #fef3c7 !important;
+  border-color: #fde68a !important;
+  color: #d97706 !important;
+}
+
+html[data-theme="light"] .overtime-btn-edit,
+html.light .overtime-btn-edit {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
+}
+
+html[data-theme="light"] .overtime-btn-edit:hover,
+html.light .overtime-btn-edit:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .overtime-btn-delete,
+html.light .overtime-btn-delete {
+  background-color: #ffe4e6 !important;
+  border: 1px solid #fecdd3 !important;
+  color: #e11d48 !important;
+}
+
+html[data-theme="light"] .overtime-btn-delete:hover,
+html.light .overtime-btn-delete:hover {
+  background-color: #fecdd3 !important;
+  border-color: #fda4af !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .overtime-empty-state,
+html.light .overtime-empty-state {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+/* Scanner Terminal Header in Light Mode */
+html[data-theme="light"] .scanner-terminal-header,
+html.light .scanner-terminal-header {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  box-shadow: 0 4px 20px rgb(15 23 42 / 4%) !important;
+}
+
+html[data-theme="light"] .scanner-terminal-title,
+html.light .scanner-terminal-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .scanner-terminal-meta,
+html.light .scanner-terminal-meta {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .scanner-terminal-clock-time,
+html.light .scanner-terminal-clock-time {
+  color: #d97706 !important;
+}
+
+html[data-theme="light"] .scanner-terminal-clock-date,
+html.light .scanner-terminal-clock-date {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] .scanner-terminal-audio.border-sky-500\/40,
+html.light .scanner-terminal-audio.border-sky-500\/40 {
+  background-color: #f0f9ff !important;
+  color: #0284c7 !important;
+  border-color: #bae6fd !important;
+}
+
+html[data-theme="light"] .scanner-terminal-audio.border-slate-700,
+html.light .scanner-terminal-audio.border-slate-700 {
+  background-color: #f8fafc !important;
+  color: #64748b !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* ==========================================================================
+   Bootstrap / Provisioning Panel in Light Mode
+   Harmonized card, typography, radio options, action buttons & alert banners
+   ========================================================================== */
+html[data-theme="light"] .bootstrap-panel-root,
+html.light .bootstrap-panel-root {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-card,
+html.light .bootstrap-panel-card {
+  background-color: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow:
+    0 25px 50px -12px rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(15, 23, 42, 0.03) !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-eyebrow,
+html.light .bootstrap-panel-eyebrow {
+  color: #0284c7 !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-title,
+html.light .bootstrap-panel-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-desc,
+html.light .bootstrap-panel-desc {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .bootstrap-panel-legend,
+html.light .bootstrap-panel-legend {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .bootstrap-alert-warning,
+html.light .bootstrap-alert-warning {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #92400e !important;
+}
+
+html[data-theme="light"] .bootstrap-alert-error,
+html.light .bootstrap-alert-error {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .bootstrap-server-origin,
+html.light .bootstrap-server-origin {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #0369a1 !important;
+}
+
+html[data-theme="light"] .bootstrap-btn-toggle,
+html.light .bootstrap-btn-toggle {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #334155 !important;
+}
+html[data-theme="light"] .bootstrap-btn-toggle:hover,
+html.light .bootstrap-btn-toggle:hover {
+  background-color: #f1f5f9 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+/* Database provider radio options */
+html[data-theme="light"] .bootstrap-provider-option.bootstrap-provider-inactive,
+html.light .bootstrap-provider-option.bootstrap-provider-inactive {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-inactive:hover,
+html.light .bootstrap-provider-option.bootstrap-provider-inactive:hover {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-provider-option.bootstrap-provider-active,
+html.light .bootstrap-provider-option.bootstrap-provider-active {
+  background-color: #f0f9ff !important;
+  border-color: #0284c7 !important;
+  color: #0369a1 !important;
+  box-shadow: 0 0 0 1px #0284c7 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-active
+  span,
+html.light .bootstrap-provider-option.bootstrap-provider-active span {
+  color: #0369a1 !important;
+}
+html[data-theme="light"]
+  .bootstrap-provider-option.bootstrap-provider-active
+  span.font-black,
+html.light
+  .bootstrap-provider-option.bootstrap-provider-active
+  span.font-black {
+  color: #0284c7 !important;
+}
+
+/* Info Callout Box (SQLite info) */
+html[data-theme="light"] .bootstrap-info-box,
+html.light .bootstrap-info-box {
+  background-color: #f0f9ff !important;
+  border-color: #bae6fd !important;
+  color: #0369a1 !important;
+}
+
+/* Check Database Button */
+html[data-theme="light"] .bootstrap-btn-check,
+html.light .bootstrap-btn-check {
+  background-color: #f0f9ff !important;
+  border-color: #38bdf8 !important;
+  color: #0284c7 !important;
+}
+html[data-theme="light"] .bootstrap-btn-check:hover:not(:disabled),
+html.light .bootstrap-btn-check:hover:not(:disabled) {
+  background-color: #e0f2fe !important;
+  border-color: #0284c7 !important;
+  color: #0369a1 !important;
+}
+
+/* Summary Card */
+html[data-theme="light"] .bootstrap-summary-card.border-emerald-400\/30,
+html.light .bootstrap-summary-card.border-emerald-400\/30 {
+  background-color: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  color: #166534 !important;
+}
+html[data-theme="light"] .bootstrap-summary-card.border-amber-400\/30,
+html.light .bootstrap-summary-card.border-amber-400\/30 {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #92400e !important;
+}
+html[data-theme="light"] .bootstrap-summary-card.border-rose-500\/30,
+html.light .bootstrap-summary-card.border-rose-500\/30 {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dl,
+html.light .bootstrap-summary-card dl {
+  border-top-color: rgba(15, 23, 42, 0.1) !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dt,
+html.light .bootstrap-summary-card dt {
+  color: #64748b !important;
+}
+html[data-theme="light"] .bootstrap-summary-card dd,
+html.light .bootstrap-summary-card dd {
+  color: #0f172a !important;
+}
+
+/* Form Inputs & Labels */
+html[data-theme="light"] .bootstrap-form-label,
+html.light .bootstrap-form-label {
+  color: #334155 !important;
+}
+html[data-theme="light"] .bootstrap-form-input,
+html.light .bootstrap-form-input {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+html[data-theme="light"] .bootstrap-form-input:focus,
+html.light .bootstrap-form-input:focus {
+  border-color: #0284c7 !important;
+  outline: 2px solid rgba(2, 132, 199, 0.25) !important;
+  outline-offset: 1px !important;
+}
+html[data-theme="light"] .bootstrap-input-readonly,
+html.light .bootstrap-input-readonly {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+
+/* Submit & Cancel Buttons */
+html[data-theme="light"] .bootstrap-btn-submit,
+html.light .bootstrap-btn-submit {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+}
+html[data-theme="light"] .bootstrap-btn-submit:hover:not(:disabled),
+html.light .bootstrap-btn-submit:hover:not(:disabled) {
+  background-color: #0369a1 !important;
+}
+html[data-theme="light"] .bootstrap-btn-cancel,
+html.light .bootstrap-btn-cancel {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #475569 !important;
+}
+html[data-theme="light"] .bootstrap-btn-cancel:hover,
+html.light .bootstrap-btn-cancel:hover {
+  background-color: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+}
+
+/* Hint Box */
+html[data-theme="light"] .bootstrap-hint-box,
+html.light .bootstrap-hint-box {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+/* ==========================================================================
+   Superadmin Recovery Codes & Password Recovery in Light Mode
+   ========================================================================== */
+html[data-theme="light"] .bootstrap-recovery-eyebrow,
+html.light .bootstrap-recovery-eyebrow {
+  color: #b45309 !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-title,
+html.light .bootstrap-recovery-title {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-desc,
+html.light .bootstrap-recovery-desc {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-code,
+html.light .bootstrap-recovery-code,
+html[data-theme="light"] .recovery-code-pill,
+html.light .recovery-code-pill {
+  background-color: #fffbeb !important;
+  border: 1px solid #fcd34d !important;
+  color: #78350f !important;
+  box-shadow: 0 1px 2px rgba(180, 83, 9, 0.05) !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-warning,
+html.light .bootstrap-recovery-warning {
+  background-color: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+  color: #be123c !important;
+}
+
+html[data-theme="light"] .bootstrap-recovery-submit,
+html.light .bootstrap-recovery-submit {
+  background-color: #f59e0b !important;
+  color: #0f172a !important;
+}
+html[data-theme="light"] .bootstrap-recovery-submit:hover,
+html.light .bootstrap-recovery-submit:hover {
+  background-color: #d97706 !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .recovery-code-btn,
+html.light .recovery-code-btn {
+  background-color: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+}
+html[data-theme="light"] .recovery-code-btn:hover,
+html.light .recovery-code-btn:hover {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* ==========================================================================
+   Pil kode persetujuan pemulihan pada mode terang
+
+   Nadanya hijau, bukan kuning seperti `.recovery-code-pill`, karena kode ini
+   lahir dari persetujuan seorang peninjau — bukan dari kertas cadangan. Ia
+   tetap butuh kelasnya sendiri: `text-emerald-100` di atas latar terang
+   nyaris tak terbaca, dan kode yang salah dibaca berarti pemohon harus
+   mengajukan permintaan baru dari awal.
+   ========================================================================== */
+html[data-theme="light"] .approval-code-pill,
+html.light .approval-code-pill {
+  border: 1px solid #6ee7b7 !important;
+  background-color: #ecfdf5 !important;
+  color: #064e3b !important;
+}

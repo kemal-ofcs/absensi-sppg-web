@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-save-payroll-component"
+description = "Enables the desktop_save_payroll_component command without any pre-configured scope."
+commands.allow = ["desktop_save_payroll_component"]
+
+[[permission]]
+identifier = "deny-desktop-save-payroll-component"
+description = "Denies the desktop_save_payroll_component command without any pre-configured scope."
+commands.deny = ["desktop_save_payroll_component"]
