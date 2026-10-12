@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><svg x="212" y="362.2235469448584" width="600" height="299.5529061102832" viewBox="298 346 671 335">
+
+<defs>
+<linearGradient id="kos-cloud" gradientUnits="userSpaceOnUse" x1="540" y1="395" x2="800" y2="650"><stop offset="0" stop-color="#4AA3F5"/><stop offset="0.3" stop-color="#2E8CE8"/><stop offset="0.55" stop-color="#1F6FD1"/><stop offset="0.8" stop-color="#1A5FB8"/><stop offset="1" stop-color="#1A5AAD"/></linearGradient>
+<linearGradient id="kos-cell-a" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#1F6FD1"/><stop offset="1" stop-color="#5BAA45"/></linearGradient>
+<linearGradient id="kos-cell-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2E7FD9"/><stop offset="1" stop-color="#174C93"/></linearGradient>
+<linearGradient id="kos-cell-c" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3E9A52"/><stop offset="1" stop-color="#5DB046"/></linearGradient>
+<linearGradient id="kos-tri" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4FAE45"/><stop offset="1" stop-color="#6BBF4E"/></linearGradient>
+</defs>
+<g id="mark">
+<mask id="kos-kmask" maskUnits="userSpaceOnUse" x="300" y="340" width="700" height="340"><rect x="300" y="340" width="700" height="340" fill="#fff"/><path d="M876.00 668.09C854.31 669.82 832.16 668.61 810.41 668.61C767.73 668.62 725.05 668.59 682.37 668.60C634.53 668.60 589.34 671.58 550.02 639.00C528.22 620.94 513.66 595.04 505.87 568.08C478.39 472.98 532.66 370.84 635.50 359.53C691.06 353.42 744.09 377.00 775.86 423.21C781.28 431.09 786.12 439.48 789.58 448.42C795.03 462.49 796.73 475.75 811.10 484.09C827.95 493.87 849.77 489.61 868.38 490.33C894.62 491.36 921.25 501.61 938.04 522.43C968.87 560.67 958.66 624.97 918.95 652.86C906.13 661.86 891.36 666.10 876.00 668.09Z" fill="#000" stroke="#000" stroke-width="12" stroke-linejoin="round"/></mask>
+<path fill="#EEF3FA" mask="url(#kos-kmask)" d="M310.3 359H363.2V665H310.3ZM363.2 503.6L511.3 359H600L437.2 502.9L606 665H517.8Z"/>
+<path fill="url(#kos-cloud)" fill-rule="evenodd" d="M876.00 668.09C854.31 669.82 832.16 668.61 810.41 668.61C767.73 668.62 725.05 668.59 682.37 668.60C634.53 668.60 589.34 671.58 550.02 639.00C528.22 620.94 513.66 595.04 505.87 568.08C478.39 472.98 532.66 370.84 635.50 359.53C691.06 353.42 744.09 377.00 775.86 423.21C781.28 431.09 786.12 439.48 789.58 448.42C795.03 462.49 796.73 475.75 811.10 484.09C827.95 493.87 849.77 489.61 868.38 490.33C894.62 491.36 921.25 501.61 938.04 522.43C968.87 560.67 958.66 624.97 918.95 652.86C906.13 661.86 891.36 666.10 876.00 668.09ZM870.37 621.00C902.52 614.04 918.41 577.49 895.06 551.81C873.64 528.24 828.38 545.86 792.91 529.56C775.64 521.61 762.18 508.27 753.21 491.58C750.31 486.18 748.15 480.41 744.63 475.35C735.69 462.49 690.04 415.89 677.01 410.23C665.62 405.28 652.16 405.40 640.03 406.96C543.69 419.34 514.14 548.83 593.65 603.34C624.94 624.80 661.01 621.66 697.10 621.58C735.26 621.50 773.42 621.52 811.58 621.50C831.07 621.49 850.94 622.62 870.37 621.00Z"/>
+<path fill="#EEF3FA" d="M792.00 436.70C783.14 421.09 773.21 408.42 761.01 395.31C765.15 387.98 771.60 382.07 778.38 377.15C810.01 354.21 850.60 359.33 887.44 359.35C902.98 359.36 919.88 357.50 935.21 360.05C925.70 374.28 911.49 394.11 899.65 406.19C883.15 406.80 866.58 406.29 850.06 406.36C819.87 406.47 806.68 408.04 792.00 436.70Z"/>
+<path fill="url(#kos-tri)" d="M679 432 L732 484 L679 484 Z"/>
+<rect x="586" y="490" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="634.5" y="490" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="683" y="490" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="586" y="522.5" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="634.5" y="522.5" width="40" height="24.5" rx="1.5" fill="url(#kos-cell-a)"/>
+<rect x="683" y="522.5" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="586" y="555" width="40" height="24.5" rx="1.5" fill="#DCE6F5"/>
+<rect x="634.5" y="555" width="40" height="24.5" rx="1.5" fill="url(#kos-cell-b)"/>
+<rect x="683" y="555" width="40" height="24.5" rx="1.5" fill="url(#kos-cell-c)"/>
+</g>
+</svg></svg>
