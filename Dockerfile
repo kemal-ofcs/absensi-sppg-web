@@ -19,7 +19,9 @@ FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# `postinstall` (salin model wajah) butuh `scripts/`, yang belum ada di tahap
+# ini; ia dijalankan di tahap build setelah `COPY . .`.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # Tahap 2: build
 FROM oven/bun:1.3-alpine AS builder
@@ -37,7 +39,7 @@ ENV KOS_BUILD_STANDALONE=1
 # (lihat `next.config.ts`), jadi tidak bisa dimatikan lewat `.env` di server.
 ENV KOS_LICENSE_ENFORCED=1
 
-RUN bun run build:web
+RUN bun scripts/copy-face-models.ts && bun run build:web
 
 # Next.js menyalin setiap `.env*` yang ia temukan ke `.next/standalone/`.
 # `.dockerignore` sudah menahannya di luar konteks build; langkah ini penjaga

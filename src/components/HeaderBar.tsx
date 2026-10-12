@@ -76,6 +76,12 @@ const NAVIGATION: NavigationItem[] = [
     label: "Foto Absensi",
   },
   {
+    area: "face_template",
+    href: "/wajah",
+    icon: "user",
+    label: "Pendaftaran Wajah",
+  },
+  {
     area: "settings",
     href: "/settings",
     icon: "settings",

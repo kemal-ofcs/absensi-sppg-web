@@ -28,6 +28,8 @@ export async function submitTerminalScan(
     ipAddress: options?.ipAddress,
     fotoBase64: input.fotoBase64,
     fotoMime: input.fotoMime,
+    wajahModel: input.wajahModel,
+    wajahVektor: input.wajahVektor,
   };
 
   const result = await prosesScanAbsensi(payload, options);

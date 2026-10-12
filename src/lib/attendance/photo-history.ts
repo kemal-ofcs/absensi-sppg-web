@@ -9,6 +9,8 @@
  * lewat `getAttendancePhoto`, persis seperti riwayat "Lupa Password".
  */
 
+import { FACE_VERDICTS, type FaceVerdict } from "@/lib/validations/face-match";
+
 export interface AttendancePhotoEntry {
   idFoto: string;
   idSesi: string;
@@ -27,6 +29,9 @@ export interface AttendancePhotoEntry {
   fotoMime: string;
   ukuranBase64: number;
   createdAt: string;
+  /** `null` = scan ini tidak diperiksa wajahnya (fitur mati, atau foto lama). */
+  wajahVonis: FaceVerdict | null;
+  wajahSkor: number | null;
 }
 
 export interface AttendancePhotoFilter {
@@ -34,7 +39,21 @@ export interface AttendancePhotoFilter {
   tanggalSelesai?: string;
   /** Cocokkan nama, ID karyawan, divisi, atau kode operator. */
   search?: string;
+  /** Hanya foto dengan vonis wajah ini, mis. "Tidak Cocok" untuk ditinjau. */
+  wajahVonis?: FaceVerdict | "";
   limit?: number;
+}
+
+export function toFaceVerdict(value: unknown): FaceVerdict | null {
+  return (FACE_VERDICTS as readonly unknown[]).includes(value)
+    ? (value as FaceVerdict)
+    : null;
+}
+
+export function toFaceScore(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export interface AttendancePhotoImage {

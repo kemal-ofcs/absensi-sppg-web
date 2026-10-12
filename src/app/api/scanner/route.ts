@@ -21,6 +21,13 @@ interface ScannerBody {
   lng?: unknown;
   fotoBase64?: unknown;
   fotoMime?: unknown;
+  wajahModel?: unknown;
+  wajahVektor?: unknown;
+}
+
+/** Teks pendek opsional; bentuk yang salah dibaca sebagai "tidak ada". */
+function shortText(value: unknown, max: number) {
+  return typeof value === "string" && value.length <= max ? value : undefined;
 }
 
 const ALLOWED_PHOTO_MIME = ["image/jpeg", "image/png", "image/webp"] as const;
@@ -63,6 +70,8 @@ export async function POST(request: NextRequest) {
         fotoBase64:
           typeof body.fotoBase64 === "string" ? body.fotoBase64 : undefined,
         fotoMime: photoMime(body.fotoMime),
+        wajahModel: shortText(body.wajahModel, 64),
+        wajahVektor: shortText(body.wajahVektor, 4096),
       },
       {
         actorOperatorId: actor.id,

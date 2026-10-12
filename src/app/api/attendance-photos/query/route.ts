@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import {
   type AttendancePhotoFilter,
   attendancePhotoLimit,
+  toFaceVerdict,
 } from "@/lib/attendance/photo-history";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import {
@@ -25,6 +26,7 @@ interface PhotoQueryBody {
   tanggalMulai?: unknown;
   tanggalSelesai?: unknown;
   search?: unknown;
+  wajahVonis?: unknown;
   limit?: unknown;
   /** Bila diisi, balasan berupa satu foto, bukan daftar. */
   photoId?: unknown;
@@ -63,6 +65,7 @@ export async function POST(request: NextRequest) {
       tanggalSelesai:
         typeof body.tanggalSelesai === "string" ? body.tanggalSelesai : "",
       search: typeof body.search === "string" ? body.search : "",
+      wajahVonis: toFaceVerdict(body.wajahVonis) ?? "",
       limit: attendancePhotoLimit(body.limit),
     };
     return noStoreJson({

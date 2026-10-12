@@ -17,7 +17,26 @@ import {
   getAttendancePhotos,
   purgeAttendancePhotoEntries,
 } from "@/lib/gateways/attendance-photo";
+import { ambilFotoPersonil } from "@/lib/gateways/personnel-photo";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { FACE_VERDICTS, type FaceVerdict } from "@/lib/validations/face-match";
+
+const VERDICT_TONE: Record<
+  FaceVerdict,
+  "success" | "danger" | "warning" | "neutral"
+> = {
+  Cocok: "success",
+  "Tidak Cocok": "danger",
+  "Belum Terdaftar": "warning",
+  "Tidak Diperiksa": "neutral",
+};
+
+function faceLabel(entry: AttendancePhotoEntry) {
+  if (!entry.wajahVonis) return null;
+  return entry.wajahSkor === null
+    ? entry.wajahVonis
+    : `${entry.wajahVonis} · ${Math.round(entry.wajahSkor * 100)}%`;
+}
 
 /** Retensi bawaan tombol pembersihan. */
 const PURGE_DAYS = 90;
@@ -63,6 +82,7 @@ export default function FotoAbsensiPage() {
   const [tanggalMulai, setTanggalMulai] = useState(() => daysAgoIso(7));
   const [tanggalSelesai, setTanggalSelesai] = useState(() => todayIso());
   const [search, setSearch] = useState("");
+  const [wajahVonis, setWajahVonis] = useState<FaceVerdict | "">("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{
@@ -72,6 +92,8 @@ export default function FotoAbsensiPage() {
   const [preview, setPreview] = useState<{
     entry: AttendancePhotoEntry;
     src: string;
+    /** Foto profil pemilik kartu, pembanding untuk vonis wajah. */
+    profileSrc: string | null;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AttendancePhotoEntry | null>(
     null,
@@ -84,7 +106,12 @@ export default function FotoAbsensiPage() {
     setLoading(true);
     try {
       setEntries(
-        await getAttendancePhotos({ tanggalMulai, tanggalSelesai, search }),
+        await getAttendancePhotos({
+          tanggalMulai,
+          tanggalSelesai,
+          search,
+          wajahVonis,
+        }),
       );
     } catch (error) {
       setFeedback({
@@ -97,7 +124,7 @@ export default function FotoAbsensiPage() {
     } finally {
       setLoading(false);
     }
-  }, [tanggalMulai, tanggalSelesai, search]);
+  }, [tanggalMulai, tanggalSelesai, search, wajahVonis]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -109,9 +136,17 @@ export default function FotoAbsensiPage() {
     setFeedback(null);
     try {
       const result = await getAttendancePhotoImage(entry.idFoto);
+      // Foto profil hanya pembanding: peninjau yang tidak berhak melihat data
+      // personil tetap bisa meninjau foto scannya.
+      const profile = entry.wajahVonis
+        ? await ambilFotoPersonil(entry.idKaryawan).catch(() => null)
+        : null;
       setPreview({
         entry,
         src: `data:${result.mime};base64,${result.base64}`,
+        profileSrc: profile
+          ? `data:${profile.foto_mime};base64,${profile.foto_base64}`
+          : null,
       });
     } catch (error) {
       setFeedback({
@@ -223,7 +258,7 @@ export default function FotoAbsensiPage() {
       </div>
 
       <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="grid flex-1 gap-3 sm:grid-cols-3">
+        <div className="grid flex-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <label className="space-y-1.5 text-xs font-bold text-slate-300">
             Dari tanggal
             <input
@@ -250,6 +285,23 @@ export default function FotoAbsensiPage() {
               placeholder="Nama, ID karyawan, divisi, kode operator"
               className="app-input w-full"
             />
+          </label>
+          <label className="space-y-1.5 text-xs font-bold text-slate-300">
+            Vonis wajah
+            <select
+              value={wajahVonis}
+              onChange={(event) =>
+                setWajahVonis(event.target.value as FaceVerdict | "")
+              }
+              className="app-input w-full"
+            >
+              <option value="">Semua</option>
+              {FACE_VERDICTS.map((vonis) => (
+                <option key={vonis} value={vonis}>
+                  {vonis}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -309,6 +361,11 @@ export default function FotoAbsensiPage() {
                       >
                         {entry.jenisScan || "Scan"}
                       </StatusBadge>
+                      {entry.wajahVonis ? (
+                        <StatusBadge tone={VERDICT_TONE[entry.wajahVonis]}>
+                          {faceLabel(entry)}
+                        </StatusBadge>
+                      ) : null}
                     </div>
                     <p className="truncate font-mono text-[11px] text-slate-400">
                       {entry.idKaryawan}
@@ -370,12 +427,45 @@ export default function FotoAbsensiPage() {
             {/* Foto disimpan sebagai base64 di database cloud, jadi ditampilkan
                 lewat data URI — tidak ada permintaan jaringan keluar, sesuai
                 batasan CSP Desktop yang hari ini hanya mengizinkan `ipc:`. */}
-            {/** biome-ignore lint/performance/noImgElement: sumbernya data URI dari database, bukan aset yang bisa dioptimalkan next/image */}
-            <img
-              src={preview.src}
-              alt={`Bukti absensi ${preview.entry.nama}`}
-              className="w-full rounded-2xl border border-white/10"
-            />
+            {preview.entry.wajahVonis ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <figure className="space-y-1.5">
+                  {/** biome-ignore lint/performance/noImgElement: data URI dari database */}
+                  <img
+                    src={preview.src}
+                    alt={`Bukti absensi ${preview.entry.nama}`}
+                    className="w-full rounded-2xl border border-white/10"
+                  />
+                  <figcaption className="text-xs text-slate-400">
+                    Saat scan · {faceLabel(preview.entry)}
+                  </figcaption>
+                </figure>
+                <figure className="space-y-1.5">
+                  {preview.profileSrc ? (
+                    // biome-ignore lint/performance/noImgElement: data URI dari database
+                    <img
+                      src={preview.profileSrc}
+                      alt={`Foto profil ${preview.entry.nama}`}
+                      className="w-full rounded-2xl border border-white/10"
+                    />
+                  ) : (
+                    <div className="grid aspect-[4/3] place-items-center rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-center text-xs text-slate-400">
+                      Foto profil tidak tersedia
+                    </div>
+                  )}
+                  <figcaption className="text-xs text-slate-400">
+                    Foto profil pemilik kartu
+                  </figcaption>
+                </figure>
+              </div>
+            ) : (
+              // biome-ignore lint/performance/noImgElement: sumbernya data URI dari database, bukan aset yang bisa dioptimalkan next/image
+              <img
+                src={preview.src}
+                alt={`Bukti absensi ${preview.entry.nama}`}
+                className="w-full rounded-2xl border border-white/10"
+              />
+            )}
             <dl className="grid gap-2 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm sm:grid-cols-2">
               <DetailRow
                 label="Waktu scan"

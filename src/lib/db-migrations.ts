@@ -23,6 +23,7 @@ const PASSWORD_RECOVERY_MIGRATION_VERSION = 15;
 const SHIFT_TIME_RULES_MIGRATION_VERSION = 16;
 const PERSONNEL_PHOTO_MIGRATION_VERSION = 17;
 const PAYROLL_FLAT_DAILY_MIGRATION_VERSION = 18;
+const FACE_VERIFICATION_MIGRATION_VERSION = 19;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -407,6 +408,18 @@ export async function runDatabaseMigrations(client: Client) {
       "payroll_components",
       "created_at",
       "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;",
+    ],
+    // Vonis verifikasi wajah pada foto bukti (v19). Cerminan `ensure_column`
+    // di `turso.rs` dan `storage.rs`.
+    [
+      "absensi_foto",
+      "wajah_vonis",
+      "ALTER TABLE absensi_foto ADD COLUMN wajah_vonis TEXT;",
+    ],
+    [
+      "absensi_foto",
+      "wajah_skor",
+      "ALTER TABLE absensi_foto ADD COLUMN wajah_skor REAL;",
     ],
   ] as const) {
     if (
@@ -886,7 +899,9 @@ export async function runDatabaseMigrations(client: Client) {
       client_id TEXT,
       foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
       foto_base64 TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      wajah_vonis TEXT,
+      wajah_skor REAL
     );
   `);
 
@@ -1030,6 +1045,26 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'payroll-flat-daily', ?);`,
     args: [PAYROLL_FLAT_DAILY_MIGRATION_VERSION, now],
+  });
+
+  // v19 — vektor wajah terdaftar untuk verifikasi 1:1 saat scan. Ikut snapshot
+  // supaya terminal offline bisa memeriksa; isinya int8 base64, bukan foto.
+  // DDL WAJIB identik dengan `storage.rs` dan `turso.rs`.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS personil_wajah (
+      id_unik TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      vektor TEXT NOT NULL,
+      jumlah_sampel INTEGER NOT NULL DEFAULT 1,
+      sumber TEXT NOT NULL CHECK (sumber IN ('kamera', 'foto_profil')),
+      dibuat_oleh TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'face-verification', ?);`,
+    args: [FACE_VERIFICATION_MIGRATION_VERSION, now],
   });
 
   await client.execute(

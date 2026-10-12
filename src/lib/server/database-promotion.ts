@@ -105,6 +105,8 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
   },
   { table: "absensi_foto", uniqueColumns: [], dependsOn: ["master_data"] },
   { table: "personil_foto", uniqueColumns: [], dependsOn: ["master_data"] },
+  // Vektor wajah terdaftar (v19), berkunci `id_unik` seperti foto profil.
+  { table: "personil_wajah", uniqueColumns: [], dependsOn: ["master_data"] },
   {
     table: "log_scan",
     autoIncrementPk: "id_log",

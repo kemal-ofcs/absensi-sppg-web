@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use super::{
     config::DesktopState,
+    face_match,
     models::CommandError,
     storage, sync,
     time_policy::{
@@ -578,15 +579,18 @@ fn persist_scan_photo(
     log: &ScanLog,
     photo: &ScanPhoto,
     device_ip: &str,
+    face: Option<&face_match::FaceVerdict>,
 ) -> Result<Value, CommandError> {
+    let wajah_vonis = face.map(|item| item.vonis);
+    let wajah_skor = face.and_then(|item| item.skor);
     transaction
         .execute(
             r#"
       INSERT INTO absensi_foto (
         id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi, jenis_scan,
         timestamp_scan, sumber_data, kode_operator, ip_perangkat, client_id,
-        foto_mime, foto_base64, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        foto_mime, foto_base64, created_at, wajah_vonis, wajah_skor
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id_foto) DO NOTHING;
       "#,
             params![
@@ -605,6 +609,8 @@ fn persist_scan_photo(
                 photo.mime,
                 photo.base64,
                 log.timestamp_scan,
+                wajah_vonis,
+                wajah_skor,
             ],
         )
         .map_err(|_| CommandError::internal())?;
@@ -624,6 +630,8 @@ fn persist_scan_photo(
         "foto_mime": photo.mime,
         "foto_base64": photo.base64,
         "created_at": log.timestamp_scan,
+        "wajah_vonis": wajah_vonis,
+        "wajah_skor": wajah_skor,
     }))
 }
 
@@ -1361,6 +1369,49 @@ fn submit_internal(
             None,
         ));
     }
+
+    // ── Verifikasi wajah 1:1 ───────────────────────────────────────────────
+    // Menumpang pada foto bukti: hanya berjalan bila foto memang wajib DAN
+    // sakelar induk wajah hidup. Vektor terdaftar dibaca dari database, tidak
+    // pernah dari payload — terminal hanya mengirim wajah yang ia lihat.
+    // Aturannya kembar dengan `attendance-processor.ts`.
+    let face_verdict = if photo_required
+        && setting_enabled(&settings, face_match::SCAN_FACE_VERIFY_ENABLED_KEY)
+    {
+        let (mode, threshold) = face_match::face_settings(&settings);
+        let reference = face_match::reference_for(&transaction, &employee.id)?;
+        let verdict = face_match::face_verdict(
+            face_match::read_probe(input).as_ref(),
+            reference.as_ref(),
+            threshold,
+        );
+        if face_match::face_scan_rejected(mode, verdict.vonis) {
+            let note = "Wajah tidak cocok dengan pemilik kartu";
+            let log = rejected_log(
+                &moment.timestamp,
+                &initial_work_date,
+                &moment.time,
+                &employee,
+                operator_code,
+                note,
+                "",
+            );
+            persist_rejection(&transaction, &client_id, &log)?;
+            transaction.commit().map_err(|_| CommandError::internal())?;
+            return Ok(failure_with_context(
+                "Scan ditolak: Wajah tidak cocok dengan pemilik kartu. Hubungi petugas bila ini keliru.",
+                &employee,
+                note,
+                "",
+                None,
+                None,
+                None,
+            ));
+        }
+        Some(verdict)
+    } else {
+        None
+    };
 
     let backup = find_effective_backup(&transaction, &employee.id, &moment)?;
     if let Some(backup) = backup.as_ref() {
@@ -2112,6 +2163,7 @@ fn submit_internal(
             &log,
             photo,
             &device_ip_text,
+            face_verdict.as_ref(),
         )?),
         None => None,
     };
@@ -2614,6 +2666,89 @@ mod tests {
             .expect("jumlah baris");
         assert_eq!(log, 1);
         assert_eq!(absensi, 0);
+    }
+
+    /// Verifikasi wajah 1:1, cermin tes yang sama di `attendance-processor.test.ts`.
+    /// Skor 0.0118 adalah vektor kembar `face-match.test.ts`.
+    fn siapkan_wajah(state: &DesktopState, mode: &str) {
+        use super::{face_match, SCAN_PHOTO_ENABLED_KEY};
+        aktifkan(state, SCAN_PHOTO_ENABLED_KEY);
+        aktifkan(state, face_match::SCAN_FACE_VERIFY_ENABLED_KEY);
+        let connection = storage::database(&state.data_dir).expect("database lokal");
+        connection
+            .execute(
+                "INSERT INTO setting_gex_system (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+                rusqlite::params![face_match::SCAN_FACE_MODE_KEY, mode],
+            )
+            .expect("mode wajah");
+        connection
+            .execute(
+                "INSERT INTO personil_wajah (id_unik, model, vektor, jumlah_sampel, sumber) VALUES ('K001', ?, ?, 3, 'kamera');",
+                rusqlite::params![face_match::FACE_MODEL_ID, face_match::tests::twin_owner()],
+            )
+            .expect("wajah terdaftar");
+    }
+
+    fn scan_wajah(state: &DesktopState, vektor: &str) -> serde_json::Value {
+        use super::{face_match, submit_at_with_policy, ScanSecurityPolicy};
+        submit_at_with_policy(
+            state,
+            &json!({
+                "qrContent": "K001|TOKEN-TEST",
+                "fotoBase64": "AAAA",
+                "wajahModel": face_match::FACE_MODEL_ID,
+                "wajahVektor": vektor,
+            }),
+            "OP001",
+            ScanSecurityPolicy {
+                require_photo: true,
+                require_ip_allowlist: false,
+            },
+            moment("2026-09-02", "07:00:00"),
+        )
+        .expect("scan diproses")
+    }
+
+    #[test]
+    fn wajah_orang_lain_ditolak_pada_mode_tolak() {
+        let (directory, state) = fixture();
+        siapkan_wajah(&state, "tolak");
+        let hasil = scan_wajah(&state, &super::face_match::tests::twin_stranger());
+        assert_eq!(hasil.get("sukses").and_then(|value| value.as_bool()), Some(false));
+        assert_eq!(
+            hasil.get("catatanSistem").and_then(|value| value.as_str()),
+            Some("Wajah tidak cocok dengan pemilik kartu")
+        );
+        let connection = storage::database(directory.path()).expect("database lokal");
+        let absensi: i64 = connection
+            .query_row("SELECT COUNT(*) FROM absensi_harian;", [], |row| row.get(0))
+            .expect("jumlah absensi");
+        assert_eq!(absensi, 0);
+    }
+
+    #[test]
+    fn wajah_orang_lain_ditandai_pada_mode_pantau() {
+        let (directory, state) = fixture();
+        siapkan_wajah(&state, "pantau");
+        let hasil = scan_wajah(&state, &super::face_match::tests::twin_stranger());
+        assert_eq!(hasil.get("sukses").and_then(|value| value.as_bool()), Some(true));
+        let connection = storage::database(directory.path()).expect("database lokal");
+        let (vonis, skor): (String, f64) = connection
+            .query_row("SELECT wajah_vonis, wajah_skor FROM absensi_foto;", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("vonis tersimpan");
+        assert_eq!(vonis, "Tidak Cocok");
+        assert_eq!(skor, 0.0118);
+        // Vonis ikut event outbox supaya sampai ke cloud.
+        let payload: String = connection
+            .query_row(
+                "SELECT payload_json FROM desktop_sync_outbox WHERE domain = 'attendance';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event scan");
+        assert!(payload.contains("\"wajah_vonis\":\"Tidak Cocok\""));
     }
 
     /// Daftar kosong = belum diatur, jadi pembatasan belum berlaku.

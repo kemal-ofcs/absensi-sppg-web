@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 18;
+pub const CLIENT_SCHEMA_VERSION: i64 = 19;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -537,6 +537,28 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id",
         delete_missing: false,
     },
+    // ── v19: Vektor wajah terdaftar (verifikasi 1:1 saat scan) ──
+    //
+    // `delete_missing: true`: wajah yang dihapus di perangkat lain atau di Web
+    // wajib ikut hilang di terminal, kalau tidak terminal itu terus
+    // mencocokkan kartu dengan wajah yang sudah dicabut.
+    SnapshotTable {
+        payload_key: "faceTemplates",
+        domain: "face-template",
+        table: "personil_wajah",
+        columns: &[
+            "id_unik",
+            "model",
+            "vektor",
+            "jumlah_sampel",
+            "sumber",
+            "dibuat_oleh",
+            "updated_at",
+        ],
+        conflict_column: "id_unik",
+        entity_column: "id_unik",
+        delete_missing: true,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
@@ -560,6 +582,8 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("holiday-whitelist", "create"),
     ("holiday-whitelist", "delete"),
     ("holiday-whitelist", "update"),
+    ("face-template", "delete"),
+    ("face-template", "save"),
     ("id-card", "update"),
     ("id-card-template", "save"),
     ("log-scan", "delete"),

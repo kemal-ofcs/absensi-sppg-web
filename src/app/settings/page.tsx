@@ -89,6 +89,12 @@ import {
   providerNeedsEndpoint,
   reviewDatabaseEndpoint,
 } from "@/lib/validations/database-endpoint";
+import {
+  FACE_THRESHOLD_DEFAULT,
+  FACE_THRESHOLD_MAX,
+  FACE_THRESHOLD_MIN,
+  type FaceMode,
+} from "@/lib/validations/face-match";
 import { validateGeofenceSettings } from "@/lib/validations/geofence";
 import { validateIpAllowlistEntries } from "@/lib/validations/ip-allowlist";
 import { validateScannerSafetySettings } from "@/lib/validations/scanner-settings";
@@ -165,6 +171,9 @@ export default function SettingsPage() {
   // Sakelar induk tingkat perusahaan. Sakelar per role di Master Operator hanya
   // berlaku ketika fiturnya dihidupkan di sini.
   const [scanPhotoEnabled, setScanPhotoEnabled] = useState(false);
+  const [faceVerifyEnabled, setFaceVerifyEnabled] = useState(false);
+  const [faceMode, setFaceMode] = useState<FaceMode>("pantau");
+  const [faceThreshold, setFaceThreshold] = useState(FACE_THRESHOLD_DEFAULT);
   const [scanIpEnabled, setScanIpEnabled] = useState(false);
   const [currentDeviceCoords, setCurrentDeviceCoords] = useState<{
     lat: number;
@@ -307,6 +316,9 @@ export default function SettingsPage() {
         if (cancelled) return;
         setScanPhotoEnabled(settings.photoEnabled);
         setScanIpEnabled(settings.ipRestrictionEnabled);
+        setFaceVerifyEnabled(settings.faceVerifyEnabled);
+        setFaceMode(settings.faceMode);
+        setFaceThreshold(settings.faceThreshold);
         setIpAllowlist(settings.entries);
         setIpAllowlistDraft(settings.entries.join("\n"));
         setIpDeviceAddresses(settings.deviceAddresses);
@@ -955,9 +967,15 @@ export default function SettingsPage() {
         photoEnabled: scanPhotoEnabled,
         ipRestrictionEnabled: scanIpEnabled,
         entries,
+        faceVerifyEnabled,
+        faceMode,
+        faceThreshold,
       });
       setScanPhotoEnabled(saved.photoEnabled);
       setScanIpEnabled(saved.ipRestrictionEnabled);
+      setFaceVerifyEnabled(saved.faceVerifyEnabled);
+      setFaceMode(saved.faceMode);
+      setFaceThreshold(saved.faceThreshold);
       setIpAllowlist(saved.entries);
       setIpAllowlistDraft(saved.entries.join("\n"));
       setIpDeviceAddresses(saved.deviceAddresses);
@@ -1897,7 +1915,7 @@ export default function SettingsPage() {
                 <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">
                   Dua fitur opsional: memaksa setiap scan menyertakan foto
                   wajah, dan membatasi absensi ke jaringan tertentu. Matikan
-                  keduanya bila perusahaan tidak memerlukannya — selama mati,
+                  keduanya bila perusahaan tidak memerlukannya. Selama mati,
                   sakelar per role di halaman Master Operator tidak berpengaruh
                   apa pun.
                 </p>
@@ -1919,11 +1937,88 @@ export default function SettingsPage() {
                 </strong>
                 <br />
                 Terminal menahan scan sesaat setelah QR terbaca, membuka kamera
-                hadap-depan, lalu memotret wajah dan latar orang yang absen
-                sebelum data dikirim. Role mana yang diwajibkan diatur di
-                halaman Master Operator.
+                foto, lalu memotret wajah dan latar orang yang absen sebelum
+                data dikirim. Role mana yang diwajibkan diatur di halaman Master
+                Operator.
               </span>
             </label>
+
+            {scanPhotoEnabled ? (
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                <label className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={faceVerifyEnabled}
+                    onChange={(event) =>
+                      setFaceVerifyEnabled(event.target.checked)
+                    }
+                    className="mt-0.5 size-4 shrink-0"
+                  />
+                  <span className="text-xs leading-5 text-slate-300">
+                    <strong className="text-white">
+                      Cocokkan wajah dengan pemilik kartu
+                    </strong>
+                    <br />
+                    Wajah di foto bukti dibandingkan dengan wajah yang terdaftar
+                    di halaman Pendaftaran Wajah. Karyawan yang belum terdaftar
+                    tetap bisa absen dan ditandai &ldquo;Belum Terdaftar&rdquo;.
+                  </span>
+                </label>
+
+                {faceVerifyEnabled ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="face-mode"
+                        className="text-[11px] font-bold uppercase tracking-wider text-slate-400"
+                      >
+                        Bila wajah tidak cocok
+                      </label>
+                      <select
+                        id="face-mode"
+                        value={faceMode}
+                        onChange={(event) =>
+                          setFaceMode(event.target.value as FaceMode)
+                        }
+                        className="mt-1 min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                      >
+                        <option value="pantau">
+                          Tetap terima, tandai untuk ditinjau
+                        </option>
+                        <option value="tolak">Tolak scan</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="face-threshold"
+                        className="text-[11px] font-bold uppercase tracking-wider text-slate-400"
+                      >
+                        Ambang kemiripan ({faceThreshold.toFixed(2)})
+                      </label>
+                      <input
+                        id="face-threshold"
+                        type="range"
+                        min={FACE_THRESHOLD_MIN}
+                        max={FACE_THRESHOLD_MAX}
+                        step={0.01}
+                        value={faceThreshold}
+                        onChange={(event) =>
+                          setFaceThreshold(Number(event.target.value))
+                        }
+                        className="mt-1 min-h-11 w-full cursor-pointer"
+                      />
+                    </div>
+                    <p className="text-[11px] leading-5 text-slate-400 sm:col-span-2">
+                      Mulailah dengan &ldquo;tetap terima&rdquo;. Lihat skor di
+                      halaman Foto Absensi selama beberapa hari, lalu naikkan
+                      ambang bila orang lain masih lolos atau turunkan bila
+                      pemilik kartu sering dianggap tidak cocok. Baru setelah
+                      itu pakai &ldquo;tolak scan&rdquo;.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
               <input
@@ -1953,7 +2048,7 @@ export default function SettingsPage() {
                   >
                     {ipAllowlist.length > 0
                       ? `${ipAllowlist.length} entri aktif`
-                      : "Kosong — belum membatasi"}
+                      : "Kosong: belum membatasi"}
                   </StatusBadge>
                 </div>
                 <textarea
@@ -2019,7 +2114,7 @@ export default function SettingsPage() {
               <p className="text-xs text-slate-400">
                 {scanPhotoEnabled || scanIpEnabled
                   ? "Berlaku untuk role yang menyalakannya di Master Operator."
-                  : "Kedua fitur mati — absensi berjalan seperti biasa."}
+                  : "Kedua fitur mati. Absensi berjalan seperti biasa."}
               </p>
             </div>
           </form>

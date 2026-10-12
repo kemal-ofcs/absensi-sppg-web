@@ -361,7 +361,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         client_id TEXT,
         foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
         foto_base64 TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        wajah_vonis TEXT,
+        wajah_skor REAL
       );
       CREATE INDEX IF NOT EXISTS idx_local_absensi_foto_tanggal
         ON absensi_foto(tanggal_kerja, timestamp_scan DESC);
@@ -603,6 +605,19 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         foto_base64 TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      -- Vektor wajah terdaftar untuk verifikasi 1:1 saat scan (v19). Ikut
+      -- SNAPSHOT_TABLES supaya terminal offline tetap bisa memeriksa; isinya
+      -- int8 base64 (±1,4 KB per orang), bukan foto. DDL WAJIB identik dengan
+      -- `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS personil_wajah (
+        id_unik TEXT PRIMARY KEY,
+        model TEXT NOT NULL,
+        vektor TEXT NOT NULL,
+        jumlah_sampel INTEGER NOT NULL DEFAULT 1,
+        sumber TEXT NOT NULL CHECK (sumber IN ('kamera', 'foto_profil')),
+        dibuat_oleh TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       -- Tarif default payroll di-seed terpisah dari `super::payroll_seed`, satu
       -- sumber bersama dengan seed cloud di `turso.rs`. Jangan tulis ulang di sini.
       INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
@@ -620,6 +635,15 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map_err(|_| "Schema keamanan Desktop tidak dapat diinisialisasi.".to_owned())?;
 
     seed_payroll_rate_tables(&connection)?;
+
+    // Vonis verifikasi wajah pada foto bukti (v19). NULL = scan itu tidak
+    // diperiksa wajahnya (fitur mati, atau foto lama).
+    for (column, sql) in [
+        ("wajah_vonis", "ALTER TABLE absensi_foto ADD COLUMN wajah_vonis TEXT;"),
+        ("wajah_skor", "ALTER TABLE absensi_foto ADD COLUMN wajah_skor REAL;"),
+    ] {
+        ensure_column(&connection, "absensi_foto", column, sql)?;
+    }
 
     ensure_column(
         &connection,
@@ -883,6 +907,7 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "tax_rules",
     "bpjs_rules",
     "personil_foto",
+    "personil_wajah",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke

@@ -1,9 +1,11 @@
 "use client";
 
-import type {
-  AttendancePhotoEntry,
-  AttendancePhotoFilter,
-  AttendancePhotoImage,
+import {
+  type AttendancePhotoEntry,
+  type AttendancePhotoFilter,
+  type AttendancePhotoImage,
+  toFaceScore,
+  toFaceVerdict,
 } from "@/lib/attendance/photo-history";
 import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
@@ -38,6 +40,8 @@ function normalizeEntry(value: JsonRecord): AttendancePhotoEntry {
     fotoMime: text(value.fotoMime ?? value.foto_mime) || "image/jpeg",
     ukuranBase64: Number(value.ukuranBase64 ?? value.ukuran_base64 ?? 0),
     createdAt: text(value.createdAt ?? value.created_at),
+    wajahVonis: toFaceVerdict(value.wajahVonis ?? value.wajah_vonis),
+    wajahSkor: toFaceScore(value.wajahSkor ?? value.wajah_skor),
   };
 }
 
@@ -54,6 +58,7 @@ export async function getAttendancePhotos(filter: AttendancePhotoFilter = {}) {
     tanggalMulai: filter.tanggalMulai ?? "",
     tanggalSelesai: filter.tanggalSelesai ?? "",
     search: filter.search ?? "",
+    wajahVonis: filter.wajahVonis ?? "",
     limit: filter.limit,
   };
   if (isDesktopRuntime()) {

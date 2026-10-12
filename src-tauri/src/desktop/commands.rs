@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    license,
+    face_match, license,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
@@ -1257,6 +1257,7 @@ pub async fn desktop_list_attendance_photos(
     tanggal_mulai: Option<String>,
     tanggal_selesai: Option<String>,
     search: Option<String>,
+    wajah_vonis: Option<String>,
     limit: Option<i64>,
 ) -> Result<Value, CommandError> {
     require_permission(&state, "attendance_photo.view")?;
@@ -1266,6 +1267,7 @@ pub async fn desktop_list_attendance_photos(
             tanggal_mulai.as_deref().unwrap_or(""),
             tanggal_selesai.as_deref().unwrap_or(""),
             search.as_deref().unwrap_or(""),
+            wajah_vonis.as_deref().unwrap_or(""),
             limit.unwrap_or(100),
         )
         .await
@@ -1318,6 +1320,38 @@ pub async fn desktop_purge_attendance_photos(
         "DELETE FROM absensi_foto WHERE tanggal_kerja < date('now', ?);",
         rusqlite::params![format!("-{} day", older_than_days.max(0))],
     );
+    Ok(result)
+}
+
+/// Status pendaftaran wajah seluruh personil, tanpa vektornya. Dibaca dari
+/// SQLite lokal: `personil_wajah` ikut snapshot, jadi daftarnya ada offline.
+#[tauri::command]
+pub fn desktop_list_face_templates(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "face_template.view")?;
+    face_match::list_templates(&state)
+}
+
+/// Daftarkan atau ganti wajah satu personil. Izin sensitif: wajah yang salah
+/// di nama orang lain membuka jalan bagi kartu yang dipinjamkan.
+#[tauri::command]
+pub async fn desktop_save_face_template(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "face_template.manage")?;
+    let result = face_match::save_template(&state, &operator.username, draft)?;
+    let _ = sync::push_outbox(&state).await;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn desktop_delete_face_template(
+    state: State<'_, DesktopState>,
+    id_unik: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "face_template.manage")?;
+    let result = face_match::delete_template(&state, &id_unik)?;
+    let _ = sync::push_outbox(&state).await;
     Ok(result)
 }
 

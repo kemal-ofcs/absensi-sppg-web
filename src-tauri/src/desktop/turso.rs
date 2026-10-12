@@ -20,6 +20,8 @@ use super::{
     // Normalisasi cakupan whitelist hari libur hidup di `scanner` bersama
     // penilaiannya, supaya jalur cloud dan jalur scan tidak pernah bisa drift.
     scanner, sync,
+    // Template wajah yang tidak sah tidak boleh sampai ke CHECK cloud.
+    face_match,
 };
 
 /// Provider database cloud yang dipakai perangkat.
@@ -758,6 +760,12 @@ const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
         table: "payroll_audit_logs",
         sql: "SELECT * FROM payroll_audit_logs ORDER BY created_at;",
     },
+    // ── v19: Vektor wajah terdaftar ──
+    SnapshotSource {
+        payload_key: "faceTemplates",
+        table: "personil_wajah",
+        sql: "SELECT * FROM personil_wajah ORDER BY id_unik\n-- batas: satu baris per karyawan, dibatasi jumlah karyawan perusahaan\n;",
+    },
 ];
 
 pub struct TursoClient {
@@ -1464,7 +1472,9 @@ impl TursoClient {
                     client_id TEXT,
                     foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
                     foto_base64 TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    wajah_vonis TEXT,
+                    wajah_skor REAL
                 );"#,
                 vec![],
             ),
@@ -1597,6 +1607,20 @@ impl TursoClient {
                     foto_mime TEXT NOT NULL DEFAULT 'image/jpeg',
                     foto_base64 TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );"#,
+                vec![],
+            ),
+            // Vektor wajah terdaftar (v19). WAJIB identik dengan `storage.rs`
+            // dan `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS personil_wajah (
+                    id_unik TEXT PRIMARY KEY,
+                    model TEXT NOT NULL,
+                    vektor TEXT NOT NULL,
+                    jumlah_sampel INTEGER NOT NULL DEFAULT 1,
+                    sumber TEXT NOT NULL CHECK (sumber IN ('kamera', 'foto_profil')),
+                    dibuat_oleh TEXT,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );"#,
                 vec![],
             ),
@@ -1798,7 +1822,9 @@ impl TursoClient {
                 ('payroll.run.approve', 'Setujui Batch Payroll', 'Penggajian', 'Menyetujui batch payroll yang telah direview.', 1, 302),
                 ('payroll.run.disburse', 'Tandai Dibayar & Kunci Slip', 'Penggajian', 'Menandai batch payroll sebagai dibayar dan mengunci slip.', 1, 303),
                 ('payroll.config.manage', 'Kelola Aturan Penggajian', 'Penggajian', 'Mengatur rate gaji, lembur, PPh 21, dan BPJS.', 1, 310),
-                ('payroll.export', 'Ekspor Laporan & Slip Gaji', 'Penggajian', 'Mengunduh rekap penggajian dan slip gaji.', 1, 320);"#,
+                ('payroll.export', 'Ekspor Laporan & Slip Gaji', 'Penggajian', 'Mengunduh rekap penggajian dan slip gaji.', 1, 320),
+                ('face_template.view', 'Lihat Pendaftaran Wajah', 'Sistem', 'Melihat siapa saja yang wajahnya sudah terdaftar untuk verifikasi scan.', 1, 1200),
+                ('face_template.manage', 'Kelola Pendaftaran Wajah', 'Sistem', 'Mendaftarkan, mengganti, dan menghapus wajah karyawan untuk verifikasi scan.', 1, 1201);"#,
                 vec![],
             ),
             // Seed Default Role Permissions untuk Role Superadmin (Role 1)
@@ -1811,7 +1837,7 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
-                WHERE permission_key NOT IN ('roles.manage', 'operators.manage');"#,
+                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage');"#,
                 vec![],
             ),
             // Seed Settings
@@ -2106,6 +2132,9 @@ impl TursoClient {
             ("payroll_items", "salary_type", "ALTER TABLE payroll_items ADD COLUMN salary_type TEXT NOT NULL DEFAULT 'HOURLY' CHECK (salary_type IN ('HOURLY','FLAT_DAILY'));"),
             ("payroll_items", "daily_rate", "ALTER TABLE payroll_items ADD COLUMN daily_rate INTEGER NOT NULL DEFAULT 0 CHECK (daily_rate >= 0);"),
             ("payroll_items", "days_present", "ALTER TABLE payroll_items ADD COLUMN days_present INTEGER NOT NULL DEFAULT 0 CHECK (days_present >= 0);"),
+            // Vonis verifikasi wajah pada foto bukti (v19).
+            ("absensi_foto", "wajah_vonis", "ALTER TABLE absensi_foto ADD COLUMN wajah_vonis TEXT;"),
+            ("absensi_foto", "wajah_skor", "ALTER TABLE absensi_foto ADD COLUMN wajah_skor REAL;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
@@ -2251,6 +2280,16 @@ impl TursoClient {
         .await?;
         self.query_one(
             "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2014, 'payroll-flat-daily-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (19, 'face-verification', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2015, 'face-verification-v1', datetime('now'));",
             vec![],
         )
         .await?;
@@ -2468,7 +2507,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2014;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2015;",
                 vec![],
             )
             .await
@@ -4860,6 +4899,8 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("holiday-whitelist" | "holiday_whitelist", "create") => ("holiday-whitelist", "create"),
         ("holiday-whitelist" | "holiday_whitelist", "update") => ("holiday-whitelist", "update"),
         ("holiday-whitelist" | "holiday_whitelist", "delete") => ("holiday-whitelist", "delete"),
+        ("face-template", "save") => ("face-template", "save"),
+        ("face-template", "delete") => ("face-template", "delete"),
         ("attendance", "scan") => ("attendance", "scan"),
         ("attendance", "create") => ("attendance", "create"),
         ("attendance", "update") => ("attendance", "update"),
@@ -5624,6 +5665,28 @@ async fn apply_event_to_turso(
                 }
             }
         }
+        ("face-template", "save") => {
+            if let Some(values) = face_match::cloud_template_values(payload, entity_key) {
+                turso
+                    .query_one(face_match::CLOUD_UPSERT_TEMPLATE_SQL, values)
+                    .await?;
+            }
+        }
+        ("face-template", "delete") => {
+            let id = payload
+                .get("id_unik")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(entity_key);
+            if !id.trim().is_empty() {
+                turso
+                    .query_one(
+                        "DELETE FROM personil_wajah WHERE id_unik = ?;",
+                        vec![json!(id)],
+                    )
+                    .await?;
+            }
+        }
         ("holiday-whitelist", "delete") => {
             let id = payload
                 .get("id")
@@ -5729,8 +5792,9 @@ async fn apply_event_to_turso(
                             r#"INSERT INTO absensi_foto (
                                 id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi,
                                 jenis_scan, timestamp_scan, sumber_data, kode_operator,
-                                ip_perangkat, client_id, foto_mime, foto_base64, created_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ip_perangkat, client_id, foto_mime, foto_base64, created_at,
+                                wajah_vonis, wajah_skor
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(id_foto) DO NOTHING;"#,
                             vec![
                                 json!(id_foto),
@@ -5754,6 +5818,8 @@ async fn apply_event_to_turso(
                                     .unwrap_or("image/jpeg")),
                                 json!(foto_base64),
                                 text("created_at"),
+                                json!(photo.get("wajah_vonis").and_then(Value::as_str)),
+                                json!(photo.get("wajah_skor").and_then(Value::as_f64)),
                             ],
                         )
                         .await?;
@@ -7079,12 +7145,18 @@ impl TursoClient {
         start_date: &str,
         end_date: &str,
         search: &str,
+        wajah_vonis: &str,
         limit: i64,
     ) -> Result<Value, CommandError> {
         self.ensure_schema_current().await?;
         let mut conditions: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
 
+        let wajah_vonis = wajah_vonis.trim();
+        if !wajah_vonis.is_empty() {
+            conditions.push("wajah_vonis = ?".to_string());
+            args.push(json!(wajah_vonis));
+        }
         let start = start_date.trim();
         if !start.is_empty() {
             conditions.push("tanggal_kerja >= ?".to_string());
@@ -7125,7 +7197,7 @@ impl TursoClient {
                 COALESCE(client_id, '') AS client_id,
                 COALESCE(foto_mime, 'image/jpeg') AS foto_mime,
                 LENGTH(COALESCE(foto_base64, '')) AS ukuran_base64,
-                created_at
+                created_at, wajah_vonis, wajah_skor
                FROM absensi_foto
                {where_clause}
                ORDER BY timestamp_scan DESC
@@ -7161,6 +7233,8 @@ impl TursoClient {
                         .and_then(Value::as_i64)
                         .unwrap_or(0),
                     "createdAt": text("created_at"),
+                    "wajahVonis": row.get("wajah_vonis").and_then(Value::as_str),
+                    "wajahSkor": row.get("wajah_skor").and_then(Value::as_f64),
                 })
             })
             .collect();
@@ -9502,6 +9576,43 @@ mod tests {
         });
     }
 
+    /// Database bersentinel `-2014` (v18) menerima `personil_wajah` dan kolom
+    /// vonis wajah `absensi_foto` lewat `ensure_schema_current`.
+    #[test]
+    fn sentinel_2014_memicu_skema_verifikasi_wajah() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2014.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+            connection
+                .execute_batch(
+                    "DROP TABLE personil_wajah;
+                     ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
+                     DELETE FROM schema_migration WHERE version = -2015;",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+            let (tabel, kolom): (i64, i64) = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE name = 'personil_wajah'),
+                            (SELECT COUNT(*) FROM pragma_table_info('absensi_foto') WHERE name = 'wajah_vonis');",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("cek skema");
+            assert_eq!((tabel, kolom), (1, 1), "database bersentinel -2014 tidak diperbarui");
+        });
+    }
     /// Migrasi v16: Jam Kerja Normal lama (+ Batas Masuk) dihitung ulang
     /// sekali menjadi (Jam Pulang − Jam Masuk) − Istirahat, tanpa menyentuh
     /// penanda shift fleksibel. Vektornya sama dengan `db-migrations.test.ts`.

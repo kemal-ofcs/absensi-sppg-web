@@ -12,6 +12,10 @@ import { join } from "node:path";
 import { type Client, createClient } from "@libsql/client";
 import { initDatabaseSchema } from "@/lib/db-schema";
 import {
+  FACE_MODEL_ID,
+  quantizeFaceVector,
+} from "@/lib/validations/face-match";
+import {
   processWebAttendanceScan,
   type ScanPayload,
 } from "./attendance-processor";
@@ -525,5 +529,112 @@ describe("guard dan konsistensi integrasi Web", () => {
     const res = await scanAt(jakarta("2026-08-12", "15:02"));
     expect(res.sukses).toBe(false);
     expect(res.pesan).toContain("Scan pulang sudah tercatat");
+  });
+});
+
+describe("verifikasi wajah 1:1 (cermin scanner.rs)", () => {
+  // Vektor kembar dengan `face-match.test.ts`: skor 0.0118 berasal dari sana.
+  const vektor = (seed: number, mod: number, offset: number) =>
+    quantizeFaceVector(
+      Array.from({ length: 1024 }, (_, i) => ((i * seed) % mod) - offset),
+    ) as string;
+  const pemilik = vektor(37, 251, 125);
+  const orangLain = vektor(53, 241, 120);
+
+  async function siapkan(mode: "pantau" | "tolak") {
+    await client.batch(
+      [
+        "DELETE FROM personil_wajah;",
+        "DELETE FROM absensi_foto;",
+        ...[
+          ["scan_photo_enabled", "true"],
+          ["scan_face_verify_enabled", "true"],
+          ["scan_face_mode", mode],
+          ["scan_face_threshold", "0.55"],
+        ].map(([key, value]) => ({
+          sql: `INSERT INTO setting_gex_system (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+          args: [key, value],
+        })),
+        {
+          sql: `INSERT INTO personil_wajah (id_unik, model, vektor, jumlah_sampel, sumber)
+                VALUES (?, ?, ?, 3, 'kamera');`,
+          args: [EMPLOYEE.id, FACE_MODEL_ID, pemilik],
+        },
+      ],
+      "write",
+    );
+  }
+
+  function scanWajah(wajahVektor: string | undefined) {
+    return processWebAttendanceScan(
+      client,
+      {
+        qrText: `${EMPLOYEE.id}|${EMPLOYEE.token}`,
+        sumberScan: "Scanner",
+        kodeOperator: "OP_WEB",
+        fotoBase64: "AAAA",
+        fotoMime: "image/jpeg",
+        wajahModel: wajahVektor ? FACE_MODEL_ID : undefined,
+        wajahVektor,
+      },
+      {
+        waktuScan: jakarta("2026-08-12", "06:30"),
+        policy: { requirePhoto: true },
+      },
+    );
+  }
+
+  async function vonisTersimpan() {
+    const result = await client.execute(
+      "SELECT wajah_vonis, wajah_skor FROM absensi_foto LIMIT 1;",
+    );
+    return result.rows[0];
+  }
+
+  afterAll(async () => {
+    await client.execute(
+      "DELETE FROM setting_gex_system WHERE key LIKE 'scan_face_%' OR key = 'scan_photo_enabled';",
+    );
+  });
+
+  test("mode tolak: wajah orang lain ditolak, hanya LOG_SCAN yang tertulis", async () => {
+    await siapkan("tolak");
+    const result = await scanWajah(orangLain);
+    expect(result).toMatchObject({ sukses: false, status: "Ditolak" });
+    expect(await tableCount("absensi_harian")).toBe(0);
+    const log = await client.execute(
+      "SELECT catatan_sistem FROM log_scan LIMIT 1;",
+    );
+    expect(String(log.rows[0]?.catatan_sistem ?? "")).toContain(
+      "Wajah tidak cocok",
+    );
+  });
+
+  test("mode pantau: wajah orang lain diterima dan ditandai Tidak Cocok", async () => {
+    await siapkan("pantau");
+    const result = await scanWajah(orangLain);
+    expect(result.sukses).toBe(true);
+    expect(await vonisTersimpan()).toMatchObject({
+      wajah_vonis: "Tidak Cocok",
+      wajah_skor: 0.0118,
+    });
+  });
+
+  test("pemilik kartu cocok; tanpa vektor tetap diterima sebagai Tidak Diperiksa", async () => {
+    await siapkan("tolak");
+    expect((await scanWajah(pemilik)).sukses).toBe(true);
+    expect(await vonisTersimpan()).toMatchObject({ wajah_vonis: "Cocok" });
+
+    await client.batch([
+      "DELETE FROM absensi_harian;",
+      "DELETE FROM log_scan;",
+    ]);
+    await siapkan("tolak");
+    expect((await scanWajah(undefined)).sukses).toBe(true);
+    expect(await vonisTersimpan()).toMatchObject({
+      wajah_vonis: "Tidak Diperiksa",
+      wajah_skor: null,
+    });
   });
 });

@@ -14,6 +14,17 @@ import {
   tentukanTanggalKerja,
 } from "@/lib/attendance/time-policy";
 import type { AttendanceSource, ScanResult } from "@/lib/contracts/scanner";
+import {
+  FACE_THRESHOLD_DEFAULT,
+  type FaceVerdict,
+  faceScanRejected,
+  faceVerdict,
+  normalizeFaceMode,
+  normalizeFaceThreshold,
+  SCAN_FACE_MODE_KEY,
+  SCAN_FACE_THRESHOLD_KEY,
+  SCAN_FACE_VERIFY_ENABLED_KEY,
+} from "@/lib/validations/face-match";
 import { evaluateHolidayScan } from "@/lib/validations/holiday-whitelist";
 import {
   IP_ALLOWLIST_SETTING_KEY,
@@ -42,6 +53,8 @@ export interface ScanPayload {
   /** Foto bukti absensi (base64 murni, tanpa awalan data URL). */
   fotoBase64?: string | null;
   fotoMime?: string | null;
+  wajahModel?: string | null;
+  wajahVektor?: string | null;
 }
 
 /**
@@ -334,6 +347,41 @@ async function processInTransaction(
       pesan:
         "Scan ditolak: Role Anda mewajibkan foto bukti absensi. Aktifkan kamera terminal lalu ulangi scan.",
     });
+  }
+
+  // ── Verifikasi wajah 1:1 ────────────────────────────────────────────────
+  // Cermin blok yang sama di `scanner.rs`. Menumpang pada foto bukti, dan
+  // wajah pembandingnya dibaca dari database, tidak pernah dari payload.
+  let wajah: { vonis: FaceVerdict; skor: number | null } | null = null;
+  if (photoRequired && settingEnabled(settings[SCAN_FACE_VERIFY_ENABLED_KEY])) {
+    const reference = await transaction.execute({
+      sql: "SELECT model, vektor FROM personil_wajah WHERE id_unik = ?;",
+      args: [employee.id],
+    });
+    const row = reference.rows[0];
+    const probe =
+      payload.wajahModel && payload.wajahVektor
+        ? { model: payload.wajahModel.trim(), vektor: payload.wajahVektor }
+        : null;
+    wajah = faceVerdict(
+      probe,
+      row ? { model: String(row.model), vektor: String(row.vektor) } : null,
+      normalizeFaceThreshold(settings[SCAN_FACE_THRESHOLD_KEY]) ??
+        FACE_THRESHOLD_DEFAULT,
+    );
+    const mode = normalizeFaceMode(settings[SCAN_FACE_MODE_KEY]) ?? "pantau";
+    if (faceScanRejected(mode, wajah.vonis)) {
+      return logKnownRejection(transaction, {
+        waktuScan,
+        tanggalKerja: tanggalLogAwal,
+        employee,
+        sumberData,
+        kodeOperator,
+        catatanSistem: "Wajah tidak cocok dengan pemilik kartu",
+        pesan:
+          "Scan ditolak: Wajah tidak cocok dengan pemilik kartu. Hubungi petugas bila ini keliru.",
+      });
+    }
   }
 
   const backup = await findEffectiveBackup(transaction, employee.id, waktuScan);
@@ -724,8 +772,9 @@ async function processInTransaction(
       sql: `INSERT INTO absensi_foto (
               id_foto, id_sesi, tanggal_kerja, id_karyawan, nama, divisi,
               jenis_scan, timestamp_scan, sumber_data, kode_operator,
-              ip_perangkat, client_id, foto_mime, foto_base64, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ip_perangkat, client_id, foto_mime, foto_base64, created_at,
+              wajah_vonis, wajah_skor
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id_foto) DO NOTHING;`,
       args: [
         `web:${idSesi}:${formatTimestampOperasional(waktuScan)}`,
@@ -745,6 +794,8 @@ async function processInTransaction(
           : "image/jpeg",
         fotoBase64,
         formatTimestampOperasional(waktuScan),
+        wajah?.vonis ?? null,
+        wajah?.skor ?? null,
       ],
     });
   }

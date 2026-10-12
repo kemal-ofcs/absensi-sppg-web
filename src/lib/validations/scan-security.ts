@@ -18,6 +18,8 @@
  * berikutnya hanya karena aplikasinya diperbarui.
  */
 
+import type { FaceMode } from "@/lib/validations/face-match";
+
 export const SCAN_PHOTO_ENABLED_KEY = "scan_photo_enabled";
 export const SCAN_IP_RESTRICTION_ENABLED_KEY = "scan_ip_restriction_enabled";
 
@@ -36,12 +38,32 @@ export interface ScanSecuritySettings {
    */
   photoRequiredForMe: boolean;
   ipRestrictionRequiredForMe: boolean;
+  /** Verifikasi wajah 1:1 dipakai perusahaan ini (menumpang foto bukti). */
+  faceVerifyEnabled: boolean;
+  faceMode: FaceMode;
+  faceThreshold: number;
+  /** Foto SAYA wajib DAN wajahnya dicocokkan. Dihitung backend. */
+  faceRequiredForMe: boolean;
   /** Alamat/blok IP yang diizinkan. Kosong untuk pembaca non-Superadmin. */
   entries: string[];
   /** Alamat perangkat saat ini, untuk tombol "tambahkan IP ini". */
   deviceAddresses: string[];
   /** Pembaca ini boleh mengubah pengaturan (Superadmin). */
   canManage: boolean;
+}
+
+/**
+ * Isi formulir yang disimpan. Semua field wajib: setiap layar yang menyimpan
+ * menulis ulang SEMUA kunci, jadi field yang terlupa akan tersimpan sebagai
+ * bawaan dan diam-diam menimpa pilihan Superadmin.
+ */
+export interface ScanSecurityDraft {
+  photoEnabled: boolean;
+  ipRestrictionEnabled: boolean;
+  entries: readonly string[];
+  faceVerifyEnabled: boolean;
+  faceMode: FaceMode;
+  faceThreshold: number;
 }
 
 export function settingEnabled(value: string | null | undefined) {

@@ -6,6 +6,8 @@ import {
   type AttendancePhotoFilter,
   type AttendancePhotoImage,
   attendancePhotoLimit,
+  toFaceScore,
+  toFaceVerdict,
 } from "@/lib/attendance/photo-history";
 
 function text(value: unknown) {
@@ -26,6 +28,11 @@ export async function listAttendancePhotos(
   const conditions: string[] = [];
   const args: (string | number)[] = [];
 
+  const vonis = toFaceVerdict(filter.wajahVonis);
+  if (vonis) {
+    conditions.push("wajah_vonis = ?");
+    args.push(vonis);
+  }
   const start = (filter.tanggalMulai ?? "").trim();
   if (start) {
     conditions.push("tanggal_kerja >= ?");
@@ -56,7 +63,7 @@ export async function listAttendancePhotos(
             COALESCE(client_id, '') AS client_id,
             COALESCE(foto_mime, 'image/jpeg') AS foto_mime,
             LENGTH(COALESCE(foto_base64, '')) AS ukuran_base64,
-            created_at
+            created_at, wajah_vonis, wajah_skor
           FROM absensi_foto
           ${where}
           ORDER BY timestamp_scan DESC
@@ -80,6 +87,8 @@ export async function listAttendancePhotos(
     fotoMime: text(row.foto_mime) || "image/jpeg",
     ukuranBase64: Number(row.ukuran_base64 ?? 0),
     createdAt: text(row.created_at),
+    wajahVonis: toFaceVerdict(row.wajah_vonis),
+    wajahSkor: toFaceScore(row.wajah_skor),
   }));
 }
 

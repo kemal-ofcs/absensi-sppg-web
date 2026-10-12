@@ -5,7 +5,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::{config::DesktopState, models::CommandError, scanner, storage, sync};
+use super::{
+    config::DesktopState, face_match, models::CommandError, scanner, storage, sync,
+};
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("").trim()
@@ -1117,6 +1119,15 @@ pub fn get_scan_security(
 
     let photo_enabled = enabled(read(scanner::SCAN_PHOTO_ENABLED_KEY)?);
     let ip_enabled = enabled(read(scanner::SCAN_IP_RESTRICTION_ENABLED_KEY)?);
+    let face_enabled = enabled(read(face_match::SCAN_FACE_VERIFY_ENABLED_KEY)?);
+    let face_mode = read(face_match::SCAN_FACE_MODE_KEY)?
+        .as_deref()
+        .and_then(face_match::normalize_face_mode)
+        .unwrap_or("pantau");
+    let face_threshold = read(face_match::SCAN_FACE_THRESHOLD_KEY)?
+        .as_deref()
+        .and_then(face_match::normalize_face_threshold)
+        .unwrap_or(face_match::FACE_THRESHOLD_DEFAULT);
     Ok(json!({
         "photoEnabled": photo_enabled,
         "ipRestrictionEnabled": ip_enabled,
@@ -1125,6 +1136,12 @@ pub fn get_scan_security(
         // bisa memakai salinan sesi yang sudah basi.
         "photoRequiredForMe": photo_enabled && role_requires_photo,
         "ipRestrictionRequiredForMe": ip_enabled && role_requires_ip,
+        // Verifikasi wajah menumpang pada foto bukti: tanpa foto tidak ada
+        // wajah untuk dicocokkan.
+        "faceVerifyEnabled": face_enabled,
+        "faceMode": face_mode,
+        "faceThreshold": face_threshold,
+        "faceRequiredForMe": face_enabled && photo_enabled && role_requires_photo,
         "entries": entries,
         "deviceAddresses": device_addresses,
         "canManage": can_manage,
@@ -1148,6 +1165,23 @@ pub fn save_scan_security(state: &DesktopState, payload: &Value) -> Result<Value
         }
     }
     let allowlist_value = serde_json::to_string(&entries).map_err(|_| CommandError::internal())?;
+    // Ditolak, bukan dinormalkan diam-diam: mode atau ambang yang salah ketik
+    // akan mengubah siapa yang boleh lewat gerbang.
+    let face_mode = payload
+        .get("faceMode")
+        .and_then(Value::as_str)
+        .and_then(face_match::normalize_face_mode)
+        .ok_or_else(|| CommandError::new("VALIDATION_ERROR", "Mode verifikasi wajah tidak dikenal."))?;
+    let face_threshold = payload
+        .get("faceThreshold")
+        .and_then(Value::as_f64)
+        .and_then(|value| face_match::normalize_face_threshold(&value.to_string()))
+        .ok_or_else(|| {
+            CommandError::new(
+                "VALIDATION_ERROR",
+                "Ambang kemiripan wajah harus antara 0,30 dan 0,95.",
+            )
+        })?;
     let flag = |key: &str| {
         payload
             .get(key)
@@ -1171,6 +1205,15 @@ pub fn save_scan_security(state: &DesktopState, payload: &Value) -> Result<Value
             flag("ipRestrictionEnabled"),
         ),
         (scanner::IP_ALLOWLIST_SETTING_KEY, allowlist_value),
+        (
+            face_match::SCAN_FACE_VERIFY_ENABLED_KEY,
+            flag("faceVerifyEnabled"),
+        ),
+        (face_match::SCAN_FACE_MODE_KEY, face_mode.to_owned()),
+        (
+            face_match::SCAN_FACE_THRESHOLD_KEY,
+            face_threshold.to_string(),
+        ),
     ] {
         transaction
             .execute(

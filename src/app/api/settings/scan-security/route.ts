@@ -23,6 +23,10 @@ import {
   updateScanSecurity,
 } from "@/lib/services/scan-security";
 import {
+  normalizeFaceMode,
+  normalizeFaceThreshold,
+} from "@/lib/validations/face-match";
+import {
   MAX_IP_ALLOWLIST_ENTRIES,
   validateIpAllowlistEntries,
 } from "@/lib/validations/ip-allowlist";
@@ -37,6 +41,9 @@ interface ScanSecurityBody {
   photoEnabled?: unknown;
   ipRestrictionEnabled?: unknown;
   entries?: unknown;
+  faceVerifyEnabled?: unknown;
+  faceMode?: unknown;
+  faceThreshold?: unknown;
 }
 
 function parseEntries(value: unknown): string[] {
@@ -86,11 +93,30 @@ export async function PUT(request: NextRequest) {
     const actor = await requireWebPermission(request, "settings.manage", true);
     await ensureServerDatabaseInitialized();
     const body = await readJsonBody<ScanSecurityBody>(request);
+    // Ditolak, bukan dinormalkan diam-diam (cermin `save_scan_security`):
+    // mode atau ambang yang salah ketik mengubah siapa yang lolos gerbang.
+    const faceMode = normalizeFaceMode(body.faceMode);
+    if (!faceMode) {
+      throw new ApiRequestError("Mode verifikasi wajah tidak dikenal.", 400);
+    }
+    const faceThreshold =
+      typeof body.faceThreshold === "number"
+        ? normalizeFaceThreshold(body.faceThreshold)
+        : null;
+    if (faceThreshold === null) {
+      throw new ApiRequestError(
+        "Ambang kemiripan wajah harus antara 0,30 dan 0,95.",
+        400,
+      );
+    }
     const data = await updateScanSecurity(
       {
         photoEnabled: body.photoEnabled === true,
         ipRestrictionEnabled: body.ipRestrictionEnabled === true,
         entries: parseEntries(body.entries),
+        faceVerifyEnabled: body.faceVerifyEnabled === true,
+        faceMode,
+        faceThreshold,
       },
       getClientAddress(request),
     );

@@ -46,3 +46,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Model wajah disalin dari node_modules saat postinstall (scripts/copy-face-models.ts).
+/public/models/wajah/

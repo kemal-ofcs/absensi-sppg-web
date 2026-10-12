@@ -10,7 +10,7 @@ import {
  * Foto bukti absensi: wajah orang yang absen beserta latar tempat ia berdiri.
  *
  * Alurnya sengaja MENAHAN scan. Begitu QR terbaca, terminal berhenti sejenak,
- * membuka kamera hadap-depan, menunggu wajah masuk bingkai, lalu memotret dan
+ * membuka kamera foto, menunggu wajah masuk bingkai, lalu memotret dan
  * baru mengirim scan. Versi pertama fitur ini memotret dari kamera pemindai QR
  * pada detik QR terbaca — yang terfoto justru kartu identitas yang sedang
  * ditempelkan ke lensa, bukan orangnya, sehingga fotonya tidak membuktikan
@@ -112,14 +112,21 @@ export function isFaceVisible(video: HTMLVideoElement | null): boolean {
  * kamera BELAKANG menghadap keluar ke karyawan yang mendekatkan QR-nya —
  * persis kamera yang dipakai memindai QR (`facingMode: "environment"`).
  * Memaksa kamera depan di HP berarti memotret ke arah operator/tembok di
- * belakang ponsel, bukan wajah karyawan. Pemanggil WAJIB meneruskan facing
- * yang sama dengan kamera pemindai QR pada perangkat itu.
+ * belakang ponsel, bukan wajah karyawan.
+ *
+ * Karena itu `deviceId` kamera pemindai QR yang menang bila ada: arah kamera
+ * ditentukan cara terminal itu dipakai, bukan jenis build-nya. Petugas yang
+ * memegang HP memilih kamera belakang untuk QR, dan wajah yang harus terfoto
+ * ada di arah yang sama (siswa di depannya, bukan petugasnya); tablet kios
+ * yang layarnya menghadap siswa memilih kamera depan untuk keduanya.
+ * `preferredFacing` hanya dipakai ketika kamera pemindai belum diketahui.
  *
  * Constraint bertingkat: perangkat yang tidak punya kamera pada arah yang
  * diminta tetap mendapat stream alih-alih gagal total.
  */
 export async function openFaceCamera(
   preferredFacing: "user" | "environment" = "user",
+  deviceId?: string,
 ): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Kamera tidak tersedia pada perangkat ini.");
@@ -128,7 +135,9 @@ export async function openFaceCamera(
     return await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
-        facingMode: { ideal: preferredFacing },
+        ...(deviceId
+          ? { deviceId: { exact: deviceId } }
+          : { facingMode: { ideal: preferredFacing } }),
         width: { ideal: 960 },
         height: { ideal: 720 },
       },
@@ -136,6 +145,46 @@ export async function openFaceCamera(
   } catch {
     return navigator.mediaDevices.getUserMedia({ audio: false, video: true });
   }
+}
+
+/**
+ * Kamera pemindai yang dipilih di terminal ini, diingat per perangkat.
+ *
+ * Tanpa ini pilihan kembali ke bawaan setiap kali halaman dibuka, sehingga
+ * tablet kios yang memakai kamera depan harus diatur ulang setiap pagi.
+ * `localStorage`, bukan setting tersinkron: satu sekolah bisa punya tablet kios
+ * dan HP petugas sekaligus, dan id kamera hanya bermakna di perangkatnya.
+ */
+const SCANNER_CAMERA_KEY = "kos.scanner.kamera";
+
+export function readScannerCamera(): string {
+  try {
+    return localStorage.getItem(SCANNER_CAMERA_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveScannerCamera(deviceId: string) {
+  try {
+    localStorage.setItem(SCANNER_CAMERA_KEY, deviceId);
+  } catch {
+    // Mode privat atau penyimpanan diblokir: pilihan hanya berlaku sesi ini.
+  }
+}
+
+/**
+ * Id kamera yang sedang mengalirkan gambar ke elemen video ini.
+ *
+ * Dibaca dari stream pemindai QR SEBELUM dimatikan, supaya foto diambil dari
+ * kamera yang barusan membaca kartu — termasuk ketika pemindai jatuh ke
+ * constraint `video: true` atau id di pemilih kamera masih kosong karena
+ * browser belum memberi izin saat daftar kameranya dibaca.
+ */
+export function liveCameraId(video: HTMLVideoElement | null) {
+  const stream = video?.srcObject;
+  if (!(stream instanceof MediaStream)) return undefined;
+  return stream.getVideoTracks()[0]?.getSettings().deviceId || undefined;
 }
 
 /** Hentikan seluruh track sebuah elemen video dan lepaskan sumbernya. */

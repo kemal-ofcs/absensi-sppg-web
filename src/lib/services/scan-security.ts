@@ -2,6 +2,14 @@ import "server-only";
 
 import { db, ensureDbInitialized } from "@/lib/db";
 import {
+  FACE_THRESHOLD_DEFAULT,
+  normalizeFaceMode,
+  normalizeFaceThreshold,
+  SCAN_FACE_MODE_KEY,
+  SCAN_FACE_THRESHOLD_KEY,
+  SCAN_FACE_VERIFY_ENABLED_KEY,
+} from "@/lib/validations/face-match";
+import {
   IP_ALLOWLIST_SETTING_KEY,
   parseIpAllowlist,
   serializeIpAllowlist,
@@ -9,6 +17,7 @@ import {
 import {
   SCAN_IP_RESTRICTION_ENABLED_KEY,
   SCAN_PHOTO_ENABLED_KEY,
+  type ScanSecurityDraft,
   type ScanSecuritySettings,
   settingEnabled,
 } from "@/lib/validations/scan-security";
@@ -16,11 +25,14 @@ import {
 async function readSettings() {
   await ensureDbInitialized();
   const result = await db.execute({
-    sql: "SELECT key, value FROM setting_gex_system WHERE key IN (?, ?, ?);",
+    sql: "SELECT key, value FROM setting_gex_system WHERE key IN (?, ?, ?, ?, ?, ?);",
     args: [
       SCAN_PHOTO_ENABLED_KEY,
       SCAN_IP_RESTRICTION_ENABLED_KEY,
       IP_ALLOWLIST_SETTING_KEY,
+      SCAN_FACE_VERIFY_ENABLED_KEY,
+      SCAN_FACE_MODE_KEY,
+      SCAN_FACE_THRESHOLD_KEY,
     ],
   });
   return new Map(
@@ -47,12 +59,23 @@ export async function getScanSecurity(
   const ipRestrictionEnabled = settingEnabled(
     values.get(SCAN_IP_RESTRICTION_ENABLED_KEY),
   );
+  const faceVerifyEnabled = settingEnabled(
+    values.get(SCAN_FACE_VERIFY_ENABLED_KEY),
+  );
+  const photoRequiredForMe = photoEnabled && role?.requireScanPhoto === true;
   return {
     photoEnabled,
     ipRestrictionEnabled,
-    photoRequiredForMe: photoEnabled && role?.requireScanPhoto === true,
+    photoRequiredForMe,
     ipRestrictionRequiredForMe:
       ipRestrictionEnabled && role?.requireScanIpAllowlist === true,
+    // Cermin `get_scan_security` di `operational.rs`.
+    faceVerifyEnabled,
+    faceMode: normalizeFaceMode(values.get(SCAN_FACE_MODE_KEY)) ?? "pantau",
+    faceThreshold:
+      normalizeFaceThreshold(values.get(SCAN_FACE_THRESHOLD_KEY)) ??
+      FACE_THRESHOLD_DEFAULT,
+    faceRequiredForMe: faceVerifyEnabled && photoRequiredForMe,
     entries: canManage
       ? parseIpAllowlist(values.get(IP_ALLOWLIST_SETTING_KEY) ?? null)
       : [],
@@ -63,11 +86,7 @@ export async function getScanSecurity(
 }
 
 export async function updateScanSecurity(
-  input: {
-    photoEnabled: boolean;
-    ipRestrictionEnabled: boolean;
-    entries: readonly string[];
-  },
+  input: ScanSecurityDraft,
   currentAddress?: string,
 ): Promise<ScanSecuritySettings> {
   await ensureDbInitialized();
@@ -81,6 +100,12 @@ export async function updateScanSecurity(
       // Disimpan dalam bentuk kanonik: entri tidak valid dibuang di sini supaya
       // tidak ada daftar berisi teks sampah yang diam-diam memblokir semua orang.
       [IP_ALLOWLIST_SETTING_KEY, serializeIpAllowlist(input.entries)],
+      [
+        SCAN_FACE_VERIFY_ENABLED_KEY,
+        input.faceVerifyEnabled ? "true" : "false",
+      ],
+      [SCAN_FACE_MODE_KEY, input.faceMode],
+      [SCAN_FACE_THRESHOLD_KEY, String(input.faceThreshold)],
     ].map(([key, value]) => ({
       sql: `INSERT INTO setting_gex_system (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,

@@ -16,6 +16,7 @@ export type AppArea =
   | "operators"
   | "password_reset"
   | "attendance_photo"
+  | "face_template"
   | "diagnostics";
 
 export interface AccessSubject {
@@ -41,6 +42,7 @@ const AREA_PERMISSION: Record<
   operators: "operators.view",
   password_reset: "password_reset.view",
   attendance_photo: "attendance_photo.view",
+  face_template: "face_template.view",
   diagnostics: "diagnostics.view",
 };
 

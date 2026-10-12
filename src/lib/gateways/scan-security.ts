@@ -3,7 +3,15 @@
 import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
-import type { ScanSecuritySettings } from "@/lib/validations/scan-security";
+import {
+  FACE_THRESHOLD_DEFAULT,
+  normalizeFaceMode,
+  normalizeFaceThreshold,
+} from "@/lib/validations/face-match";
+import type {
+  ScanSecurityDraft,
+  ScanSecuritySettings,
+} from "@/lib/validations/scan-security";
 
 export type { ScanSecuritySettings } from "@/lib/validations/scan-security";
 
@@ -18,6 +26,11 @@ function normalize(value: unknown): ScanSecuritySettings {
     ipRestrictionEnabled: record.ipRestrictionEnabled === true,
     photoRequiredForMe: record.photoRequiredForMe === true,
     ipRestrictionRequiredForMe: record.ipRestrictionRequiredForMe === true,
+    faceVerifyEnabled: record.faceVerifyEnabled === true,
+    faceMode: normalizeFaceMode(record.faceMode) ?? "pantau",
+    faceThreshold:
+      normalizeFaceThreshold(record.faceThreshold) ?? FACE_THRESHOLD_DEFAULT,
+    faceRequiredForMe: record.faceRequiredForMe === true,
     entries: list(record.entries),
     deviceAddresses: list(record.deviceAddresses),
     canManage: record.canManage === true,
@@ -43,15 +56,16 @@ export async function getScanSecurity(): Promise<ScanSecuritySettings> {
   return normalize(response.data);
 }
 
-export async function saveScanSecurity(input: {
-  photoEnabled: boolean;
-  ipRestrictionEnabled: boolean;
-  entries: readonly string[];
-}): Promise<ScanSecuritySettings> {
+export async function saveScanSecurity(
+  input: ScanSecurityDraft,
+): Promise<ScanSecuritySettings> {
   const payload = {
     photoEnabled: input.photoEnabled,
     ipRestrictionEnabled: input.ipRestrictionEnabled,
     entries: [...input.entries],
+    faceVerifyEnabled: input.faceVerifyEnabled,
+    faceMode: input.faceMode,
+    faceThreshold: input.faceThreshold,
   };
   if (isDesktopRuntime()) {
     return normalize(

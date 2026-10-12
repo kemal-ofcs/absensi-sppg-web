@@ -91,6 +91,19 @@ export const PERMISSION_CATALOG = [
     name: "Hapus Foto Bukti Absensi",
     group: "Sistem",
   },
+  // Wajah terdaftar untuk verifikasi 1:1 saat scan. MENGELOLANYA sensitif:
+  // wajah orang lain yang didaftarkan di nama seseorang membuat kartu yang
+  // dipinjamkan lolos pemeriksaan.
+  {
+    key: "face_template.view",
+    name: "Lihat Pendaftaran Wajah",
+    group: "Sistem",
+  },
+  {
+    key: "face_template.manage",
+    name: "Kelola Pendaftaran Wajah",
+    group: "Sistem",
+  },
   // Portabilitas data. MEMBUAT cadangan tidak butuh izin khusus di luar ini,
   // tetapi berkasnya memuat hash password, rahasia TOTP, dan foto absensi —
   // jadi mengeluarkannya dari perangkat adalah tindakan yang harus diberikan
@@ -189,6 +202,8 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Menghapus foto bukti absensi menghilangkan satu-satunya bukti visual bahwa
   // sebuah scan benar dilakukan orang yang bersangkutan.
   "attendance_photo.delete",
+  // Wajah yang salah di nama seseorang meloloskan kartu yang dipinjamkan.
+  "face_template.manage",
   // Memulihkan cadangan MENIMPA seluruh data perusahaan sekaligus — absensi,
   // payroll, operator, dan hak aksesnya. Tidak ada operasi lain di aplikasi ini
   // yang bisa menghapus sebanyak itu dalam satu langkah.

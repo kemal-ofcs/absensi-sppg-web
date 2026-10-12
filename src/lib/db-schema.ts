@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 18;
-export const REQUIRED_TABLE_COUNT = 36;
+export const CURRENT_SCHEMA_VERSION = 19;
+export const REQUIRED_TABLE_COUNT = 37;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -24,7 +24,7 @@ export async function isDatabaseSchemaReady(client: Client) {
             'salary_configs', 'overtime_tier_rules', 'payroll_components',
             'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
             'password_reset_request', 'app_mail_config', 'absensi_foto',
-            'hari_libur_whitelist', 'personil_foto'
+            'hari_libur_whitelist', 'personil_foto', 'personil_wajah'
           )
         ) AS table_count;
     `);

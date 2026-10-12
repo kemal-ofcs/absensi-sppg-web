@@ -1,6 +1,7 @@
 mod administration;
 pub mod commands;
 pub mod config;
+pub mod face_match;
 pub mod license;
 pub mod models;
 mod operational;

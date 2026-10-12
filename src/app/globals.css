@@ -1736,6 +1736,21 @@ html.light .bootstrap-btn-check:hover:not(:disabled) {
   color: #0369a1 !important;
 }
 
+/* Bingkai pill status (badge vonis wajah, status pendaftaran, StatusBadge).
+   Versi `/25` transparan nyaris tak terlihat di atas putih. */
+html[data-theme="light"] .border-emerald-400\/25,
+html.light .border-emerald-400\/25 {
+  border-color: #86efac !important;
+}
+html[data-theme="light"] .border-rose-400\/25,
+html.light .border-rose-400\/25 {
+  border-color: #fda4af !important;
+}
+html[data-theme="light"] .border-amber-400\/25,
+html.light .border-amber-400\/25 {
+  border-color: #fcd34d !important;
+}
+
 /* Summary Card */
 html[data-theme="light"] .bootstrap-summary-card.border-emerald-400\/30,
 html.light .bootstrap-summary-card.border-emerald-400\/30 {

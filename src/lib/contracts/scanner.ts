@@ -35,6 +35,13 @@ export interface ScanTerminalInput {
    */
   fotoBase64?: string;
   fotoMime?: "image/jpeg" | "image/png" | "image/webp";
+  /**
+   * Vektor wajah yang dilihat kamera foto (int8 base64, `face-match.ts`).
+   * Hanya bahan perbandingan: wajah terdaftar yang menjadi pembandingnya
+   * selalu dibaca dari database, tidak pernah dari sini.
+   */
+  wajahModel?: string;
+  wajahVektor?: string;
 }
 
 export interface ScanResult {
