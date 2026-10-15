@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-accounting-report-cashflow"
+description = "Enables the desktop_accounting_report_cashflow command without any pre-configured scope."
+commands.allow = ["desktop_accounting_report_cashflow"]
+
+[[permission]]
+identifier = "deny-desktop-accounting-report-cashflow"
+description = "Denies the desktop_accounting_report_cashflow command without any pre-configured scope."
+commands.deny = ["desktop_accounting_report_cashflow"]

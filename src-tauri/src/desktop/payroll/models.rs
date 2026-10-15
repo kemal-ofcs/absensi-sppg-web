@@ -301,6 +301,9 @@ pub struct PayrollRecapRow {
     pub est_bpjs_employee: i64,
     pub est_pph21: i64,
     pub est_net_salary: i64,
+    /// Cicilan kasbon yang ikut dipotong; sudah termasuk di
+    /// `est_total_deduction`.
+    pub est_kasbon: i64,
     pub salary_type: String,
     pub daily_rate: i64,
     /// Tanggal unik berstatus Hadir. Berbeda dengan `total_hadir` (jumlah

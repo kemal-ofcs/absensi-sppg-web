@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-inventory-procurement"
+description = "Enables the desktop_inventory_procurement command without any pre-configured scope."
+commands.allow = ["desktop_inventory_procurement"]
+
+[[permission]]
+identifier = "deny-desktop-inventory-procurement"
+description = "Denies the desktop_inventory_procurement command without any pre-configured scope."
+commands.deny = ["desktop_inventory_procurement"]

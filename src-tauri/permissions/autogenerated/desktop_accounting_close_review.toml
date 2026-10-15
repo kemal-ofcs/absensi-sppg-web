@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-accounting-close-review"
+description = "Enables the desktop_accounting_close_review command without any pre-configured scope."
+commands.allow = ["desktop_accounting_close_review"]
+
+[[permission]]
+identifier = "deny-desktop-accounting-close-review"
+description = "Denies the desktop_accounting_close_review command without any pre-configured scope."
+commands.deny = ["desktop_accounting_close_review"]

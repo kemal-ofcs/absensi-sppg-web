@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 19;
+pub const CLIENT_SCHEMA_VERSION: i64 = 23;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -559,9 +559,259 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_unik",
         delete_missing: true,
     },
+    // ── v20: Inventaris ──
+    //
+    // Keduanya `delete_missing: false`: barang hanya dinonaktifkan dan mutasi
+    // tidak pernah dihapus, jadi ketiadaan baris di snapshot tidak pernah
+    // berarti "dihapus".
+    SnapshotTable {
+        payload_key: "inventoryItems",
+        domain: "inventory-item",
+        table: "inventory_barang",
+        columns: &[
+            "id_barang",
+            "kode_barang",
+            "nama_barang",
+            "kategori",
+            "tipe",
+            "satuan",
+            "bisa_expired",
+            "stok_minimum",
+            "tempat_utama",
+            "catatan",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_barang",
+        entity_column: "id_barang",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "inventoryMutations",
+        domain: "inventory-mutation",
+        table: "inventory_mutasi",
+        columns: &[
+            "id_mutasi",
+            "id_barang",
+            "jenis",
+            "alasan",
+            "tanggal",
+            "jumlah",
+            "tempat_asal",
+            "kondisi_asal",
+            "tempat_tujuan",
+            "kondisi_tujuan",
+            "id_batch",
+            "tanggal_expired",
+            "id_ref",
+            "penerima_tipe",
+            "penerima_id",
+            "penerima_nama",
+            "keperluan",
+            "sumber_dana",
+            "nomor_dokumen",
+            "harga_satuan",
+            "catatan",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_mutasi",
+        entity_column: "id_mutasi",
+        delete_missing: false,
+    },
+    // Registri aset per unit.
+    //
+    // `delete_missing: false`: unit tidak pernah dihapus. Unit yang afkir atau
+    // hilang tetap ada barisnya dengan saldo 0.
+    SnapshotTable {
+        payload_key: "inventoryUnits",
+        domain: "inventory-unit",
+        table: "inventory_unit",
+        columns: &[
+            "id_unit",
+            "id_barang",
+            "kode_unit",
+            "nomor_seri",
+            "catatan",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_unit",
+        entity_column: "id_unit",
+        delete_missing: false,
+    },
+    // ── v21: Akuntansi ──
+    //
+    // Ketiganya `delete_missing: false`: akun hanya dinonaktifkan dan jurnal
+    // append-only (koreksi = jurnal pembalik), jadi ketiadaan baris di
+    // snapshot tidak pernah berarti "dihapus".
+    SnapshotTable {
+        payload_key: "accountingAccounts",
+        domain: "accounting-account",
+        table: "keu_akun",
+        columns: &[
+            "id_akun",
+            "kode",
+            "nama",
+            "kelompok",
+            "saldo_normal",
+            "is_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_akun",
+        entity_column: "id_akun",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "accountingJournals",
+        domain: "accounting-journal",
+        table: "keu_jurnal",
+        columns: &[
+            "id_jurnal",
+            "tanggal",
+            "seri",
+            "nomor_urut",
+            "nomor",
+            "keterangan",
+            "sumber",
+            "id_sumber",
+            "id_jurnal_batal",
+            "dibuat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_jurnal",
+        entity_column: "id_jurnal",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "accountingJournalLines",
+        // Domain sendiri, pola baris detail: cache hash dan
+        // revisi disimpan per (domain, kunci), jadi baris yang memakai domain
+        // dan kunci headernya akan saling menimpa.
+        domain: "accounting-journal-line",
+        table: "keu_jurnal_baris",
+        columns: &[
+            "id_baris",
+            "id_jurnal",
+            "id_akun",
+            "debit",
+            "kredit",
+            "keterangan",
+            "urutan",
+        ],
+        conflict_column: "id_baris",
+        entity_column: "id_baris",
+        delete_missing: false,
+    },
+    // ── v22: Kasbon karyawan ──
+    //
+    // Pinjaman dan mutasinya `delete_missing: false` (tidak pernah dihapus).
+    // Penundaan bisa dicabut, jadi `delete_missing: true`: cabutan di perangkat
+    // lain wajib ikut hilang di sini, kalau tidak gaji tetap tidak dipotong.
+    SnapshotTable {
+        payload_key: "employeeLoans",
+        domain: "loan",
+        table: "keu_pinjaman",
+        columns: &[
+            "id_pinjaman",
+            "id_karyawan",
+            "nama_karyawan",
+            "pokok",
+            "cicilan",
+            "mulai_potong",
+            "keterangan",
+            "status",
+            "tanggal_pengajuan",
+            "diajukan_oleh",
+            "diputuskan_oleh",
+            "tanggal_cair",
+            "id_akun_kas",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_pinjaman",
+        entity_column: "id_pinjaman",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "employeeLoanMutations",
+        domain: "loan-mutation",
+        table: "keu_pinjaman_mutasi",
+        columns: &[
+            "id_mutasi",
+            "id_pinjaman",
+            "jenis",
+            "jumlah",
+            "tanggal",
+            "id_ref",
+            "id_jurnal",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_mutasi",
+        entity_column: "id_mutasi",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "employeeLoanDeferrals",
+        domain: "loan-deferral",
+        table: "keu_pinjaman_tunda",
+        columns: &[
+            "id_tunda",
+            "id_pinjaman",
+            "periode",
+            "alasan",
+            "dibuat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_tunda",
+        entity_column: "id_tunda",
+        delete_missing: true,
+    },
+    // ── v23: Tutup buku ──
+    //
+    // Statusnya berubah (buka kembali, keputusan bentrokan), tetapi barisnya
+    // tidak pernah dihapus.
+    SnapshotTable {
+        payload_key: "bookClosings",
+        domain: "accounting-close",
+        table: "keu_tutup_buku",
+        columns: &[
+            "id_tutup",
+            "sampai_tanggal",
+            "dibuat_oleh",
+            "kode_perangkat",
+            "waktu_perangkat",
+            "diterima_cloud",
+            "saldo_json",
+            "status",
+            "alasan_buka",
+            "dibuka_oleh",
+            "dibuka_pada",
+            "created_at",
+            "updated_at",
+            "diputuskan_oleh",
+            "diputuskan_pada",
+            "catatan_keputusan",
+        ],
+        conflict_column: "id_tutup",
+        entity_column: "id_tutup",
+        delete_missing: false,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
+    ("accounting-account", "save"),
+    ("accounting-close", "create"),
+    ("accounting-close", "decide"),
+    ("accounting-close", "reopen"),
+    ("accounting-journal", "post"),
+    ("loan", "save"),
+    ("loan-deferral", "delete"),
+    ("loan-deferral", "save"),
+    ("loan-mutation", "create"),
     ("attendance", "create"),
     ("attendance", "delete"),
     ("attendance", "scan"),
@@ -586,6 +836,9 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("face-template", "save"),
     ("id-card", "update"),
     ("id-card-template", "save"),
+    ("inventory-item", "save"),
+    ("inventory-mutation", "create"),
+    ("inventory-unit", "save"),
     ("log-scan", "delete"),
     ("offline-import", "delete"),
     ("offline-import", "row"),

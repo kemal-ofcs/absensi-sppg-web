@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    face_match, license,
+    accounting, face_match, inventory, license, loan, tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
@@ -2311,4 +2311,410 @@ mod tests_offline_login {
             assert_ne!(error.code, online_code);
         }
     }
+}
+
+#[tauri::command]
+pub fn desktop_inventory_list(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::list_inventory(&state)
+}
+
+/// Penerima dibaca dengan izin mencatat, bukan `employees.view`: petugas
+/// gudang perlu memilih penerima tanpa melihat seluruh data karyawan.
+#[tauri::command]
+pub fn desktop_inventory_recipients(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.record")?;
+    inventory::list_recipients(&state)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_save_item(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.manage")?;
+    inventory::save_item(&state, draft)
+}
+
+/// Daftar awalan kode barang. Diatur oleh pemegang `inventory.manage`, bukan
+/// `branding.manage`, supaya petugas gudang bisa mengelolanya sendiri.
+#[tauri::command]
+pub fn desktop_inventory_save_code_prefixes(
+    state: State<'_, DesktopState>,
+    prefixes: Vec<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.manage")?;
+    inventory::save_code_prefixes(&state, prefixes)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_record_mutation(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    // Izinnya ditentukan alasan: penghapusan stok (Rusak/Afkir, Hilang,
+    // Kedaluwarsa) menuntut `inventory.adjust`, dan diperiksa sebelum apa pun
+    // ditulis.
+    let alasan = draft.get("alasan").and_then(Value::as_str).unwrap_or("");
+    let operator = require_permission(&state, inventory::izin_untuk_alasan(alasan))?;
+    inventory::record_mutation(&state, &operator.username, draft)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_loans(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::list_loans(&state)
+}
+
+/// Isi berita acara, termasuk kop perusahaan. Izinnya `inventory.view` karena
+/// isinya sama dengan yang sudah terlihat di kartu stok.
+#[tauri::command]
+pub fn desktop_inventory_document(
+    state: State<'_, DesktopState>,
+    id_mutasi: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::document(&state, &id_mutasi)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_opname_history(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::opname_history(&state)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_procurement(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::procurement(&state, &dari, &sampai)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_record_opname(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.adjust")?;
+    inventory::record_opname(&state, &operator.username, draft)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_cancel_mutation(
+    state: State<'_, DesktopState>,
+    id_mutasi: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.adjust")?;
+    inventory::cancel_mutation(&state, &operator.username, &id_mutasi, &alasan)
+}
+
+#[tauri::command]
+pub fn desktop_inventory_stock_card(
+    state: State<'_, DesktopState>,
+    id_barang: String,
+    tempat: Option<String>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::stock_card(&state, &id_barang, tempat, &dari, &sampai)
+}
+
+/// Mendaftarkan stok aset yang belum bernomor menjadi unit. Jumlah stok tidak
+/// berubah, jadi cukup `inventory.manage` seperti pengaturan barang lain.
+#[tauri::command]
+pub fn desktop_inventory_register_units(
+    state: State<'_, DesktopState>,
+    id_barang: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.manage")?;
+    inventory::register_units(&state, &operator.username, &id_barang)
+}
+
+/// Nomor seri dan catatan satu unit.
+#[tauri::command]
+pub fn desktop_inventory_save_unit(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.manage")?;
+    inventory::save_unit(&state, draft)
+}
+
+/// Bagan akun beserta penanda akun sistem dan akun yang sudah dipakai jurnal.
+#[tauri::command]
+pub fn desktop_accounting_accounts(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::list_accounts(&state)
+}
+
+#[tauri::command]
+pub fn desktop_accounting_save_account(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.manage")?;
+    accounting::save_account(&state, draft)
+}
+
+#[tauri::command]
+pub fn desktop_accounting_journals(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+    sumber: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::list_journals(&state, &dari, &sampai, sumber.as_deref())
+}
+
+#[tauri::command]
+pub fn desktop_accounting_journal(
+    state: State<'_, DesktopState>,
+    id_jurnal: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::get_journal(&state, &id_jurnal)
+}
+
+/// Jurnal umum manual. Header dan seluruh barisnya ditulis dalam satu
+/// transaksi lokal dan satu event outbox.
+#[tauri::command]
+pub fn desktop_accounting_post_journal(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.manage")?;
+    accounting::post_journal(&state, &operator.username, draft)
+}
+
+/// Pembatalan menuntut izin sensitif tersendiri: jurnal pembalik mengubah
+/// saldo setiap akun yang disentuh jurnal asalnya.
+#[tauri::command]
+pub fn desktop_accounting_reverse_journal(
+    state: State<'_, DesktopState>,
+    id_jurnal: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.reverse")?;
+    accounting::reverse_journal(&state, &operator.username, &id_jurnal, &alasan)
+}
+
+#[tauri::command]
+pub fn desktop_accounting_ledger(
+    state: State<'_, DesktopState>,
+    id_akun: String,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::ledger(&state, &id_akun, &dari, &sampai)
+}
+
+#[tauri::command]
+pub fn desktop_accounting_trial_balance(
+    state: State<'_, DesktopState>,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::trial_balance(&state, &sampai)
+}
+
+/// Laporan Posisi Keuangan per tanggal (ISAK 35).
+#[tauri::command]
+pub fn desktop_accounting_report_position(
+    state: State<'_, DesktopState>,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::report_position(&state, &sampai)
+}
+
+/// Laporan Penghasilan Komprehensif untuk satu rentang (ISAK 35).
+#[tauri::command]
+pub fn desktop_accounting_report_activity(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::report_activity(&state, &dari, &sampai)
+}
+
+/// Laporan Arus Kas metode langsung untuk akun kas yang dipilih.
+#[tauri::command]
+pub fn desktop_accounting_report_cashflow(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+    akun_kas: Vec<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    accounting::report_cashflow(&state, &dari, &sampai, &akun_kas)
+}
+
+/// Daftar kasbon beserta sisa yang dihitung dari mutasinya.
+#[tauri::command]
+pub fn desktop_loan_list(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "loan.view")?;
+    loan::list_loans(&state)
+}
+
+#[tauri::command]
+pub fn desktop_loan_detail(
+    state: State<'_, DesktopState>,
+    id_pinjaman: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "loan.view")?;
+    loan::loan_detail(&state, &id_pinjaman)
+}
+
+/// Personil aktif untuk dipilih sebagai peminjam, dengan izin kasbon (bukan
+/// `employees.view`): bendahara tidak perlu melihat seluruh data kepegawaian.
+#[tauri::command]
+pub fn desktop_loan_people(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "loan.manage")?;
+    loan::loan_people(&state)
+}
+
+#[tauri::command]
+pub fn desktop_loan_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "loan.manage")?;
+    loan::save_loan(&state, &operator.username, draft)
+}
+
+/// Menyetujui (sekaligus mencairkan), menolak, atau membatalkan kasbon. Izin
+/// sensitif: uang perusahaan berpindah atau piutangnya dihapus dari pembukuan.
+#[tauri::command]
+pub fn desktop_loan_decide(
+    state: State<'_, DesktopState>,
+    id_pinjaman: String,
+    aksi: String,
+    id_akun_kas: Option<String>,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "loan.approve")?;
+    loan::decide_loan(
+        &state,
+        &operator.username,
+        &id_pinjaman,
+        &aksi,
+        id_akun_kas.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn desktop_loan_pay_off(
+    state: State<'_, DesktopState>,
+    id_pinjaman: String,
+    jumlah: i64,
+    id_akun_kas: Option<String>,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "loan.manage")?;
+    loan::pay_off_loan(
+        &state,
+        &operator.username,
+        &id_pinjaman,
+        jumlah,
+        id_akun_kas.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn desktop_loan_defer(
+    state: State<'_, DesktopState>,
+    id_pinjaman: String,
+    periode: String,
+    alasan: Option<String>,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "loan.manage")?;
+    loan::defer_loan(
+        &state,
+        &operator.username,
+        &id_pinjaman,
+        &periode,
+        alasan.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn desktop_loan_undefer(
+    state: State<'_, DesktopState>,
+    id_tunda: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "loan.manage")?;
+    loan::undefer_loan(&state, &id_tunda)
+}
+
+/// Batas tutup buku yang berlaku dan riwayatnya.
+#[tauri::command]
+pub fn desktop_accounting_close_status(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    tutup_buku::status(&state)
+}
+
+/// Tutup buku sampai satu tanggal: izin sensitif, karena setelahnya perangkat
+/// ini menolak setiap pencatatan bertanggal di periode itu.
+#[tauri::command]
+pub fn desktop_accounting_close(
+    state: State<'_, DesktopState>,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.close")?;
+    tutup_buku::close(&state, &operator.username, &sampai)
+}
+
+/// Buka kembali periode yang terakhir ditutup, dengan alasan.
+#[tauri::command]
+pub fn desktop_accounting_reopen(
+    state: State<'_, DesktopState>,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.close")?;
+    tutup_buku::reopen(&state, &operator.username, &alasan)
+}
+
+/// Bahan tinjauan satu tutup buku (bentrokan atau saldo yang berubah).
+#[tauri::command]
+pub fn desktop_accounting_close_review(
+    state: State<'_, DesktopState>,
+    id_tutup: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    tutup_buku::review(&state, &id_tutup)
+}
+
+/// Putuskan tutup buku yang menunggu keputusan: dipakai atau ditolak.
+#[tauri::command]
+pub fn desktop_accounting_close_decide(
+    state: State<'_, DesktopState>,
+    id_tutup: String,
+    keputusan: String,
+    catatan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.close")?;
+    tutup_buku::decide(&state, &operator.username, &id_tutup, &keputusan, &catatan)
+}
+
+/// Tutup ulang tutup buku yang saldonya berubah sejak ditutup.
+#[tauri::command]
+pub fn desktop_accounting_close_revise(
+    state: State<'_, DesktopState>,
+    id_tutup: String,
+    catatan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.close")?;
+    tutup_buku::revise(&state, &operator.username, &id_tutup, &catatan)
 }

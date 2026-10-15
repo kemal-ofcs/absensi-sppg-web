@@ -82,6 +82,24 @@ const NAVIGATION: NavigationItem[] = [
     label: "Pendaftaran Wajah",
   },
   {
+    area: "inventaris",
+    href: "/inventaris",
+    icon: "box",
+    label: "Inventaris",
+  },
+  {
+    area: "keuangan",
+    href: "/keuangan",
+    icon: "document",
+    label: "Keuangan",
+  },
+  {
+    area: "kasbon",
+    href: "/kasbon",
+    icon: "users",
+    label: "Kasbon",
+  },
+  {
     area: "settings",
     href: "/settings",
     icon: "settings",

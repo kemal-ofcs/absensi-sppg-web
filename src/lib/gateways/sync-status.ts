@@ -65,6 +65,18 @@ export const SYNC_REQUEST_EVENT = "sppg:sync-request";
  *
  * Aman dipanggil dari mana saja: no-op di luar runtime Tauri dan saat SSR.
  */
+/**
+ * Daftarkan satu penangan "siklus sinkronisasi selesai", kembalikan pelepasnya.
+ * Bentuknya `useEffect`-friendly: `return subscribeSyncCompleted(fn)` sudah
+ * merupakan pendaftaran beserta pembersihannya.
+ */
+export function subscribeSyncCompleted(handler: () => void): () => void {
+  window.addEventListener(SYNC_COMPLETED_EVENT, handler);
+  return () => {
+    window.removeEventListener(SYNC_COMPLETED_EVENT, handler);
+  };
+}
+
 export function requestSyncNow() {
   if (typeof window === "undefined" || !isDesktopRuntime()) return;
   window.dispatchEvent(new CustomEvent(SYNC_REQUEST_EVENT));

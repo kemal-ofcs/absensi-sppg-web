@@ -565,6 +565,8 @@ export async function transitionPayrollStatus(
   runId: string,
   targetStatus: string,
   notes?: string,
+  /** Akun Kas/Bank sumber pembayaran gaji; hanya dipakai saat PAID. */
+  idAkunBayar?: string,
 ): Promise<PayrollRunRow> {
   if (isDesktopRuntime()) {
     const result = await invokeDesktop<PayrollRunRow>(
@@ -573,6 +575,7 @@ export async function transitionPayrollStatus(
         runId,
         targetStatus,
         notes,
+        idAkunBayar,
       },
     );
     kickDesktopSync();
@@ -585,6 +588,7 @@ export async function transitionPayrollStatus(
       runId,
       targetStatus,
       notes,
+      idAkunBayar,
     },
   );
   return response.data;

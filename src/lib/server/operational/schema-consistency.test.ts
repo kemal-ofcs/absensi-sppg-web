@@ -37,7 +37,11 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'salary_configs', 'overtime_tier_rules', 'payroll_components',
         'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
         'password_reset_request', 'app_mail_config', 'absensi_foto',
-        'hari_libur_whitelist', 'personil_foto', 'personil_wajah'
+        'hari_libur_whitelist', 'personil_foto', 'personil_wajah',
+        'inventory_barang', 'inventory_mutasi', 'inventory_unit',
+        'keu_akun', 'keu_jurnal', 'keu_jurnal_baris',
+        'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
+        'keu_tutup_buku'
       );
     `);
     const tableCount = Number(tablesRes.rows[0]?.count ?? 0);

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PilihAkunBayar } from "@/components/keuangan/PilihAkunBayar";
 import { AuditTrailTimeline } from "@/components/payroll/AuditTrailTimeline";
 import { RunStatusBadge } from "@/components/payroll/RunStatusBadge";
 import { SlipGajiPrintView } from "@/components/payroll/SlipGajiPrintView";
@@ -42,6 +43,7 @@ export default function RunDetailClient() {
   const [transitionModalOpen, setTransitionModalOpen] = useState(false);
   const [targetStatus, setTargetStatus] = useState<string>("");
   const [statusNotes, setStatusNotes] = useState<string>("");
+  const [akunBayar, setAkunBayar] = useState("akun-kas");
   const [transitioning, setTransitioning] = useState(false);
 
   const [feedback, setFeedback] = useState<{
@@ -93,7 +95,12 @@ export default function RunDetailClient() {
     setTransitioning(true);
     setFeedback(null);
     try {
-      await transitionPayrollStatus(runId, targetStatus, statusNotes);
+      await transitionPayrollStatus(
+        runId,
+        targetStatus,
+        statusNotes,
+        akunBayar,
+      );
       setTransitionModalOpen(false);
       setFeedback({
         type: "success",
@@ -413,6 +420,20 @@ export default function RunDetailClient() {
                 <strong>{runId}</strong> ke status{" "}
                 <strong className="text-sky-400">{targetStatus}</strong>?
               </p>
+              {targetStatus === "PAID" ? (
+                <div className="space-y-2">
+                  <PilihAkunBayar
+                    id="run-akun-bayar"
+                    label="Gaji dibayar dari akun"
+                    value={akunBayar}
+                    onChange={setAkunBayar}
+                  />
+                  <p className="text-xs text-slate-400">
+                    Saat dibayar, cicilan kasbon di slip tercatat sebagai
+                    angsuran dan satu jurnal gaji dicatat di pembukuan.
+                  </p>
+                </div>
+              ) : null}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">
                   <span>Catatan / Justifikasi (Opsional):</span>

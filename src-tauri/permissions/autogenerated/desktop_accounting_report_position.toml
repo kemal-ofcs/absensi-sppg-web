@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-accounting-report-position"
+description = "Enables the desktop_accounting_report_position command without any pre-configured scope."
+commands.allow = ["desktop_accounting_report_position"]
+
+[[permission]]
+identifier = "deny-desktop-accounting-report-position"
+description = "Denies the desktop_accounting_report_position command without any pre-configured scope."
+commands.deny = ["desktop_accounting_report_position"]

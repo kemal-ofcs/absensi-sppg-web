@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-accounting-trial-balance"
+description = "Enables the desktop_accounting_trial_balance command without any pre-configured scope."
+commands.allow = ["desktop_accounting_trial_balance"]
+
+[[permission]]
+identifier = "deny-desktop-accounting-trial-balance"
+description = "Denies the desktop_accounting_trial_balance command without any pre-configured scope."
+commands.deny = ["desktop_accounting_trial_balance"]

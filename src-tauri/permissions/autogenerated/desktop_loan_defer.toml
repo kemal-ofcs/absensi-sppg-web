@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-loan-defer"
+description = "Enables the desktop_loan_defer command without any pre-configured scope."
+commands.allow = ["desktop_loan_defer"]
+
+[[permission]]
+identifier = "deny-desktop-loan-defer"
+description = "Denies the desktop_loan_defer command without any pre-configured scope."
+commands.deny = ["desktop_loan_defer"]

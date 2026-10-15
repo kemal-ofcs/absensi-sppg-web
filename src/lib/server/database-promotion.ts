@@ -150,6 +150,42 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     uniqueColumns: [],
     dependsOn: ["payroll_runs"],
   },
+
+  // Lapisan 6 — inventaris (v20). Kunci TEXT buatan klien, tanpa UNIQUE.
+  { table: "inventory_barang", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "inventory_mutasi",
+    uniqueColumns: [],
+    dependsOn: ["inventory_barang"],
+  },
+  {
+    table: "inventory_unit",
+    uniqueColumns: [],
+    dependsOn: ["inventory_barang"],
+  },
+
+  // Lapisan 7 — pembukuan (v21). Kunci TEXT buatan klien, tanpa UNIQUE.
+  { table: "keu_akun", uniqueColumns: [], dependsOn: [] },
+  { table: "keu_jurnal", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "keu_jurnal_baris",
+    uniqueColumns: [],
+    dependsOn: ["keu_jurnal", "keu_akun"],
+  },
+  // Kasbon (v22): merujuk karyawan dan jurnalnya.
+  { table: "keu_pinjaman", uniqueColumns: [], dependsOn: ["master_data"] },
+  {
+    table: "keu_pinjaman_mutasi",
+    uniqueColumns: [],
+    dependsOn: ["keu_pinjaman", "keu_jurnal"],
+  },
+  {
+    table: "keu_pinjaman_tunda",
+    uniqueColumns: [],
+    dependsOn: ["keu_pinjaman"],
+  },
+  // Tutup buku (v23): potret saldo per tanggal batas.
+  { table: "keu_tutup_buku", uniqueColumns: [], dependsOn: ["keu_akun"] },
 ];
 
 /**

@@ -18,6 +18,15 @@ function commandErrorMessage(error: unknown) {
   return "Perintah keamanan Desktop tidak dapat diproses.";
 }
 
+/**
+ * Bangunkan sinkronisasi Desktop/Mobile setelah mutasi lokal. Kegagalan
+ * sengaja ditelan: datanya sudah tersimpan di SQLite lokal dan outbox akan
+ * mencoba lagi sendiri.
+ */
+export function kickDesktopSync() {
+  void invokeDesktop("desktop_sync_now").catch(() => undefined);
+}
+
 export async function invokeDesktop<T>(
   command: string,
   args?: Record<string, unknown>,

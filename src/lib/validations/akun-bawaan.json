@@ -1,0 +1,194 @@
+[
+  {
+    "id_akun": "akun-kas",
+    "kode": "1-1100",
+    "nama": "Kas",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-bank",
+    "kode": "1-1200",
+    "nama": "Bank",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-piutang-usaha",
+    "kode": "1-1300",
+    "nama": "Piutang Usaha",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-piutang-karyawan",
+    "kode": "1-1400",
+    "nama": "Piutang Karyawan",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-persediaan",
+    "kode": "1-1500",
+    "nama": "Persediaan",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-peralatan",
+    "kode": "1-2100",
+    "nama": "Peralatan",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-kendaraan",
+    "kode": "1-2200",
+    "nama": "Kendaraan",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-bangunan",
+    "kode": "1-2300",
+    "nama": "Bangunan",
+    "kelompok": "Aset",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-utang-pph21",
+    "kode": "2-1100",
+    "nama": "Utang PPh 21",
+    "kelompok": "Kewajiban",
+    "saldo_normal": "Kredit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-utang-bpjs",
+    "kode": "2-1200",
+    "nama": "Utang BPJS",
+    "kelompok": "Kewajiban",
+    "saldo_normal": "Kredit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-utang-usaha",
+    "kode": "2-1300",
+    "nama": "Utang Usaha",
+    "kelompok": "Kewajiban",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-potongan-gaji",
+    "kode": "2-1500",
+    "nama": "Potongan Gaji Lain",
+    "kelompok": "Kewajiban",
+    "saldo_normal": "Kredit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-modal",
+    "kode": "3-1000",
+    "nama": "Modal Pemilik",
+    "kelompok": "Ekuitas",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-laba-ditahan",
+    "kode": "3-2000",
+    "nama": "Laba Ditahan",
+    "kelompok": "Ekuitas",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-pendapatan-usaha",
+    "kode": "4-1100",
+    "nama": "Pendapatan Usaha",
+    "kelompok": "Pendapatan",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-pendapatan-lain",
+    "kode": "4-1900",
+    "nama": "Pendapatan Lain-lain",
+    "kelompok": "Pendapatan",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-gaji",
+    "kode": "5-1100",
+    "nama": "Beban Gaji",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-beban-bpjs",
+    "kode": "5-1150",
+    "nama": "Beban BPJS Perusahaan",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
+    "id_akun": "akun-beban-utilitas",
+    "kode": "5-1200",
+    "nama": "Beban Listrik, Air, dan Internet",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-atk",
+    "kode": "5-1300",
+    "nama": "Beban ATK",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-sewa",
+    "kode": "5-1400",
+    "nama": "Beban Sewa",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-pemeliharaan",
+    "kode": "5-1500",
+    "nama": "Beban Pemeliharaan",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-transportasi",
+    "kode": "5-1600",
+    "nama": "Beban Transportasi",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-lain",
+    "kode": "5-1900",
+    "nama": "Beban Lain-lain",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  }
+]

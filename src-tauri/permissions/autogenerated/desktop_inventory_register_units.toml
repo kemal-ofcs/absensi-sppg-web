@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-inventory-register-units"
+description = "Enables the desktop_inventory_register_units command without any pre-configured scope."
+commands.allow = ["desktop_inventory_register_units"]
+
+[[permission]]
+identifier = "deny-desktop-inventory-register-units"
+description = "Denies the desktop_inventory_register_units command without any pre-configured scope."
+commands.deny = ["desktop_inventory_register_units"]

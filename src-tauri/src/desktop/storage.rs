@@ -618,6 +618,196 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         dibuat_oleh TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      -- Inventaris (v20). DDL keempat lapis WAJIB identik: `turso.rs` dan
+      -- `db-migrations.ts`. Tidak ada kolom stok: stok dihitung dari mutasi
+      -- lewat view `inventory_saldo`, karena kolom stok yang ikut sync ditimpa
+      -- siapa terakhir menang saat dua perangkat offline.
+      CREATE TABLE IF NOT EXISTS inventory_barang (
+        id_barang TEXT PRIMARY KEY,
+        kode_barang TEXT NOT NULL,
+        nama_barang TEXT NOT NULL,
+        kategori TEXT,
+        tipe TEXT NOT NULL CHECK (tipe IN ('Aset', 'Habis Pakai')),
+        satuan TEXT NOT NULL,
+        bisa_expired INTEGER NOT NULL DEFAULT 0 CHECK (bisa_expired IN (0, 1)),
+        stok_minimum INTEGER NOT NULL DEFAULT 0 CHECK (stok_minimum >= 0),
+        tempat_utama TEXT,
+        catatan TEXT,
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      -- Append-only. Pembatalan adalah baris kebalikan berid 'batal-' || id_ref.
+      CREATE TABLE IF NOT EXISTS inventory_mutasi (
+        id_mutasi TEXT PRIMARY KEY,
+        id_barang TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Masuk', 'Keluar', 'Pindah')),
+        alasan TEXT NOT NULL CHECK (alasan IN (
+          'Saldo Awal', 'Pengadaan', 'Hibah', 'Pengembalian',
+          'Pemakaian', 'Peminjaman', 'Rusak/Afkir', 'Hilang', 'Kedaluwarsa',
+          'Distribusi', 'Perubahan Kondisi',
+          'Selisih Opname', 'Pembatalan')),
+        tanggal TEXT NOT NULL,
+        jumlah INTEGER NOT NULL CHECK (jumlah > 0),
+        tempat_asal TEXT,
+        kondisi_asal TEXT CHECK (kondisi_asal IN ('Baik', 'Rusak Ringan', 'Rusak Berat')),
+        tempat_tujuan TEXT,
+        kondisi_tujuan TEXT CHECK (kondisi_tujuan IN ('Baik', 'Rusak Ringan', 'Rusak Berat')),
+        id_batch TEXT,
+        tanggal_expired TEXT,
+        id_ref TEXT,
+        penerima_tipe TEXT CHECK (penerima_tipe IN ('Personil', 'Divisi', 'Unit', 'Umum')),
+        penerima_id TEXT,
+        penerima_nama TEXT,
+        keperluan TEXT,
+        sumber_dana TEXT,
+        nomor_dokumen TEXT,
+        harga_satuan INTEGER CHECK (harga_satuan IS NULL OR harga_satuan >= 0),
+        catatan TEXT,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_mutasi_barang_tanggal
+        ON inventory_mutasi(id_barang, tanggal);
+      CREATE INDEX IF NOT EXISTS idx_inventory_mutasi_batch ON inventory_mutasi(id_batch);
+      CREATE INDEX IF NOT EXISTS idx_inventory_mutasi_ref ON inventory_mutasi(id_ref);
+      -- Satu-satunya rumus stok. `CREATE VIEW IF NOT EXISTS` tidak pernah
+      -- memperbarui view lama: mengubah rumusnya berarti DROP VIEW lalu buat
+      -- ulang, di keempat lapis sekaligus.
+      CREATE VIEW IF NOT EXISTS inventory_saldo AS
+        SELECT id_barang, MIN(tempat) AS tempat, kondisi, id_batch, SUM(delta) AS saldo
+        FROM (
+          SELECT id_barang, tempat_tujuan AS tempat, kondisi_tujuan AS kondisi, id_batch, jumlah AS delta
+            FROM inventory_mutasi WHERE tempat_tujuan IS NOT NULL
+          UNION ALL
+          SELECT id_barang, tempat_asal, kondisi_asal, id_batch, -jumlah
+            FROM inventory_mutasi WHERE tempat_asal IS NOT NULL
+        )
+        GROUP BY id_barang, LOWER(tempat), kondisi, id_batch;
+      -- Registri aset per unit. Hanya identitas: `id_unit` = id_mutasi baris
+      -- Masuk pembukanya, sehingga unit adalah batch berjumlah 1 dan
+      -- tempat/kondisinya diturunkan dari mutasi. Tanpa UNIQUE selain PK.
+      CREATE TABLE IF NOT EXISTS inventory_unit (
+        id_unit TEXT PRIMARY KEY,
+        id_barang TEXT NOT NULL,
+        kode_unit TEXT NOT NULL,
+        nomor_seri TEXT,
+        catatan TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_unit_barang ON inventory_unit(id_barang);
+      -- Akuntansi berpasangan (v21). Saldo TIDAK pernah disimpan: dihitung dari
+      -- baris jurnal, karena kolom saldo yang ikut sync ditimpa siapa terakhir
+      -- menang. Jurnal append-only; koreksi = jurnal pembalik `batal-<id>`.
+      -- Tanpa UNIQUE selain PK dan tanpa FK. DDL WAJIB identik dengan
+      -- `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS keu_akun (
+        id_akun TEXT PRIMARY KEY,
+        kode TEXT NOT NULL,
+        nama TEXT NOT NULL,
+        kelompok TEXT NOT NULL CHECK (kelompok IN ('Aset', 'Kewajiban', 'Ekuitas', 'Pendapatan', 'Beban')),
+        saldo_normal TEXT NOT NULL CHECK (saldo_normal IN ('Debit', 'Kredit')),
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS keu_jurnal (
+        id_jurnal TEXT PRIMARY KEY,
+        tanggal TEXT NOT NULL,
+        seri TEXT NOT NULL,
+        nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+        nomor TEXT NOT NULL,
+        keterangan TEXT NOT NULL,
+        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembatalan')),
+        id_sumber TEXT,
+        id_jurnal_batal TEXT,
+        dibuat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_jurnal_tanggal ON keu_jurnal(tanggal);
+      CREATE INDEX IF NOT EXISTS idx_keu_jurnal_seri ON keu_jurnal(seri, nomor_urut);
+      CREATE TABLE IF NOT EXISTS keu_jurnal_baris (
+        id_baris TEXT PRIMARY KEY,
+        id_jurnal TEXT NOT NULL,
+        id_akun TEXT NOT NULL,
+        debit INTEGER NOT NULL DEFAULT 0 CHECK (debit >= 0),
+        kredit INTEGER NOT NULL DEFAULT 0 CHECK (kredit >= 0),
+        keterangan TEXT,
+        urutan INTEGER NOT NULL DEFAULT 0,
+        CHECK ((debit > 0 AND kredit = 0) OR (debit = 0 AND kredit > 0))
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_jurnal_baris_jurnal ON keu_jurnal_baris(id_jurnal);
+      CREATE INDEX IF NOT EXISTS idx_keu_jurnal_baris_akun ON keu_jurnal_baris(id_akun);
+      -- Tutup buku / kunci periode (v23). `diterima_cloud` hanya diisi cloud;
+      -- status diubah oleh "buka kembali" dan keputusan bentrokan, barisnya
+      -- tidak pernah dihapus. DDL WAJIB identik dengan `turso.rs` dan
+      -- `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS keu_tutup_buku (
+        id_tutup TEXT PRIMARY KEY,
+        sampai_tanggal TEXT NOT NULL,
+        dibuat_oleh TEXT NOT NULL,
+        kode_perangkat TEXT NOT NULL,
+        waktu_perangkat TEXT NOT NULL,
+        diterima_cloud TEXT,
+        saldo_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Aktif' CHECK (status IN ('Aktif', 'Dibuka', 'Digantikan', 'Menunggu')),
+        alasan_buka TEXT,
+        dibuka_oleh TEXT,
+        dibuka_pada TEXT,
+        diputuskan_oleh TEXT,
+        diputuskan_pada TEXT,
+        catatan_keputusan TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      -- Kasbon karyawan (v22). Sisa TIDAK disimpan: pokok dikurangi angsuran
+      -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
+      -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
+      -- selain PK. DDL WAJIB identik dengan `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS keu_pinjaman (
+        id_pinjaman TEXT PRIMARY KEY,
+        id_karyawan TEXT NOT NULL,
+        nama_karyawan TEXT NOT NULL,
+        pokok INTEGER NOT NULL CHECK (pokok > 0),
+        cicilan INTEGER NOT NULL CHECK (cicilan > 0),
+        mulai_potong TEXT NOT NULL,
+        keterangan TEXT,
+        status TEXT NOT NULL DEFAULT 'Diajukan' CHECK (status IN ('Diajukan', 'Disetujui', 'Ditolak', 'Dibatalkan')),
+        tanggal_pengajuan TEXT NOT NULL,
+        diajukan_oleh TEXT NOT NULL,
+        diputuskan_oleh TEXT,
+        tanggal_cair TEXT,
+        id_akun_kas TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS keu_pinjaman_mutasi (
+        id_mutasi TEXT PRIMARY KEY,
+        id_pinjaman TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Pencairan', 'Angsuran Gaji', 'Pelunasan Tunai', 'Pembatalan')),
+        jumlah INTEGER NOT NULL CHECK (jumlah > 0),
+        tanggal TEXT NOT NULL,
+        id_ref TEXT,
+        id_jurnal TEXT,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS keu_pinjaman_tunda (
+        id_tunda TEXT PRIMARY KEY,
+        id_pinjaman TEXT NOT NULL,
+        periode TEXT NOT NULL,
+        alasan TEXT,
+        dibuat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_karyawan ON keu_pinjaman(id_karyawan, status);
+      CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_mutasi_pinjaman ON keu_pinjaman_mutasi(id_pinjaman);
+      CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_tunda_pinjaman ON keu_pinjaman_tunda(id_pinjaman, periode);
+      -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
+      -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
+      -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
+      -- selain PK. DDL WAJIB identik dengan `turso.rs` dan `db-migrations.ts`.
       -- Tarif default payroll di-seed terpisah dari `super::payroll_seed`, satu
       -- sumber bersama dengan seed cloud di `turso.rs`. Jangan tulis ulang di sini.
       INSERT OR IGNORE INTO desktop_schema_migration (version, name, applied_at)
@@ -635,6 +825,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         .map_err(|_| "Schema keamanan Desktop tidak dapat diinisialisasi.".to_owned())?;
 
     seed_payroll_rate_tables(&connection)?;
+    super::accounting::seed_akun_bawaan(&connection)
+        .map_err(|_| "Bagan akun bawaan tidak dapat disiapkan.".to_owned())?;
 
     // Vonis verifikasi wajah pada foto bukti (v19). NULL = scan itu tidak
     // diperiksa wajahnya (fitur mati, atau foto lama).
@@ -908,6 +1100,16 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "bpjs_rules",
     "personil_foto",
     "personil_wajah",
+    "inventory_barang",
+    "inventory_mutasi",
+    "inventory_unit",
+    "keu_akun",
+    "keu_jurnal",
+    "keu_jurnal_baris",
+    "keu_pinjaman",
+    "keu_pinjaman_mutasi",
+    "keu_pinjaman_tunda",
+    "keu_tutup_buku",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke
@@ -990,6 +1192,10 @@ pub fn reset_cloud_linked_data(
     // Tabelnya baru saja dikosongkan, jadi tanam ulang di transaksi yang sama.
     seed_payroll_rate_tables(&transaction).map_err(|message| {
         CommandError::new("LOCAL_RESET_FAILED", message)
+    })?;
+    // Bagan akun bawaan sama halnya: seed aplikasi, bukan data database lama.
+    super::accounting::seed_akun_bawaan(&transaction).map_err(|_| {
+        CommandError::new("LOCAL_RESET_FAILED", "Bagan akun bawaan tidak dapat disiapkan.")
     })?;
 
     transaction.commit().map_err(|_| CommandError::internal())?;

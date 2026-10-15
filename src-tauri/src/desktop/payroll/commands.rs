@@ -10,6 +10,7 @@ use super::models::{
     PayrollRun, PayrollStatus, SalaryConfig, TaxRule, SALARY_TYPE_FLAT_DAILY,
 };
 use crate::desktop::config::DesktopState;
+use crate::desktop::loan;
 use crate::desktop::models::CommandError;
 use crate::desktop::storage;
 use crate::desktop::sync;
@@ -1041,6 +1042,10 @@ pub async fn desktop_get_payroll_recap(
     let components = load_payroll_components(&conn)?;
     let tax_rules = load_tax_rules(&conn, &period_end)?;
     let bpjs_rules = load_bpjs_rules(&conn, &period_end)?;
+    // Kasbon: jatah cicilan per BULAN, dinilai terhadap bulan tanggal mulai
+    // periode (sama dengan penundaan dan bulan mulai potong).
+    let kasbon_aktif =
+        loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
 
     let mut stmt = conn
         .prepare(
@@ -1154,7 +1159,17 @@ pub async fn desktop_get_payroll_recap(
             let gross = pay.gross;
             let bpjs_emp = pay.bpjs_employee;
             let pph21 = pay.pph21;
-            let net = pay.net;
+            // Kasbon dipotong TERAKHIR dari gaji bersih yang tersisa, aturan
+            // yang sama persis dengan pembekuan di bawah dan `potongKasbon` Web.
+            let (kasbon, _) = loan::potong_kasbon(
+                pay.net.to_i64().unwrap_or(0),
+                kasbon_aktif
+                    .get(&agg.id_unik)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            let net = pay.net - Decimal::from(kasbon);
+            let deduction = deduction + Decimal::from(kasbon);
 
             result.push(PayrollRecapRow {
                 id_karyawan: agg.id_unik,
@@ -1183,6 +1198,7 @@ pub async fn desktop_get_payroll_recap(
                 est_bpjs_employee: bpjs_emp.to_i64().unwrap_or(0),
                 est_pph21: pph21.to_i64().unwrap_or(0),
                 est_net_salary: net.to_i64().unwrap_or(0),
+                est_kasbon: kasbon,
                 salary_type: agg.salary_type,
                 daily_rate: agg.daily_rate,
                 days_present: agg.days_present,
@@ -1244,6 +1260,8 @@ pub async fn desktop_create_payroll_run(
     let components = load_payroll_components(&conn)?;
     let tax_rules = load_tax_rules(&conn, &period_end)?;
     let bpjs_rules = load_bpjs_rules(&conn, &period_end)?;
+    let kasbon_aktif =
+        loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
 
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
@@ -1292,7 +1310,20 @@ pub async fn desktop_create_payroll_run(
         let bpjs_emp = pay.bpjs_employee;
         let bpjs_co = pay.bpjs_company;
         let pph21 = pay.pph21;
-        let net = pay.net;
+        // Kasbon TERAKHIR, sama dengan pratinjau. `breakdown.kasbon` dibaca saat
+        // proses gaji ditandai PAID untuk mencatat angsuran; entri komponennya
+        // membuat slip langsung menampilkannya.
+        let (kasbon, rincian_kasbon) = loan::potong_kasbon(
+            pay.net.to_i64().unwrap_or(0),
+            kasbon_aktif
+                .get(&row.id_karyawan)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        );
+        let net = pay.net - Decimal::from(kasbon);
+        let deduction = deduction + Decimal::from(kasbon);
+        let mut components_snapshot = pay.components;
+        components_snapshot.extend(loan::komponen_kasbon(&rincian_kasbon));
 
         let snapshot = json!({
             "salary_type": row.salary_type,
@@ -1306,9 +1337,10 @@ pub async fn desktop_create_payroll_run(
             "holiday_overtime_index": holiday_index.to_f64().unwrap_or(0.0),
             "basic_salary": basic_salary.to_i64().unwrap_or(0),
             "overtime_salary": overtime_salary.to_i64().unwrap_or(0),
-            "components": pay.components,
+            "components": components_snapshot,
             "bpjs": pay.bpjs,
             "tax": pay.tax,
+            "kasbon": loan::rincian_kasbon_json(&rincian_kasbon),
             "calculated_at": now.clone()
         });
 
@@ -1704,6 +1736,7 @@ pub async fn desktop_transition_payroll_status(
     run_id: String,
     target_status: String,
     notes: Option<String>,
+    id_akun_bayar: Option<String>,
 ) -> Result<PayrollRun, CommandError> {
     let target = PayrollStatus::from_str(&target_status)
         .ok_or_else(|| CommandError::new("INVALID_STATUS", "Status target tidak valid."))?;
@@ -1764,6 +1797,13 @@ pub async fn desktop_transition_payroll_status(
         ));
     }
 
+    // Akun pembayaran diperiksa SEBELUM status berubah: proses gaji yang
+    // tercatat PAID tanpa jurnal tidak bisa diulang, karena PAID status akhir.
+    let akun_bayar = id_akun_bayar.as_deref().unwrap_or(loan::AKUN_KAS);
+    if target == PayrollStatus::Paid {
+        crate::desktop::accounting::assert_akun_bayar(&conn, akun_bayar)?;
+    }
+
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
     let now = iso_now_tx(&tx);
 
@@ -1817,6 +1857,20 @@ pub async fn desktop_transition_payroll_status(
         }),
         None,
     )?;
+
+    if target == PayrollStatus::Paid {
+        // Angsuran kasbon dan jurnal payroll di transaksi yang SAMA dengan
+        // perubahan status: proses gaji tidak pernah tercatat dibayar tanpa
+        // pembukuannya, dan sebaliknya.
+        loan::catat_pembayaran_payroll_tx(
+            &tx,
+            &state,
+            &client_id,
+            &run_id,
+            akun_bayar,
+            &operator.username,
+        )?;
+    }
 
     tx.commit().map_err(|_| CommandError::internal())?;
 

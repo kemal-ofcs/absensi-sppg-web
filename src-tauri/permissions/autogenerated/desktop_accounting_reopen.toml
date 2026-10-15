@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-accounting-reopen"
+description = "Enables the desktop_accounting_reopen command without any pre-configured scope."
+commands.allow = ["desktop_accounting_reopen"]
+
+[[permission]]
+identifier = "deny-desktop-accounting-reopen"
+description = "Denies the desktop_accounting_reopen command without any pre-configured scope."
+commands.deny = ["desktop_accounting_reopen"]

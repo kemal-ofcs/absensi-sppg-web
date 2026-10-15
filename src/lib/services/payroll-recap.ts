@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Client } from "@libsql/client";
+import { pinjamanAktif } from "@/lib/services/loan";
 import {
   type BpjsRule,
   calculateEmployeePay,
@@ -8,6 +9,7 @@ import {
   type PayrollComponent,
   type TaxRule,
 } from "@/lib/services/payroll-calculator";
+import { komponenKasbon, potongKasbon } from "@/lib/validations/loan";
 
 export interface PayrollRecapRow {
   id_karyawan: string;
@@ -39,6 +41,8 @@ export interface PayrollRecapRow {
   est_bpjs_employee: number;
   est_pph21: number;
   est_net_salary: number;
+  /** Cicilan kasbon yang ikut dipotong; sudah termasuk di `est_total_deduction`. */
+  est_kasbon: number;
   salary_type: string;
   daily_rate: number;
   /**
@@ -176,6 +180,7 @@ export async function computePayrollRecap(
     taxRules,
     bpjsRules,
     aggResult,
+    kasbonAktif,
   ] = await Promise.all([
     loadOvertimeTiers(client, "HARI_KERJA"),
     // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
@@ -222,6 +227,9 @@ export async function computePayrollRecap(
         `,
       args: [periodEnd, periodStart, periodEnd],
     }),
+    // Kasbon: jatah cicilan per BULAN menurut bulan tanggal mulai periode.
+    // Cerminan `loan::pinjaman_aktif`.
+    pinjamanAktif(client, periodStart.slice(0, 7)),
   ]);
 
   return aggResult.rows.map((row) => {
@@ -257,6 +265,11 @@ export async function computePayrollRecap(
       { overtimeTiers, holidayTiers, components, taxRules, bpjsRules },
     );
 
+    // Kasbon dipotong TERAKHIR dari gaji bersih yang tersisa, aturan yang sama
+    // persis dengan `loan::potong_kasbon` di pratinjau dan pembekuan Rust.
+    const kasbon = potongKasbon(pay.net, kasbonAktif.get(idKaryawan) ?? []);
+    const net = pay.net - kasbon.total;
+
     const breakdownSnapshot = JSON.stringify({
       salary_type: salaryType,
       daily_rate: dailyRate,
@@ -269,9 +282,10 @@ export async function computePayrollRecap(
       holiday_overtime_index: pay.holidayIndex,
       basic_salary: pay.basic,
       overtime_salary: pay.overtime,
-      components: pay.components,
+      components: [...pay.components, ...komponenKasbon(kasbon.rincian)],
       bpjs: pay.bpjs,
       tax: pay.tax,
+      kasbon: kasbon.rincian,
       calculated_at: new Date().toISOString(),
     });
 
@@ -292,10 +306,11 @@ export async function computePayrollRecap(
       est_overtime_salary: pay.overtime,
       est_gross_salary: pay.gross,
       est_total_allowance: pay.allowance,
-      est_total_deduction: pay.deduction,
+      est_total_deduction: pay.deduction + kasbon.total,
       est_bpjs_employee: pay.bpjsEmployee,
       est_pph21: pay.pph21,
-      est_net_salary: pay.net,
+      est_net_salary: net,
+      est_kasbon: kasbon.total,
       salary_type: salaryType,
       daily_rate: dailyRate,
       days_present: daysPresent,

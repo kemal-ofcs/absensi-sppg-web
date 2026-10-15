@@ -12,11 +12,14 @@ import {
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
+import { assertAkunBayar } from "@/lib/services/accounting";
+import { catatPembayaranPayrollTx } from "@/lib/services/loan";
 import {
   canTransitionPayrollStatus,
   isValidPayrollStatus,
 } from "@/lib/services/payroll-calculator";
 import { computePayrollRecap } from "@/lib/services/payroll-recap";
+import { AKUN_KAS } from "@/lib/validations/loan";
 
 export const runtime = "nodejs";
 
@@ -211,16 +214,19 @@ export async function PUT(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
+    assertSameOriginMutation(request);
     const body = await readJsonBody<{
       runId?: string;
       targetStatus?: string;
       notes?: string;
+      idAkunBayar?: string | null;
     }>(request);
 
     if (!body.runId) {
       throw new ApiRequestError("runId wajib diisi.", 400);
     }
     assertSameOriginMutation(request);
+    const runId = body.runId;
     const target = (body.targetStatus || "").toUpperCase();
 
     if (!isValidPayrollStatus(target)) {
@@ -241,53 +247,68 @@ export async function PATCH(request: NextRequest) {
     const actor = await requireWebPermission(request, requiredPermission);
     await ensureServerDatabaseInitialized();
     const client = getServerDatabase();
+    const akunBayar = body.idAkunBayar?.trim() || AKUN_KAS;
 
-    const currentResult = await client.execute({
-      sql: "SELECT status FROM payroll_runs WHERE id = ? LIMIT 1;",
-      args: [body.runId],
-    });
+    // Status, audit, dan (saat PAID) angsuran kasbon beserta jurnal payroll
+    // ditulis dalam SATU transaksi, cermin `desktop_transition_payroll_status`.
+    // Dulu status dan audit ditulis dua perintah terpisah; proses gaji yang
+    // tercatat PAID tanpa pembukuannya tidak bisa diulang, karena PAID adalah
+    // status akhir.
+    const tx = await client.transaction("write");
+    try {
+      const currentResult = await tx.execute({
+        sql: "SELECT status FROM payroll_runs WHERE id = ? LIMIT 1;",
+        args: [runId],
+      });
+      if (currentResult.rows.length === 0) {
+        throw new ApiRequestError("Batch payroll tidak ditemukan.", 404);
+      }
+      const currentStatus = String(currentResult.rows[0]?.status || "");
+      if (!canTransitionPayrollStatus(currentStatus, target)) {
+        throw new ApiRequestError(
+          `Tidak dapat mengubah status dari ${currentStatus} ke ${target}.`,
+          409,
+        );
+      }
+      if (target === "PAID") {
+        await assertAkunBayar(tx, akunBayar);
+      }
 
-    if (currentResult.rows.length === 0) {
-      throw new ApiRequestError("Batch payroll tidak ditemukan.", 404);
+      const now = new Date().toISOString();
+      await tx.execute({
+        sql: "UPDATE payroll_runs SET status = ?, updated_at = ? WHERE id = ?;",
+        args: [target, now, runId],
+      });
+      await tx.execute({
+        sql: `
+          INSERT INTO payroll_audit_logs (
+            id, payroll_run_id, action, old_status, new_status, performed_by, notes, created_at
+          ) VALUES (?, ?, 'TRANSITION_STATUS', ?, ?, ?, ?, ?);
+        `,
+        args: [
+          `audit-${Date.now()}`,
+          runId,
+          currentStatus,
+          target,
+          actor.username,
+          body.notes || "",
+          now,
+        ],
+      });
+      if (target === "PAID") {
+        await catatPembayaranPayrollTx(tx, runId, akunBayar, actor.username);
+      }
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    } finally {
+      tx.close();
     }
-
-    const currentStatus = String(currentResult.rows[0]?.status || "");
-
-    if (!canTransitionPayrollStatus(currentStatus, target)) {
-      throw new ApiRequestError(
-        `Tidak dapat mengubah status dari ${currentStatus} ke ${target}.`,
-        409,
-      );
-    }
-
-    const now = new Date().toISOString();
-
-    await client.execute({
-      sql: "UPDATE payroll_runs SET status = ?, updated_at = ? WHERE id = ?;",
-      args: [target, now, body.runId],
-    });
-
-    const auditId = `audit-${Date.now()}`;
-    await client.execute({
-      sql: `
-        INSERT INTO payroll_audit_logs (
-          id, payroll_run_id, action, old_status, new_status, performed_by, notes, created_at
-        ) VALUES (?, ?, 'TRANSITION_STATUS', ?, ?, ?, ?, ?);
-      `,
-      args: [
-        auditId,
-        body.runId,
-        currentStatus,
-        target,
-        actor.username,
-        body.notes || "",
-        now,
-      ],
-    });
 
     const updatedResult = await client.execute({
       sql: "SELECT * FROM payroll_runs WHERE id = ? LIMIT 1;",
-      args: [body.runId],
+      args: [runId],
     });
 
     return noStoreJson({ data: updatedResult.rows[0] });

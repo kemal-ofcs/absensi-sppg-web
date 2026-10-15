@@ -174,6 +174,37 @@ export const PERMISSION_CATALOG = [
     name: "Export Laporan & Slip Gaji",
     group: "Penggajian",
   },
+  { key: "inventory.view", name: "Lihat Inventaris", group: "Inventaris" },
+  {
+    key: "inventory.manage",
+    name: "Kelola Master Barang",
+    group: "Inventaris",
+  },
+  {
+    key: "inventory.record",
+    name: "Catat Barang Masuk, Keluar & Pindah",
+    group: "Inventaris",
+  },
+  {
+    key: "inventory.adjust",
+    name: "Koreksi & Batalkan Mutasi Inventaris",
+    group: "Inventaris",
+  },
+  { key: "accounting.view", name: "Lihat Pembukuan", group: "Keuangan" },
+  {
+    key: "accounting.manage",
+    name: "Kelola Akun & Catat Jurnal",
+    group: "Keuangan",
+  },
+  { key: "accounting.reverse", name: "Batalkan Jurnal", group: "Keuangan" },
+  { key: "accounting.close", name: "Tutup Buku", group: "Keuangan" },
+  { key: "loan.view", name: "Lihat Kasbon Karyawan", group: "Keuangan" },
+  { key: "loan.manage", name: "Ajukan & Kelola Kasbon", group: "Keuangan" },
+  {
+    key: "loan.approve",
+    name: "Setujui & Batalkan Kasbon",
+    group: "Keuangan",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -212,6 +243,18 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // yang sedang berdiri di depan layar. Peninjaunya WAJIB sadar memikul itu,
   // jadi tidak ikut paket bawaan Admin.
   "password_reset.approve",
+  // Opname, pembatalan, dan penghapusan stok (Rusak/Afkir, Hilang,
+  // Kedaluwarsa) mengurangi stok tanpa ada yang menerima barangnya, jadi
+  // ketiganya juga cara termudah menutupi barang yang diambil orang.
+  "inventory.adjust",
+  // Jurnal pembalik menghapus efek sebuah transaksi dari seluruh laporan
+  // tanpa jejak uang yang benar-benar kembali.
+  "accounting.reverse",
+  // Menyetujui kasbon berarti mencairkan uang perusahaan ke seorang karyawan.
+  "loan.approve",
+  // Menutup buku mengunci jurnal seluruh perangkat untuk periode itu, dan
+  // memutuskan bentrokan menentukan potret saldo mana yang berlaku.
+  "accounting.close",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
