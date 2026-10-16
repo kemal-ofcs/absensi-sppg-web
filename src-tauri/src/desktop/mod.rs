@@ -2,6 +2,7 @@ mod administration;
 pub mod commands;
 pub mod config;
 pub mod face_match;
+mod hari_kerja;
 mod inventory;
 mod accounting;
 mod loan;

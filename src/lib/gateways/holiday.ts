@@ -2,14 +2,35 @@
 
 import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
-import { invokeDesktop } from "@/lib/runtime/desktop-commands";
+import { invokeDesktop, kickDesktopSync } from "@/lib/runtime/desktop-commands";
 import type { HariLiburInput, HariLiburRecord } from "@/lib/services/holiday";
 
-function kickDesktopSync() {
-  void invokeDesktop("desktop_sync_now").catch(() => undefined);
-}
+import type { LiburMassal } from "@/lib/validations/hari-kerja";
 
 export type { HariLiburInput, HariLiburRecord } from "@/lib/services/holiday";
+
+export interface HasilLiburMassal {
+  sukses: true;
+  dibuat: number;
+  /** Tanggal yang sudah terdaftar sebelumnya dan tidak diubah. */
+  dilewati: string[];
+}
+
+export async function tambahHariLiburMassal(
+  entries: LiburMassal[],
+): Promise<HasilLiburMassal> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<HasilLiburMassal>(
+      "desktop_create_holidays_bulk",
+      { entries },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi<HasilLiburMassal>("/api/holidays/bulk", "POST", {
+    entries,
+  });
+}
 
 export async function getDaftarHariLibur(): Promise<HariLiburRecord[]> {
   if (isDesktopRuntime()) {

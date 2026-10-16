@@ -129,6 +129,29 @@ impl PayrollCalculator {
         }
     }
 
+    /// Tanpa jenjang HARI_LIBUR yang aktif, jam di hari libur dibayar seperti
+    /// hari biasa: jam kerjanya reguler, sisanya lembur HARI_KERJA. Tanpa ini
+    /// indeksnya nol dan jam itu tidak dibayar sama sekali, padahal maksudnya
+    /// hanya "tidak ada tarif khusus hari libur". Mengembalikan menit
+    /// `(reguler, lembur, libur)`. Cermin `applyHolidayFallback`.
+    pub fn apply_holiday_fallback(
+        regular_minutes: i64,
+        overtime_minutes: i64,
+        holiday_total_minutes: i64,
+        holiday_regular_minutes: i64,
+        holiday_tiers_active: bool,
+    ) -> (i64, i64, i64) {
+        if holiday_tiers_active {
+            (regular_minutes, overtime_minutes, holiday_total_minutes)
+        } else {
+            (
+                regular_minutes + holiday_regular_minutes,
+                overtime_minutes + holiday_total_minutes - holiday_regular_minutes,
+                0,
+            )
+        }
+    }
+
     /// Upah dari MENIT bulat dan tarif per jam.
     ///
     /// Urutannya menentukan, dan inilah satu-satunya tempat urutan itu dieja.
@@ -533,5 +556,22 @@ mod tests {
             .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
         assert_eq!(nominal, Decimal::from(8));
         assert_eq!(exact_decimal(f64::NAN), None);
+    }
+
+    // Vektor kembar `applyHolidayFallback` di `payroll-calculator.test.ts`.
+    #[test]
+    fn jam_hari_libur_tanpa_jenjang_dibayar_seperti_hari_biasa() {
+        assert_eq!(
+            PayrollCalculator::apply_holiday_fallback(480, 60, 540, 480, true),
+            (480, 60, 540)
+        );
+        assert_eq!(
+            PayrollCalculator::apply_holiday_fallback(480, 60, 540, 480, false),
+            (960, 120, 0)
+        );
+        assert_eq!(
+            PayrollCalculator::apply_holiday_fallback(0, 0, 0, 0, false),
+            (0, 0, 0)
+        );
     }
 }

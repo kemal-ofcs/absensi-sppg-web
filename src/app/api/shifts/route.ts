@@ -20,6 +20,7 @@ import {
   tambahShift,
   updateShift,
 } from "@/lib/services/shift";
+import { validateHariKerja } from "@/lib/validations/hari-kerja";
 import {
   firstValidationMessage,
   validateShiftDraft,
@@ -72,6 +73,13 @@ function parseDraft(value: unknown): ShiftInput {
         : 0,
     shift_lanjutan_id: Math.max(0, Number(draft.shift_lanjutan_id ?? 0) || 0),
   };
+  // Tidak dikirim = tidak diubah; dikirim tetapi tidak sah = ditolak. Cermin
+  // `shift_hari_kerja` di `operational.rs`.
+  if (draft.hari_kerja !== undefined && draft.hari_kerja !== null) {
+    const hariKerja = validateHariKerja(draft.hari_kerja);
+    if (!hariKerja.ok) throw new ApiRequestError(hariKerja.error, 400);
+    parsed.hari_kerja = hariKerja.value;
+  }
   const message = firstValidationMessage(validateShiftDraft(parsed));
   if (message) throw new ApiRequestError(message, 400);
   return parsed;

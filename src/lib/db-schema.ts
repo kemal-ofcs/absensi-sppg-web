@@ -2,7 +2,7 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 23;
+export const CURRENT_SCHEMA_VERSION = 24;
 export const REQUIRED_TABLE_COUNT = 47;
 
 export async function isDatabaseSchemaReady(client: Client) {
@@ -127,7 +127,8 @@ export async function initDatabaseSchema(client: Client) {
         offset_generate_alfa INTEGER DEFAULT 180,
         buffer_shift_malam_menit INTEGER DEFAULT 120,
         izinkan_multi_sesi INTEGER DEFAULT 0,
-        shift_lanjutan_id INTEGER DEFAULT 0
+        shift_lanjutan_id INTEGER DEFAULT 0,
+        hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7'
       );
     `);
 

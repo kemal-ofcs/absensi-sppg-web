@@ -62,6 +62,7 @@
     "allow-desktop-accounting-close-review",
     "allow-desktop-accounting-close-decide",
     "allow-desktop-accounting-close-revise",
+    "allow-desktop-create-holidays-bulk",
     "allow-desktop-loan-list",
     "allow-desktop-loan-detail",
     "allow-desktop-loan-people",

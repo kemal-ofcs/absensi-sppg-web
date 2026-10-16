@@ -220,3 +220,66 @@ describe("Generate Alfa Harian & Setting Automation", () => {
     expect(audit.rows[0].status).toBe("Gagal");
   });
 });
+
+describe("Generate Alfa: libur mingguan dan whitelist", () => {
+  // Kembar `libur_mingguan_mengikuti_hari_kerja_shift` di `operational.rs`.
+  test("karyawan mengikuti hari kerja shift", async () => {
+    await saveAutoAlfaSetting(true);
+    await db.batch([
+      "DELETE FROM master_data;",
+      "DELETE FROM tbl_shift;",
+      `INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+         jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+         buffer_shift_malam_menit, offset_generate_alfa, hari_kerja)
+       VALUES (1, 1, 'Kantor', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5'),
+              (2, 2, 'Jaga', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5,6,7');`,
+      `INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif)
+       VALUES ('EMP-STAF', 'Staf Kantor', 'Keuangan', 1, 'Aktif'),
+              ('EMP-SATPAM', 'Satpam', 'Keamanan', 2, 'Aktif');`,
+    ]);
+    // Sabtu 17 Oktober 2026, jauh setelah jendela scan pulang tertutup.
+    const res = await generateAlfaHarian(new Date("2026-10-17T23:30:00+07:00"));
+    const rows = await db.execute(
+      "SELECT id_karyawan FROM absensi_harian WHERE tanggal = '2026-10-17' ORDER BY id_karyawan;",
+    );
+    expect(rows.rows.map((r) => String(r.id_karyawan))).toEqual(["EMP-SATPAM"]);
+    expect(res.jumlahLibur).toBe(1);
+  });
+
+  // Kembar `hari_libur_hanya_mengalfakan_yang_masuk_whitelist`.
+  test("tanggal libur hanya mengalfakan yang masuk whitelist", async () => {
+    await saveAutoAlfaSetting(true);
+    await db.batch([
+      "DELETE FROM master_data;",
+      "DELETE FROM tbl_shift;",
+      `INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+         jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+         buffer_shift_malam_menit, offset_generate_alfa)
+       VALUES (1, 1, 'Pagi', '07:00', '15:00', 480, 60, 240, 120, 180);`,
+      `INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif)
+       VALUES ('EMP-SATPAM', 'Satpam Satu', 'Keamanan', 1, 'Aktif'),
+              ('EMP-STAF', 'Staf Satu', 'Keuangan', 1, 'Aktif');`,
+      "INSERT INTO tbl_hari_libur (tanggal, nama_libur, status_aktif) VALUES ('2026-03-17', 'Hari Raya', 1);",
+      `INSERT INTO hari_libur_whitelist (id, scope_type, scope_value, tanggal_libur,
+         status_aktif, created_at, updated_at)
+       VALUES ('hlw-1', 'DIVISI', 'Keamanan', NULL, 1, '2026-01-01', '2026-01-01');`,
+    ]);
+    try {
+      const res = await generateAlfaHarian(
+        new Date("2026-03-17T23:30:00+07:00"),
+      );
+      const rows = await db.execute(
+        "SELECT id_karyawan FROM absensi_harian WHERE tanggal = '2026-03-17';",
+      );
+      expect(rows.rows.map((r) => String(r.id_karyawan))).toEqual([
+        "EMP-SATPAM",
+      ]);
+      expect(res.jumlahLibur).toBe(1);
+    } finally {
+      await db.batch([
+        "DELETE FROM hari_libur_whitelist;",
+        "DELETE FROM tbl_hari_libur WHERE tanggal = '2026-03-17';",
+      ]);
+    }
+  });
+});

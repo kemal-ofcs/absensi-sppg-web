@@ -1058,14 +1058,18 @@ pub async fn desktop_get_payroll_recap(
                 COALESCE(sc.ptkp_status, 'TK/0') AS ptkp_status,
                 COUNT(CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN 1 END) AS total_hadir,
                 COALESCE(SUM(ah.menit_terlambat), 0) AS total_terlambat_menit,
-                COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.jam_kerja ELSE 0 END), 0) AS total_jam_kerja_menit,
-                COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.lembur ELSE 0 END), 0) AS total_lembur_menit,
-                COALESCE(SUM(CASE WHEN hl.tanggal IS NOT NULL
+                COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN 0 ELSE ah.jam_kerja END), 0) AS total_jam_kerja_menit,
+                COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN 0 ELSE ah.lembur END), 0) AS total_lembur_menit,
+                COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
                     THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit,
                 COALESCE(sc.salary_type, 'HOURLY') AS salary_type,
                 COALESCE(sc.daily_rate, 0) AS daily_rate,
                 -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari.
-                COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present
+                COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present,
+                -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
+                -- `apply_holiday_fallback` bila jenjang HARI_LIBUR tidak aktif.
+                COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
+                    THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit
             FROM master_data md
             LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
                 AND sc.effective_date = (
@@ -1079,6 +1083,11 @@ pub async fn desktop_get_payroll_recap(
             -- join ini tidak pernah menggandakan baris, dan absensi lama otomatis
             -- ikut terhitung benar begitu admin melengkapi daftar hari liburnya.
             LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1
+            -- Libur mingguan: tanggal di luar hari kerja shift barisnya ikut
+            -- dihitung jam hari libur (PP 35/2021 menyamakan istirahat mingguan
+            -- dengan hari libur resmi untuk lembur). replace() mengubah 0
+            -- (Minggu) dari strftime('%w') menjadi 7; hari_kerja kosong = 7 hari.
+            LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift
             WHERE md.status_aktif = 'Aktif'
             GROUP BY md.id_unik
             ORDER BY md.nama ASC;
@@ -1100,6 +1109,7 @@ pub async fn desktop_get_payroll_recap(
         salary_type: String,
         daily_rate: i64,
         days_present: i64,
+        libur_jam_kerja_menit: i64,
     }
 
     let rows = stmt
@@ -1118,6 +1128,7 @@ pub async fn desktop_get_payroll_recap(
                 salary_type: row.get(10)?,
                 daily_rate: row.get(11)?,
                 days_present: row.get(12)?,
+                libur_jam_kerja_menit: row.get(13)?,
             })
         })
         .map_err(|_| CommandError::internal())?;
@@ -1133,9 +1144,19 @@ pub async fn desktop_get_payroll_recap(
 
     for item in rows {
         if let Ok(agg) = item {
-            let reg_hours = Decimal::from(agg.jam_kerja_menit) / Decimal::from(60);
-            let ot_hours = Decimal::from(agg.lembur_menit) / Decimal::from(60);
-            let holiday_hours = Decimal::from(agg.libur_menit) / Decimal::from(60);
+            // Tanpa jenjang HARI_LIBUR aktif, jam hari libur dibayar seperti
+            // hari biasa; menit yang sudah disesuaikan ini juga yang dibekukan.
+            let (jam_kerja_menit, lembur_menit, libur_menit) =
+                PayrollCalculator::apply_holiday_fallback(
+                    agg.jam_kerja_menit,
+                    agg.lembur_menit,
+                    agg.libur_menit,
+                    agg.libur_jam_kerja_menit,
+                    !holiday_tiers.is_empty(),
+                );
+            let reg_hours = Decimal::from(jam_kerja_menit) / Decimal::from(60);
+            let ot_hours = Decimal::from(lembur_menit) / Decimal::from(60);
+            let holiday_hours = Decimal::from(libur_menit) / Decimal::from(60);
             let pay = PayrollCalculator::calculate_employee_pay(
                 &PayInput {
                     id_karyawan: &agg.id_unik,
@@ -1144,9 +1165,9 @@ pub async fn desktop_get_payroll_recap(
                     rate_per_hour: agg.rate_per_hour,
                     daily_rate: agg.daily_rate,
                     days_present: agg.days_present,
-                    regular_minutes: agg.jam_kerja_menit,
-                    overtime_minutes: agg.lembur_menit,
-                    holiday_minutes: agg.libur_menit,
+                    regular_minutes: jam_kerja_menit,
+                    overtime_minutes: lembur_menit,
+                    holiday_minutes: libur_menit,
                 },
                 &rules,
             );
@@ -1187,9 +1208,9 @@ pub async fn desktop_get_payroll_recap(
                 // Menit mentah ikut dibawa supaya pembekuan bisa menurunkan
                 // jamnya dengan cara yang sama persis seperti di sini, alih-alih
                 // membaca ulang `f64` di bawah yang presisinya sudah hilang.
-                total_regular_minutes: agg.jam_kerja_menit,
-                total_overtime_minutes: agg.lembur_menit,
-                total_holiday_minutes: agg.libur_menit,
+                total_regular_minutes: jam_kerja_menit,
+                total_overtime_minutes: lembur_menit,
+                total_holiday_minutes: libur_menit,
                 est_basic_salary: basic_salary.to_i64().unwrap_or(0),
                 est_overtime_salary: overtime_salary.to_i64().unwrap_or(0),
                 est_gross_salary: gross.to_i64().unwrap_or(0),

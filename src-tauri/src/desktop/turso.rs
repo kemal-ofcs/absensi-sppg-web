@@ -1450,7 +1450,8 @@ impl TursoClient {
                     offset_generate_alfa INTEGER DEFAULT 180,
                     buffer_shift_malam_menit INTEGER DEFAULT 120,
                     izinkan_multi_sesi INTEGER DEFAULT 0,
-                    shift_lanjutan_id INTEGER DEFAULT 0
+                    shift_lanjutan_id INTEGER DEFAULT 0,
+                    hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7'
                 );"#,
                 vec![],
             ),
@@ -2405,6 +2406,7 @@ impl TursoClient {
             ("app_role", "require_scan_ip_allowlist", "ALTER TABLE app_role ADD COLUMN require_scan_ip_allowlist INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "izinkan_multi_sesi", "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "shift_lanjutan_id", "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER NOT NULL DEFAULT 0;"),
+            ("tbl_shift", "hari_kerja", "ALTER TABLE tbl_shift ADD COLUMN hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7';"),
             ("import_offline", "timestamp_input", "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;"),
             ("import_offline", "id_unik", "ALTER TABLE import_offline ADD COLUMN id_unik TEXT;"),
             ("import_offline", "status_absen", "ALTER TABLE import_offline ADD COLUMN status_absen TEXT;"),
@@ -2660,6 +2662,16 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (24, 'shift-hari-kerja', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2020, 'shift-hari-kerja-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -2874,7 +2886,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2019;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2020;",
                 vec![],
             )
             .await
@@ -5864,8 +5876,9 @@ async fn apply_event_to_turso(
                     batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
                     istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
                     offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi,
-                    shift_lanjutan_id
-                ) VALUES ((SELECT id_shift FROM tbl_shift WHERE kode_shift = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    shift_lanjutan_id, hari_kerja
+                ) VALUES ((SELECT id_shift FROM tbl_shift WHERE kode_shift = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE(?, '1,2,3,4,5,6,7'))
                 ON CONFLICT(id_shift) DO UPDATE SET
                     nama_shift = excluded.nama_shift,
                     jam_masuk = excluded.jam_masuk,
@@ -5880,8 +5893,17 @@ async fn apply_event_to_turso(
                     offset_generate_alfa = excluded.offset_generate_alfa,
                     buffer_shift_malam_menit = excluded.buffer_shift_malam_menit,
                     izinkan_multi_sesi = excluded.izinkan_multi_sesi,
-                    shift_lanjutan_id = excluded.shift_lanjutan_id;
+                    shift_lanjutan_id = excluded.shift_lanjutan_id,
+                    -- Perangkat sebelum v24 tidak mengirim hari_kerja: nilainya
+                    -- dipertahankan, bukan dikembalikan ke tujuh hari.
+                    hari_kerja = CASE WHEN ? IS NULL THEN tbl_shift.hari_kerja
+                                      ELSE excluded.hari_kerja END;
             "#;
+            let hari_kerja = row
+                .get("hari_kerja")
+                .and_then(Value::as_str)
+                .map(|teks| super::hari_kerja::parse_hari_kerja(Some(teks)))
+                .map(|hari| hari.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
             turso
                 .query_one(
                     sql,
@@ -5929,12 +5951,20 @@ async fn apply_event_to_turso(
                             .unwrap_or(120)),
                         json!(row
                             .get("izinkan_multi_sesi")
-                            .map(|v| if v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1 { 1 } else { 0 })
+                            .map(|v| {
+                                if v.as_bool().unwrap_or(false) || v.as_i64().unwrap_or(0) == 1 {
+                                    1
+                                } else {
+                                    0
+                                }
+                            })
                             .unwrap_or(0)),
                         json!(row
                             .get("shift_lanjutan_id")
                             .and_then(Value::as_i64)
                             .unwrap_or(0)),
+                        json!(hari_kerja),
+                        json!(hari_kerja),
                     ],
                 )
                 .await?;
@@ -10067,7 +10097,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020);",
                 )
                 .expect("siapkan database lama");
 
@@ -10107,7 +10137,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020);",
                 )
                 .expect("siapkan database lama");
 
@@ -10146,7 +10176,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020);",
                 )
                 .expect("siapkan database lama");
 
@@ -10186,7 +10216,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020);",
                 )
                 .expect("siapkan database lama");
 
@@ -10223,7 +10253,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version = -2019;",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020);",
                 )
                 .expect("siapkan database lama");
 
@@ -10236,6 +10266,44 @@ mod tests {
                 )
                 .expect("cek skema");
             assert_eq!(tabel, 1, "database bersentinel -2018 tidak diperbarui");
+        });
+    }
+
+    /// Database bersentinel `-2019` (v23) menerima kolom `tbl_shift.hari_kerja`
+    /// berbawaan tujuh hari lewat `ensure_schema_current`.
+    #[test]
+    fn sentinel_2019_memicu_kolom_hari_kerja_shift() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2019.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+            connection
+                .execute_batch(
+                    "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
+                     INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
+                     VALUES (77, 'Lama', '07:00', '15:00', 480);
+                     DELETE FROM schema_migration WHERE version = -2020;",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+            let hari: String = connection
+                .query_row(
+                    "SELECT hari_kerja FROM tbl_shift WHERE kode_shift = 77;",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("kolom hari_kerja");
+            assert_eq!(hari, "1,2,3,4,5,6,7", "shift lama wajib tetap tujuh hari");
         });
     }
 

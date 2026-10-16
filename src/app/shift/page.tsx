@@ -2,8 +2,9 @@
 
 import { redirect } from "next/navigation";
 import type React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PilihHariKerja } from "@/components/shift/PilihHariKerja";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -18,11 +19,13 @@ import { useAuth } from "@/lib/context/AuthContext";
 import {
   getDaftarShift,
   hapusShift,
-  type ShiftInput,
+  type ShiftDraft,
   tambahShift,
   updateShift,
 } from "@/lib/gateways/shift";
+import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { parseHariKerja, ringkasHariKerja } from "@/lib/validations/hari-kerja";
 import {
   firstValidationMessage,
   validateShiftDraft,
@@ -81,6 +84,12 @@ function pratinjauJendelaMasuk(
 }
 
 export default function ShiftPage() {
+  // Penjaga anti klik ganda (Aturan 5). `useState` tidak cukup: pembaruannya
+  // dijadwalkan, sehingga dua klik dalam satu tick React sama-sama membaca
+  // nilai lama dan keduanya lolos. Dideklarasikan di ATAS, sebelum setiap
+  // early return, supaya urutan hook tidak pernah berubah antar-render.
+  const isSubmittingRef = useRef(false);
+
   const isHydrated = useHydrated();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const canManage = hasPermission(user, "shifts.manage");
@@ -92,7 +101,7 @@ export default function ShiftPage() {
   const [showModal, setShowModal] = useState<boolean>(false);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editId, setEditId] = useState<number | null>(null);
-  const [formData, setFormData] = useState<ShiftInput>({
+  const [formData, setFormData] = useState<ShiftDraft>({
     kode_shift: 1,
     nama_shift: "",
     jam_masuk: "07:00",
@@ -107,6 +116,7 @@ export default function ShiftPage() {
     offset_generate_alfa: 180,
     buffer_shift_malam_menit: 120,
     izinkan_multi_sesi: 0,
+    hari_kerja: [1, 2, 3, 4, 5, 6, 7],
   });
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -144,19 +154,15 @@ export default function ShiftPage() {
   }, [isHydrated, isAuthenticated, loadShifts]);
 
   useEffect(() => {
-    const onSyncCompleted = () => {
+    return subscribeSyncCompleted(() => {
       loadShifts(true);
-    };
-    window.addEventListener("sppg:sync-completed", onSyncCompleted);
-    return () => {
-      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
-    };
+    });
   }, [loadShifts]);
 
   // Recalculate work hours automatically on form change
-  const updateFormField = <K extends keyof ShiftInput>(
+  const updateFormField = <K extends keyof ShiftDraft>(
     field: K,
-    value: ShiftInput[K],
+    value: ShiftDraft[K],
   ) => {
     setFormData((prev) => {
       const next = { ...prev, [field]: value };
@@ -269,6 +275,7 @@ export default function ShiftPage() {
       buffer_shift_malam_menit: 120,
       izinkan_multi_sesi: 0,
       shift_lanjutan_id: 0,
+      hari_kerja: [1, 2, 3, 4, 5, 6, 7],
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -310,6 +317,9 @@ export default function ShiftPage() {
           ? 1
           : 0,
       shift_lanjutan_id: Number(row.shift_lanjutan_id || 0),
+      hari_kerja: parseHariKerja(
+        typeof row.hari_kerja === "string" ? row.hari_kerja : null,
+      ),
     });
     setFormErrors({});
     setErrorMsg(null);
@@ -318,6 +328,7 @@ export default function ShiftPage() {
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
     const validationErrors = validateShiftDraft(formData);
     if (Object.keys(validationErrors).length > 0) {
       setFormErrors(validationErrors);
@@ -325,6 +336,7 @@ export default function ShiftPage() {
       return;
     }
 
+    isSubmittingRef.current = true;
     try {
       if (isEditing && editId) {
         await updateShift(editId, formData);
@@ -339,11 +351,17 @@ export default function ShiftPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Gagal menyimpan shift.";
       setErrorMsg(msg);
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   const handleDeleteShift = async () => {
     if (!deleteConfirmShift) return;
+    // Penjaga klik ganda: state penanda proses baru terlihat setelah
+    // render berikutnya, sehingga dua klik cepat sama-sama melewatinya.
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setIsDeleting(true);
     setErrorMsg(null);
     try {
@@ -366,6 +384,7 @@ export default function ShiftPage() {
       setDeleteConfirmShift(null);
     } finally {
       setIsDeleting(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -511,6 +530,18 @@ export default function ShiftPage() {
 
                   {/* Detail Parameters List */}
                   <div className="space-y-1.5 font-mono text-xs text-slate-400 pt-1">
+                    <div className="flex justify-between gap-3 border-b border-slate-800/60 pb-1">
+                      <span>Hari Kerja:</span>
+                      <span className="text-right text-slate-200 font-semibold">
+                        {ringkasHariKerja(
+                          parseHariKerja(
+                            typeof row.hari_kerja === "string"
+                              ? row.hari_kerja
+                              : null,
+                          ),
+                        )}
+                      </span>
+                    </div>
                     <div className="flex justify-between border-b border-slate-800/60 pb-1">
                       <span>Awal Absen Masuk:</span>
                       <span className="text-slate-200 font-semibold">
@@ -1053,6 +1084,13 @@ export default function ShiftPage() {
                 />
               </div>
             </div>
+
+            <PilihHariKerja
+              value={formData.hari_kerja}
+              onChange={(hari) =>
+                setFormData((prev) => ({ ...prev, hari_kerja: hari }))
+              }
+            />
 
             {/* Toggle Auto Multi-Sesi */}
             <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-2xl flex items-center justify-between gap-3">

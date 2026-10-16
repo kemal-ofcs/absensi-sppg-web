@@ -11,6 +11,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 
 export type KeparahanTemuan = "tinggi" | "sedang" | "rendah" | "info";
 
@@ -97,6 +98,7 @@ interface BarisShift {
   batasPulangMenit: number;
   bufferShiftMalamMenit: number;
   jamKerjaNormalMenit: number;
+  hariKerja: number[];
 }
 
 interface BarisAbsensi {
@@ -151,7 +153,7 @@ export async function auditKualitasAbsensi(
   const shiftRes = await targetDb.execute(
     `SELECT id_shift, nama_shift, jam_masuk, jam_pulang, batas_masuk_menit,
             toleransi_masuk_menit, batas_pulang_menit, buffer_shift_malam_menit,
-            jam_kerja_normal_menit
+            jam_kerja_normal_menit, hari_kerja
      FROM tbl_shift;`,
   );
   const shifts = new Map<number, BarisShift>();
@@ -165,6 +167,9 @@ export async function auditKualitasAbsensi(
       batasPulangMenit: Number(row.batas_pulang_menit ?? 240),
       bufferShiftMalamMenit: Number(row.buffer_shift_malam_menit ?? 120),
       jamKerjaNormalMenit: Number(row.jam_kerja_normal_menit ?? 0),
+      hariKerja: parseHariKerja(
+        row.hari_kerja == null ? null : String(row.hari_kerja),
+      ),
     });
   }
 
@@ -281,8 +286,18 @@ export async function auditKualitasAbsensi(
       ringkasan.fleksibel++;
     }
 
-    // Hari libur aktif: tidak ada kewajiban absen, jadi tidak dinilai.
-    if (hariLibur !== null) continue;
+    // Hari libur aktif, atau di luar hari kerja shift: tidak ada kewajiban
+    // absen, jadi tidak dinilai.
+    if (
+      !wajibMasuk({
+        tanggal: tanggalTarget,
+        hariMasuk: shift.hariKerja,
+        libur: hariLibur !== null,
+        masukSaatLibur: false,
+      })
+    ) {
+      continue;
+    }
 
     ringkasan.wajibAbsen++;
 

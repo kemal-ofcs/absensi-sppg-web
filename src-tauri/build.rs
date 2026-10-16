@@ -57,6 +57,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_accounting_close_review",
     "desktop_accounting_close_decide",
     "desktop_accounting_close_revise",
+    "desktop_create_holidays_bulk",
     "desktop_loan_list",
     "desktop_loan_detail",
     "desktop_loan_people",

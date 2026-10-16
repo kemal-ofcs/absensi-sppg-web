@@ -1,14 +1,16 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { HolidayWhitelistPanel } from "@/components/HolidayWhitelistPanel";
+import { LiburMassalDialog } from "@/components/holiday/LiburMassalDialog";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -19,6 +21,7 @@ import {
   tambahHariLibur,
   updateHariLibur,
 } from "@/lib/gateways/holiday";
+import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 
 const EMPTY_DRAFT: HariLiburInput = {
@@ -46,6 +49,12 @@ function formatDisplayDate(dateStr: string) {
 }
 
 export default function HolidaysPage() {
+  // Penjaga anti klik ganda (Aturan 5). `useState` tidak cukup: pembaruannya
+  // dijadwalkan, sehingga dua klik dalam satu tick React sama-sama membaca
+  // nilai lama dan keduanya lolos. Dideklarasikan di ATAS, sebelum setiap
+  // early return, supaya urutan hook tidak pernah berubah antar-render.
+  const isSubmittingRef = useRef(false);
+
   const isHydrated = useHydrated();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const [holidays, setHolidays] = useState<HariLiburRecord[]>([]);
@@ -56,6 +65,7 @@ export default function HolidaysPage() {
   const [filterYear, setFilterYear] = useState<string>("all");
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [massalOpen, setMassalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState<HariLiburInput>(EMPTY_DRAFT);
   const [deleteTarget, setDeleteTarget] = useState<HariLiburRecord | null>(
@@ -94,13 +104,9 @@ export default function HolidaysPage() {
   }, [isHydrated, isAuthenticated, loadData]);
 
   useEffect(() => {
-    const onSyncCompleted = () => {
+    return subscribeSyncCompleted(() => {
       loadData(true);
-    };
-    window.addEventListener("sppg:sync-completed", onSyncCompleted);
-    return () => {
-      window.removeEventListener("sppg:sync-completed", onSyncCompleted);
-    };
+    });
   }, [loadData]);
 
   if (!isHydrated || authLoading) {
@@ -146,7 +152,7 @@ export default function HolidaysPage() {
 
   const handleOpenAdd = () => {
     setEditingId(null);
-    const today = new Date().toLocaleDateString("en-CA");
+    const today = formatTanggalOperasional(Date.now());
     setDraft({
       tanggal: today,
       nama_libur: "",
@@ -170,8 +176,10 @@ export default function HolidaysPage() {
   };
 
   const handleToggleStatus = async (item: HariLiburRecord) => {
+    if (isSubmittingRef.current) return;
     if (!canManage) return;
     const nextStatus = item.status_aktif === 1 ? 0 : 1;
+    isSubmittingRef.current = true;
     try {
       await updateHariLibur(item.id_libur, { status_aktif: nextStatus });
       setHolidays((prev) =>
@@ -191,11 +199,14 @@ export default function HolidaysPage() {
             ? err.message
             : "Gagal mengubah status hari libur.",
       });
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
     if (!draft.tanggal || !draft.nama_libur) {
       setFeedback({
         tone: "error",
@@ -205,6 +216,7 @@ export default function HolidaysPage() {
     }
 
     setSaving(true);
+    isSubmittingRef.current = true;
     try {
       if (editingId) {
         await updateHariLibur(editingId, draft);
@@ -230,12 +242,17 @@ export default function HolidaysPage() {
             : "Gagal menyimpan data hari libur.",
       });
     } finally {
+      isSubmittingRef.current = false;
       setSaving(false);
     }
   };
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
+    // Penjaga klik ganda: state penanda proses baru terlihat setelah
+    // render berikutnya, sehingga dua klik cepat sama-sama melewatinya.
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setSaving(true);
     try {
       await hapusHariLibur(deleteTarget.id_libur);
@@ -253,6 +270,7 @@ export default function HolidaysPage() {
       });
     } finally {
       setSaving(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -262,17 +280,27 @@ export default function HolidaysPage() {
         <PageHeader
           eyebrow="Operasional & Kalender"
           title="Kalender & Manajemen Hari Libur"
-          description="Atur jadwal hari libur nasional, cuti bersama, dan hari non-kerja. Pada tanggal libur aktif, QR Scanner hanya melayani Shift/Divisi yang terdaftar di Whitelist di bawah, dan Generate Alfa otomatis dinonaktifkan sehingga yang libur tidak kena Alfa."
+          description="Atur hari libur nasional, cuti bersama, dan libur khusus perusahaan. Pada tanggal libur aktif, QR Scanner hanya melayani Shift/Divisi yang terdaftar di Whitelist di bawah, dan hanya mereka yang bisa kena Alfa. Libur mingguan seperti Sabtu dan Minggu tidak perlu diinput di sini: atur Hari Kerja di tiap shift."
           actions={
             canManage ? (
-              <button
-                type="button"
-                onClick={handleOpenAdd}
-                className="flex items-center gap-2 rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 active:scale-95"
-              >
-                <Icon name="calendar" className="size-4" />
-                <span>+ Tambah Hari Libur</span>
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMassalOpen(true)}
+                  className="flex min-h-11 items-center gap-2 rounded-xl border border-sky-500/40 px-4 py-2.5 text-sm font-bold text-sky-200 transition hover:bg-sky-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                >
+                  <Icon name="calendar" className="size-4" />
+                  <span>Tambah Banyak Sekaligus</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenAdd}
+                  className="flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 active:scale-95"
+                >
+                  <Icon name="calendar" className="size-4" />
+                  <span>+ Tambah Hari Libur</span>
+                </button>
+              </div>
             ) : null
           }
         />
@@ -290,6 +318,7 @@ export default function HolidaysPage() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="relative">
             <input
+              aria-label="Cari hari libur"
               type="text"
               placeholder="Cari nama atau tanggal libur..."
               value={searchQuery}
@@ -299,6 +328,7 @@ export default function HolidaysPage() {
           </div>
           <div>
             <select
+              aria-label="Filter jenis hari libur"
               value={filterJenis}
               onChange={(e) => setFilterJenis(e.target.value)}
               className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-sky-500"
@@ -311,6 +341,7 @@ export default function HolidaysPage() {
           </div>
           <div>
             <select
+              aria-label="Filter tahun"
               value={filterYear}
               onChange={(e) => setFilterYear(e.target.value)}
               className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-sky-500"
@@ -601,7 +632,7 @@ export default function HolidaysPage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="flex items-center gap-2 rounded-xl bg-sky-500 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-xl bg-sky-700 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-800 disabled:opacity-50"
                 >
                   {saving && (
                     <Icon name="clock" className="size-3.5 animate-spin" />
@@ -659,6 +690,24 @@ export default function HolidaysPage() {
               </div>
             </div>
           </Modal>
+        ) : null}
+
+        {massalOpen ? (
+          <LiburMassalDialog
+            tanggalTerdaftar={new Set(holidays.map((h) => h.tanggal))}
+            onClose={() => setMassalOpen(false)}
+            onSaved={(hasil) => {
+              setMassalOpen(false);
+              setFeedback({
+                tone: "success",
+                message:
+                  hasil.dilewati.length > 0
+                    ? `${hasil.dibuat} hari libur ditambahkan. ${hasil.dilewati.length} tanggal dilewati karena sudah terdaftar.`
+                    : `${hasil.dibuat} hari libur ditambahkan.`,
+              });
+              loadData();
+            }}
+          />
         ) : null}
 
         <HolidayWhitelistPanel canManage={canManage} />

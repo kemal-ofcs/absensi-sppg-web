@@ -396,6 +396,29 @@ export const PAYROLL_STATUSES = [
   "REJECTED",
 ] as const;
 
+/**
+ * Tanpa jenjang HARI_LIBUR yang aktif, jam di hari libur dibayar seperti hari
+ * biasa: jam kerjanya reguler, sisanya lembur HARI_KERJA. Tanpa ini indeksnya
+ * nol dan jam itu tidak dibayar sama sekali. Mengembalikan menit
+ * `[reguler, lembur, libur]`. Cermin `apply_holiday_fallback` di engine.rs.
+ */
+export function applyHolidayFallback(
+  regularMinutes: number,
+  overtimeMinutes: number,
+  holidayTotalMinutes: number,
+  holidayRegularMinutes: number,
+  holidayTiersActive: boolean,
+): [number, number, number] {
+  if (holidayTiersActive) {
+    return [regularMinutes, overtimeMinutes, holidayTotalMinutes];
+  }
+  return [
+    regularMinutes + holidayRegularMinutes,
+    overtimeMinutes + holidayTotalMinutes - holidayRegularMinutes,
+    0,
+  ];
+}
+
 export function isValidPayrollStatus(value: string): boolean {
   return (PAYROLL_STATUSES as readonly string[]).includes(value.toUpperCase());
 }

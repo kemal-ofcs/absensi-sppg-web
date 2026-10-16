@@ -3,6 +3,7 @@ import "server-only";
 import type { Client } from "@libsql/client";
 import { pinjamanAktif } from "@/lib/services/loan";
 import {
+  applyHolidayFallback,
   type BpjsRule,
   calculateEmployeePay,
   type OvertimeTierRule,
@@ -200,14 +201,18 @@ export async function computePayrollRecap(
             COALESCE(sc.ptkp_status, 'TK/0') AS ptkp_status,
             COUNT(CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN 1 END) AS total_hadir,
             COALESCE(SUM(ah.menit_terlambat), 0) AS total_terlambat_menit,
-            COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.jam_kerja ELSE 0 END), 0) AS total_jam_kerja_menit,
-            COALESCE(SUM(CASE WHEN hl.tanggal IS NULL THEN ah.lembur ELSE 0 END), 0) AS total_lembur_menit,
-            COALESCE(SUM(CASE WHEN hl.tanggal IS NOT NULL
+            COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN 0 ELSE ah.jam_kerja END), 0) AS total_jam_kerja_menit,
+            COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN 0 ELSE ah.lembur END), 0) AS total_lembur_menit,
+            COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
               THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit,
             COALESCE(sc.salary_type, 'HOURLY') AS salary_type,
             COALESCE(sc.daily_rate, 0) AS daily_rate,
             -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari.
-            COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present
+            COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present,
+            -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
+            -- applyHolidayFallback bila jenjang HARI_LIBUR tidak aktif.
+            COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
+              THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit
           FROM master_data md
           LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
             AND sc.effective_date = (
@@ -221,6 +226,11 @@ export async function computePayrollRecap(
           -- join ini tidak pernah menggandakan baris, dan absensi lama otomatis
           -- ikut terhitung benar begitu admin melengkapi daftar hari liburnya.
           LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1
+          -- Libur mingguan: tanggal di luar hari kerja shift barisnya ikut
+          -- dihitung jam hari libur (PP 35/2021 menyamakan istirahat mingguan
+          -- dengan hari libur resmi untuk lembur). replace() mengubah 0
+          -- (Minggu) dari strftime('%w') menjadi 7; hari_kerja kosong = 7 hari.
+          LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift
           WHERE md.status_aktif = 'Aktif'
           GROUP BY md.id_unik
           ORDER BY md.nama ASC;
@@ -234,12 +244,18 @@ export async function computePayrollRecap(
 
   return aggResult.rows.map((row) => {
     const idKaryawan = String(row.id_unik);
-    const jamKerjaMenit = Number(row.total_jam_kerja_menit || 0);
-    const lemburMenit = Number(row.total_lembur_menit || 0);
+    // Tanpa jenjang HARI_LIBUR aktif, jam hari libur dibayar seperti hari
+    // biasa. Cermin `apply_holiday_fallback` di rekap Rust.
+    const [jamKerjaMenit, lemburMenit, liburMenit] = applyHolidayFallback(
+      Number(row.total_jam_kerja_menit || 0),
+      Number(row.total_lembur_menit || 0),
+      Number(row.total_libur_menit || 0),
+      Number(row.total_libur_jam_kerja_menit || 0),
+      holidayTiers.length > 0,
+    );
     const ratePerHour = Number(row.rate_per_hour || 0);
     const ptkpStatus = String(row.ptkp_status || "TK/0");
 
-    const liburMenit = Number(row.total_libur_menit || 0);
     const salaryType = String(row.salary_type || "HOURLY");
     const dailyRate = Number(row.daily_rate || 0);
     const daysPresent = Number(row.days_present || 0);

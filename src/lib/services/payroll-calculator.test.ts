@@ -185,3 +185,11 @@ describe("gaji harian tetap", () => {
     expect(pay.net).toBe(245000);
   });
 });
+
+// Vektor kembar `jam_hari_libur_tanpa_jenjang_dibayar_seperti_hari_biasa`.
+test("jam hari libur tanpa jenjang dibayar seperti hari biasa", async () => {
+  const { applyHolidayFallback } = await import("./payroll-calculator");
+  expect(applyHolidayFallback(480, 60, 540, 480, true)).toEqual([480, 60, 540]);
+  expect(applyHolidayFallback(480, 60, 540, 480, false)).toEqual([960, 120, 0]);
+  expect(applyHolidayFallback(0, 0, 0, 0, false)).toEqual([0, 0, 0]);
+});

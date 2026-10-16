@@ -29,6 +29,7 @@ const INVENTORY_MIGRATION_VERSION = 20;
 const ACCOUNTING_MIGRATION_VERSION = 21;
 const EMPLOYEE_LOAN_MIGRATION_VERSION = 22;
 const BOOK_CLOSING_MIGRATION_VERSION = 23;
+const SHIFT_HARI_KERJA_MIGRATION_VERSION = 24;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -559,6 +560,13 @@ export async function runDatabaseMigrations(client: Client) {
   if (!(await hasColumn(client, "tbl_shift", "shift_lanjutan_id"))) {
     await client.execute(
       "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER DEFAULT 0;",
+    );
+  }
+  // v24 — hari kerja mingguan shift. Bawaan tujuh hari: shift lama tidak
+  // tiba-tiba punya hari libur. Cermin `ensure_column` di Rust.
+  if (!(await hasColumn(client, "tbl_shift", "hari_kerja"))) {
+    await client.execute(
+      "ALTER TABLE tbl_shift ADD COLUMN hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7';",
     );
   }
   if (!(await hasColumn(client, "tbl_shift", "izinkan_multi_sesi"))) {
@@ -1327,6 +1335,11 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'book-closing', ?);`,
     args: [BOOK_CLOSING_MIGRATION_VERSION, now],
+  });
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'shift-hari-kerja', ?);`,
+    args: [SHIFT_HARI_KERJA_MIGRATION_VERSION, now],
   });
 
   await client.execute(

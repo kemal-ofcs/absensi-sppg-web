@@ -218,7 +218,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         offset_generate_alfa INTEGER DEFAULT 180,
         buffer_shift_malam_menit INTEGER DEFAULT 120,
         izinkan_multi_sesi INTEGER DEFAULT 0,
-        shift_lanjutan_id INTEGER DEFAULT 0
+        shift_lanjutan_id INTEGER DEFAULT 0,
+        hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7'
       );
 
       CREATE TABLE IF NOT EXISTS setting_gex_system (
@@ -927,6 +928,16 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "tbl_shift",
         "shift_lanjutan_id",
         "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER DEFAULT 0;",
+    )?;
+
+    // Hari kerja mingguan shift (v24), teks kanonik
+    // `hari_kerja::validate_hari_kerja`. Bawaan tujuh hari: shift lama tidak
+    // tiba-tiba punya hari libur.
+    ensure_column(
+        &connection,
+        "tbl_shift",
+        "hari_kerja",
+        "ALTER TABLE tbl_shift ADD COLUMN hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7';",
     )?;
 
     let has_holiday_table: bool = connection

@@ -2,14 +2,18 @@
 
 import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
-import { invokeDesktop } from "@/lib/runtime/desktop-commands";
+import { invokeDesktop, kickDesktopSync } from "@/lib/runtime/desktop-commands";
 import type { ShiftInput } from "@/lib/services/shift";
 
-function kickDesktopSync() {
-  void invokeDesktop("desktop_sync_now").catch(() => undefined);
-}
-
 export type { ShiftInput } from "@/lib/services/shift";
+
+/**
+ * Draft dari layar: hari kerja dikirim sebagai daftar angka 1-7 dan disimpan
+ * backend sebagai teks kanonik (`validateHariKerja`).
+ */
+export type ShiftDraft = Omit<ShiftInput, "hari_kerja"> & {
+  hari_kerja: number[];
+};
 
 export async function getDaftarShift() {
   if (isDesktopRuntime()) {
@@ -21,7 +25,7 @@ export async function getDaftarShift() {
   return response.shifts;
 }
 
-export async function tambahShift(draft: ShiftInput) {
+export async function tambahShift(draft: ShiftDraft) {
   if (isDesktopRuntime()) {
     const result = await invokeDesktop<{ sukses: true; id_shift: number }>(
       "desktop_create_shift",
@@ -37,7 +41,7 @@ export async function tambahShift(draft: ShiftInput) {
   );
 }
 
-export async function updateShift(shiftId: number, draft: Partial<ShiftInput>) {
+export async function updateShift(shiftId: number, draft: ShiftDraft) {
   if (isDesktopRuntime()) {
     const result = await invokeDesktop<{ sukses: true }>(
       "desktop_update_shift",

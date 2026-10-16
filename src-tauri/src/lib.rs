@@ -78,6 +78,7 @@ pub fn run() {
             desktop::commands::desktop_accounting_close_review,
             desktop::commands::desktop_accounting_close_decide,
             desktop::commands::desktop_accounting_close_revise,
+            desktop::commands::desktop_create_holidays_bulk,
             desktop::commands::desktop_loan_list,
             desktop::commands::desktop_loan_detail,
             desktop::commands::desktop_loan_people,

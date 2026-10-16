@@ -2,6 +2,7 @@ import "server-only";
 
 import { hitungJamKerjaNormalMenit } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { HARI_KERJA_SEMUA } from "@/lib/validations/hari-kerja";
 
 export interface ShiftInput {
   kode_shift: number;
@@ -20,6 +21,8 @@ export interface ShiftInput {
   izinkan_multi_sesi?: number | boolean;
   /** Shift tujuan sesi lanjutan; 0 = pencocokan jendela otomatis. */
   shift_lanjutan_id?: number;
+  /** Teks kanonik `validateHariKerja`, mis. "1,2,3,4,5". */
+  hari_kerja?: string;
 }
 
 /**
@@ -89,8 +92,8 @@ export async function tambahShift(data: ShiftInput) {
         batas_masuk_menit, toleransi_masuk_menit, jam_kerja_normal_menit,
         istirahat_menit, batas_pulang_menit, offset_istirahat_mulai,
         offset_generate_alfa, buffer_shift_malam_menit, izinkan_multi_sesi,
-        shift_lanjutan_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        shift_lanjutan_id, hari_kerja
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     args: [
       data.kode_shift,
@@ -110,6 +113,7 @@ export async function tambahShift(data: ShiftInput) {
         ? 1
         : 0,
       Math.max(0, Number(data.shift_lanjutan_id ?? 0) || 0),
+      data.hari_kerja ?? HARI_KERJA_SEMUA,
     ],
   });
 
@@ -181,6 +185,10 @@ export async function updateShift(id_shift: number, data: Partial<ShiftInput>) {
   if (data.shift_lanjutan_id !== undefined) {
     updates.push("shift_lanjutan_id = ?");
     args.push(Math.max(0, Number(data.shift_lanjutan_id) || 0));
+  }
+  if (data.hari_kerja !== undefined) {
+    updates.push("hari_kerja = ?");
+    args.push(data.hari_kerja);
   }
 
   if (updates.length > 0) {

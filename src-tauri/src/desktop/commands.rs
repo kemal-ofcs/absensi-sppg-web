@@ -2718,3 +2718,13 @@ pub fn desktop_accounting_close_revise(
     let operator = require_permission(&state, "accounting.close")?;
     tutup_buku::revise(&state, &operator.username, &id_tutup, &catatan)
 }
+
+/// Simpan banyak hari libur sekaligus (rentang tanggal).
+#[tauri::command]
+pub fn desktop_create_holidays_bulk(
+    state: State<'_, DesktopState>,
+    entries: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "holidays.manage")?;
+    operational::create_holidays_bulk(&state, &entries)
+}
