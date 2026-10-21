@@ -3,7 +3,15 @@
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import {
+  BATAS_IMPORT_MASSAL,
+  BATAS_KOREKSI_MASSAL,
+  jalankanBerurutan,
+  ringkasHasil,
+} from "@/components/operational/aturanPilihPersonil";
+import { PilihPersonil } from "@/components/operational/PilihPersonil";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
+import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -33,8 +41,6 @@ type Tab = "correction" | "backup" | "import";
 
 const inputClass =
   "min-h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none focus:border-sky-400";
-const readOnlyClass =
-  "min-h-11 w-full rounded-xl border border-white/5 bg-slate-900/60 px-3 text-sm text-slate-400 outline-none cursor-not-allowed";
 
 export default function OperationalPage() {
   const hydrated = useHydrated();
@@ -51,10 +57,9 @@ export default function OperationalPage() {
   const [busy, setBusy] = useState(false);
   const isSubmittingRef = useRef(false);
 
-  const [confirmOverwrite, setConfirmOverwrite] = useState<{
-    id_karyawan: string;
-    nama: string;
-    tanggal: string;
+  const [confirmKoreksi, setConfirmKoreksi] = useState<{
+    ids: string[];
+    sudahAda: string[];
   } | null>(null);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -106,10 +111,9 @@ export default function OperationalPage() {
   // Form State: Koreksi Admin
   const [correction, setCorrection] = useState({
     tanggal: new Date().toLocaleDateString("en-CA"),
-    id_karyawan: "",
-    nama: "",
-    divisi: "",
-    id_shift: 1,
+    idPersonil: [] as string[],
+    // 0 = backend memakai shift masing-masing karyawan (atau shift backup-nya).
+    id_shift: 0,
     jenis_koreksi: "Izin",
     jam_koreksi: "",
     keterangan_admin: "",
@@ -132,9 +136,7 @@ export default function OperationalPage() {
   // Form State: Import Manual (Per-Kolom)
   const [manualEntry, setManualEntry] = useState({
     tanggal: new Date().toLocaleDateString("en-CA"),
-    id_unik: "",
-    nama: "",
-    divisi: "",
+    idPersonil: [] as string[],
     jam_masuk: "07:00",
     jam_pulang: "15:00",
     status_kehadiran: "Hadir",
@@ -232,134 +234,109 @@ export default function OperationalPage() {
     };
   }, [tab, load]);
 
-  // Employee selection helpers
-  const handleSelectCorrectionEmployee = (empId: string) => {
-    const found = employees.find(
-      (e) => String(e.id_unik) === empId || String(e.kode_karyawan) === empId,
+  const cariKaryawan = (idKaryawan: string) =>
+    employees.find((row) => String(row.id_unik) === idKaryawan);
+  const namaKaryawan = (idKaryawan: string) =>
+    String(cariKaryawan(idKaryawan)?.nama || idKaryawan);
+
+  const shiftOptions =
+    shifts.length > 0 ? (
+      shifts.map((s) => (
+        <option key={String(s.id_shift)} value={Number(s.id_shift)}>
+          {String(s.nama_shift)} ({String(s.jam_masuk)} - {String(s.jam_pulang)}
+          )
+        </option>
+      ))
+    ) : (
+      <>
+        <option value={1}>Shift 1 (07:00 - 15:00)</option>
+        <option value={2}>Shift 2 (15:00 - 23:00)</option>
+        <option value={3}>Shift 3 (23:00 - 07:00)</option>
+      </>
     );
-    if (found) {
-      setCorrection((prev) => ({
-        ...prev,
-        id_karyawan: String(found.id_unik),
-        nama: String(found.nama || ""),
-        divisi: String(found.divisi || ""),
-        id_shift: Number(found.id_shift || 1),
-      }));
-    } else {
-      setCorrection((prev) => ({
-        ...prev,
-        id_karyawan: empId,
-      }));
-    }
+
+  const handleSelectBackupAsal = (ids: string[]) => {
+    const found = ids[0] ? cariKaryawan(ids[0]) : undefined;
+    setBackup((prev) => ({
+      ...prev,
+      id_karyawan_asal: ids[0] ?? "",
+      nama_karyawan_asal: String(found?.nama || ""),
+      divisi_asal: String(found?.divisi || ""),
+      id_shift_backup: found
+        ? Number(found.id_shift || 1)
+        : prev.id_shift_backup,
+    }));
   };
 
-  const handleSelectManualEntryEmployee = (empId: string) => {
-    const found = employees.find(
-      (e) => String(e.id_unik) === empId || String(e.kode_karyawan) === empId,
-    );
-    if (found) {
-      setManualEntry((prev) => ({
-        ...prev,
-        id_unik: String(found.id_unik),
-        nama: String(found.nama || ""),
-        divisi: String(found.divisi || ""),
-      }));
-    } else {
-      setManualEntry((prev) => ({
-        ...prev,
-        id_unik: empId,
-      }));
-    }
+  const handleSelectBackupPengganti = (ids: string[]) => {
+    const found = ids[0] ? cariKaryawan(ids[0]) : undefined;
+    setBackup((prev) => ({
+      ...prev,
+      id_karyawan_pengganti: ids[0] ?? "",
+      nama_karyawan_pengganti: String(found?.nama || ""),
+      divisi_pengganti: String(found?.divisi || ""),
+    }));
   };
 
-  const handleSelectBackupAsal = (empId: string) => {
-    const found = employees.find(
-      (e) => String(e.id_unik) === empId || String(e.kode_karyawan) === empId,
-    );
-    if (found) {
-      setBackup((prev) => ({
-        ...prev,
-        id_karyawan_asal: String(found.id_unik),
-        nama_karyawan_asal: String(found.nama || ""),
-        divisi_asal: String(found.divisi || ""),
-        id_shift_backup: Number(found.id_shift || 1),
-      }));
-    } else {
-      setBackup((prev) => ({ ...prev, id_karyawan_asal: empId }));
-    }
-  };
-
-  const handleSelectBackupPengganti = (empId: string) => {
-    const found = employees.find(
-      (e) => String(e.id_unik) === empId || String(e.kode_karyawan) === empId,
-    );
-    if (found) {
-      setBackup((prev) => ({
-        ...prev,
-        id_karyawan_pengganti: String(found.id_unik),
-        nama_karyawan_pengganti: String(found.nama || ""),
-        divisi_pengganti: String(found.divisi || ""),
-      }));
-    } else {
-      setBackup((prev) => ({ ...prev, id_karyawan_pengganti: empId }));
-    }
-  };
-
-  const executeCorrection = () =>
+  const executeCorrection = (ids: string[]) =>
     run(async () => {
-      if (!correction.id_karyawan) {
-        throw new Error("Pilih atau isi ID Karyawan terlebih dahulu.");
+      if (ids.length === 0) {
+        throw new Error("Pilih minimal satu karyawan terlebih dahulu.");
       }
-      const result = await prosesKoreksiAdmin({
-        tanggal: correction.tanggal,
-        id_karyawan: correction.id_karyawan,
-        jenis_koreksi: correction.jenis_koreksi as Parameters<
-          typeof prosesKoreksiAdmin
-        >[0]["jenis_koreksi"],
-        jam_koreksi: correction.jam_koreksi || undefined,
-        keterangan_admin: correction.keterangan_admin || undefined,
-        id_shift: correction.id_shift,
-      });
+      const hasil = await jalankanBerurutan(ids, (idKaryawan) =>
+        prosesKoreksiAdmin({
+          tanggal: correction.tanggal,
+          id_karyawan: idKaryawan,
+          jenis_koreksi: correction.jenis_koreksi as Parameters<
+            typeof prosesKoreksiAdmin
+          >[0]["jenis_koreksi"],
+          jam_koreksi: correction.jam_koreksi || undefined,
+          keterangan_admin: correction.keterangan_admin || undefined,
+          id_shift: correction.id_shift || undefined,
+        }),
+      );
       setFeedback({
-        tone: result.sukses ? "success" : "error",
-        text: result.pesan,
+        tone: hasil.gagal.length > 0 ? "error" : "success",
+        text:
+          ids.length === 1
+            ? (hasil.gagal[0]?.pesan ??
+              `Koreksi admin untuk ${namaKaryawan(ids[0])} tanggal ${correction.tanggal} tersimpan.`)
+            : `Koreksi admin: ${ringkasHasil(hasil, namaKaryawan)}`,
       });
-      if (result.sukses) {
-        setCorrection((prev) => ({
-          ...prev,
-          id_karyawan: "",
-          nama: "",
-          divisi: "",
-          jam_koreksi: "",
-          keterangan_admin: "",
-        }));
+      // Yang gagal tetap terpilih supaya bisa langsung dicoba lagi.
+      setCorrection((prev) => ({
+        ...prev,
+        idPersonil: hasil.gagal.map((item) => item.id),
+        ...(hasil.gagal.length === 0
+          ? { jam_koreksi: "", keterangan_admin: "" }
+          : {}),
+      }));
+      if (hasil.berhasil.length > 0) {
         await load("correction", false, false);
       }
     });
 
   const submitCorrection = () => {
-    if (!correction.id_karyawan) {
+    const ids = correction.idPersonil;
+    if (ids.length === 0) {
       setFeedback({
         tone: "error",
-        text: "Pilih atau isi ID Karyawan terlebih dahulu.",
+        text: "Pilih minimal satu karyawan terlebih dahulu.",
       });
       return;
     }
-    const existing = records.find(
-      (r) =>
-        String(r.id_karyawan || r.id_unik) === correction.id_karyawan &&
-        String(r.tanggal || r.tanggal_kerja) === correction.tanggal,
+    const sudahAda = ids.filter((idKaryawan) =>
+      records.some(
+        (r) =>
+          String(r.id_karyawan || r.id_unik) === idKaryawan &&
+          String(r.tanggal || r.tanggal_kerja) === correction.tanggal,
+      ),
     );
-    if (existing) {
-      setConfirmOverwrite({
-        id_karyawan: correction.id_karyawan,
-        nama:
-          correction.nama || String(existing.nama || correction.id_karyawan),
-        tanggal: correction.tanggal,
-      });
+    if (sudahAda.length > 0 || ids.length > 1) {
+      setConfirmKoreksi({ ids, sudahAda: sudahAda.map(namaKaryawan) });
       return;
     }
-    void executeCorrection();
+    void executeCorrection(ids);
   };
 
   const submitBackup = () =>
@@ -393,41 +370,61 @@ export default function OperationalPage() {
           alasan_backup: "Penggantian Shift",
           catatan: "",
         }));
+        await load("backup", false, false);
       }
     });
 
   const submitManualEntry = () =>
     run(async () => {
-      if (!manualEntry.id_unik) {
-        throw new Error("Pilih atau isi ID Karyawan terlebih dahulu.");
+      const ids = manualEntry.idPersonil;
+      if (ids.length === 0) {
+        throw new Error("Pilih minimal satu karyawan terlebih dahulu.");
       }
-      const row: OfflineImportRow = {
-        tanggal: manualEntry.tanggal,
-        id_unik: manualEntry.id_unik,
-        nama: manualEntry.nama || undefined,
-        divisi: manualEntry.divisi || undefined,
-        jam_masuk: manualEntry.jam_masuk || undefined,
-        jam_pulang: manualEntry.jam_pulang || undefined,
-        status_kehadiran: manualEntry.status_kehadiran,
-        status_absen: manualEntry.status_absen || undefined,
-        keterangan: manualEntry.keterangan || undefined,
-      };
-      const result = await prosesImportOffline([row]);
-      const isSuccess = result.berhasil > 0;
-      setFeedback({
-        tone: isSuccess ? "success" : "error",
-        text: isSuccess
-          ? `Entri absensi manual untuk ${manualEntry.nama || manualEntry.id_unik} tanggal ${manualEntry.tanggal} berhasil disimpan!`
-          : `Gagal menyimpan entri manual: ${result.results[0]?.pesan || "Terjadi kesalahan"}`,
+      const rows: OfflineImportRow[] = ids.map((idKaryawan) => {
+        const found = cariKaryawan(idKaryawan);
+        return {
+          tanggal: manualEntry.tanggal,
+          id_unik: idKaryawan,
+          nama: found?.nama ? String(found.nama) : undefined,
+          divisi: found?.divisi ? String(found.divisi) : undefined,
+          jam_masuk: manualEntry.jam_masuk || undefined,
+          jam_pulang: manualEntry.jam_pulang || undefined,
+          status_kehadiran: manualEntry.status_kehadiran,
+          status_absen: manualEntry.status_absen || undefined,
+          keterangan: manualEntry.keterangan || undefined,
+        };
       });
-      if (isSuccess) {
-        setManualEntry((prev) => ({
-          ...prev,
-          id_unik: "",
-          nama: "",
-          divisi: "",
-          keterangan: "Import Manual",
-        }));
+      const result = await prosesImportOffline(rows);
+      // `results` berurutan sama dengan `rows`, di Web maupun Rust.
+      const hasil = {
+        berhasil: ids.filter((_, index) => result.results[index]?.sukses),
+        gagal: ids.flatMap((idKaryawan, index) =>
+          result.results[index]?.sukses
+            ? []
+            : [
+                {
+                  id: idKaryawan,
+                  pesan: result.results[index]?.pesan || "Terjadi kesalahan",
+                },
+              ],
+        ),
+      };
+      setFeedback({
+        tone: hasil.gagal.length > 0 ? "error" : "success",
+        text:
+          ids.length === 1
+            ? hasil.gagal.length === 0
+              ? `Entri absensi manual untuk ${namaKaryawan(ids[0])} tanggal ${manualEntry.tanggal} berhasil disimpan.`
+              : `Gagal menyimpan entri manual: ${hasil.gagal[0].pesan}`
+            : `Entri manual: ${ringkasHasil(hasil, namaKaryawan)}`,
+      });
+      setManualEntry((prev) => ({
+        ...prev,
+        idPersonil: hasil.gagal.map((item) => item.id),
+        ...(hasil.gagal.length === 0 ? { keterangan: "Import Manual" } : {}),
+      }));
+      if (hasil.berhasil.length > 0) {
+        await load("import", false, false);
       }
     });
 
@@ -504,31 +501,38 @@ export default function OperationalPage() {
         </FeedbackBanner>
       ) : null}
 
-      {/* Confirmation Overwrite Modal */}
-      {confirmOverwrite ? (
+      {/* Konfirmasi koreksi: timpa koreksi lama dan/atau banyak karyawan */}
+      {confirmKoreksi ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
           <div className="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-6 shadow-2xl space-y-4">
             <div className="flex items-center gap-3 text-amber-400">
-              <span className="text-2xl">⚠️</span>
+              <Icon name="alert" className="size-6 shrink-0" />
               <h3 className="text-base font-bold text-white">
-                Konfirmasi Timpa Koreksi
+                {confirmKoreksi.ids.length > 1
+                  ? `Simpan koreksi untuk ${confirmKoreksi.ids.length} karyawan?`
+                  : "Konfirmasi Timpa Koreksi"}
               </h3>
             </div>
             <p className="text-sm text-slate-300">
-              Karyawan{" "}
-              <strong className="text-white">{confirmOverwrite.nama}</strong>{" "}
-              sudah memiliki riwayat koreksi/absensi pada tanggal{" "}
-              <strong className="text-white">{confirmOverwrite.tanggal}</strong>
-              .
+              {correction.jenis_koreksi} pada tanggal{" "}
+              <strong className="text-white">{correction.tanggal}</strong> untuk{" "}
+              {confirmKoreksi.ids.length} karyawan.
             </p>
-            <p className="text-xs text-amber-300/90 bg-amber-950/40 border border-amber-800/40 p-2.5 rounded-xl">
-              Menyimpan koreksi baru akan memperbarui dan menyelaraskan data
-              absensi pada tanggal tersebut.
-            </p>
+            {confirmKoreksi.sudahAda.length > 0 ? (
+              <p className="text-xs text-amber-300/90 bg-amber-950/40 border border-amber-800/40 p-2.5 rounded-xl">
+                {confirmKoreksi.sudahAda.length} karyawan sudah punya koreksi
+                pada tanggal ini:{" "}
+                {confirmKoreksi.sudahAda.slice(0, 5).join(", ")}
+                {confirmKoreksi.sudahAda.length > 5
+                  ? `, dan ${confirmKoreksi.sudahAda.length - 5} lainnya`
+                  : ""}
+                . Koreksi baru memperbarui absensi mereka pada tanggal itu.
+              </p>
+            ) : null}
             <div className="flex justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setConfirmOverwrite(null)}
+                onClick={() => setConfirmKoreksi(null)}
                 className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 rounded-xl transition"
               >
                 Batal
@@ -537,12 +541,13 @@ export default function OperationalPage() {
                 type="button"
                 disabled={busy}
                 onClick={() => {
-                  setConfirmOverwrite(null);
-                  void executeCorrection();
+                  const ids = confirmKoreksi.ids;
+                  setConfirmKoreksi(null);
+                  void executeCorrection(ids);
                 }}
                 className="px-4 py-2 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-xl transition shadow-lg flex items-center gap-2"
               >
-                Ya, Perbarui Koreksi
+                Ya, Simpan Koreksi
               </button>
             </div>
           </div>
@@ -566,9 +571,9 @@ export default function OperationalPage() {
                 : "text-slate-400 hover:text-white"
             }`}
           >
-            {value === "correction" && "🛠️ Koreksi Admin"}
-            {value === "backup" && "👥 Penugasan Backup"}
-            {value === "import" && "📥 Import Manual"}
+            {value === "correction" && "Koreksi Admin"}
+            {value === "backup" && "Penugasan Backup"}
+            {value === "import" && "Import Manual"}
           </button>
         ))}
       </div>
@@ -604,67 +609,18 @@ export default function OperationalPage() {
               />
             </div>
 
-            {/* ID Karyawan & Auto-fill */}
-            <div className="space-y-1">
-              <span className="text-slate-400 block font-semibold">
-                Pilih Karyawan
-              </span>
-              <select
-                aria-label="Pilih Karyawan"
-                className={inputClass}
-                value={correction.id_karyawan}
-                onChange={(e) => handleSelectCorrectionEmployee(e.target.value)}
-              >
-                <option value="">-- Pilih dari Master Karyawan --</option>
-                {employees.map((emp) => (
-                  <option key={String(emp.id_unik)} value={String(emp.id_unik)}>
-                    {String(emp.nama)} ({String(emp.id_unik)})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Input Manual ID Karyawan */}
-            <div>
-              <span className="text-slate-400 block mb-1">
-                Atau Ketik ID Karyawan
-              </span>
-              <input
-                aria-label="ID Karyawan"
-                className={inputClass}
-                placeholder="ID Karyawan / Kode"
-                value={correction.id_karyawan}
-                onChange={(event) =>
-                  handleSelectCorrectionEmployee(event.target.value)
+            {/* Karyawan: satu atau banyak sekaligus */}
+            <div className="sm:col-span-2 md:col-span-3">
+              <PilihPersonil
+                id="koreksi-karyawan"
+                label="Pilih karyawan (bisa lebih dari satu)"
+                personil={employees}
+                terpilih={correction.idPersonil}
+                onChange={(ids) =>
+                  setCorrection((prev) => ({ ...prev, idPersonil: ids }))
                 }
-              />
-            </div>
-
-            {/* Nama (Auto-filled) */}
-            <div>
-              <span className="text-slate-400 block mb-1">
-                Nama Karyawan (Otomatis)
-              </span>
-              <input
-                aria-label="Nama Karyawan"
-                className={readOnlyClass}
-                readOnly
-                placeholder="Nama otomatis terisi"
-                value={correction.nama}
-              />
-            </div>
-
-            {/* Divisi (Auto-filled) */}
-            <div>
-              <span className="text-slate-400 block mb-1">
-                Divisi (Otomatis)
-              </span>
-              <input
-                aria-label="Divisi"
-                className={readOnlyClass}
-                readOnly
-                placeholder="Divisi otomatis terisi"
-                value={correction.divisi}
+                batas={BATAS_KOREKSI_MASSAL}
+                disabled={busy}
               />
             </div>
 
@@ -684,20 +640,8 @@ export default function OperationalPage() {
                   })
                 }
               >
-                {shifts.length > 0 ? (
-                  shifts.map((s) => (
-                    <option key={String(s.id_shift)} value={Number(s.id_shift)}>
-                      {String(s.nama_shift)} ({String(s.jam_masuk)} -{" "}
-                      {String(s.jam_pulang)})
-                    </option>
-                  ))
-                ) : (
-                  <>
-                    <option value={1}>Shift 1 (07:00 - 15:00)</option>
-                    <option value={2}>Shift 2 (15:00 - 23:00)</option>
-                    <option value={3}>Shift 3 (23:00 - 07:00)</option>
-                  </>
-                )}
+                <option value={0}>Ikuti shift masing-masing karyawan</option>
+                {shiftOptions}
               </select>
             </div>
 
@@ -782,7 +726,7 @@ export default function OperationalPage() {
                 <span>Sedang Memproses Koreksi...</span>
               </>
             ) : (
-              <>💾 Simpan Koreksi Admin</>
+              <>Simpan Koreksi Admin</>
             )}
           </button>
         </section>
@@ -821,10 +765,8 @@ export default function OperationalPage() {
               <span className="text-slate-400 block mb-1">
                 Shift Backup Ditugaskan
               </span>
-              <input
+              <select
                 aria-label="Shift backup"
-                type="number"
-                min="1"
                 className={inputClass}
                 value={backup.id_shift_backup}
                 onChange={(event) =>
@@ -833,7 +775,9 @@ export default function OperationalPage() {
                     id_shift_backup: Number(event.target.value),
                   })
                 }
-              />
+              >
+                {shiftOptions}
+              </select>
             </div>
 
             {/* Alasan Backup */}
@@ -851,61 +795,33 @@ export default function OperationalPage() {
             </div>
 
             {/* Karyawan Asal (Yang Digantikan) */}
-            <div className="space-y-1">
-              <span className="text-rose-400 font-semibold block">
-                Karyawan Asal (Yang Digantikan)
-              </span>
-              <select
-                aria-label="Pilih karyawan asal"
-                className={inputClass}
-                value={backup.id_karyawan_asal}
-                onChange={(e) => handleSelectBackupAsal(e.target.value)}
-              >
-                <option value="">-- Pilih Karyawan Asal --</option>
-                {employees.map((emp) => (
-                  <option key={String(emp.id_unik)} value={String(emp.id_unik)}>
-                    {String(emp.nama)} ({String(emp.id_unik)})
-                  </option>
-                ))}
-              </select>
-              {backup.nama_karyawan_asal ? (
-                <div className="text-[11px] text-slate-400 px-1">
-                  Nama:{" "}
-                  <strong className="text-white">
-                    {backup.nama_karyawan_asal}
-                  </strong>{" "}
-                  | Divisi: {backup.divisi_asal}
-                </div>
-              ) : null}
+            <div>
+              <PilihPersonil
+                id="backup-asal"
+                label="Karyawan asal (yang digantikan)"
+                personil={employees}
+                terpilih={
+                  backup.id_karyawan_asal ? [backup.id_karyawan_asal] : []
+                }
+                onChange={handleSelectBackupAsal}
+                disabled={busy}
+              />
             </div>
 
             {/* Karyawan Pengganti */}
-            <div className="space-y-1">
-              <span className="text-emerald-400 font-semibold block">
-                Karyawan Pengganti
-              </span>
-              <select
-                aria-label="Pilih karyawan pengganti"
-                className={inputClass}
-                value={backup.id_karyawan_pengganti}
-                onChange={(e) => handleSelectBackupPengganti(e.target.value)}
-              >
-                <option value="">-- Pilih Karyawan Pengganti --</option>
-                {employees.map((emp) => (
-                  <option key={String(emp.id_unik)} value={String(emp.id_unik)}>
-                    {String(emp.nama)} ({String(emp.id_unik)})
-                  </option>
-                ))}
-              </select>
-              {backup.nama_karyawan_pengganti ? (
-                <div className="text-[11px] text-slate-400 px-1">
-                  Nama:{" "}
-                  <strong className="text-white">
-                    {backup.nama_karyawan_pengganti}
-                  </strong>{" "}
-                  | Divisi: {backup.divisi_pengganti}
-                </div>
-              ) : null}
+            <div>
+              <PilihPersonil
+                id="backup-pengganti"
+                label="Karyawan pengganti"
+                personil={employees}
+                terpilih={
+                  backup.id_karyawan_pengganti
+                    ? [backup.id_karyawan_pengganti]
+                    : []
+                }
+                onChange={handleSelectBackupPengganti}
+                disabled={busy}
+              />
             </div>
 
             {/* Catatan Tambahan */}
@@ -937,7 +853,7 @@ export default function OperationalPage() {
                 <span>Sedang Menyimpan Backup...</span>
               </>
             ) : (
-              <>👥 Buat Penugasan Backup</>
+              <>Buat Penugasan Backup</>
             )}
           </button>
         </section>
@@ -948,7 +864,7 @@ export default function OperationalPage() {
         <section className="app-panel rounded-3xl p-5 sm:p-7 space-y-6 bg-slate-900/80 border border-slate-800">
           <div className="border-b border-slate-800 pb-3">
             <h2 className="text-base font-bold text-white">
-              📥 Input Absensi Manual (Per-Kolom)
+              Input Absensi Manual (Per-Kolom)
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Tambahkan data absensi harian per kolom secara langsung. Pilih
@@ -975,69 +891,18 @@ export default function OperationalPage() {
               />
             </div>
 
-            {/* ID Karyawan & Auto-fill */}
-            <div className="space-y-1">
-              <span className="text-slate-400 block font-semibold">
-                Pilih Karyawan
-              </span>
-              <select
-                aria-label="Pilih Karyawan"
-                className={inputClass}
-                value={manualEntry.id_unik}
-                onChange={(e) =>
-                  handleSelectManualEntryEmployee(e.target.value)
+            {/* Karyawan: satu atau banyak sekaligus */}
+            <div className="sm:col-span-2 md:col-span-3">
+              <PilihPersonil
+                id="manual-karyawan"
+                label="Pilih karyawan (bisa lebih dari satu)"
+                personil={employees}
+                terpilih={manualEntry.idPersonil}
+                onChange={(ids) =>
+                  setManualEntry((prev) => ({ ...prev, idPersonil: ids }))
                 }
-              >
-                <option value="">-- Pilih dari Master Karyawan --</option>
-                {employees.map((emp) => (
-                  <option key={String(emp.id_unik)} value={String(emp.id_unik)}>
-                    {String(emp.nama)} ({String(emp.id_unik)})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Input Manual ID Karyawan */}
-            <div>
-              <span className="text-slate-400 block mb-1 font-semibold">
-                Atau Ketik ID Karyawan
-              </span>
-              <input
-                aria-label="ID Karyawan"
-                className={inputClass}
-                placeholder="ID Karyawan / Kode"
-                value={manualEntry.id_unik}
-                onChange={(e) =>
-                  handleSelectManualEntryEmployee(e.target.value)
-                }
-              />
-            </div>
-
-            {/* Nama (Auto-filled) */}
-            <div>
-              <span className="text-slate-400 block mb-1">
-                Nama Karyawan (Otomatis)
-              </span>
-              <input
-                aria-label="Nama Karyawan"
-                className={readOnlyClass}
-                readOnly
-                placeholder="Nama otomatis terisi"
-                value={manualEntry.nama}
-              />
-            </div>
-
-            {/* Divisi (Auto-filled) */}
-            <div>
-              <span className="text-slate-400 block mb-1">
-                Divisi (Otomatis)
-              </span>
-              <input
-                aria-label="Divisi"
-                className={readOnlyClass}
-                readOnly
-                placeholder="Divisi otomatis terisi"
-                value={manualEntry.divisi}
+                batas={BATAS_IMPORT_MASSAL}
+                disabled={busy}
               />
             </div>
 
@@ -1113,9 +978,7 @@ export default function OperationalPage() {
                   })
                 }
               >
-                <option value="">
-                  ✨ Otomatis (Generate Sistem Sesuai Jam)
-                </option>
+                <option value="">Otomatis (Generate Sistem Sesuai Jam)</option>
                 <option value="Lengkap">Lengkap (Masuk & Pulang)</option>
                 <option value="Belum Pulang">Belum Pulang (Hanya Masuk)</option>
                 <option value="Perlu Verifikasi">
@@ -1157,7 +1020,7 @@ export default function OperationalPage() {
                     <span>Sedang Menyimpan Entri Manual...</span>
                   </>
                 ) : (
-                  <>➕ Simpan Entri Manual</>
+                  <>Simpan Entri Manual</>
                 )}
               </button>
             </div>
@@ -1171,7 +1034,7 @@ export default function OperationalPage() {
               className="text-xs font-mono text-sky-400 hover:text-sky-300 font-bold flex items-center gap-2"
             >
               <span>{showBulkUpload ? "▼" : "▶"}</span>
-              <span>📁 Opsi Tambahan: Import Massal File CSV (Opsional)</span>
+              <span>Opsi Tambahan: Import Massal File CSV (Opsional)</span>
             </button>
 
             {showBulkUpload ? (
@@ -1496,7 +1359,7 @@ export default function OperationalPage() {
           <div className="w-full max-w-md rounded-3xl border border-rose-800/60 bg-slate-900 p-6 shadow-2xl space-y-4">
             <div className="border-b border-slate-800 pb-3 flex items-center gap-3 text-rose-400">
               <div className="w-10 h-10 rounded-2xl bg-rose-950/80 border border-rose-800 flex items-center justify-center text-xl shrink-0">
-                ⚠️
+                <Icon name="alert" className="size-5" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-white">

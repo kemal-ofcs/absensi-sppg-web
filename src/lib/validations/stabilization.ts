@@ -1,3 +1,5 @@
+import type { KaryawanInput } from "@/lib/gateways/employee";
+
 interface EmployeeDraft {
   divisi: string;
   id_shift: number;
@@ -33,6 +35,31 @@ export function createEmployeeIdentifiers(uuid: string) {
   return {
     idUnik: `EMP_${compactUuid.slice(0, 12)}`,
     kodeKaryawan: `K${compactUuid.slice(-8)}`,
+  };
+}
+
+/**
+ * Draft edit dari satu baris daftar, dipakai form Edit dan Ubah massal.
+ * `update_employee` (Rust) mengosongkan No. HP, catatan, dan tanggal aktif yang tidak dikirim.
+ */
+export function draftKaryawanDariBaris(
+  row: Record<string, unknown>,
+): KaryawanInput {
+  return {
+    id_unik: String(row.id_unik),
+    kode_karyawan: String(row.kode_karyawan || ""),
+    nama: String(row.nama || ""),
+    divisi: String(row.divisi || "Operational"),
+    jabatan_status: String(row.jabatan_status || "Staff"),
+    no_hp: String(row.no_hp || ""),
+    lp: (row.lp as "L" | "P") || "L",
+    id_shift: Number(row.id_shift || 1),
+    status_aktif: (row.status_aktif as "Aktif" | "Nonaktif") || "Aktif",
+    tanggal_daftar: String(row.tanggal_daftar || ""),
+    catatan: String(row.catatan || ""),
+    jenis_personil: String(row.jenis_personil || "Pegawai"),
+    tanggal_mulai_aktif: String(row.tanggal_mulai_aktif || ""),
+    tanggal_selesai_aktif: String(row.tanggal_selesai_aktif || ""),
   };
 }
 
@@ -118,7 +145,7 @@ export function validateShiftDraft(data: ShiftDraft) {
       value !== undefined &&
       (!Number.isFinite(value) || value < minimum || value > maximum)
     ) {
-      errors[field] = `${label} harus antara ${minimum}–${maximum} menit.`;
+      errors[field] = `${label} harus antara ${minimum} dan ${maximum} menit.`;
     }
   }
 
