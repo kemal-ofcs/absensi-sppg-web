@@ -30,6 +30,9 @@ const ACCOUNTING_MIGRATION_VERSION = 21;
 const EMPLOYEE_LOAN_MIGRATION_VERSION = 22;
 const BOOK_CLOSING_MIGRATION_VERSION = 23;
 const SHIFT_HARI_KERJA_MIGRATION_VERSION = 24;
+const INVENTORY_COLUMN_MIGRATION_VERSION = 25;
+const INVENTORY_COLUMN_DELETE_MIGRATION_VERSION = 26;
+const INVENTORY_DECIMAL_MIGRATION_VERSION = 27;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -1098,7 +1101,9 @@ export async function runDatabaseMigrations(client: Client) {
       catatan TEXT,
       status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      atribut TEXT,
+      desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1))
     );
   `);
   await client.execute(`
@@ -1340,6 +1345,52 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'shift-hari-kerja', ?);`,
     args: [SHIFT_HARI_KERJA_MIGRATION_VERSION, now],
+  });
+  // v25 — kolom tambahan barang inventaris. DDL WAJIB identik dengan
+  // `storage.rs` dan `turso.rs`. ALTER-nya di sini, bukan di daftar kolom di
+  // atas: di sana `inventory_barang` belum tentu sudah dibuat.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS inventory_kolom (
+      id_kolom TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      tipe TEXT NOT NULL CHECK (tipe IN ('Teks', 'Angka')),
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      dihapus_pada TEXT
+    );
+  `);
+  if (!(await hasColumn(client, "inventory_barang", "atribut"))) {
+    await client.execute(
+      "ALTER TABLE inventory_barang ADD COLUMN atribut TEXT;",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'inventory-column', ?);`,
+    args: [INVENTORY_COLUMN_MIGRATION_VERSION, now],
+  });
+  // v26 — hapus permanen kolom tambahan. NULL = belum dihapus.
+  if (!(await hasColumn(client, "inventory_kolom", "dihapus_pada"))) {
+    await client.execute(
+      "ALTER TABLE inventory_kolom ADD COLUMN dihapus_pada TEXT;",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'inventory-column-delete', ?);`,
+    args: [INVENTORY_COLUMN_DELETE_MIGRATION_VERSION, now],
+  });
+  // v27 — jumlah desimal per barang: 1 = setiap jumlah disimpan ×100.
+  if (!(await hasColumn(client, "inventory_barang", "desimal"))) {
+    await client.execute(
+      "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'inventory-decimal', ?);`,
+    args: [INVENTORY_DECIMAL_MIGRATION_VERSION, now],
   });
 
   await client.execute(

@@ -3,6 +3,7 @@ import type {
   DokumenInventaris,
   KopPerusahaan,
 } from "@/lib/validations/inventory";
+import { angka } from "./gaya";
 
 /**
  * Berita acara inventaris sebagai HTML A4, dicetak lewat dialog cetak
@@ -72,7 +73,9 @@ function tandaTangan(
 }
 
 function selisih(baris: BarisDokumen): string {
-  return baris.tempat_tujuan ? `+${baris.jumlah}` : `-${baris.jumlah}`;
+  return baris.tempat_tujuan
+    ? `+${angka(baris.jumlah, baris.desimal)}`
+    : `-${angka(baris.jumlah, baris.desimal)}`;
 }
 
 function isi(dok: DokumenInventaris): {
@@ -98,7 +101,7 @@ function isi(dok: DokumenInventaris): {
         <tbody>${dok.baris
           .map(
             (b, i) =>
-              `<tr><td>${i + 1}</td><td>${esc(b.nama_barang)}</td><td>${esc(b.kode_barang)}</td><td class="angka">${b.jumlah}</td><td>${esc(b.satuan)}</td><td>${esc(b.tempat_asal)}</td><td>${esc(b.keperluan)}</td></tr>`,
+              `<tr><td>${i + 1}</td><td>${esc(b.nama_barang)}</td><td>${esc(b.kode_barang)}</td><td class="angka">${angka(b.jumlah, b.desimal)}</td><td>${esc(b.satuan)}</td><td>${esc(b.tempat_asal)}</td><td>${esc(b.keperluan)}</td></tr>`,
           )
           .join("")}</tbody>`,
       ttd:
@@ -117,7 +120,7 @@ function isi(dok: DokumenInventaris): {
         <tbody>${dok.baris
           .map(
             (b, i) =>
-              `<tr><td>${i + 1}</td><td>${esc(b.nama_barang)}</td><td>${esc(b.kode_barang)}</td><td class="angka">${b.jumlah}</td><td>${esc(b.satuan)}</td><td>${esc(b.tempat_asal)}</td><td>${esc(b.alasan)}</td><td>${esc(b.tanggal_expired)}</td><td>${esc(b.catatan)}</td></tr>`,
+              `<tr><td>${i + 1}</td><td>${esc(b.nama_barang)}</td><td>${esc(b.kode_barang)}</td><td class="angka">${angka(b.jumlah, b.desimal)}</td><td>${esc(b.satuan)}</td><td>${esc(b.tempat_asal)}</td><td>${esc(b.alasan)}</td><td>${esc(b.tanggal_expired)}</td><td>${esc(b.catatan)}</td></tr>`,
           )
           .join("")}</tbody>`,
       ttd: tandaTangan("Petugas", null) + tandaTangan("Saksi", null) + kepala,

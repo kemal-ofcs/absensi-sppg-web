@@ -46,8 +46,18 @@ export const ALASAN_FORMULIR = [
   "Distribusi",
   "Perubahan Kondisi",
 ] as const;
-export const MAKS_JUMLAH = 1_000_000;
+export const MAKS_JUMLAH = 1_000_000_000;
 export const MAKS_HARGA_SATUAN = 1_000_000_000_000;
+/** Jumlah × harga satuan harus muat di INTEGER SQLite: lewat dari ini SQLite
+ * mengubahnya menjadi pecahan dan laporan pengadaan gagal dibaca. */
+export const MAKS_NILAI_MUTASI = 1_000_000_000_000_000_000;
+/**
+ * Barang `desimal` menyimpan setiap jumlahnya ×100: 10,25 kg = 1025. Kontrak
+ * TS ↔ Rust tetap bilangan bulat; hanya UI dan Excel yang mengonversi lewat
+ * `jumlahDariKetikan` dan `formatJumlah`; Rust hanya membaginya di
+ * `NILAI_MUTASI_SQL`.
+ */
+export const SKALA_DESIMAL = 100;
 export const MAKS_PANJANG_TEMPAT = 80;
 export const MAKS_BARIS_KARTU_STOK = 1000;
 export const MAKS_BARIS_OPNAME = 500;
@@ -303,10 +313,14 @@ export const barangDraftSchema = z
     tipe: z.string().default(""),
     satuan: z.string().default(""),
     bisa_expired: z.boolean().default(false),
+    /** Jumlah 2 angka di belakang koma, disimpan ×`SKALA_DESIMAL`. Hanya Habis Pakai. */
+    desimal: z.boolean().default(false),
     stok_minimum: z.number().int().default(0),
     tempat_utama: z.string().nullish(),
     catatan: z.string().nullish(),
     status_aktif: z.boolean().default(true),
+    /** Isi kolom tambahan, berkunci `id_kolom`; diperiksa `validateAtribut`. */
+    atribut: z.record(z.string(), z.string()).default({}),
   })
   .strict();
 
@@ -320,6 +334,7 @@ export interface BarangValid {
   tipe: TipeBarang;
   satuan: string;
   bisa_expired: boolean;
+  desimal: boolean;
   stok_minimum: number;
   tempat_utama: string | null;
   catatan: string | null;
@@ -346,6 +361,13 @@ export function validateBarang(draft: BarangDraftParsed): Hasil<BarangValid> {
   if (!(TIPE_BARANG as readonly string[]).includes(draft.tipe)) {
     return { ok: false, error: "Tipe barang tidak dikenal." };
   }
+  // Aset dilacak per unit berlabel, jadi jumlahnya selalu bulat.
+  if (draft.desimal && draft.tipe !== "Habis Pakai") {
+    return {
+      ok: false,
+      error: "Jumlah desimal hanya untuk barang Habis Pakai.",
+    };
+  }
   const satuan = draft.satuan.trim();
   if (!satuan) return { ok: false, error: "Satuan wajib diisi." };
   if (panjang(satuan) > 20) {
@@ -371,6 +393,7 @@ export function validateBarang(draft: BarangDraftParsed): Hasil<BarangValid> {
       tipe: draft.tipe as TipeBarang,
       satuan,
       bisa_expired: draft.bisa_expired,
+      desimal: draft.desimal,
       stok_minimum: draft.stok_minimum,
       tempat_utama,
       catatan,
@@ -493,7 +516,9 @@ function susunMutasi(
     throw new GalatValidasi("Alasan tidak berlaku untuk jenis mutasi ini.");
   }
   if (draft.jumlah < 1 || draft.jumlah > MAKS_JUMLAH) {
-    throw new GalatValidasi("Jumlah harus bilangan bulat 1 sampai 1.000.000.");
+    throw new GalatValidasi(
+      "Jumlah harus bilangan bulat 1 sampai 1.000.000.000.",
+    );
   }
   const tanggal = bersih(draft.tanggal) ?? hariIni;
   if (!isValidDate(tanggal)) throw new GalatValidasi("Tanggal tidak valid.");
@@ -626,6 +651,11 @@ function susunMutasi(
       if (draft.harga_satuan < 0 || draft.harga_satuan > MAKS_HARGA_SATUAN) {
         throw new GalatValidasi("Harga satuan tidak valid.");
       }
+      if (draft.jumlah * draft.harga_satuan > MAKS_NILAI_MUTASI) {
+        throw new GalatValidasi(
+          "Nilai mutasi (jumlah × harga satuan) terlalu besar.",
+        );
+      }
       valid.harga_satuan = draft.harga_satuan;
     }
     valid.sumber_dana = bersih(draft.sumber_dana);
@@ -706,7 +736,7 @@ export function validateOpname(draft: OpnameDraftParsed): Hasil<OpnameValid> {
       return { ok: false, error: "Kondisi barang tidak dikenal." };
     }
     if (item.fisik < 0 || item.fisik > MAKS_JUMLAH) {
-      return { ok: false, error: "Jumlah fisik harus 0 sampai 1.000.000." };
+      return { ok: false, error: "Jumlah fisik harus 0 sampai 1.000.000.000." };
     }
     const id_batch = bersih(item.id_batch);
     if (
@@ -807,6 +837,10 @@ export interface BarangInventaris {
   tipe: TipeBarang;
   satuan: string;
   bisa_expired: boolean;
+  /** Setiap jumlah barang ini (saldo, stok minimum, mutasi) bernilai ×100. */
+  desimal: boolean;
+  /** Satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama. */
+  punya_mutasi: boolean;
   stok_minimum: number;
   tempat_utama: string | null;
   catatan: string | null;
@@ -819,6 +853,8 @@ export interface BarangInventaris {
   posisi: PosisiStok[];
   /** Sudah punya unit: keluar dan pindah wajib memilih unitnya. */
   dilacak_unit: boolean;
+  /** Isi kolom tambahan berkunci `id_kolom`, termasuk kolom yang nonaktif. */
+  atribut: Record<string, string>;
 }
 
 export interface DaftarInventaris {
@@ -830,6 +866,8 @@ export interface DaftarInventaris {
   hari_ini: string;
   /** Dicetak di label QR. */
   nama_perusahaan: string | null;
+  /** Semua kolom tambahan, aktif maupun tidak, urut waktu dibuat. */
+  kolom: KolomInventaris[];
 }
 
 export interface PenerimaInventaris {
@@ -876,6 +914,7 @@ export interface PinjamanAktif {
   nama_barang: string;
   kode_barang: string;
   satuan: string;
+  desimal: boolean;
   tipe: TipeBarang;
   tanggal: string;
   jumlah: number;
@@ -925,6 +964,7 @@ export interface BarisDokumen {
   nama_barang: string;
   kode_barang: string;
   satuan: string;
+  desimal: boolean;
 }
 
 export interface DokumenInventaris {
@@ -952,6 +992,7 @@ export interface BarisPengadaan {
   kode_barang: string;
   nama_barang: string;
   satuan: string;
+  desimal: boolean;
   alasan: string;
   jumlah: number;
   harga_satuan: number | null;
@@ -1101,7 +1142,9 @@ export function aksiPindaiOpname(
     return {
       jenis: "hitung",
       kunci: baik.kunci,
-      fisik: baik.dipindai ? (Number(baik.fisik) || 0) + 1 : 1,
+      fisik: baik.dipindai
+        ? (jumlahDariKetikan(baik.fisik, false) ?? 0) + 1
+        : 1,
     };
   }
   const pertama = milik[0];
@@ -1206,4 +1249,260 @@ export function validasiUnitEdit(
     return { ok: false, error: "Catatan unit maksimal 200 karakter." };
   }
   return { ok: true, value: { nomor_seri, catatan } };
+}
+
+// ── Kolom tambahan (v25) ────────────────────────────────────────────────────
+
+/** WAJIB sama dengan CHECK `inventory_kolom.tipe` di ketiga DDL. */
+export const TIPE_KOLOM = ["Teks", "Angka"] as const;
+export type TipeKolom = (typeof TIPE_KOLOM)[number];
+export const MAKS_KOLOM_AKTIF = 20;
+export const MAKS_NAMA_KOLOM = 40;
+export const MAKS_ISI_TEKS = 200;
+/** Termasuk isi kolom yang sudah dinonaktifkan. */
+export const MAKS_ISI_ATRIBUT = 100;
+/**
+ * Judul kolom bawaan di Excel template, impor, dan rekap stok. Nama kolom
+ * tambahan tidak boleh sama, karena judulnya menjadi ambigu saat diimpor.
+ */
+export const NAMA_KOLOM_BAWAAN = [
+  "Kode",
+  "Nama barang",
+  "Kategori",
+  "Tipe",
+  "Satuan",
+  "Bisa kedaluwarsa",
+  "Stok minimum",
+  "Tempat utama",
+  "Catatan",
+  "Saldo awal",
+  "Tempat saldo",
+  "Kondisi",
+  "Tanggal kedaluwarsa",
+  "Tempat",
+  "Kedaluwarsa",
+  "Saldo",
+] as const;
+
+export interface KolomInventaris {
+  id_kolom: string;
+  nama: string;
+  tipe: TipeKolom;
+  is_aktif: boolean;
+  /** Nama yang sama dipakai kolom lain, biasanya dari dua perangkat offline. */
+  nama_ganda: boolean;
+}
+
+export const kolomDraftSchema = z
+  .object({
+    id_kolom: z.string().nullish(),
+    nama: z.string().default(""),
+    tipe: z.string().default(""),
+    is_aktif: z.boolean().default(true),
+  })
+  .strict();
+
+export type KolomDraft = z.input<typeof kolomDraftSchema>;
+
+/** Teks yang wajib diketik sebelum kolom dihapus permanen. */
+export const KONFIRMASI_HAPUS_KOLOM = "Hapus Permanen";
+
+/**
+ * Cermin `validate_kolom`. Murni: nama kembar, tipe yang terkunci, dan batas
+ * kolom aktif diperiksa service karena butuh database.
+ */
+export function validateKolom(
+  draft: z.output<typeof kolomDraftSchema>,
+): Hasil<{ nama: string; tipe: TipeKolom; is_aktif: boolean }> {
+  const nama = normalizeTempat(draft.nama);
+  if (!nama) return { ok: false, error: "Nama kolom wajib diisi." };
+  if (panjang(nama) > MAKS_NAMA_KOLOM) {
+    return { ok: false, error: "Nama kolom maksimal 40 karakter." };
+  }
+  if (
+    NAMA_KOLOM_BAWAAN.some((bawaan) => asciiLower(bawaan) === asciiLower(nama))
+  ) {
+    return { ok: false, error: "Nama kolom sudah dipakai kolom bawaan." };
+  }
+  if (!(TIPE_KOLOM as readonly string[]).includes(draft.tipe)) {
+    return { ok: false, error: "Tipe kolom tidak dikenal." };
+  }
+  return {
+    ok: true,
+    value: { nama, tipe: draft.tipe as TipeKolom, is_aktif: draft.is_aktif },
+  };
+}
+
+const POLA_ID_KOLOM = /^kol-[0-9a-f]{1,32}$/;
+/** Angka baku: tanpa nol di depan atau di belakang, maksimal 4 desimal. */
+const POLA_ANGKA = /^(0|[1-9][0-9]{0,11})(\.[0-9]{0,3}[1-9])?$/;
+
+/** Cermin `is_angka_kanonik`. */
+export function isAngkaKanonik(value: string): boolean {
+  return POLA_ANGKA.test(value);
+}
+
+/**
+ * Ketikan pengguna berformat Indonesia ke angka baku: koma = desimal, titik =
+ * pemisah ribuan. `1.250,5` → `1250.5`. Titik yang bukan pemisah ribuan
+ * (`2.5`) ditolak, tidak ditebak, karena salah tebak tidak kelihatan.
+ */
+export function angkaDariKetikan(raw: string): string | null {
+  const value = raw.replace(/\s/g, "");
+  const [bulat, pecahan, ...lebih] = value.split(",");
+  if (lebih.length > 0) return null;
+  if (!/^\d+$/.test(bulat) && !/^\d{1,3}(\.\d{3})+$/.test(bulat)) return null;
+  if (pecahan !== undefined && !/^\d{1,4}$/.test(pecahan)) return null;
+  return bakukan(bulat.replace(/\./g, ""), pecahan ?? "");
+}
+
+/**
+ * Isi sel Excel bertipe Angka (selalu bertitik desimal, apa pun pengaturan
+ * regionalnya) ke angka baku, dibulatkan ke 4 desimal.
+ */
+export function angkaDariSelAngka(raw: string): string | null {
+  const angka = Number(raw);
+  if (!Number.isFinite(angka) || angka < 0) return null;
+  const [bulat, pecahan] = angka.toFixed(4).split(".");
+  return bakukan(bulat, pecahan);
+}
+
+function bakukan(bulat: string, pecahan: string): string | null {
+  const depan = bulat.replace(/^0+(?=\d)/, "");
+  const belakang = pecahan.replace(/0+$/, "");
+  const hasil = belakang ? `${depan}.${belakang}` : depan;
+  return isAngkaKanonik(hasil) ? hasil : null;
+}
+
+/** Angka baku untuk layar: `1250.5` → `1.250,5`. */
+export function formatAngka(kanonik: string): string {
+  const [bulat, pecahan] = kanonik.split(".");
+  const berkelompok = bulat.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return pecahan ? `${berkelompok},${pecahan}` : berkelompok;
+}
+
+/** Definisi kolom yang dibutuhkan `validateAtribut`. */
+export type KolomUntukAtribut = Pick<
+  KolomInventaris,
+  "id_kolom" | "nama" | "tipe"
+> & {
+  /** Dihapus permanen: isinya dibuang setiap kali barang disimpan. */
+  dihapus?: boolean;
+};
+
+/**
+ * Cermin `validate_atribut`. Isi kosong dan isi kolom yang sudah dihapus
+ * dibuang. Kunci yang belum dikenal perangkat ini (definisinya belum tertarik)
+ * tetap disimpan sebagai teks.
+ */
+export function validateAtribut(
+  atribut: Record<string, string>,
+  kolom: readonly KolomUntukAtribut[],
+): Hasil<Record<string, string>> {
+  const hasil: Record<string, string> = {};
+  for (const kunci of Object.keys(atribut).sort()) {
+    if (!POLA_ID_KOLOM.test(kunci)) {
+      return { ok: false, error: "Kolom tambahan tidak valid." };
+    }
+    const isi = atribut[kunci].trim();
+    if (!isi) continue;
+    const definisi = kolom.find((item) => item.id_kolom === kunci);
+    if (definisi?.dihapus) continue;
+    if (definisi?.tipe === "Angka") {
+      if (!isAngkaKanonik(isi)) {
+        return {
+          ok: false,
+          error: `Isi kolom ${definisi.nama} harus angka.`,
+        };
+      }
+    } else if (panjang(isi) > MAKS_ISI_TEKS) {
+      return {
+        ok: false,
+        error: `Isi kolom ${definisi?.nama ?? "tambahan"} maksimal 200 karakter.`,
+      };
+    }
+    hasil[kunci] = isi;
+  }
+  if (Object.keys(hasil).length > MAKS_ISI_ATRIBUT) {
+    return { ok: false, error: "Kolom tambahan terlalu banyak." };
+  }
+  return { ok: true, value: hasil };
+}
+
+/** Isi kolom `atribut` dari database; JSON rusak dibaca sebagai kosong. */
+export function bacaAtribut(raw: unknown): Record<string, string> {
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+// ── Jumlah desimal ──────────────────────────────────────────────────────────
+
+function jumlahDari(
+  bulat: string,
+  pecahan: string,
+  desimal: boolean,
+): number | null {
+  if (!desimal) return /^0*$/.test(pecahan) ? Number(bulat) : null;
+  if (pecahan.length > 2) return null;
+  return Number(bulat) * SKALA_DESIMAL + Number(pecahan.padEnd(2, "0"));
+}
+
+/**
+ * Ketikan berformat Indonesia (titik = ribuan, koma = desimal) menjadi jumlah
+ * tersimpan. Barang desimal: `254,5` = 25450. Barang biasa hanya menerima
+ * pecahan nol (`10.000,00`). Null = bukan jumlah yang sah; batasnya diperiksa
+ * validasi mutasi seperti biasa.
+ */
+export function jumlahDariKetikan(
+  teks: string,
+  desimal: boolean,
+): number | null {
+  const cocok = /^(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d+))?$/.exec(teks.trim());
+  if (!cocok) return null;
+  return jumlahDari(
+    (cocok[1] as string).replaceAll(".", ""),
+    cocok[2] ?? "",
+    desimal,
+  );
+}
+
+/**
+ * Sel Angka Excel: titik adalah desimal, dan sisa pembulatan biner Excel
+ * (`10.250000000000002`) sudah dirapikan `angkaDariSelAngka`.
+ */
+export function jumlahDariSelAngka(
+  raw: string,
+  desimal: boolean,
+): number | null {
+  const kanonik = angkaDariSelAngka(raw);
+  if (kanonik === null) return null;
+  const [bulat, pecahan = ""] = kanonik.split(".");
+  return jumlahDari(bulat as string, pecahan, desimal);
+}
+
+/**
+ * Jumlah tersimpan untuk dibaca orang, dan bisa diketik ulang apa adanya:
+ * 1000000 → "1.000.000"; barang desimal 25450 → "254,50", 25000 → "250".
+ */
+export function formatJumlah(nilai: number, desimal: boolean): string {
+  if (!desimal) return formatAngka(String(nilai));
+  const mutlak = Math.abs(nilai);
+  const bulat = Math.floor(mutlak / SKALA_DESIMAL);
+  const sisa = mutlak % SKALA_DESIMAL;
+  const teks = formatAngka(
+    sisa ? `${bulat}.${String(sisa).padStart(2, "0")}` : String(bulat),
+  );
+  return nilai < 0 ? `-${teks}` : teks;
 }

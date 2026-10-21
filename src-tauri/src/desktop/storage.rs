@@ -636,7 +636,9 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         catatan TEXT,
         status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        atribut TEXT,
+        desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1))
       );
       -- Append-only. Pembatalan adalah baris kebalikan berid 'batal-' || id_ref.
       CREATE TABLE IF NOT EXISTS inventory_mutasi (
@@ -698,6 +700,18 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_inventory_unit_barang ON inventory_unit(id_barang);
+      -- Definisi kolom tambahan barang (v25). Isinya di `inventory_barang.atribut`
+      -- (JSON berkunci id_kolom); hapus = nonaktif. DDL WAJIB identik dengan
+      -- `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS inventory_kolom (
+        id_kolom TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        tipe TEXT NOT NULL CHECK (tipe IN ('Teks', 'Angka')),
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        dihapus_pada TEXT
+      );
       -- Akuntansi berpasangan (v21). Saldo TIDAK pernah disimpan: dihitung dari
       -- baris jurnal, karena kolom saldo yang ikut sync ditimpa siapa terakhir
       -- menang. Jurnal append-only; koreksi = jurnal pembalik `batal-<id>`.
@@ -930,6 +944,29 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER DEFAULT 0;",
     )?;
 
+    // Isi kolom tambahan barang (v25, JSON berkunci id_kolom). NULL = belum
+    // ada isi, sama dengan `{}`.
+    ensure_column(
+        &connection,
+        "inventory_barang",
+        "atribut",
+        "ALTER TABLE inventory_barang ADD COLUMN atribut TEXT;",
+    )?;
+    // Hapus permanen kolom tambahan (v26). NULL = belum dihapus.
+    ensure_column(
+        &connection,
+        "inventory_kolom",
+        "dihapus_pada",
+        "ALTER TABLE inventory_kolom ADD COLUMN dihapus_pada TEXT;",
+    )?;
+    // Jumlah desimal per barang (v27): 1 = setiap jumlah disimpan ×100.
+    ensure_column(
+        &connection,
+        "inventory_barang",
+        "desimal",
+        "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
+    )?;
+
     // Hari kerja mingguan shift (v24), teks kanonik
     // `hari_kerja::validate_hari_kerja`. Bawaan tujuh hari: shift lama tidak
     // tiba-tiba punya hari libur.
@@ -1114,6 +1151,7 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "inventory_barang",
     "inventory_mutasi",
     "inventory_unit",
+    "inventory_kolom",
     "keu_akun",
     "keu_jurnal",
     "keu_jurnal_baris",

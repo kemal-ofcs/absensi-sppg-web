@@ -28,13 +28,17 @@ import {
   aksiPindaiOpname,
   asciiLower,
   bacaLabelInventaris,
+  jumlahDariKetikan,
   KONDISI_BARANG,
 } from "@/lib/validations/inventory";
 import { cetakBeritaAcara } from "./beritaAcara";
 import { eksporPengadaan } from "./ekspor";
 import {
+  angka,
+  bacaJumlah,
   hariIniWib,
   INPUT,
+  isianJumlah,
   LABEL,
   pesanGalat,
   TOMBOL_BAHAYA,
@@ -418,7 +422,7 @@ export function PanelKedaluwarsa({
 
   const buka = (batch: BatchBersaldo) => {
     setTarget(batch);
-    setJumlah(String(batch.posisi.saldo));
+    setJumlah(angka(batch.posisi.saldo, batch.barang.desimal));
     setCatatan("");
   };
 
@@ -428,11 +432,12 @@ export function PanelKedaluwarsa({
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
+      const nilai = bacaJumlah(jumlah, target.barang.desimal);
       await catatMutasiInventaris({
         id_barang: target.barang.id_barang,
         jenis: "Keluar",
         alasan: "Kedaluwarsa",
-        jumlah: Number(jumlah),
+        jumlah: nilai,
         tempat_asal: target.posisi.tempat,
         kondisi_asal: target.posisi.kondisi,
         id_batch: target.posisi.id_batch,
@@ -441,7 +446,7 @@ export function PanelKedaluwarsa({
       });
       setTarget(null);
       await onSelesai(
-        `Pemusnahan ${jumlah} ${target.barang.satuan} ${target.barang.nama_barang} tercatat.`,
+        `Pemusnahan ${angka(nilai, target.barang.desimal)} ${target.barang.satuan} ${target.barang.nama_barang} tercatat.`,
       );
     } catch (error) {
       onGalat(pesanGalat(error, "Pemusnahan tidak bisa dicatat."));
@@ -494,7 +499,7 @@ export function PanelKedaluwarsa({
                   </p>
                   <p className="text-xs text-slate-400">
                     {posisi.tempat} · kedaluwarsa {posisi.tanggal_expired} ·{" "}
-                    {posisi.saldo} {barang.satuan}
+                    {angka(posisi.saldo, barang.desimal)} {barang.satuan}
                   </p>
                   <p
                     className={`mt-1 text-sm font-medium ${
@@ -543,12 +548,8 @@ export function PanelKedaluwarsa({
               </label>
               <input
                 id="inv-musnah-jumlah"
-                type="number"
+                {...isianJumlah(target.barang.desimal)}
                 required
-                min={1}
-                max={target.posisi.saldo}
-                step={1}
-                inputMode="numeric"
                 value={jumlah}
                 onChange={(e) => setJumlah(e.target.value)}
                 className={INPUT}
@@ -641,7 +642,7 @@ export function PanelPinjaman({
 
   const buka = (baris: PinjamanAktif) => {
     setTarget(baris);
-    setJumlah(String(baris.sisa));
+    setJumlah(angka(baris.sisa, baris.desimal));
     setTempat(baris.tempat_asal ?? "");
     setKondisi(baris.kondisi_asal ?? "Baik");
     setTanggal(hariIni);
@@ -654,12 +655,13 @@ export function PanelPinjaman({
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
+      const nilai = bacaJumlah(jumlah, target.desimal);
       await catatMutasiInventaris({
         id_barang: target.id_barang,
         jenis: "Masuk",
         alasan: "Pengembalian",
         id_ref: target.id_mutasi,
-        jumlah: Number(jumlah),
+        jumlah: nilai,
         tanggal,
         tempat_tujuan: tempat,
         kondisi_tujuan: target.tipe === "Aset" ? kondisi : "Baik",
@@ -667,7 +669,7 @@ export function PanelPinjaman({
       });
       setTarget(null);
       await onSelesai(
-        `Pengembalian ${jumlah} ${target.satuan} ${target.nama_barang} tercatat.`,
+        `Pengembalian ${angka(nilai, target.desimal)} ${target.satuan} ${target.nama_barang} tercatat.`,
       );
     } catch (error) {
       onGalat(pesanGalat(error, "Pengembalian tidak bisa dicatat."));
@@ -718,7 +720,8 @@ export function PanelPinjaman({
                 </p>
                 <p className="text-sm text-slate-200">
                   {baris.penerima_nama ?? "Tanpa nama"}: belum kembali{" "}
-                  {baris.sisa} dari {baris.jumlah} {baris.satuan}
+                  {angka(baris.sisa, baris.desimal)} dari{" "}
+                  {angka(baris.jumlah, baris.desimal)} {baris.satuan}
                 </p>
                 <p className="text-xs text-slate-400">
                   Dipinjam {baris.tanggal}, sudah {baris.lama_hari} hari
@@ -755,7 +758,8 @@ export function PanelPinjaman({
             <p className="text-sm text-slate-300">
               {target.nama_barang} dipinjam{" "}
               {target.penerima_nama ?? "tanpa nama"} sejak {target.tanggal}.
-              Belum kembali {target.sisa} {target.satuan}.
+              Belum kembali {angka(target.sisa, target.desimal)} {target.satuan}
+              .
             </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
@@ -764,12 +768,8 @@ export function PanelPinjaman({
                 </label>
                 <input
                   id="inv-kembali-jumlah"
-                  type="number"
+                  {...isianJumlah(target.desimal)}
                   required
-                  min={1}
-                  max={target.sisa}
-                  step={1}
-                  inputMode="numeric"
                   value={jumlah}
                   onChange={(e) => setJumlah(e.target.value)}
                   className={INPUT}
@@ -878,6 +878,13 @@ interface BarisHitung {
   kode_unit: string | null;
 }
 
+/** Jumlah fisik ketikan; kosong = 0, ketikan yang bukan angka = null (selisih). */
+function fisikDari(b: BarisHitung): number | null {
+  return b.fisik.trim() === ""
+    ? 0
+    : jumlahDariKetikan(b.fisik, b.barang.desimal);
+}
+
 function kunciHitung(
   idBarang: string,
   kondisi: string,
@@ -901,7 +908,7 @@ function barisDariTempat(
         id_batch: posisi.id_batch,
         tanggal_expired: posisi.tanggal_expired,
         sistem: posisi.saldo,
-        fisik: String(Math.max(posisi.saldo, 0)),
+        fisik: angka(Math.max(posisi.saldo, 0), barang.desimal),
         dipindai: false,
         kode_unit: posisi.kode_unit,
       })),
@@ -1067,7 +1074,7 @@ export function PanelOpname({
       );
       navigator.vibrate?.(40);
       setPesanPindai({
-        teks: `${barang.nama_barang}: ${aksi.fisik} ${barang.satuan} terhitung.`,
+        teks: `${barang.nama_barang}: ${angka(aksi.fisik)} ${barang.satuan} terhitung.`,
         galat: false,
       });
       return;
@@ -1110,7 +1117,7 @@ export function PanelOpname({
 
   const adaPindaian = baris.some((b) => b.dipindai);
   const tidakDisentuh = (b: BarisHitung) =>
-    !b.dipindai && b.fisik === String(Math.max(b.sistem, 0));
+    !b.dipindai && fisikDari(b) === Math.max(b.sistem, 0);
   const belumDipindai = adaPindaian
     ? baris.filter(
         (b) =>
@@ -1141,9 +1148,7 @@ export function PanelOpname({
     () => (barangTambah ? batchBarang(barangTambah) : []),
     [barangTambah],
   );
-  const jumlahSelisih = baris.filter(
-    (b) => Number(b.fisik) !== b.sistem,
-  ).length;
+  const jumlahSelisih = baris.filter((b) => fisikDari(b) !== b.sistem).length;
 
   const tambah = () => {
     if (!barangTambah) {
@@ -1199,7 +1204,11 @@ export function PanelOpname({
           id_barang: b.barang.id_barang,
           kondisi: b.kondisi,
           id_batch: b.id_batch,
-          fisik: Number(b.fisik),
+          fisik: bacaJumlah(
+            b.fisik || "0",
+            b.barang.desimal,
+            `Jumlah fisik ${b.barang.nama_barang}`,
+          ),
         })),
         catatan,
       });
@@ -1285,7 +1294,8 @@ export function PanelOpname({
             ) : (
               <ul className="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-900/60">
                 {baris.map((item, index) => {
-                  const beda = Number(item.fisik) !== item.sistem;
+                  const fisik = fisikDari(item);
+                  const beda = fisik !== item.sistem;
                   return (
                     <li
                       key={item.kunci}
@@ -1300,7 +1310,8 @@ export function PanelOpname({
                           {item.tanggal_expired
                             ? ` · kedaluwarsa ${item.tanggal_expired}`
                             : ""}{" "}
-                          · sistem {item.sistem} {item.barang.satuan}
+                          · sistem {angka(item.sistem, item.barang.desimal)}{" "}
+                          {item.barang.satuan}
                           {item.kode_unit ? ` · unit ${item.kode_unit}` : ""}
                           {item.dipindai ? " · dihitung dengan pindai" : ""}
                         </p>
@@ -1314,11 +1325,8 @@ export function PanelOpname({
                         </label>
                         <input
                           id={`inv-fisik-${index}`}
-                          type="number"
+                          {...isianJumlah(item.barang.desimal)}
                           required
-                          min={0}
-                          step={1}
-                          inputMode="numeric"
                           value={item.fisik}
                           onChange={(e) =>
                             setBaris(
@@ -1333,8 +1341,12 @@ export function PanelOpname({
                         />
                         {beda ? (
                           <span className="w-16 text-sm font-semibold text-amber-300">
-                            {Number(item.fisik) - item.sistem > 0 ? "+" : ""}
-                            {Number(item.fisik) - item.sistem}
+                            {fisik === null
+                              ? "?"
+                              : `${fisik > item.sistem ? "+" : ""}${angka(
+                                  fisik - item.sistem,
+                                  item.barang.desimal,
+                                )}`}
                           </span>
                         ) : (
                           <span className="w-16 text-sm text-slate-500">
@@ -1428,10 +1440,7 @@ export function PanelOpname({
                   </label>
                   <input
                     id="inv-tambah-fisik"
-                    type="number"
-                    min={0}
-                    step={1}
-                    inputMode="numeric"
+                    {...isianJumlah(barangTambah?.desimal ?? false)}
                     value={tambahFisik}
                     onChange={(e) => setTambahFisik(e.target.value)}
                     className={INPUT}

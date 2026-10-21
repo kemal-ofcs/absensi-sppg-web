@@ -19,7 +19,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 24;
+pub const CLIENT_SCHEMA_VERSION: i64 = 27;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -583,6 +583,8 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "status_aktif",
             "created_at",
             "updated_at",
+            "atribut",
+            "desimal",
         ],
         conflict_column: "id_barang",
         entity_column: "id_barang",
@@ -640,6 +642,26 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_unit",
         entity_column: "id_unit",
+        delete_missing: false,
+    },
+    // ── v25: Kolom tambahan barang ──
+    //
+    // Hapus = nonaktif, jadi ketiadaan baris tidak pernah berarti "dihapus".
+    SnapshotTable {
+        payload_key: "inventoryColumns",
+        domain: "inventory-column",
+        table: "inventory_kolom",
+        columns: &[
+            "id_kolom",
+            "nama",
+            "tipe",
+            "is_aktif",
+            "created_at",
+            "updated_at",
+            "dihapus_pada",
+        ],
+        conflict_column: "id_kolom",
+        entity_column: "id_kolom",
         delete_missing: false,
     },
     // ── v21: Akuntansi ──
@@ -840,6 +862,7 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("inventory-item", "save"),
     ("inventory-mutation", "create"),
     ("inventory-unit", "save"),
+    ("inventory-column", "save"),
     ("log-scan", "delete"),
     ("offline-import", "delete"),
     ("offline-import", "row"),

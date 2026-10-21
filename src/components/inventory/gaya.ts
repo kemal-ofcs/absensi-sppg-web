@@ -1,6 +1,8 @@
 // Kelas dan helper yang dipakai bersama `InventarisWorkspace` dan
 // `PanelPemantauan`. Ikut disalin ke Mobile lewat `filesToCopy`.
 
+import { formatJumlah, jumlahDariKetikan } from "@/lib/validations/inventory";
+
 export const INPUT =
   "w-full min-h-11 text-sm rounded-lg px-3 py-2 bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500";
 export const LABEL = "block text-xs font-medium text-slate-300 mb-1";
@@ -16,6 +18,44 @@ export function hariIniWib(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(
     new Date(),
   );
+}
+
+/**
+ * Jumlah stok untuk dibaca: 10000 -> "10.000"; barang desimal (tersimpan
+ * ×100) 25450 -> "254,50". Hasilnya bisa diketik ulang ke isian jumlah.
+ */
+export function angka(nilai: number, desimal = false): string {
+  return formatJumlah(nilai, desimal);
+}
+
+/**
+ * Atribut isian jumlah. Selalu teks berformat Indonesia ("1.000", "2,5")
+ * dibaca `bacaJumlah`, karena `type="number"` memperlakukan koma dan titik
+ * mengikuti bahasa peramban, tidak mengikuti aturan aplikasi.
+ */
+export function isianJumlah(desimal: boolean) {
+  return {
+    type: "text",
+    inputMode: desimal ? "decimal" : "numeric",
+    autoComplete: "off",
+  } as const;
+}
+
+/** Ketikan jumlah menjadi jumlah tersimpan, atau galat yang siap ditampilkan. */
+export function bacaJumlah(
+  teks: string,
+  desimal: boolean,
+  nama = "Jumlah",
+): number {
+  const nilai = jumlahDariKetikan(teks, desimal);
+  if (nilai === null) {
+    throw new Error(
+      desimal
+        ? `${nama} harus angka dengan paling banyak 2 angka di belakang koma, misalnya 2,5.`
+        : `${nama} harus bilangan bulat, misalnya 10 atau 1.000.`,
+    );
+  }
+  return nilai;
 }
 
 export function pesanGalat(error: unknown, cadangan: string): string {

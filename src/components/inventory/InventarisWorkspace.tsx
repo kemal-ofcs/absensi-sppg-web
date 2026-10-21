@@ -32,6 +32,8 @@ import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
 import {
   ALASAN_FORMULIR,
   alasanSahUntuk,
+  angkaDariKetikan,
+  formatAngka,
   izinUntukAlasan,
   JENIS_MUTASI,
   type JenisMutasi,
@@ -42,16 +44,29 @@ import {
   PENERIMA_TIPE,
   TIPE_BARANG,
 } from "@/lib/validations/inventory";
-import { eksporKartuStok, eksporRekapStok } from "./ekspor";
 import {
+  describeImportReport,
+  runImport,
+} from "@/lib/validations/inventory-import";
+import {
+  bacaImporBarang,
+  eksporKartuStok,
+  eksporRekapStok,
+  unduhTemplateBarang,
+} from "./ekspor";
+import {
+  angka,
+  bacaJumlah,
   hariIniWib,
   INPUT,
+  isianJumlah,
   LABEL,
   pesanGalat,
   TOMBOL_BAHAYA,
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "./gaya";
+import { DialogKolomTambahan } from "./KolomTambahan";
 import { DialogLabel } from "./LabelQr";
 import {
   bisaCetakBeritaAcara,
@@ -116,11 +131,15 @@ function awalBulan(tanggal: string): string {
   return `${tanggal.slice(0, 8)}01`;
 }
 
-function labelPosisi(posisi: PosisiStok, satuan: string): string {
+function labelPosisi(
+  posisi: PosisiStok,
+  satuan: string,
+  desimal: boolean,
+): string {
   const bagian = [posisi.tempat, posisi.kondisi];
   if (posisi.tanggal_expired)
     bagian.push(`kedaluwarsa ${posisi.tanggal_expired}`);
-  return `${bagian.join(" · ")} (sisa ${posisi.saldo} ${satuan})`;
+  return `${bagian.join(" · ")} (sisa ${angka(posisi.saldo, desimal)} ${satuan})`;
 }
 
 /**
@@ -156,12 +175,14 @@ export function InventarisWorkspace({
   const [barangCatat, setBarangCatat] = useState("");
   const [barangKartu, setBarangKartu] = useState("");
   const [aturAwalan, setAturAwalan] = useState(false);
+  const [aturKolom, setAturKolom] = useState(false);
   const [unitAksi, setUnitAksi] = useState<
     | { jenis: "daftar"; barang: BarangInventaris }
     | { jenis: "ubah"; barang: BarangInventaris; posisi: PosisiStok }
     | null
   >(null);
   const isSubmittingRef = useRef(false);
+  const [mengimpor, setMengimpor] = useState(false);
 
   const muatPinjaman = useCallback(async () => {
     try {
@@ -206,6 +227,79 @@ export function InventarisWorkspace({
       if (hasil.sukses) info("Rekap stok tersimpan sebagai berkas Excel.");
     } catch (error) {
       galat(pesanGalat(error, "Berkas Excel tidak bisa disimpan."));
+    }
+  };
+
+  const unduhTemplate = async () => {
+    if (!data) return;
+    try {
+      const hasil = await unduhTemplateBarang(data);
+      if (hasil.sukses) info("Template barang tersimpan sebagai berkas Excel.");
+    } catch (error) {
+      galat(pesanGalat(error, "Berkas Excel tidak bisa disimpan."));
+    }
+  };
+
+  const imporBarang = async (file: File) => {
+    if (!data || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setMengimpor(true);
+    try {
+      const { baris, judulAsing } = await bacaImporBarang(file, data);
+      const report = await runImport(baris, async (draft) => {
+        const tersimpan = await simpanBarangInventaris(draft.barang);
+        if (!draft.saldo) return;
+        try {
+          await catatMutasiInventaris({
+            ...draft.saldo,
+            id_barang: tersimpan.id_barang,
+          });
+        } catch (error) {
+          throw new Error(
+            `${tersimpan.kode_barang} tersimpan, tetapi saldo awalnya gagal dicatat (${pesanGalat(error, "galat tidak dikenal")}). Catat lewat Catat Mutasi.`,
+          );
+        }
+      });
+      const kodeOtomatis = baris.filter(
+        (item) => item.draft.baru && !item.draft.barang.kode_barang,
+      ).length;
+      const saldoDiabaikan = baris.filter(
+        (item) => item.draft.saldoDiabaikan,
+      ).length;
+      const desimalDiabaikan = baris.filter(
+        (item) => item.draft.desimalDiabaikan,
+      ).length;
+      const pesan = [describeImportReport(report)];
+      if (judulAsing.length > 0) {
+        pesan.push(
+          `Kolom ${judulAsing.join(", ")} tidak dikenal dan isinya diabaikan.`,
+        );
+      }
+      if (kodeOtomatis > 0) {
+        pesan.push(
+          `${kodeOtomatis} barang baru diberi kode otomatis; unduh ulang template sebelum impor berikutnya supaya barangnya tidak dobel.`,
+        );
+      }
+      if (saldoDiabaikan > 0) {
+        pesan.push(
+          `Saldo awal ${saldoDiabaikan} barang yang sudah ada diabaikan; tambah stoknya lewat Catat Mutasi.`,
+        );
+      }
+      if (desimalDiabaikan > 0) {
+        pesan.push(
+          `Kolom Desimal ${desimalDiabaikan} barang tidak diubah karena barangnya sudah punya riwayat mutasi.`,
+        );
+      }
+      setFeedback({
+        tone: report.gagal.length > 0 ? "error" : "success",
+        message: pesan.join(" "),
+      });
+      await muat();
+    } catch (error) {
+      galat(pesanGalat(error, "Berkas Excel tidak bisa dibaca."));
+    } finally {
+      isSubmittingRef.current = false;
+      setMengimpor(false);
     }
   };
 
@@ -363,7 +457,11 @@ export function InventarisWorkspace({
             canRecord={canRecord}
             onTambah={() => setFormBarang("baru")}
             onAturAwalan={() => setAturAwalan(true)}
+            onAturKolom={() => setAturKolom(true)}
             onEkspor={() => void eksporStok()}
+            onUnduhTemplate={() => void unduhTemplate()}
+            onImpor={(file) => void imporBarang(file)}
+            mengimpor={mengimpor}
             onUbah={(barang) => setFormBarang(barang)}
             onCatat={(barang) => {
               setBarangCatat(barang.id_barang);
@@ -440,6 +538,16 @@ export function InventarisWorkspace({
         />
       ) : null}
 
+      {aturKolom && data ? (
+        <DialogKolomTambahan
+          kolom={data.kolom}
+          barang={data.barang}
+          bolehHapus={hasPermission(user, "inventory.column.delete")}
+          isSubmittingRef={isSubmittingRef}
+          onClose={() => setAturKolom(false)}
+          onChanged={muat}
+        />
+      ) : null}
       {aturAwalan && data ? (
         <FormAwalanKode
           awalan={data.kode_prefix}
@@ -465,7 +573,11 @@ function DaftarBarang({
   canRecord,
   onTambah,
   onAturAwalan,
+  onAturKolom,
   onEkspor,
+  onUnduhTemplate,
+  onImpor,
+  mengimpor,
   onUbah,
   onCatat,
   onKartu,
@@ -478,7 +590,11 @@ function DaftarBarang({
   canRecord: boolean;
   onTambah: () => void;
   onAturAwalan: () => void;
+  onAturKolom: () => void;
   onEkspor: () => void;
+  onUnduhTemplate: () => void;
+  onImpor: (file: File) => void;
+  mengimpor: boolean;
   onUbah: (barang: BarangInventaris) => void;
   onCatat: (barang: BarangInventaris) => void;
   onKartu: (barang: BarangInventaris) => void;
@@ -492,8 +608,13 @@ function DaftarBarang({
   const [filterStok, setFilterStok] = useState<FilterBarang>(filterAwal);
   const [terbuka, setTerbuka] = useState<string | null>(null);
   const [cetakLabel, setCetakLabel] = useState(false);
+  const imporRef = useRef<HTMLInputElement>(null);
   // Cetak butuh dialog cetak, yang tidak ada di WebView Android.
   const bisaCetak = bisaCetakBeritaAcara();
+  const kolomAktif = useMemo(
+    () => data.kolom.filter((kolom) => kolom.is_aktif),
+    [data.kolom],
+  );
 
   const daftar = useMemo(() => {
     const kata = cari.trim().toLowerCase();
@@ -510,9 +631,54 @@ function DaftarBarang({
           )) &&
         (!kata ||
           barang.nama_barang.toLowerCase().includes(kata) ||
-          barang.kode_barang.toLowerCase().includes(kata)),
+          barang.kode_barang.toLowerCase().includes(kata) ||
+          kolomAktif.some((kolom) =>
+            (barang.atribut[kolom.id_kolom] ?? "").toLowerCase().includes(kata),
+          )),
     );
-  }, [data.barang, cari, kategori, tempat, tampilkanNonaktif, filterStok]);
+  }, [
+    data.barang,
+    kolomAktif,
+    cari,
+    kategori,
+    tempat,
+    tampilkanNonaktif,
+    filterStok,
+  ]);
+
+  // Dipakai juga di tampilan kosong: impor Excel paling dibutuhkan justru
+  // saat belum ada barang sama sekali.
+  const tombolKelola = canManage ? (
+    <>
+      <input
+        ref={imporRef}
+        type="file"
+        accept=".xlsx"
+        className="hidden"
+        aria-label="Pilih berkas Excel barang untuk diimpor"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Dikosongkan supaya berkas yang sama bisa dipilih lagi.
+          e.target.value = "";
+          if (file) onImpor(file);
+        }}
+      />
+      <button type="button" onClick={onUnduhTemplate} className={TOMBOL_KEDUA}>
+        Unduh template
+      </button>
+      <button
+        type="button"
+        disabled={mengimpor}
+        onClick={() => imporRef.current?.click()}
+        className={TOMBOL_KEDUA}
+      >
+        {mengimpor ? "Mengimpor..." : "Impor Excel"}
+      </button>
+      <button type="button" onClick={onAturKolom} className={TOMBOL_KEDUA}>
+        Kolom tambahan
+      </button>
+    </>
+  ) : null;
 
   if (data.barang.length === 0) {
     return (
@@ -522,12 +688,16 @@ function DaftarBarang({
         </p>
         <p className="text-sm text-slate-400">
           Daftarkan barang lebih dulu, lalu catat stok yang sudah ada di
-          tempatnya sebagai mutasi Masuk dengan alasan Saldo Awal.
+          tempatnya sebagai mutasi Masuk dengan alasan Saldo Awal. Banyak barang
+          sekaligus bisa diimpor dari Excel lewat template.
         </p>
         {canManage ? (
-          <button type="button" onClick={onTambah} className={TOMBOL_UTAMA}>
-            Tambah barang pertama
-          </button>
+          <div className="flex flex-wrap justify-center gap-2">
+            {tombolKelola}
+            <button type="button" onClick={onTambah} className={TOMBOL_UTAMA}>
+              Tambah barang pertama
+            </button>
+          </div>
         ) : (
           <p className="text-xs text-slate-500">
             Menambah barang butuh izin Kelola Master Barang.
@@ -542,7 +712,9 @@ function DaftarBarang({
       <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div>
           <label htmlFor="inv-cari" className={LABEL}>
-            Cari nama atau kode
+            {kolomAktif.length > 0
+              ? "Cari nama, kode, atau kolom tambahan"
+              : "Cari nama atau kode"}
           </label>
           <input
             id="inv-cari"
@@ -631,6 +803,7 @@ function DaftarBarang({
         ) : null}
         {canManage ? (
           <>
+            {tombolKelola}
             <button
               type="button"
               onClick={onAturAwalan}
@@ -692,19 +865,20 @@ function DaftarBarang({
                             : "text-slate-100"
                         }`}
                       >
-                        {barang.stok_baik}
+                        {angka(barang.stok_baik, barang.desimal)}
                       </span>{" "}
                       <span className="text-sm text-slate-400">
                         {barang.satuan} baik
                       </span>
                       {rusak !== 0 ? (
                         <span className="block text-xs text-amber-300">
-                          {rusak} {barang.satuan} rusak
+                          {angka(rusak, barang.desimal)} {barang.satuan} rusak
                         </span>
                       ) : null}
                       {barang.stok_menipis ? (
                         <span className="block text-xs font-medium text-amber-300">
-                          di bawah minimum {barang.stok_minimum}
+                          di bawah minimum{" "}
+                          {angka(barang.stok_minimum, barang.desimal)}
                         </span>
                       ) : null}
                     </p>
@@ -743,6 +917,24 @@ function DaftarBarang({
                     ) : null}
                   </div>
                 </div>
+                {buka &&
+                kolomAktif.some((kolom) => barang.atribut[kolom.id_kolom]) ? (
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+                    {kolomAktif
+                      .filter((kolom) => barang.atribut[kolom.id_kolom])
+                      .map((kolom) => {
+                        const isi = barang.atribut[kolom.id_kolom] ?? "";
+                        return (
+                          <div key={kolom.id_kolom} className="flex gap-2">
+                            <dt className="text-slate-400">{kolom.nama}</dt>
+                            <dd className="min-w-0 break-words text-slate-200">
+                              {kolom.tipe === "Angka" ? formatAngka(isi) : isi}
+                            </dd>
+                          </div>
+                        );
+                      })}
+                  </dl>
+                ) : null}
                 {buka && (barang.dilacak_unit || bisaDaftarkanUnit(barang)) ? (
                   <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                     <p className="text-slate-400">
@@ -809,7 +1001,8 @@ function DaftarBarang({
                                 : "text-slate-100"
                             }`}
                           >
-                            {posisi.saldo} {barang.satuan}
+                            {angka(posisi.saldo, barang.desimal)}{" "}
+                            {barang.satuan}
                             {posisi.saldo < 0 ? " (perlu opname)" : ""}
                           </span>
                           {canManage && posisi.kode_unit ? (
@@ -866,17 +1059,60 @@ function FormBarang({
   const [kategori, setKategori] = useState(barang?.kategori ?? "");
   const [tempatUtama, setTempatUtama] = useState(barang?.tempat_utama ?? "");
   const [stokMinimum, setStokMinimum] = useState(
-    String(barang?.stok_minimum ?? 0),
+    barang ? angka(barang.stok_minimum, barang.desimal) : "0",
   );
   const [bisaExpired, setBisaExpired] = useState(barang?.bisa_expired ?? false);
+  const [desimal, setDesimal] = useState(barang?.desimal ?? false);
+  // Mengubahnya setelah ada mutasi akan mengubah arti setiap jumlah tercatat.
+  const desimalTerkunci = barang?.punya_mutasi ?? false;
+  const pakaiDesimal = desimal && tipe === "Habis Pakai";
   const [catatan, setCatatan] = useState(barang?.catatan ?? "");
   const [aktif, setAktif] = useState(barang?.status_aktif ?? true);
+  const kolomAktif = data.kolom.filter((kolom) => kolom.is_aktif);
+  // Angka ditampilkan dan diketik berformat Indonesia: 1.250,5.
+  const [isiKolom, setIsiKolom] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      kolomAktif.map((kolom) => {
+        const isi = barang?.atribut[kolom.id_kolom] ?? "";
+        return [
+          kolom.id_kolom,
+          kolom.tipe === "Angka" && isi ? formatAngka(isi) : isi,
+        ];
+      }),
+    ),
+  );
   const [galat, setGalat] = useState<string | null>(null);
   const [menyimpan, setMenyimpan] = useState(false);
 
   const simpan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    // Isi kolom nonaktif ikut dikirim apa adanya supaya tidak terhapus.
+    const atribut: Record<string, string> = { ...(barang?.atribut ?? {}) };
+    for (const kolom of kolomAktif) {
+      const isi = (isiKolom[kolom.id_kolom] ?? "").trim();
+      if (!isi) {
+        delete atribut[kolom.id_kolom];
+      } else if (kolom.tipe === "Angka") {
+        const angka = angkaDariKetikan(isi);
+        if (angka === null) {
+          setGalat(
+            `${kolom.nama} harus angka. Pakai koma untuk desimal, misalnya 2,5.`,
+          );
+          return;
+        }
+        atribut[kolom.id_kolom] = angka;
+      } else {
+        atribut[kolom.id_kolom] = isi;
+      }
+    }
+    let minimum: number;
+    try {
+      minimum = bacaJumlah(stokMinimum || "0", pakaiDesimal, "Stok minimum");
+    } catch (error) {
+      setGalat(pesanGalat(error, "Stok minimum tidak valid."));
+      return;
+    }
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -890,10 +1126,12 @@ function FormBarang({
         tipe,
         satuan,
         bisa_expired: bisaExpired,
-        stok_minimum: Number(stokMinimum) || 0,
+        desimal: pakaiDesimal,
+        stok_minimum: minimum,
         tempat_utama: tempatUtama,
         catatan,
         status_aktif: aktif,
+        atribut,
       });
       await onSaved(
         barang
@@ -1038,10 +1276,7 @@ function FormBarang({
             </label>
             <input
               id="inv-stok-minimum"
-              type="number"
-              min={0}
-              step={1}
-              inputMode="numeric"
+              {...isianJumlah(pakaiDesimal)}
               value={stokMinimum}
               onChange={(e) => setStokMinimum(e.target.value)}
               className={INPUT}
@@ -1063,6 +1298,54 @@ function FormBarang({
             </span>
           </span>
         </label>
+        {tipe === "Habis Pakai" ? (
+          <label className="flex min-h-11 items-start gap-2 text-sm text-slate-200">
+            <input
+              type="checkbox"
+              checked={desimal}
+              disabled={desimalTerkunci}
+              onChange={(e) => setDesimal(e.target.checked)}
+              className="mt-1 h-4 w-4"
+            />
+            <span>
+              Jumlah boleh berkoma
+              <span className="block text-xs text-slate-400">
+                Untuk barang yang ditimbang atau diukur, misalnya 2,5 kg atau
+                0,75 liter. Paling banyak 2 angka di belakang koma.
+                {desimalTerkunci
+                  ? " Barang ini sudah punya riwayat mutasi, jadi pilihannya terkunci."
+                  : " Tidak bisa diubah lagi setelah barang punya riwayat mutasi."}
+              </span>
+            </span>
+          </label>
+        ) : null}
+        {kolomAktif.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {kolomAktif.map((kolom) => (
+              <div key={kolom.id_kolom}>
+                <label
+                  htmlFor={`inv-atribut-${kolom.id_kolom}`}
+                  className={LABEL}
+                >
+                  {kolom.nama}
+                </label>
+                <input
+                  id={`inv-atribut-${kolom.id_kolom}`}
+                  inputMode={kolom.tipe === "Angka" ? "decimal" : undefined}
+                  maxLength={200}
+                  value={isiKolom[kolom.id_kolom] ?? ""}
+                  onChange={(e) =>
+                    setIsiKolom({
+                      ...isiKolom,
+                      [kolom.id_kolom]: e.target.value,
+                    })
+                  }
+                  className={INPUT}
+                />
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div>
           <label htmlFor="inv-catatan-barang" className={LABEL}>
             Catatan
@@ -1456,7 +1739,9 @@ function FormMutasi({
     setMenyimpan(true);
     try {
       const aset = barang.tipe === "Aset";
-      const jumlahCatat = pakaiUnit ? unitDipilih.length : Number(jumlah);
+      const jumlahCatat = pakaiUnit
+        ? unitDipilih.length
+        : bacaJumlah(jumlah, barang.desimal);
       await catatMutasiInventaris({
         id_barang: barang.id_barang,
         jenis,
@@ -1495,7 +1780,7 @@ function FormMutasi({
       });
       reset();
       await onSelesai(
-        `${jenis} ${jumlahCatat} ${barang.satuan} ${barang.nama_barang} tercatat.`,
+        `${jenis} ${angka(jumlahCatat, barang.desimal)} ${barang.satuan} ${barang.nama_barang} tercatat.`,
       );
     } catch (error) {
       onGalat(pesanGalat(error, "Mutasi tidak bisa disimpan."));
@@ -1603,12 +1888,8 @@ function FormMutasi({
             </label>
             <input
               id="inv-jumlah"
-              type="number"
+              {...isianJumlah(barang?.desimal ?? false)}
               required
-              min={1}
-              max={dilacak || perUnit ? 200 : undefined}
-              step={1}
-              inputMode="numeric"
               value={jumlah}
               onChange={(e) => setJumlah(e.target.value)}
               className={INPUT}
@@ -1752,7 +2033,7 @@ function FormMutasi({
                     key={`${posisi.tempat}|${posisi.kondisi}|${posisi.id_batch ?? ""}`}
                     value={String(index)}
                   >
-                    {labelPosisi(posisi, barang.satuan)}
+                    {labelPosisi(posisi, barang.satuan, barang.desimal)}
                   </option>
                 ))}
               </select>
@@ -1838,7 +2119,8 @@ function FormMutasi({
             </div>
             <div>
               <label htmlFor="inv-harga" className={LABEL}>
-                Harga satuan (Rp)
+                Harga satuan (Rp{barang?.desimal ? ` per ${barang.satuan}` : ""}
+                )
               </label>
               <input
                 id="inv-harga"
@@ -2211,7 +2493,7 @@ function PanelKartuStok({
             <span className="text-slate-300">Saldo sebelum {dari}</span>
             <span className="flex flex-wrap items-center gap-3">
               <span className="font-semibold text-slate-100">
-                {kartu.saldo_awal} {barang.satuan}
+                {angka(kartu.saldo_awal, barang.desimal)} {barang.satuan}
               </span>
               <button
                 type="button"
@@ -2263,13 +2545,17 @@ function PanelKartuStok({
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-3 sm:justify-end text-sm">
                     {baris.masuk > 0 ? (
-                      <span className="text-emerald-300">+{baris.masuk}</span>
+                      <span className="text-emerald-300">
+                        +{angka(baris.masuk, barang.desimal)}
+                      </span>
                     ) : null}
                     {baris.keluar > 0 ? (
-                      <span className="text-rose-300">-{baris.keluar}</span>
+                      <span className="text-rose-300">
+                        -{angka(baris.keluar, barang.desimal)}
+                      </span>
                     ) : null}
                     <span className="min-w-16 text-right font-semibold text-slate-100">
-                      {baris.saldo} {barang.satuan}
+                      {angka(baris.saldo, barang.desimal)} {barang.satuan}
                     </span>
                     {bisaCetak &&
                     !baris.dibatalkan &&

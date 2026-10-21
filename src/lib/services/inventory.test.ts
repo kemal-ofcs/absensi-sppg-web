@@ -26,6 +26,8 @@ const {
   recordOpname,
   registerUnits,
   saveCodePrefixes,
+  deleteColumn,
+  saveColumn,
   saveItem,
   saveUnit,
   stockCard,
@@ -48,6 +50,7 @@ beforeEach(async () => {
       "DELETE FROM inventory_mutasi;",
       "DELETE FROM inventory_barang;",
       "DELETE FROM inventory_unit;",
+      "DELETE FROM inventory_kolom;",
       "DELETE FROM master_data;",
       "DELETE FROM setting_gex_system WHERE key = 'inventory_kode_prefix';",
     ],
@@ -314,7 +317,7 @@ describe("service inventaris Web", () => {
         tipe: "Habis Pakai",
         satuan: "rim",
       }),
-    ).rejects.toThrow("Satuan dan pengaturan kedaluwarsa");
+    ).rejects.toThrow("Satuan, desimal, dan pengaturan kedaluwarsa");
   });
 
   // Skenario kembar dengan `automatic_codes_are_sequential_per_prefix`.
@@ -788,6 +791,176 @@ describe("registri aset per unit Web", () => {
     const habis = await barangBaru();
     await expect(registerUnits(client, "admin", habis)).rejects.toThrow(
       "Hanya aset tanpa kedaluwarsa yang bisa dicatat per unit.",
+    );
+  });
+});
+
+describe("kolom tambahan Web", () => {
+  test("nama unik, tipe terkunci, batas kolom aktif", async () => {
+    const { id_kolom } = await saveColumn(client, {
+      nama: "Merek",
+      tipe: "Teks",
+    });
+    expect(id_kolom).toMatch(/^kol-[0-9a-f]{32}$/);
+    await expect(
+      saveColumn(client, { nama: " merek ", tipe: "Teks" }),
+    ).rejects.toThrow("Nama kolom sudah dipakai kolom lain.");
+    await expect(
+      saveColumn(client, { id_kolom, nama: "Merek", tipe: "Angka" }),
+    ).rejects.toThrow("Tipe kolom tidak bisa diubah setelah dibuat.");
+    await saveColumn(client, {
+      id_kolom,
+      nama: "Merk",
+      tipe: "Teks",
+      is_aktif: false,
+    });
+
+    for (let i = 0; i < 20; i += 1) {
+      await saveColumn(client, { nama: `Kolom ${i}`, tipe: "Teks" });
+    }
+    // Kolom nonaktif tidak bisa diaktifkan lagi saat 20 kolom sudah aktif.
+    await expect(
+      saveColumn(client, {
+        id_kolom,
+        nama: "Merk",
+        tipe: "Teks",
+        is_aktif: true,
+      }),
+    ).rejects.toThrow("Maksimal 20 kolom tambahan aktif.");
+    const daftar = await listInventory(client);
+    expect(daftar.kolom).toHaveLength(21);
+    // `created_at` berpresisi detik: kolom yang dibuat bersamaan urut id acak.
+    expect(
+      daftar.kolom.find((item) => item.id_kolom === id_kolom),
+    ).toMatchObject({
+      nama: "Merk",
+      is_aktif: false,
+    });
+  });
+
+  test("isi kolom tersimpan, divalidasi tipenya, dan kosong dibuang", async () => {
+    const { id_kolom: berat } = await saveColumn(client, {
+      nama: "Berat",
+      tipe: "Angka",
+    });
+    await expect(
+      saveItem(client, {
+        nama_barang: "Karung",
+        tipe: "Aset",
+        satuan: "unit",
+        atribut: { [berat]: "2,5" },
+      }),
+    ).rejects.toThrow("Isi kolom Berat harus angka.");
+    const { id_barang } = await saveItem(client, {
+      nama_barang: "Karung",
+      tipe: "Aset",
+      satuan: "unit",
+      atribut: { [berat]: "2.5", "kol-ff": "  " },
+    });
+    const daftar = await listInventory(client);
+    expect(
+      daftar.barang.find((item) => item.id_barang === id_barang)?.atribut,
+    ).toEqual({
+      [berat]: "2.5",
+    });
+  });
+});
+
+describe("hapus permanen kolom tambahan Web", () => {
+  test("isi dibuang dari barang, nama bisa dipakai lagi, tidak bisa dihidupkan", async () => {
+    const { id_kolom } = await saveColumn(client, {
+      nama: "Merek",
+      tipe: "Teks",
+    });
+    const draft = {
+      nama_barang: "Spidol",
+      tipe: "Habis Pakai",
+      satuan: "pcs",
+      atribut: { [id_kolom]: "Pilot" },
+    };
+    const { id_barang } = await saveItem(client, draft);
+    await saveItem(client, {
+      nama_barang: "Kapur",
+      tipe: "Habis Pakai",
+      satuan: "pcs",
+    });
+
+    expect(await deleteColumn(client, id_kolom)).toEqual({
+      sukses: true,
+      barang_dibersihkan: 1,
+    });
+    const daftar = await listInventory(client);
+    expect(daftar.kolom).toEqual([]);
+    expect(
+      daftar.barang.find((item) => item.id_barang === id_barang)?.atribut,
+    ).toEqual({});
+
+    // Isi lama dari perangkat yang belum sinkron dibuang saat disimpan.
+    await saveItem(client, { ...draft, id_barang });
+    const ulang = await listInventory(client);
+    expect(
+      ulang.barang.find((item) => item.id_barang === id_barang)?.atribut,
+    ).toEqual({});
+
+    await expect(
+      saveColumn(client, { id_kolom, nama: "Merek", tipe: "Teks" }),
+    ).rejects.toThrow("Kolom ini sudah dihapus.");
+    await expect(deleteColumn(client, id_kolom)).rejects.toThrow(
+      "Kolom ini sudah dihapus.",
+    );
+    await saveColumn(client, { nama: "Merek", tipe: "Teks" });
+  });
+});
+
+// Kembar `decimal_items_lock_after_history_and_round_procurement_value` di inventory.rs.
+describe("barang desimal Web", () => {
+  test("terkunci sejak mutasi pertama, nilai pengadaan dibulatkan per baris", async () => {
+    const simpan = (extra: Record<string, unknown>) =>
+      saveItem(client, {
+        nama_barang: "Beras",
+        tipe: "Habis Pakai",
+        satuan: "kg",
+        tempat_utama: "Gudang",
+        desimal: true,
+        ...extra,
+      });
+    const { id_barang: idBarang } = await simpan({});
+    await simpan({ id_barang: idBarang, desimal: false });
+    await simpan({ id_barang: idBarang, desimal: true });
+
+    for (const [jumlah, harga] of [
+      [1025, 12_345],
+      [5, 10],
+    ] as const) {
+      await recordMutation(client, "admin", {
+        id_barang: idBarang,
+        jenis: "Masuk",
+        alasan: "Pengadaan",
+        jumlah,
+        tempat_tujuan: "Gudang",
+        harga_satuan: harga,
+      });
+    }
+    const hari = await client.execute(
+      "SELECT date('now', '+7 hours') AS hari;",
+    );
+    const rekap = await procurement(
+      client,
+      "2000-01-01",
+      String(hari.rows[0]?.hari),
+    );
+    expect(rekap.total_nilai).toBe(126_537);
+    expect(rekap.baris[0]?.desimal).toBe(true);
+
+    const barang = (await listInventory(client)).barang[0];
+    expect(barang?.stok_total).toBe(1030);
+    expect(barang?.desimal).toBe(true);
+    expect(barang?.punya_mutasi).toBe(true);
+    await expect(
+      simpan({ id_barang: idBarang, desimal: false }),
+    ).rejects.toThrow("Satuan, desimal, dan pengaturan kedaluwarsa");
+    await expect(simpan({ tipe: "Aset" })).rejects.toThrow(
+      "Jumlah desimal hanya untuk barang Habis Pakai.",
     );
   });
 });

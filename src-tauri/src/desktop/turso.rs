@@ -791,6 +791,12 @@ const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
         table: "inventory_unit",
         sql: "SELECT * FROM inventory_unit ORDER BY id_unit;",
     },
+    // ── v25: Kolom tambahan barang ──
+    SnapshotSource {
+        payload_key: "inventoryColumns",
+        table: "inventory_kolom",
+        sql: "SELECT * FROM inventory_kolom ORDER BY id_kolom;",
+    },
     // ── v21: Akuntansi ──
     SnapshotSource {
         payload_key: "accountingAccounts",
@@ -1705,7 +1711,9 @@ impl TursoClient {
                     catatan TEXT,
                     status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    atribut TEXT,
+                    desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1))
                 );"#,
                 vec![],
             ),
@@ -1773,6 +1781,20 @@ impl TursoClient {
             ),
             Statement::new(
                 "CREATE INDEX IF NOT EXISTS idx_inventory_unit_barang ON inventory_unit(id_barang);",
+                vec![],
+            ),
+            // Definisi kolom tambahan barang (v25). WAJIB identik dengan
+            // `storage.rs` dan `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS inventory_kolom (
+                    id_kolom TEXT PRIMARY KEY,
+                    nama TEXT NOT NULL,
+                    tipe TEXT NOT NULL CHECK (tipe IN ('Teks', 'Angka')),
+                    is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    dihapus_pada TEXT
+                );"#,
                 vec![],
             ),
             // Akuntansi berpasangan (v21). WAJIB identik dengan `storage.rs`
@@ -2124,6 +2146,7 @@ impl TursoClient {
                 ('inventory.manage', 'Kelola Master Barang', 'Inventaris', 'Menambah dan mengubah data barang inventaris.', 1, 1301),
                 ('inventory.record', 'Catat Barang Masuk, Keluar & Pindah', 'Inventaris', 'Mencatat barang masuk, pemakaian, dan perpindahan tempat atau kondisi.', 1, 1302),
                 ('inventory.adjust', 'Koreksi & Batalkan Mutasi Inventaris', 'Inventaris', 'Membatalkan mutasi, stock opname, dan menghapus stok rusak, hilang, atau kedaluwarsa.', 1, 1303),
+                ('inventory.column.delete', 'Hapus Permanen Kolom Tambahan', 'Inventaris', 'Menghapus kolom tambahan barang beserta seluruh isinya secara permanen.', 1, 1304),
                 ('accounting.view', 'Lihat Pembukuan', 'Keuangan', 'Melihat bagan akun, jurnal, buku besar, neraca saldo, dan laporan keuangan.', 1, 1400),
                 ('accounting.manage', 'Kelola Akun & Catat Jurnal', 'Keuangan', 'Menambah atau mengubah akun dan mencatat jurnal umum.', 1, 1401),
                 ('accounting.reverse', 'Batalkan Jurnal', 'Keuangan', 'Membatalkan jurnal dengan jurnal pembalik.', 1, 1402),
@@ -2143,7 +2166,7 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
-                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'accounting.reverse', 'loan.approve', 'accounting.close');"#,
+                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'accounting.reverse', 'loan.approve', 'accounting.close');"#,
                 vec![],
             ),
             // Seed Settings
@@ -2407,6 +2430,12 @@ impl TursoClient {
             ("tbl_shift", "izinkan_multi_sesi", "ALTER TABLE tbl_shift ADD COLUMN izinkan_multi_sesi INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "shift_lanjutan_id", "ALTER TABLE tbl_shift ADD COLUMN shift_lanjutan_id INTEGER NOT NULL DEFAULT 0;"),
             ("tbl_shift", "hari_kerja", "ALTER TABLE tbl_shift ADD COLUMN hari_kerja TEXT DEFAULT '1,2,3,4,5,6,7';"),
+            // Isi kolom tambahan barang (v25, JSON berkunci id_kolom).
+            ("inventory_barang", "atribut", "ALTER TABLE inventory_barang ADD COLUMN atribut TEXT;"),
+            // Hapus permanen kolom tambahan (v26).
+            ("inventory_kolom", "dihapus_pada", "ALTER TABLE inventory_kolom ADD COLUMN dihapus_pada TEXT;"),
+            // Jumlah desimal per barang (v27).
+            ("inventory_barang", "desimal", "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));"),
             ("import_offline", "timestamp_input", "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;"),
             ("import_offline", "id_unik", "ALTER TABLE import_offline ADD COLUMN id_unik TEXT;"),
             ("import_offline", "status_absen", "ALTER TABLE import_offline ADD COLUMN status_absen TEXT;"),
@@ -2672,6 +2701,36 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (25, 'inventory-column', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2021, 'inventory-column-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (26, 'inventory-column-delete', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2022, 'inventory-column-delete-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (27, 'inventory-decimal', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2023, 'inventory-decimal-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -2886,7 +2945,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2020;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2023;",
                 vec![],
             )
             .await
@@ -5292,6 +5351,7 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("loan-deferral", "delete") => ("loan-deferral", "delete"),
         ("inventory-mutation", "create") => ("inventory-mutation", "create"),
         ("inventory-unit", "save") => ("inventory-unit", "save"),
+        ("inventory-column", "save") => ("inventory-column", "save"),
         ("attendance", "scan") => ("attendance", "scan"),
         ("attendance", "create") => ("attendance", "create"),
         ("attendance", "update") => ("attendance", "update"),
@@ -6107,6 +6167,13 @@ async fn apply_event_to_turso(
             if let Some(values) = inventory::cloud_unit_values(payload, entity_key) {
                 turso
                     .query_one(inventory::CLOUD_UPSERT_UNIT_SQL, values)
+                    .await?;
+            }
+        }
+        ("inventory-column", "save") => {
+            if let Some(values) = inventory::cloud_column_values(payload, entity_key) {
+                turso
+                    .query_one(inventory::CLOUD_UPSERT_COLUMN_SQL, values)
                     .await?;
             }
         }
@@ -10097,7 +10164,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 
@@ -10137,7 +10204,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 
@@ -10176,7 +10243,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 
@@ -10216,7 +10283,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 
@@ -10253,7 +10320,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 
@@ -10291,7 +10358,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version = -2020;",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023);",
                 )
                 .expect("siapkan database lama");
 

@@ -9,7 +9,7 @@
 //! Aturan validasi di sini dieja kembar dengan `src/lib/validations/inventory.ts`
 //! dan diuji dengan vektor yang sama di kedua bahasa.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -53,8 +53,20 @@ pub const ALASAN_FORMULIR: [&str; 11] = [
     "Distribusi",
     "Perubahan Kondisi",
 ];
-pub const MAKS_JUMLAH: i64 = 1_000_000;
+pub const MAKS_JUMLAH: i64 = 1_000_000_000;
 pub const MAKS_HARGA_SATUAN: i64 = 1_000_000_000_000;
+/// Jumlah × harga satuan harus muat di INTEGER SQLite: lewat dari ini SQLite
+/// mengubahnya menjadi pecahan dan laporan pengadaan gagal dibaca.
+pub const MAKS_NILAI_MUTASI: i64 = 1_000_000_000_000_000_000;
+/// Nilai satu mutasi dalam rupiah. Barang `desimal` menyimpan setiap jumlahnya
+/// ×100 (10,25 kg = 1025; lihat `SKALA_DESIMAL` di `validations/inventory.ts`),
+/// sedangkan harga satuan selalu per 1 satuan: dibagi 100 lalu dibulatkan ke
+/// rupiah terdekat per baris. Rust tidak pernah mengonversi jumlah; hanya UI
+/// dan Excel yang melakukannya.
+/// Cermin `NILAI_MUTASI_SQL` di `services/inventory.ts`.
+pub const NILAI_MUTASI_SQL: &str = "CASE WHEN b.desimal = 1
+        THEN (m.jumlah * COALESCE(m.harga_satuan, 0) + 50) / 100
+        ELSE m.jumlah * COALESCE(m.harga_satuan, 0) END";
 pub const MAKS_PANJANG_TEMPAT: usize = 80;
 pub const MAKS_BARIS_KARTU_STOK: usize = 1000;
 pub const MAKS_BARIS_OPNAME: usize = 500;
@@ -343,6 +355,9 @@ pub struct BarangDraft {
     pub satuan: String,
     #[serde(default)]
     pub bisa_expired: bool,
+    /// Jumlah 2 angka di belakang koma, disimpan ×100. Hanya Habis Pakai.
+    #[serde(default)]
+    pub desimal: bool,
     #[serde(default)]
     pub stok_minimum: i64,
     #[serde(default)]
@@ -351,6 +366,9 @@ pub struct BarangDraft {
     pub catatan: Option<String>,
     #[serde(default = "default_true")]
     pub status_aktif: bool,
+    /// Isi kolom tambahan berkunci `id_kolom`; diperiksa `validate_atribut`.
+    #[serde(default)]
+    pub atribut: BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -365,6 +383,7 @@ pub struct BarangValid {
     pub tipe: String,
     pub satuan: String,
     pub bisa_expired: bool,
+    pub desimal: bool,
     pub stok_minimum: i64,
     pub tempat_utama: Option<String>,
     pub catatan: Option<String>,
@@ -391,6 +410,10 @@ pub fn validate_barang(draft: &BarangDraft) -> Result<BarangValid, String> {
     if !TIPE_BARANG.contains(&draft.tipe.as_str()) {
         return Err("Tipe barang tidak dikenal.".into());
     }
+    // Aset dilacak per unit berlabel, jadi jumlahnya selalu bulat.
+    if draft.desimal && draft.tipe != "Habis Pakai" {
+        return Err("Jumlah desimal hanya untuk barang Habis Pakai.".into());
+    }
     let satuan = draft.satuan.trim().to_owned();
     if satuan.is_empty() {
         return Err("Satuan wajib diisi.".into());
@@ -416,11 +439,176 @@ pub fn validate_barang(draft: &BarangDraft) -> Result<BarangValid, String> {
         tipe: draft.tipe.clone(),
         satuan,
         bisa_expired: draft.bisa_expired,
+        desimal: draft.desimal,
         stok_minimum: draft.stok_minimum,
         tempat_utama,
         catatan,
         status_aktif: draft.status_aktif,
     })
+}
+
+// ── Kolom tambahan (v25) ────────────────────────────────────────────────────
+
+/// WAJIB sama dengan CHECK `inventory_kolom.tipe` di ketiga DDL.
+pub const TIPE_KOLOM: [&str; 2] = ["Teks", "Angka"];
+pub const MAKS_KOLOM_AKTIF: i64 = 20;
+const MAKS_NAMA_KOLOM: usize = 40;
+const MAKS_ISI_TEKS: usize = 200;
+/// Termasuk isi kolom yang sudah dinonaktifkan.
+const MAKS_ISI_ATRIBUT: usize = 100;
+/// Cermin `NAMA_KOLOM_BAWAAN`: judul kolom bawaan di Excel inventaris.
+const NAMA_KOLOM_BAWAAN: [&str; 16] = [
+    "Kode",
+    "Nama barang",
+    "Kategori",
+    "Tipe",
+    "Satuan",
+    "Bisa kedaluwarsa",
+    "Stok minimum",
+    "Tempat utama",
+    "Catatan",
+    "Saldo awal",
+    "Tempat saldo",
+    "Kondisi",
+    "Tanggal kedaluwarsa",
+    "Tempat",
+    "Kedaluwarsa",
+    "Saldo",
+];
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KolomDraft {
+    #[serde(default)]
+    pub id_kolom: Option<String>,
+    #[serde(default)]
+    pub nama: String,
+    #[serde(default)]
+    pub tipe: String,
+    #[serde(default = "default_true")]
+    pub is_aktif: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct KolomValid {
+    pub nama: String,
+    pub tipe: String,
+    pub is_aktif: bool,
+}
+
+/// Definisi kolom yang dibutuhkan `validate_atribut`.
+pub struct KolomInfo {
+    pub id_kolom: String,
+    pub nama: String,
+    pub tipe: String,
+    /// Dihapus permanen: isinya dibuang setiap kali barang disimpan.
+    pub dihapus: bool,
+}
+
+/// Cermin `validateKolom`. Murni: nama kembar, tipe yang terkunci, dan batas
+/// kolom aktif diperiksa `save_column` karena butuh database.
+pub fn validate_kolom(draft: &KolomDraft) -> Result<KolomValid, String> {
+    let nama = normalize_tempat(&draft.nama);
+    if nama.is_empty() {
+        return Err("Nama kolom wajib diisi.".into());
+    }
+    if nama.chars().count() > MAKS_NAMA_KOLOM {
+        return Err("Nama kolom maksimal 40 karakter.".into());
+    }
+    if NAMA_KOLOM_BAWAAN
+        .iter()
+        .any(|bawaan| ascii_lower(bawaan) == ascii_lower(&nama))
+    {
+        return Err("Nama kolom sudah dipakai kolom bawaan.".into());
+    }
+    if !TIPE_KOLOM.contains(&draft.tipe.as_str()) {
+        return Err("Tipe kolom tidak dikenal.".into());
+    }
+    Ok(KolomValid {
+        nama,
+        tipe: draft.tipe.clone(),
+        is_aktif: draft.is_aktif,
+    })
+}
+
+fn is_id_kolom(value: &str) -> bool {
+    value.strip_prefix("kol-").is_some_and(|hex| {
+        (1..=32).contains(&hex.len()) && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Cermin `isAngkaKanonik`: tanpa nol di depan atau di belakang, maksimal 12
+/// digit bulat dan 4 desimal.
+pub fn is_angka_kanonik(value: &str) -> bool {
+    let (bulat, pecahan) = match value.split_once('.') {
+        Some((bulat, pecahan)) => (bulat, Some(pecahan)),
+        None => (value, None),
+    };
+    let bulat_sah = !bulat.is_empty()
+        && bulat.len() <= 12
+        && bulat.bytes().all(|b| b.is_ascii_digit())
+        && (bulat == "0" || !bulat.starts_with('0'));
+    let pecahan_sah = match pecahan {
+        None => true,
+        Some(digits) => {
+            (1..=4).contains(&digits.len())
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && !digits.ends_with('0')
+        }
+    };
+    bulat_sah && pecahan_sah
+}
+
+/// Cermin `validateAtribut`. Isi kosong dan isi kolom yang sudah dihapus
+/// dibuang; kunci yang belum dikenal perangkat ini (definisinya belum tertarik)
+/// tetap disimpan sebagai teks.
+pub fn validate_atribut(
+    atribut: &BTreeMap<String, String>,
+    kolom: &[KolomInfo],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut hasil = BTreeMap::new();
+    for (kunci, isi) in atribut {
+        if !is_id_kolom(kunci) {
+            return Err("Kolom tambahan tidak valid.".into());
+        }
+        let isi = isi.trim();
+        if isi.is_empty() {
+            continue;
+        }
+        let definisi = kolom.iter().find(|item| &item.id_kolom == kunci);
+        if definisi.is_some_and(|item| item.dihapus) {
+            continue;
+        }
+        match definisi {
+            Some(item) if item.tipe == "Angka" => {
+                if !is_angka_kanonik(isi) {
+                    return Err(format!("Isi kolom {} harus angka.", item.nama));
+                }
+            }
+            _ if isi.chars().count() > MAKS_ISI_TEKS => {
+                let nama = definisi.map_or("tambahan", |item| item.nama.as_str());
+                return Err(format!("Isi kolom {nama} maksimal 200 karakter."));
+            }
+            _ => {}
+        }
+        hasil.insert(kunci.clone(), isi.to_owned());
+    }
+    if hasil.len() > MAKS_ISI_ATRIBUT {
+        return Err("Kolom tambahan terlalu banyak.".into());
+    }
+    Ok(hasil)
+}
+
+/// Isi kolom `atribut` dari database; JSON rusak dibaca sebagai kosong.
+fn baca_atribut(raw: Option<String>) -> Value {
+    let map: serde_json::Map<String, Value> = raw
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, value)| value.is_string())
+        .collect();
+    Value::Object(map)
 }
 
 // ── Mutasi ──────────────────────────────────────────────────────────────────
@@ -532,7 +720,7 @@ pub fn validate_mutation(
         return Err("Alasan tidak berlaku untuk jenis mutasi ini.".into());
     }
     if !(1..=MAKS_JUMLAH).contains(&draft.jumlah) {
-        return Err("Jumlah harus bilangan bulat 1 sampai 1.000.000.".into());
+        return Err("Jumlah harus bilangan bulat 1 sampai 1.000.000.000.".into());
     }
     let tanggal = clean(&draft.tanggal).unwrap_or_else(|| hari_ini.to_owned());
     if !is_valid_date(&tanggal) {
@@ -654,6 +842,9 @@ pub fn validate_mutation(
         if let Some(harga) = draft.harga_satuan {
             if !(0..=MAKS_HARGA_SATUAN).contains(&harga) {
                 return Err("Harga satuan tidak valid.".into());
+            }
+            if i128::from(draft.jumlah) * i128::from(harga) > i128::from(MAKS_NILAI_MUTASI) {
+                return Err("Nilai mutasi (jumlah × harga satuan) terlalu besar.".into());
             }
             valid.harga_satuan = Some(harga);
         }
@@ -920,6 +1111,255 @@ pub fn save_code_prefixes(
     Ok(json!({ "sukses": true, "kode_prefix": list }))
 }
 
+/// Semua kolom tambahan, urut waktu dibuat. Nama yang sama dari dua perangkat
+/// offline hanya bisa terlihat di sini, karena DB sengaja tanpa UNIQUE.
+const LIST_KOLOM_SQL: &str = "SELECT k.id_kolom, k.nama, k.tipe, k.is_aktif,
+        EXISTS(SELECT 1 FROM inventory_kolom lain
+               WHERE LOWER(lain.nama) = LOWER(k.nama) AND lain.id_kolom <> k.id_kolom
+                 AND lain.dihapus_pada IS NULL) AS ganda
+     FROM inventory_kolom k
+     WHERE k.dihapus_pada IS NULL
+     ORDER BY k.created_at, k.id_kolom
+     -- batas: kolom aktif dibatasi MAKS_KOLOM_AKTIF saat menyimpan
+     ;";
+
+fn list_kolom(connection: &Connection) -> Result<Vec<Value>, CommandError> {
+    let mut statement = connection
+        .prepare(LIST_KOLOM_SQL)
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id_kolom": row.get::<_, String>(0)?,
+                "nama": row.get::<_, String>(1)?,
+                "tipe": row.get::<_, String>(2)?,
+                "is_aktif": row.get::<_, i64>(3)? == 1,
+                "nama_ganda": row.get::<_, i64>(4)? == 1,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+    Ok(rows)
+}
+
+fn read_kolom_info(connection: &Connection) -> Result<Vec<KolomInfo>, CommandError> {
+    let mut statement = connection
+        .prepare("SELECT id_kolom, nama, tipe, dihapus_pada IS NOT NULL FROM inventory_kolom;")
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(KolomInfo {
+                id_kolom: row.get(0)?,
+                nama: row.get(1)?,
+                tipe: row.get(2)?,
+                dihapus: row.get(3)?,
+            })
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+    Ok(rows)
+}
+
+/// Menambah, mengganti nama, atau menonaktifkan kolom tambahan. Tidak ada
+/// hapus: isi kolom nonaktif tetap tersimpan di `atribut` dan kembali bila
+/// kolomnya diaktifkan lagi. Tipe terkunci setelah kolom dibuat.
+pub fn save_column(state: &DesktopState, draft: Value) -> Result<Value, CommandError> {
+    let draft: KolomDraft =
+        serde_json::from_value(draft).map_err(|_| invalid("Data kolom tidak valid."))?;
+    let valid = validate_kolom(&draft).map_err(invalid)?;
+    let client_id = sync::ensure_client_id(state)?;
+
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let requested_id = clean(&draft.id_kolom);
+    let existing: Option<(String, i64)> = match requested_id.as_deref() {
+        Some(id) => {
+            let (tipe, aktif, dihapus): (String, i64, bool) = transaction
+                .query_row(
+                    "SELECT tipe, is_aktif, dihapus_pada IS NOT NULL FROM inventory_kolom WHERE id_kolom = ?;",
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|_| CommandError::internal())?
+                .ok_or_else(|| invalid("Kolom tidak ditemukan."))?;
+            if dihapus {
+                return Err(invalid("Kolom ini sudah dihapus."));
+            }
+            Some((tipe, aktif))
+        }
+        None => None,
+    };
+    let id_kolom = requested_id.unwrap_or_else(|| new_hex_id("kol-"));
+
+    if existing
+        .as_ref()
+        .is_some_and(|(tipe_lama, _)| tipe_lama != &valid.tipe)
+    {
+        return Err(invalid("Tipe kolom tidak bisa diubah setelah dibuat."));
+    }
+    let nama_dipakai: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM inventory_kolom
+                           WHERE LOWER(nama) = LOWER(?) AND id_kolom <> ?
+                             AND dihapus_pada IS NULL);",
+            params![valid.nama, id_kolom],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())?;
+    if nama_dipakai {
+        return Err(invalid("Nama kolom sudah dipakai kolom lain."));
+    }
+    let sudah_aktif = existing.as_ref().is_some_and(|(_, aktif)| *aktif == 1);
+    if valid.is_aktif && !sudah_aktif {
+        let aktif: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM inventory_kolom WHERE is_aktif = 1 AND id_kolom <> ?;",
+                params![id_kolom],
+                |row| row.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        if aktif >= MAKS_KOLOM_AKTIF {
+            return Err(invalid("Maksimal 20 kolom tambahan aktif."));
+        }
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO inventory_kolom (id_kolom, nama, tipe, is_aktif, created_at, updated_at)
+             VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+             ON CONFLICT(id_kolom) DO UPDATE SET
+                nama = excluded.nama,
+                is_aktif = excluded.is_aktif,
+                updated_at = excluded.updated_at;",
+            params![id_kolom, valid.nama, valid.tipe, valid.is_aktif as i64],
+        )
+        .map_err(|_| CommandError::internal())?;
+    enqueue_kolom(&transaction, &client_id, &id_kolom)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_kolom": id_kolom }))
+}
+
+fn enqueue_kolom(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    id_kolom: &str,
+) -> Result<(), CommandError> {
+    let payload = transaction
+        .query_row(
+            "SELECT id_kolom, nama, tipe, is_aktif, created_at, updated_at, dihapus_pada
+             FROM inventory_kolom WHERE id_kolom = ?;",
+            params![id_kolom],
+            |row| {
+                Ok(json!({
+                    "id_kolom": row.get::<_, String>(0)?,
+                    "nama": row.get::<_, String>(1)?,
+                    "tipe": row.get::<_, String>(2)?,
+                    "is_aktif": row.get::<_, i64>(3)?,
+                    "created_at": row.get::<_, String>(4)?,
+                    "updated_at": row.get::<_, String>(5)?,
+                    "dihapus_pada": row.get::<_, Option<String>>(6)?,
+                }))
+            },
+        )
+        .map_err(|_| CommandError::internal())?;
+    sync::enqueue(
+        transaction,
+        client_id,
+        "inventory-column",
+        "save",
+        id_kolom,
+        &payload,
+        None,
+    )?;
+    Ok(())
+}
+
+/// Hapus permanen kolom tambahan. Barisnya tetap ada bertanda `dihapus_pada`
+/// (baris yang benar-benar dibuang tidak pernah sampai ke perangkat lain,
+/// karena snapshot ini `delete_missing: false`), sedangkan isinya dibuang dari
+/// setiap barang di transaksi yang sama. Isi yang masih terkirim dari
+/// perangkat yang belum sinkron dibuang `validate_atribut` saat barang itu
+/// disimpan lagi.
+pub fn delete_column(state: &DesktopState, id_kolom: &str) -> Result<Value, CommandError> {
+    let id_kolom = id_kolom.trim();
+    if !is_id_kolom(id_kolom) {
+        return Err(invalid("Kolom tidak ditemukan."));
+    }
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let dihapus: bool = transaction
+        .query_row(
+            "SELECT dihapus_pada IS NOT NULL FROM inventory_kolom WHERE id_kolom = ?;",
+            params![id_kolom],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .ok_or_else(|| invalid("Kolom tidak ditemukan."))?;
+    if dihapus {
+        return Err(invalid("Kolom ini sudah dihapus."));
+    }
+    transaction
+        .execute(
+            "UPDATE inventory_kolom
+             SET dihapus_pada = datetime('now'), is_aktif = 0, updated_at = datetime('now')
+             WHERE id_kolom = ?;",
+            params![id_kolom],
+        )
+        .map_err(|_| CommandError::internal())?;
+    enqueue_kolom(&transaction, &client_id, id_kolom)?;
+
+    // `id_kolom` sudah lolos `is_id_kolom` (huruf heksadesimal), jadi aman
+    // disusun menjadi path JSON.
+    let path = format!("$.\"{id_kolom}\"");
+    let barang: Vec<String> = transaction
+        .prepare(
+            "SELECT id_barang FROM inventory_barang
+             WHERE json_valid(atribut) AND json_extract(atribut, ?) IS NOT NULL
+             -- batas: hanya barang yang memegang isi kolom ini; ditulis ulang semua dalam satu transaksi
+             ;",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![path], |row| row.get(0))?
+                .collect::<Result<_, _>>()
+        })
+        .map_err(|_| CommandError::internal())?;
+    for id_barang in &barang {
+        transaction
+            .execute(
+                "UPDATE inventory_barang
+                 SET atribut = NULLIF(json_remove(atribut, ?), '{}'), updated_at = datetime('now')
+                 WHERE id_barang = ?;",
+                params![path, id_barang],
+            )
+            .map_err(|_| CommandError::internal())?;
+        let payload =
+            barang_json(&transaction, id_barang)?.ok_or_else(CommandError::internal)?;
+        sync::enqueue(
+            &transaction,
+            &client_id,
+            "inventory-item",
+            "save",
+            id_barang,
+            &payload,
+            None,
+        )?;
+    }
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "barang_dibersihkan": barang.len() }))
+}
+
 fn wib_today(connection: &Connection) -> String {
     connection
         .query_row("SELECT date('now', '+7 hours');", [], |row| row.get(0))
@@ -957,7 +1397,8 @@ fn barang_json(connection: &Connection, id_barang: &str) -> Result<Option<Value>
     connection
         .query_row(
             "SELECT id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-                    stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at
+                    stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at,
+                    atribut, desimal
              FROM inventory_barang WHERE id_barang = ?;",
             params![id_barang],
             |row| {
@@ -975,6 +1416,8 @@ fn barang_json(connection: &Connection, id_barang: &str) -> Result<Option<Value>
                     "status_aktif": row.get::<_, i64>(10)?,
                     "created_at": row.get::<_, String>(11)?,
                     "updated_at": row.get::<_, String>(12)?,
+                    "atribut": row.get::<_, Option<String>>(13)?,
+                    "desimal": row.get::<_, i64>(14)?,
                 }))
             },
         )
@@ -1102,9 +1545,12 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
     let mut barang_statement = connection
         .prepare(
             "SELECT id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-                    stok_minimum, tempat_utama, catatan, status_aktif
+                    stok_minimum, tempat_utama, catatan, status_aktif, atribut, desimal,
+                    EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang) AS punya_mutasi
              FROM inventory_barang
-             ORDER BY status_aktif DESC, nama_barang COLLATE NOCASE;",
+             ORDER BY status_aktif DESC, nama_barang COLLATE NOCASE
+             -- batas: satu baris per barang; EXISTS hanya memeriksa ada tidaknya mutasi
+             ;",
         )
         .map_err(|_| CommandError::internal())?;
     let barang: Vec<Value> = barang_statement
@@ -1124,6 +1570,10 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
                     "tempat_utama": row.get::<_, Option<String>>(8)?,
                     "catatan": row.get::<_, Option<String>>(9)?,
                     "status_aktif": row.get::<_, i64>(10)? == 1,
+                    "atribut": baca_atribut(row.get::<_, Option<String>>(11)?),
+                    "desimal": row.get::<_, i64>(12)? == 1,
+                    // Satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama.
+                    "punya_mutasi": row.get::<_, i64>(13)? == 1,
                 }),
             ))
         })
@@ -1202,6 +1652,7 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
         "tempat": tempat,
         "kategori": kategori,
         "kode_prefix": read_kode_prefixes(&connection)?,
+        "kolom": list_kolom(&connection)?,
         "hari_ini": wib_today(&connection),
         // Untuk label QR: profil perusahaan biasa menuntut `settings.manage`.
         "nama_perusahaan": kop_perusahaan(&connection)?["nama"].clone(),
@@ -1264,13 +1715,13 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
         .map_err(|_| CommandError::internal())?;
 
     let requested_id = clean(&draft.id_barang);
-    let existing: Option<(String, i64)> = match requested_id.as_deref() {
+    let existing: Option<(String, i64, i64)> = match requested_id.as_deref() {
         Some(id) => Some(
             transaction
                 .query_row(
-                    "SELECT satuan, bisa_expired FROM inventory_barang WHERE id_barang = ?;",
+                    "SELECT satuan, bisa_expired, desimal FROM inventory_barang WHERE id_barang = ?;",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(|_| CommandError::internal())?
@@ -1280,8 +1731,11 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
     };
     let id_barang = requested_id.unwrap_or_else(|| new_hex_id("brg-"));
 
-    if let Some((satuan_lama, expired_lama)) = existing {
-        let berubah = satuan_lama != valid.satuan || (expired_lama == 1) != valid.bisa_expired;
+    if let Some((satuan_lama, expired_lama, desimal_lama)) = existing {
+        // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
+        let berubah = satuan_lama != valid.satuan
+            || (expired_lama == 1) != valid.bisa_expired
+            || (desimal_lama == 1) != valid.desimal;
         if berubah {
             let punya_mutasi: bool = transaction
                 .query_row(
@@ -1292,7 +1746,7 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
                 .map_err(|_| CommandError::internal())?;
             if punya_mutasi {
                 return Err(invalid(
-                    "Satuan dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
+                    "Satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
                 ));
             }
         }
@@ -1317,13 +1771,21 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
         }
     };
     let tempat_utama = canonical_option(&transaction, valid.tempat_utama.clone())?;
+    let atribut =
+        validate_atribut(&draft.atribut, &read_kolom_info(&transaction)?).map_err(invalid)?;
+    let atribut = if atribut.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&atribut).map_err(|_| CommandError::internal())?)
+    };
 
     transaction
         .execute(
             "INSERT INTO inventory_barang (
                 id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-                stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at, atribut,
+                desimal
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?)
              ON CONFLICT(id_barang) DO UPDATE SET
                 kode_barang = excluded.kode_barang,
                 nama_barang = excluded.nama_barang,
@@ -1335,7 +1797,9 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
                 tempat_utama = excluded.tempat_utama,
                 catatan = excluded.catatan,
                 status_aktif = excluded.status_aktif,
-                updated_at = excluded.updated_at;",
+                updated_at = excluded.updated_at,
+                atribut = excluded.atribut,
+                desimal = excluded.desimal;",
             params![
                 id_barang,
                 kode_barang,
@@ -1348,6 +1812,8 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
                 tempat_utama,
                 valid.catatan,
                 valid.status_aktif as i64,
+                atribut,
+                valid.desimal as i64,
             ],
         )
         .map_err(|_| CommandError::internal())?;
@@ -2104,7 +2570,7 @@ pub fn list_loans(state: &DesktopState) -> Result<Value, CommandError> {
                                    AND NOT EXISTS (SELECT 1 FROM inventory_mutasi rb
                                                    WHERE rb.id_mutasi = 'batal-' || r.id_mutasi)), 0) AS kembali,
                        CAST(julianday(date('now', '+7 hours')) - julianday(p.tanggal) AS INTEGER) AS lama_hari,
-                       p.created_at
+                       p.created_at, b.desimal
                 FROM inventory_mutasi p
                 JOIN inventory_barang b ON b.id_barang = p.id_barang
                 WHERE p.alasan = 'Peminjaman'
@@ -2136,6 +2602,7 @@ pub fn list_loans(state: &DesktopState) -> Result<Value, CommandError> {
                 "kembali": kembali,
                 "sisa": jumlah - kembali,
                 "lama_hari": row.get::<_, i64>(15)?,
+                "desimal": row.get::<_, i64>(17)? == 1,
             }))
         })
         .map_err(|_| CommandError::internal())?
@@ -2210,7 +2677,7 @@ pub fn validate_opname(draft: &OpnameDraft) -> Result<OpnameValid, String> {
             return Err("Kondisi barang tidak dikenal.".into());
         }
         if !(0..=MAKS_JUMLAH).contains(&item.fisik) {
-            return Err("Jumlah fisik harus 0 sampai 1.000.000.".into());
+            return Err("Jumlah fisik harus 0 sampai 1.000.000.000.".into());
         }
         let id_batch = clean(&item.id_batch);
         if baris.iter().any(|known| {
@@ -2440,7 +2907,8 @@ pub fn document(state: &DesktopState, id_mutasi: &str) -> Result<Value, CommandE
         .prepare(
             "SELECT m.id_mutasi, m.tanggal, m.alasan, m.jumlah, m.tempat_asal, m.kondisi_asal,
                     m.tempat_tujuan, m.kondisi_tujuan, bm.tanggal_expired, m.penerima_nama,
-                    m.keperluan, m.catatan, m.dicatat_oleh, b.nama_barang, b.kode_barang, b.satuan
+                    m.keperluan, m.catatan, m.dicatat_oleh, b.nama_barang, b.kode_barang, b.satuan,
+                    b.desimal
              FROM inventory_mutasi m
              JOIN inventory_barang b ON b.id_barang = m.id_barang
              LEFT JOIN inventory_mutasi bm ON bm.id_mutasi = m.id_batch
@@ -2473,6 +2941,7 @@ pub fn document(state: &DesktopState, id_mutasi: &str) -> Result<Value, CommandE
                     "nama_barang": row.get::<_, String>(13)?,
                     "kode_barang": row.get::<_, String>(14)?,
                     "satuan": row.get::<_, String>(15)?,
+                    "desimal": row.get::<_, i64>(16)? == 1,
                 }),
             ))
         })
@@ -2545,16 +3014,18 @@ pub fn procurement(state: &DesktopState, dari: &str, sampai: &str) -> Result<Val
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection
         .prepare(
-            "SELECT m.tanggal, b.kode_barang, b.nama_barang, b.satuan, m.alasan, m.jumlah,
-                    m.harga_satuan, COALESCE(m.sumber_dana, '') AS sumber_dana, m.nomor_dokumen,
-                    m.tempat_tujuan, m.jumlah * COALESCE(m.harga_satuan, 0) AS nilai
-             FROM inventory_mutasi m
-             JOIN inventory_barang b ON b.id_barang = m.id_barang
-             WHERE m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah', 'Saldo Awal')
-               AND m.tanggal >= ? AND m.tanggal <= ?
-               AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
-             ORDER BY sumber_dana COLLATE NOCASE, m.tanggal, m.created_at
-             LIMIT 5001;",
+            &format!(
+                "SELECT m.tanggal, b.kode_barang, b.nama_barang, b.satuan, m.alasan, m.jumlah,
+                        m.harga_satuan, COALESCE(m.sumber_dana, '') AS sumber_dana, m.nomor_dokumen,
+                        m.tempat_tujuan, {NILAI_MUTASI_SQL} AS nilai, b.desimal
+                 FROM inventory_mutasi m
+                 JOIN inventory_barang b ON b.id_barang = m.id_barang
+                 WHERE m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah', 'Saldo Awal')
+                   AND m.tanggal >= ? AND m.tanggal <= ?
+                   AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
+                 ORDER BY sumber_dana COLLATE NOCASE, m.tanggal, m.created_at
+                 LIMIT 5001;"
+            ),
         )
         .map_err(|_| CommandError::internal())?;
     let mut ringkas: Vec<(String, i64, bool)> = Vec::new();
@@ -2575,6 +3046,7 @@ pub fn procurement(state: &DesktopState, dari: &str, sampai: &str) -> Result<Val
                 "nomor_dokumen": row.get::<_, Option<String>>(8)?,
                 "tempat_tujuan": row.get::<_, Option<String>>(9)?,
                 "nilai": nilai,
+                "desimal": row.get::<_, i64>(11)? == 1,
             }))
         })
         .map_err(|_| CommandError::internal())?
@@ -2745,6 +3217,13 @@ pub fn cloud_item_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
         .and_then(Value::as_i64)
         .filter(|value| *value >= 0)
         .unwrap_or(0);
+    let (atribut, bawa_atribut) = payload_atribut(row);
+    // Perangkat yang belum mengenal desimal (sebelum v27) tidak mengirim
+    // kuncinya: pertahankan nilai cloud, jangan kembalikan ke bulat.
+    let desimal = match row.get("desimal").and_then(Value::as_i64) {
+        Some(nilai @ (0 | 1)) => Some(nilai),
+        _ => None,
+    };
     Some(vec![
         json!(id),
         json!(kode),
@@ -2759,13 +3238,40 @@ pub fn cloud_item_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
         json!(flag("status_aktif", 1)),
         json!(payload_text(row, "created_at")),
         json!(payload_text(row, "updated_at")),
+        json!(atribut),
+        json!(desimal.unwrap_or(0)),
+        json!(bawa_atribut as i64),
+        json!(desimal.is_some() as i64),
     ])
+}
+
+/// `atribut` payload: `(isi, dibawa)`. Perangkat yang belum mengenal kolom
+/// tambahan tidak mengirim kuncinya, dan isi yang bukan objek teks tidak
+/// pernah ditulis; keduanya mempertahankan isi cloud, tidak menolak event.
+fn payload_atribut(row: &Value) -> (Option<String>, bool) {
+    match row.get("atribut") {
+        None => (None, false),
+        Some(Value::Null) => (None, true),
+        Some(Value::String(text)) => {
+            let sah = serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .is_some_and(|map| map.values().all(Value::is_string));
+            if sah {
+                (Some(text.clone()), true)
+            } else {
+                (None, false)
+            }
+        }
+        Some(_) => (None, false),
+    }
 }
 
 pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-        stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+        stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at, atribut,
+        desimal
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?, ?)
     ON CONFLICT(id_barang) DO UPDATE SET
         kode_barang = excluded.kode_barang,
         nama_barang = excluded.nama_barang,
@@ -2777,6 +3283,45 @@ pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         tempat_utama = excluded.tempat_utama,
         catatan = excluded.catatan,
         status_aktif = excluded.status_aktif,
+        updated_at = excluded.updated_at,
+        atribut = CASE WHEN ? = 1 THEN excluded.atribut ELSE inventory_barang.atribut END,
+        desimal = CASE WHEN ? = 1 THEN excluded.desimal ELSE inventory_barang.desimal END;";
+
+/// Nilai kolom `inventory_kolom` dari payload event. Tipe tidak ikut
+/// diperbarui: tipe terkunci sejak kolom dibuat.
+pub fn cloud_column_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
+    let id = payload_text(row, "id_kolom").unwrap_or_else(|| entity_key.trim().to_owned());
+    let nama = payload_text(row, "nama")?;
+    let tipe = payload_text(row, "tipe").filter(|value| TIPE_KOLOM.contains(&value.as_str()))?;
+    if !is_id_kolom(&id) {
+        return None;
+    }
+    let aktif = match row.get("is_aktif").and_then(Value::as_i64) {
+        Some(0) => 0,
+        _ => 1,
+    };
+    Some(vec![
+        json!(id),
+        json!(nama),
+        json!(tipe),
+        json!(aktif),
+        json!(payload_text(row, "created_at")),
+        json!(payload_text(row, "updated_at")),
+        json!(payload_text(row, "dihapus_pada")),
+    ])
+}
+
+/// Sekali dihapus tetap dihapus: perangkat yang belum sinkron lalu mengganti
+/// nama atau mengaktifkan kolom itu tidak bisa menghidupkannya lagi.
+pub const CLOUD_UPSERT_COLUMN_SQL: &str = "INSERT INTO inventory_kolom (
+        id_kolom, nama, tipe, is_aktif, created_at, updated_at, dihapus_pada
+    ) VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?)
+    ON CONFLICT(id_kolom) DO UPDATE SET
+        nama = excluded.nama,
+        is_aktif = CASE
+            WHEN COALESCE(inventory_kolom.dihapus_pada, excluded.dihapus_pada) IS NULL
+            THEN excluded.is_aktif ELSE 0 END,
+        dihapus_pada = COALESCE(inventory_kolom.dihapus_pada, excluded.dihapus_pada),
         updated_at = excluded.updated_at;";
 
 /// Nilai kolom `inventory_mutasi` dari payload event. Cloud TIDAK memeriksa
@@ -2967,7 +3512,22 @@ mod tests {
             (
                 HABIS_PAKAI,
                 json!({"id_barang":"b","jenis":"Masuk","alasan":"Pengadaan","jumlah":0,"tempat_tujuan":"Gudang"}),
-                Some("Jumlah harus bilangan bulat 1 sampai 1.000.000."),
+                Some("Jumlah harus bilangan bulat 1 sampai 1.000.000.000."),
+            ),
+            (
+                HABIS_PAKAI,
+                json!({"id_barang":"b","jenis":"Masuk","alasan":"Pengadaan","jumlah":1_000_000_001_i64,"tempat_tujuan":"Gudang"}),
+                Some("Jumlah harus bilangan bulat 1 sampai 1.000.000.000."),
+            ),
+            (
+                HABIS_PAKAI,
+                json!({"id_barang":"b","jenis":"Masuk","alasan":"Pengadaan","jumlah":1_000_000_000_i64,"tempat_tujuan":"Gudang","harga_satuan":1_000_000_000_i64}),
+                None,
+            ),
+            (
+                HABIS_PAKAI,
+                json!({"id_barang":"b","jenis":"Masuk","alasan":"Pengadaan","jumlah":1_000_000_000_i64,"tempat_tujuan":"Gudang","harga_satuan":1_000_000_001_i64}),
+                Some("Nilai mutasi (jumlah × harga satuan) terlalu besar."),
             ),
             (
                 HABIS_PAKAI,
@@ -3092,6 +3652,121 @@ mod tests {
         assert_eq!(valid.penerima_tipe, None);
     }
 
+    // Vektor kembar dengan `validations/inventory.test.ts` (VEKTOR_KOLOM,
+    // VEKTOR_ANGKA, VEKTOR_ATRIBUT).
+    #[test]
+    fn kolom_tambahan_vectors() {
+        let kolom: Vec<(Value, Option<&str>)> = vec![
+            (json!({"nama":"  Merek   Barang ","tipe":"Teks"}), None),
+            (json!({"nama":"Berat","tipe":"Angka","is_aktif":false}), None),
+            (json!({"nama":"   ","tipe":"Teks"}), Some("Nama kolom wajib diisi.")),
+            (
+                json!({"nama":"M".repeat(41),"tipe":"Teks"}),
+                Some("Nama kolom maksimal 40 karakter."),
+            ),
+            (
+                json!({"nama":"nama BARANG","tipe":"Teks"}),
+                Some("Nama kolom sudah dipakai kolom bawaan."),
+            ),
+            (
+                json!({"nama":"Saldo","tipe":"Angka"}),
+                Some("Nama kolom sudah dipakai kolom bawaan."),
+            ),
+            (json!({"nama":"Warna","tipe":"Tanggal"}), Some("Tipe kolom tidak dikenal.")),
+        ];
+        for (value, expected) in kolom {
+            let label = value.to_string();
+            let draft: KolomDraft = serde_json::from_value(value).expect("draft kolom");
+            assert_eq!(validate_kolom(&draft).err().as_deref(), expected, "{label}");
+        }
+        let draft: KolomDraft =
+            serde_json::from_value(json!({"nama":" Merek   Barang ","tipe":"Teks"})).unwrap();
+        assert_eq!(
+            validate_kolom(&draft),
+            Ok(KolomValid {
+                nama: "Merek Barang".into(),
+                tipe: "Teks".into(),
+                is_aktif: true,
+            })
+        );
+
+        for (value, expected) in [
+            ("0", true),
+            ("7", true),
+            ("1250.5", true),
+            ("0.0001", true),
+            ("999999999999", true),
+            ("1000000000000", false),
+            ("007", false),
+            ("2.50", false),
+            ("0.00001", false),
+            ("1.", false),
+            (".5", false),
+            ("-1", false),
+            ("1,5", false),
+            ("", false),
+        ] {
+            assert_eq!(is_angka_kanonik(value), expected, "{value}");
+        }
+
+        let info = [
+            KolomInfo {
+                id_kolom: "kol-a1".into(),
+                nama: "Merek".into(),
+                tipe: "Teks".into(),
+                dihapus: false,
+            },
+            KolomInfo {
+                id_kolom: "kol-b2".into(),
+                nama: "Berat".into(),
+                tipe: "Angka".into(),
+                dihapus: false,
+            },
+            KolomInfo {
+                id_kolom: "kol-c3".into(),
+                nama: "Warna".into(),
+                tipe: "Angka".into(),
+                dihapus: true,
+            },
+        ];
+        let peta = |value: Value| -> BTreeMap<String, String> {
+            serde_json::from_value(value).expect("atribut")
+        };
+        let atribut: Vec<(Value, Result<Value, &str>)> = vec![
+            (
+                json!({"kol-b2":"2.5","kol-a1":"  Pilot ","kol-ff":"dari perangkat lain"}),
+                Ok(json!({"kol-a1":"Pilot","kol-b2":"2.5","kol-ff":"dari perangkat lain"})),
+            ),
+            (json!({"kol-a1":"   "}), Ok(json!({}))),
+            // Kolom yang dihapus: isinya dibuang, tidak divalidasi.
+            (json!({"kol-a1":"Pilot","kol-c3":"bukan angka"}), Ok(json!({"kol-a1":"Pilot"}))),
+            (json!({"kol-b2":"2,5"}), Err("Isi kolom Berat harus angka.")),
+            (
+                json!({"kol-a1":"x".repeat(201)}),
+                Err("Isi kolom Merek maksimal 200 karakter."),
+            ),
+            (
+                json!({"kol-ff":"x".repeat(201)}),
+                Err("Isi kolom tambahan maksimal 200 karakter."),
+            ),
+            (json!({"merek":"Pilot"}), Err("Kolom tambahan tidak valid.")),
+        ];
+        for (raw, expected) in atribut {
+            let label = raw.to_string();
+            let result = validate_atribut(&peta(raw), &info);
+            match expected {
+                Ok(value) => assert_eq!(result, Ok(peta(value)), "{label}"),
+                Err(message) => assert_eq!(result, Err(message.to_owned()), "{label}"),
+            }
+        }
+        let banyak: BTreeMap<String, String> =
+            (0..101).map(|i| (format!("kol-{i:x}"), "x".to_owned())).collect();
+        assert_eq!(
+            validate_atribut(&banyak, &[]),
+            Err("Kolom tambahan terlalu banyak.".to_owned())
+        );
+    }
+
     // Vektor kembar dengan `validations/inventory.test.ts` (VEKTOR_BARANG).
     #[test]
     fn validate_barang_vectors() {
@@ -3119,6 +3794,14 @@ mod tests {
             (
                 json!({"nama_barang":"Spidol","tipe":"Aset","satuan":"pcs","kode_barang":"K".repeat(31)}),
                 Some("Kode barang maksimal 30 karakter."),
+            ),
+            (
+                json!({"nama_barang":"Beras","tipe":"Habis Pakai","satuan":"kg","desimal":true}),
+                None,
+            ),
+            (
+                json!({"nama_barang":"Laptop","tipe":"Aset","satuan":"unit","desimal":true}),
+                Some("Jumlah desimal hanya untuk barang Habis Pakai."),
             ),
         ];
         for (value, expected) in cases {
@@ -3224,7 +3907,7 @@ mod tests {
             ),
             (
                 json!({"tempat":"Gudang","baris":[{"id_barang":"b","fisik":-1}]}),
-                Some("Jumlah fisik harus 0 sampai 1.000.000."),
+                Some("Jumlah fisik harus 0 sampai 1.000.000.000."),
             ),
             (
                 json!({"tempat":"Gudang","baris":[{"id_barang":"b","fisik":1},{"id_barang":"b","kondisi":"Baik","fisik":2}]}),
@@ -3607,6 +4290,70 @@ mod tests {
                 .message,
             "Tanggal awal tidak boleh setelah tanggal akhir."
         );
+    }
+
+    // Barang desimal: jumlah ×100 terkunci sejak mutasi pertama, nilai
+    // pengadaan dibulatkan per baris. Kembar `services/inventory.test.ts`.
+    #[test]
+    fn decimal_items_lock_after_history_and_round_procurement_value() {
+        let (_directory, state) = setup_state();
+        let simpan = |extra: Value| {
+            let mut draft = json!({"nama_barang": "Beras", "tipe": "Habis Pakai", "satuan": "kg",
+                                   "tempat_utama": "Gudang", "desimal": true});
+            for (key, value) in extra.as_object().unwrap() {
+                draft[key] = value.clone();
+            }
+            save_item(&state, draft)
+        };
+        let id_barang = simpan(json!({})).unwrap()["id_barang"].as_str().unwrap().to_owned();
+        // Belum ada mutasi: sakelar masih boleh dibalik.
+        simpan(json!({"id_barang": id_barang, "desimal": false})).unwrap();
+        simpan(json!({"id_barang": id_barang, "desimal": true})).unwrap();
+
+        // 10,25 kg × Rp12.345 = Rp126.536,25 → 126.536; 0,05 kg × Rp10 = Rp0,5 → 1.
+        for (jumlah, harga) in [(1025, 12_345), (5, 10)] {
+            record_mutation(
+                &state,
+                "admin",
+                json!({"id_barang": id_barang, "jenis": "Masuk", "alasan": "Pengadaan",
+                       "jumlah": jumlah, "tempat_tujuan": "Gudang", "harga_satuan": harga}),
+            )
+            .unwrap();
+        }
+        let hari_ini = wib_today(&storage::database(&state.data_dir).unwrap());
+        let rekap = procurement(&state, "2000-01-01", &hari_ini).unwrap();
+        assert_eq!(rekap["total_nilai"], 126_537);
+        assert_eq!(rekap["baris"][0]["desimal"], true);
+
+        let daftar = list_inventory(&state).unwrap();
+        let barang = &daftar["barang"][0];
+        assert_eq!(barang["stok_total"], 1030);
+        assert_eq!(barang["desimal"], true);
+        assert_eq!(barang["punya_mutasi"], true);
+        assert!(simpan(json!({"id_barang": id_barang, "desimal": false}))
+            .unwrap_err()
+            .message
+            .starts_with("Satuan, desimal, dan pengaturan kedaluwarsa"));
+        assert_eq!(
+            simpan(json!({"tipe": "Aset"})).unwrap_err().message,
+            "Jumlah desimal hanya untuk barang Habis Pakai."
+        );
+    }
+
+    #[test]
+    fn cloud_keeps_decimal_flag_when_payload_omits_it() {
+        let lama = json!({"id_barang": "b1", "kode_barang": "K", "nama_barang": "Beras",
+                          "tipe": "Habis Pakai", "satuan": "kg"});
+        let values = cloud_item_values(&lama, "b1").unwrap();
+        // desimal, bawa_atribut, bawa_desimal
+        assert_eq!(&values[14..], &[json!(0), json!(0), json!(0)]);
+        let mut baru = lama.clone();
+        baru["desimal"] = json!(1);
+        let values = cloud_item_values(&baru, "b1").unwrap();
+        assert_eq!(&values[14..], &[json!(1), json!(0), json!(1)]);
+        baru["desimal"] = json!(7);
+        let values = cloud_item_values(&baru, "b1").unwrap();
+        assert_eq!(values[16], json!(0), "nilai asing tidak pernah ditulis");
     }
 
     #[test]
@@ -4224,6 +4971,61 @@ mod tests {
     }
 
     #[test]
+    fn delete_column_purges_values_and_cannot_be_revived() {
+        let (_directory, state) = setup_state();
+        let kolom = save_column(&state, json!({"nama": "Merek", "tipe": "Teks"})).unwrap();
+        let id_kolom = kolom["id_kolom"].as_str().unwrap().to_owned();
+        let id_barang = insert_item(&state, "Aset", false);
+        let barang = barang_json(&storage::database(&state.data_dir).unwrap(), &id_barang)
+            .unwrap()
+            .unwrap();
+        let mut draft = json!({
+            "id_barang": id_barang,
+            "kode_barang": barang["kode_barang"],
+            "nama_barang": barang["nama_barang"],
+            "tipe": barang["tipe"],
+            "satuan": barang["satuan"],
+            "atribut": { id_kolom.as_str(): "Pilot" },
+        });
+        save_item(&state, draft.clone()).unwrap();
+
+        let hasil = delete_column(&state, &id_kolom).unwrap();
+        assert_eq!(hasil["barang_dibersihkan"], 1);
+        let connection = storage::database(&state.data_dir).unwrap();
+        let atribut: Option<String> = connection
+            .query_row(
+                "SELECT atribut FROM inventory_barang WHERE id_barang = ?;",
+                params![id_barang],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(atribut, None);
+        assert!(list_kolom(&connection).unwrap().is_empty());
+
+        // Isi lama yang masih terkirim dari perangkat lain dibuang saat disimpan.
+        draft["atribut"] = json!({ id_kolom.as_str(): "Pilot" });
+        save_item(&state, draft).unwrap();
+        let atribut: Option<String> = connection
+            .query_row(
+                "SELECT atribut FROM inventory_barang WHERE id_barang = ?;",
+                params![id_barang],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(atribut, None);
+
+        let error = save_column(
+            &state,
+            json!({"id_kolom": id_kolom, "nama": "Merek", "tipe": "Teks"}),
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "Kolom ini sudah dihapus.");
+        // Namanya boleh dipakai lagi oleh kolom baru.
+        save_column(&state, json!({"nama": "Merek", "tipe": "Teks"})).unwrap();
+        assert!(delete_column(&state, &id_kolom).is_err());
+    }
+
+    #[test]
     fn record_mutation_takes_operator_from_session_and_enqueues() {
         let (_directory, state) = setup_state();
         let id_barang = insert_item(&state, "Habis Pakai", false);
@@ -4368,7 +5170,7 @@ mod tests {
         .unwrap_err();
         assert!(error
             .message
-            .starts_with("Satuan dan pengaturan kedaluwarsa"));
+            .starts_with("Satuan, desimal, dan pengaturan kedaluwarsa"));
     }
 
     #[test]

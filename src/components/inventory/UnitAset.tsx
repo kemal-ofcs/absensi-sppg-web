@@ -8,7 +8,14 @@ import {
   type PosisiStok,
   simpanUnitInventaris,
 } from "@/lib/gateways/inventory";
-import { INPUT, LABEL, pesanGalat, TOMBOL_KEDUA, TOMBOL_UTAMA } from "./gaya";
+import {
+  angka,
+  INPUT,
+  LABEL,
+  pesanGalat,
+  TOMBOL_KEDUA,
+  TOMBOL_UTAMA,
+} from "./gaya";
 
 type SubmitRef = { current: boolean };
 
@@ -84,7 +91,9 @@ export function DialogDaftarkanUnit({
                 {p.tempat}
                 <span className="text-slate-400"> · {p.kondisi}</span>
               </span>
-              <span className="font-semibold text-slate-100">{p.saldo}</span>
+              <span className="font-semibold text-slate-100">
+                {angka(p.saldo)}
+              </span>
             </li>
           ))}
         </ul>

@@ -1,16 +1,31 @@
 import type { DownloadResult } from "@/lib/client/download";
-import { exportToExcel } from "@/lib/client/excel-export";
-import type {
-  BarangInventaris,
-  DaftarInventaris,
-  KartuStok,
-  RekapPengadaan,
+import {
+  AngkaExcel,
+  exportToExcel,
+  type SelExcel,
+} from "@/lib/client/excel-export";
+import { readWorkbookTable } from "@/lib/client/xlsx";
+import {
+  type BarangInventaris,
+  type DaftarInventaris,
+  formatAngka,
+  formatJumlah,
+  type KartuStok,
+  type RekapPengadaan,
+  SKALA_DESIMAL,
 } from "@/lib/validations/inventory";
+import {
+  type BarisImporBarang,
+  type ImportRow,
+  INVENTARIS_WORKBOOK_HEADERS,
+  judulAsing,
+  parseInventarisRows,
+} from "@/lib/validations/inventory-import";
 
-// Export Excel inventaris. `exportToExcel` sudah memilih jalur per platform:
+// Export dan import Excel inventaris. `exportToExcel` sudah memilih jalur per platform:
 // unduhan biasa di Web, dialog simpan di Desktop, dialog SAF di Android.
 
-type Sel = string | number | boolean | null | undefined;
+type Sel = SelExcel;
 
 function saveWorkbook(spec: {
   headers: string[];
@@ -26,6 +41,39 @@ function saveWorkbook(spec: {
   );
 }
 
+/**
+ * Isi kolom tambahan yang aktif, berjudul nama kolomnya. Angka ditulis
+ * berformat Indonesia (`1.250,5`): penulis xlsx menyimpan semua sel sebagai
+ * teks, dan impor membaca sel teks dengan format yang sama.
+ */
+function isiKolomTambahan(
+  data: DaftarInventaris,
+  barang: BarangInventaris,
+): Record<string, string> {
+  return Object.fromEntries(
+    data.kolom
+      .filter((kolom) => kolom.is_aktif)
+      .map((kolom) => {
+        const isi = barang.atribut[kolom.id_kolom] ?? "";
+        return [
+          kolom.nama,
+          kolom.tipe === "Angka" && isi ? formatAngka(isi) : isi,
+        ];
+      }),
+  );
+}
+
+/** Jumlah tersimpan sebagai sel Angka dalam satuan barangnya: 1025 → 10,25. */
+function jumlahExcel(nilai: number, desimal: boolean): AngkaExcel {
+  return new AngkaExcel(desimal ? nilai / SKALA_DESIMAL : nilai);
+}
+
+function judulKolomTambahan(data: DaftarInventaris): string[] {
+  return data.kolom
+    .filter((kolom) => kolom.is_aktif)
+    .map((kolom) => kolom.nama);
+}
+
 export function eksporRekapStok(
   data: DaftarInventaris,
 ): Promise<DownloadResult> {
@@ -35,6 +83,7 @@ export function eksporRekapStok(
     "Kategori",
     "Tipe",
     "Satuan",
+    ...judulKolomTambahan(data),
     "Tempat",
     "Kondisi",
     "Kedaluwarsa",
@@ -47,10 +96,11 @@ export function eksporRekapStok(
       Kategori: barang.kategori ?? "",
       Tipe: barang.tipe,
       Satuan: barang.satuan,
+      ...isiKolomTambahan(data, barang),
       Tempat: posisi.tempat,
       Kondisi: posisi.kondisi,
       Kedaluwarsa: posisi.tanggal_expired ?? "",
-      Saldo: posisi.saldo,
+      Saldo: jumlahExcel(posisi.saldo, barang.desimal),
     })),
   );
   return saveWorkbook({
@@ -59,6 +109,58 @@ export function eksporRekapStok(
     filename: `rekap-stok-${data.hari_ini}.xlsx`,
     sheetName: "Rekap Stok",
   });
+}
+
+/**
+ * Template impor yang sudah berisi semua barang beserta kodenya, sehingga
+ * mengubah massal cukup unduh, sunting, lalu impor kembali.
+ */
+export function unduhTemplateBarang(
+  data: DaftarInventaris,
+): Promise<DownloadResult> {
+  const rows = data.barang.map((barang) => ({
+    Kode: barang.kode_barang,
+    "Nama barang": barang.nama_barang,
+    Kategori: barang.kategori ?? "",
+    Tipe: barang.tipe,
+    Satuan: barang.satuan,
+    "Bisa kedaluwarsa": barang.bisa_expired ? "Ya" : "Tidak",
+    Desimal: barang.desimal ? "Ya" : "Tidak",
+    // Teks berformat Indonesia, dibaca impor apa adanya: 1.000 atau 2,5.
+    "Stok minimum": formatJumlah(barang.stok_minimum, barang.desimal),
+    "Tempat utama": barang.tempat_utama ?? "",
+    Catatan: barang.catatan ?? "",
+    ...isiKolomTambahan(data, barang),
+  }));
+  // Kolom tambahan di antara data barang dan kolom saldo awal.
+  const akhirDataBarang = INVENTARIS_WORKBOOK_HEADERS.indexOf("Catatan") + 1;
+  return saveWorkbook({
+    headers: [
+      ...INVENTARIS_WORKBOOK_HEADERS.slice(0, akhirDataBarang),
+      ...judulKolomTambahan(data),
+      ...INVENTARIS_WORKBOOK_HEADERS.slice(akhirDataBarang),
+    ],
+    rows,
+    filename: `template-barang-${data.hari_ini}.xlsx`,
+    sheetName: "Barang",
+  });
+}
+
+export async function bacaImporBarang(
+  file: File,
+  data: DaftarInventaris,
+): Promise<{ baris: ImportRow<BarisImporBarang>[]; judulAsing: string[] }> {
+  const { rows, selAngka } = await readWorkbookTable(file);
+  return {
+    baris: parseInventarisRows(
+      rows,
+      data.barang,
+      data.hari_ini,
+      data.kolom,
+      selAngka,
+    ),
+    judulAsing: judulAsing(rows[0] ?? [], data.kolom),
+  };
 }
 
 export function eksporKartuStok(
@@ -86,7 +188,7 @@ export function eksporKartuStok(
     {
       Tanggal: `Sebelum ${dari}`,
       Alasan: "Saldo awal",
-      Saldo: kartu.saldo_awal,
+      Saldo: jumlahExcel(kartu.saldo_awal, barang.desimal),
     },
     ...kartu.baris.map((baris) => ({
       Tanggal: baris.tanggal,
@@ -96,9 +198,9 @@ export function eksporKartuStok(
       Ke: baris.tempat_tujuan ?? "",
       Penerima: baris.penerima_nama ?? "",
       Keperluan: baris.keperluan ?? "",
-      Masuk: baris.masuk || "",
-      Keluar: baris.keluar || "",
-      Saldo: baris.saldo,
+      Masuk: baris.masuk ? jumlahExcel(baris.masuk, barang.desimal) : "",
+      Keluar: baris.keluar ? jumlahExcel(baris.keluar, barang.desimal) : "",
+      Saldo: jumlahExcel(baris.saldo, barang.desimal),
       "Nomor dokumen": baris.nomor_dokumen ?? "",
       "Dicatat oleh": baris.dicatat_oleh,
       Status: baris.dibatalkan ? "Dibatalkan" : "",
@@ -137,10 +239,11 @@ export function eksporPengadaan(
     Kode: baris.kode_barang,
     "Nama barang": baris.nama_barang,
     Alasan: baris.alasan,
-    Jumlah: baris.jumlah,
+    Jumlah: jumlahExcel(baris.jumlah, baris.desimal),
     Satuan: baris.satuan,
-    "Harga satuan": baris.harga_satuan ?? "",
-    Nilai: baris.harga_satuan === null ? "" : baris.nilai,
+    "Harga satuan":
+      baris.harga_satuan === null ? "" : new AngkaExcel(baris.harga_satuan),
+    Nilai: baris.harga_satuan === null ? "" : new AngkaExcel(baris.nilai),
     "Nomor dokumen": baris.nomor_dokumen ?? "",
     "Disimpan di": baris.tempat_tujuan ?? "",
   }));
@@ -148,12 +251,15 @@ export function eksporPengadaan(
   for (const item of rekap.rekap) {
     rows.push({
       "Sumber dana": `Total ${item.sumber_dana}`,
-      Nilai: item.nilai,
+      Nilai: new AngkaExcel(item.nilai),
       "Nomor dokumen":
         item.tanpa_harga > 0 ? `${item.tanpa_harga} baris tanpa harga` : "",
     });
   }
-  rows.push({ "Sumber dana": "Total keseluruhan", Nilai: rekap.total_nilai });
+  rows.push({
+    "Sumber dana": "Total keseluruhan",
+    Nilai: new AngkaExcel(rekap.total_nilai),
+  });
   return saveWorkbook({
     headers,
     rows,

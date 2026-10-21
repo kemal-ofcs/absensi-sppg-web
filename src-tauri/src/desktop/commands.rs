@@ -2349,6 +2349,26 @@ pub fn desktop_inventory_save_code_prefixes(
     inventory::save_code_prefixes(&state, prefixes)
 }
 
+/// Kolom tambahan barang: tambah, ganti nama, atau nonaktifkan.
+#[tauri::command]
+pub fn desktop_inventory_save_column(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.manage")?;
+    inventory::save_column(&state, draft)
+}
+
+/// Hapus permanen kolom tambahan beserta isinya di semua barang.
+#[tauri::command]
+pub fn desktop_inventory_delete_column(
+    state: State<'_, DesktopState>,
+    id_kolom: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.column.delete")?;
+    inventory::delete_column(&state, &id_kolom)
+}
+
 #[tauri::command]
 pub fn desktop_inventory_record_mutation(
     state: State<'_, DesktopState>,

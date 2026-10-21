@@ -6,6 +6,7 @@ import {
   validateEmployeeDraft,
 } from "@/lib/validations/stabilization";
 import { type DownloadResult, saveFileWithPicker } from "./download";
+import { readWorkbookRows } from "./xlsx";
 
 const HEADERS = [
   "id_unik",
@@ -136,90 +137,6 @@ function createZipArchive(files: ZipFileEntry[]): Uint8Array {
   return result;
 }
 
-async function decompressDeflateRaw(
-  compressed: Uint8Array,
-): Promise<Uint8Array> {
-  const blob = new Blob([compressed as unknown as BlobPart]);
-  const ds = new DecompressionStream("deflate-raw");
-  const stream = new Response(blob.stream().pipeThrough(ds));
-  const buffer = await stream.arrayBuffer();
-  return new Uint8Array(buffer);
-}
-
-async function extractZipEntries(
-  buffer: ArrayBuffer,
-): Promise<Map<string, string>> {
-  const entries = new Map<string, string>();
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  const textDecoder = new TextDecoder();
-
-  // Locate End of Central Directory (EOCD) signature: 0x06054b50
-  let eocdOffset = -1;
-  const searchLimit = Math.max(0, buffer.byteLength - 65557);
-  for (let i = buffer.byteLength - 22; i >= searchLimit; i--) {
-    if (view.getUint32(i, true) === 0x06054b50) {
-      eocdOffset = i;
-      break;
-    }
-  }
-
-  if (eocdOffset === -1) {
-    throw new Error("Format file Excel (.xlsx) tidak valid atau file rusak.");
-  }
-
-  const totalEntries = view.getUint16(eocdOffset + 10, true);
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
-
-  let cdPos = cdOffset;
-  for (let i = 0; i < totalEntries && cdPos + 46 <= buffer.byteLength; i++) {
-    if (view.getUint32(cdPos, true) !== 0x02014b50) break;
-
-    const compression = view.getUint16(cdPos + 10, true);
-    const compressedSize = view.getUint32(cdPos + 20, true);
-    const nameLen = view.getUint16(cdPos + 28, true);
-    const extraLen = view.getUint16(cdPos + 30, true);
-    const commentLen = view.getUint16(cdPos + 32, true);
-    const localHeaderOffset = view.getUint32(cdPos + 42, true);
-
-    const name = textDecoder.decode(
-      bytes.subarray(cdPos + 46, cdPos + 46 + nameLen),
-    );
-
-    if (
-      name.endsWith(".xml") ||
-      name.endsWith(".rels") ||
-      name === "xl/sharedStrings.xml" ||
-      name.startsWith("xl/worksheets/")
-    ) {
-      if (localHeaderOffset + 30 <= buffer.byteLength) {
-        const localNameLen = view.getUint16(localHeaderOffset + 26, true);
-        const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
-        const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
-        const dataEnd = dataStart + compressedSize;
-
-        if (dataEnd <= buffer.byteLength) {
-          const rawData = bytes.subarray(dataStart, dataEnd);
-          if (compression === 0) {
-            entries.set(name, textDecoder.decode(rawData));
-          } else if (compression === 8) {
-            try {
-              const decompressed = await decompressDeflateRaw(rawData);
-              entries.set(name, textDecoder.decode(decompressed));
-            } catch {
-              // Non-fatal if unused file fails
-            }
-          }
-        }
-      }
-    }
-
-    cdPos += 46 + nameLen + extraLen + commentLen;
-  }
-
-  return entries;
-}
-
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -237,14 +154,6 @@ function columnLetter(colIndex: number): string {
     temp = Math.floor(temp / 26) - 1;
   }
   return letter;
-}
-
-function colLetterToIndex(colStr: string): number {
-  let index = 0;
-  for (let i = 0; i < colStr.length; i++) {
-    index = index * 26 + (colStr.toUpperCase().charCodeAt(i) - 64);
-  }
-  return Math.max(0, index - 1);
 }
 
 function createXlsxBuffer(
@@ -315,109 +224,7 @@ function createXlsxBuffer(
 export async function readEmployeeWorkbook(
   file: File,
 ): Promise<KaryawanInput[]> {
-  if (file.size > 10 * 1024 * 1024) {
-    throw new Error("Ukuran file Excel maksimal 10 MB.");
-  }
-
-  const rows: string[][] = [];
-
-  if (file.name.endsWith(".csv")) {
-    const text = await file.text();
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const row: string[] = [];
-      let inQuote = false;
-      let cell = "";
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          inQuote = !inQuote;
-        } else if (ch === "," && !inQuote) {
-          row.push(cell.trim());
-          cell = "";
-        } else {
-          cell += ch;
-        }
-      }
-      row.push(cell.trim());
-      if (row.some((c) => c !== "")) {
-        rows.push(row);
-      }
-    }
-  } else {
-    const buffer = await file.arrayBuffer();
-    const entries = await extractZipEntries(buffer);
-    const sheetXml =
-      entries.get("xl/worksheets/sheet1.xml") ||
-      entries.get("xl/worksheets/sheet.xml");
-
-    if (!sheetXml) {
-      throw new Error(
-        "File Excel tidak memiliki sheet1 atau format tidak valid.",
-      );
-    }
-
-    const sharedStrings: string[] = [];
-    const ssXml = entries.get("xl/sharedStrings.xml");
-    const parser = new DOMParser();
-
-    if (ssXml) {
-      const ssDoc = parser.parseFromString(ssXml, "application/xml");
-      const siElements = ssDoc.querySelectorAll("si");
-      siElements.forEach((si) => {
-        let text = "";
-        const tElements = si.querySelectorAll("t");
-        tElements.forEach((t) => {
-          text += t.textContent || "";
-        });
-        sharedStrings.push(text.trim());
-      });
-    }
-
-    const doc = parser.parseFromString(sheetXml, "application/xml");
-    const rowElements = doc.querySelectorAll("row");
-
-    rowElements.forEach((rowEl) => {
-      const rowCells: string[] = [];
-      const cElements = rowEl.querySelectorAll("c");
-
-      cElements.forEach((cEl) => {
-        const ref = cEl.getAttribute("r") || "";
-        const colLetters = ref.replace(/[^a-zA-Z]/g, "");
-        const colIdx = colLetters
-          ? colLetterToIndex(colLetters)
-          : rowCells.length;
-
-        while (rowCells.length < colIdx) {
-          rowCells.push("");
-        }
-
-        const type = cEl.getAttribute("t");
-        let val = "";
-
-        if (type === "inlineStr") {
-          const tEl = cEl.querySelector("is t, t");
-          val = tEl?.textContent?.trim() || "";
-        } else if (type === "s") {
-          const vEl = cEl.querySelector("v");
-          const idx = vEl ? Number(vEl.textContent) : -1;
-          val =
-            idx >= 0 && idx < sharedStrings.length ? sharedStrings[idx] : "";
-        } else {
-          const vEl = cEl.querySelector("v");
-          val = vEl?.textContent?.trim() || "";
-        }
-
-        rowCells[colIdx] = val;
-      });
-
-      if (rowCells.some((c) => c !== "")) {
-        rows.push(rowCells);
-      }
-    });
-  }
-
+  const rows = await readWorkbookRows(file);
   if (rows.length < 2) {
     throw new Error("Tidak ada data karyawan yang ditemukan di file.");
   }

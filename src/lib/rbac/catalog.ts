@@ -190,6 +190,11 @@ export const PERMISSION_CATALOG = [
     name: "Koreksi & Batalkan Mutasi Inventaris",
     group: "Inventaris",
   },
+  {
+    key: "inventory.column.delete",
+    name: "Hapus Permanen Kolom Tambahan",
+    group: "Inventaris",
+  },
   { key: "accounting.view", name: "Lihat Pembukuan", group: "Keuangan" },
   {
     key: "accounting.manage",
@@ -247,6 +252,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Kedaluwarsa) mengurangi stok tanpa ada yang menerima barangnya, jadi
   // ketiganya juga cara termudah menutupi barang yang diambil orang.
   "inventory.adjust",
+  // Menghapus kolom tambahan memusnahkan isinya di SEMUA barang sekaligus, dan
+  // tidak ada jalan mengembalikannya.
+  "inventory.column.delete",
   // Jurnal pembalik menghapus efek sebuah transaksi dari seluruh laporan
   // tanpa jejak uang yang benar-benar kembali.
   "accounting.reverse",

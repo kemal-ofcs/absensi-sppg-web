@@ -30,6 +30,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_inventory_recipients",
     "desktop_inventory_save_item",
     "desktop_inventory_save_code_prefixes",
+    "desktop_inventory_save_column",
+    "desktop_inventory_delete_column",
     "desktop_inventory_record_mutation",
     "desktop_inventory_loans",
     "desktop_inventory_document",

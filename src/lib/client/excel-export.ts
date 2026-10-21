@@ -133,10 +133,28 @@ function columnLetter(colIndex: number): string {
   return letter;
 }
 
+/**
+ * Sel bertipe Angka sungguhan: bisa dijumlah di Excel dan tampil mengikuti
+ * bahasa Excel pembacanya. Opt-in, karena nilai lain sengaja ditulis sebagai
+ * teks: NIK atau nomor HP yang kebetulan berupa angka akan kehilangan nol
+ * depannya bila menjadi sel Angka.
+ */
+export class AngkaExcel {
+  constructor(readonly nilai: number) {}
+}
+
+export type SelExcel =
+  | string
+  | number
+  | boolean
+  | AngkaExcel
+  | null
+  | undefined;
+
 export function buildXlsxBuffer(
   sheetName: string,
   headers: string[],
-  rows: (string | number | boolean | null | undefined)[][],
+  rows: SelExcel[][],
 ): Uint8Array {
   const encoder = new TextEncoder();
 
@@ -157,6 +175,10 @@ export function buildXlsxBuffer(
     headers.forEach((_, colIdx) => {
       const cellRef = `${columnLetter(colIdx)}${rowNum}`;
       const rawVal = row[colIdx];
+      if (rawVal instanceof AngkaExcel && Number.isFinite(rawVal.nilai)) {
+        sheetXml += `<c r="${cellRef}"><v>${rawVal.nilai}</v></c>`;
+        return;
+      }
       const val = rawVal === null || rawVal === undefined ? "" : String(rawVal);
       sheetXml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(val)}</t></is></c>`;
     });
@@ -203,7 +225,7 @@ export async function exportToExcel(
   filename: string,
   sheetName: string,
   headers: string[],
-  rows: (string | number | boolean | null | undefined)[][],
+  rows: SelExcel[][],
 ): Promise<DownloadResult> {
   const xlsxBytes = buildXlsxBuffer(sheetName, headers, rows);
   const blob = new Blob([xlsxBytes as unknown as BlobPart], {
