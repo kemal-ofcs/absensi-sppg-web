@@ -11,6 +11,7 @@ import {
   formatAngka,
   formatJumlah,
   type KartuStok,
+  type PosisiStok,
   type RekapPengadaan,
   SKALA_DESIMAL,
 } from "@/lib/validations/inventory";
@@ -74,40 +75,186 @@ function judulKolomTambahan(data: DaftarInventaris): string[] {
     .map((kolom) => kolom.nama);
 }
 
-export function eksporRekapStok(
-  data: DaftarInventaris,
-): Promise<DownloadResult> {
-  const headers = [
-    "Kode",
-    "Nama barang",
-    "Kategori",
-    "Tipe",
-    "Satuan",
-    ...judulKolomTambahan(data),
-    "Tempat",
-    "Kondisi",
-    "Kedaluwarsa",
-    "Saldo",
+export interface KolomEkspor {
+  kunci: string;
+  judul: string;
+  /** Kolom milik satu tempat/batch: bila dipilih, baris dipecah per posisi. */
+  perPosisi: boolean;
+}
+
+/** Pilihan dialog ekspor. Kolom tambahan berkunci `atribut:<id_kolom>`. */
+export interface PilihanEkspor {
+  kolom: string[];
+  /** Judul kolom kosong untuk diisi tangan, misalnya "Sesuai". */
+  manual: string[];
+}
+
+export const MAKS_JUDUL_MANUAL = 40;
+
+/** Semua kolom data yang bisa diekspor, dalam urutan tampil di berkas. */
+export function daftarKolomEkspor(data: DaftarInventaris): KolomEkspor[] {
+  return [
+    { kunci: "no", judul: "No", perPosisi: false },
+    { kunci: "kode", judul: "Kode", perPosisi: false },
+    { kunci: "nama", judul: "Nama barang", perPosisi: false },
+    { kunci: "kategori", judul: "Kategori", perPosisi: false },
+    { kunci: "tipe", judul: "Tipe", perPosisi: false },
+    { kunci: "satuan", judul: "Satuan", perPosisi: false },
+    ...data.kolom
+      .filter((kolom) => kolom.is_aktif)
+      .map((kolom) => ({
+        kunci: `atribut:${kolom.id_kolom}`,
+        judul: kolom.nama,
+        perPosisi: false,
+      })),
+    { kunci: "tempat", judul: "Tempat", perPosisi: true },
+    { kunci: "kondisi", judul: "Kondisi", perPosisi: true },
+    { kunci: "kedaluwarsa", judul: "Kedaluwarsa", perPosisi: true },
+    { kunci: "kode_unit", judul: "Kode unit", perPosisi: true },
+    { kunci: "nomor_seri", judul: "Nomor seri", perPosisi: true },
+    { kunci: "kuantitas", judul: "Kuantitas", perPosisi: false },
   ];
-  const rows = data.barang.flatMap((barang) =>
-    barang.posisi.map((posisi) => ({
-      Kode: barang.kode_barang,
-      "Nama barang": barang.nama_barang,
-      Kategori: barang.kategori ?? "",
-      Tipe: barang.tipe,
-      Satuan: barang.satuan,
-      ...isiKolomTambahan(data, barang),
-      Tempat: posisi.tempat,
-      Kondisi: posisi.kondisi,
-      Kedaluwarsa: posisi.tanggal_expired ?? "",
-      Saldo: jumlahExcel(posisi.saldo, barang.desimal),
-    })),
+}
+
+export function presetRekapStok(data: DaftarInventaris): PilihanEkspor {
+  return {
+    kolom: [
+      "kode",
+      "nama",
+      "kategori",
+      "tipe",
+      "satuan",
+      ...data.kolom
+        .filter((kolom) => kolom.is_aktif)
+        .map((kolom) => `atribut:${kolom.id_kolom}`),
+      "tempat",
+      "kondisi",
+      "kedaluwarsa",
+      "kuantitas",
+    ],
+    manual: [],
+  };
+}
+
+export const PRESET_LEMBAR_VALIDASI: PilihanEkspor = {
+  kolom: ["no", "nama", "satuan", "kuantitas"],
+  manual: ["Sesuai", "Tidak sesuai", "Keterangan"],
+};
+
+function isiKolom(
+  kunci: string,
+  barang: BarangInventaris,
+  posisi: PosisiStok[],
+  nomor: number,
+  data: DaftarInventaris,
+): Sel {
+  // Mode per posisi selalu membawa tepat satu posisi; mode per barang memakai
+  // `posisi` hanya untuk menjumlah kuantitasnya.
+  const satu = posisi.length === 1 ? posisi[0] : undefined;
+  switch (kunci) {
+    case "no":
+      return new AngkaExcel(nomor);
+    case "kode":
+      return barang.kode_barang;
+    case "nama":
+      return barang.nama_barang;
+    case "kategori":
+      return barang.kategori ?? "";
+    case "tipe":
+      return barang.tipe;
+    case "satuan":
+      return barang.satuan;
+    case "tempat":
+      return satu?.tempat ?? "";
+    case "kondisi":
+      return satu?.kondisi ?? "";
+    case "kedaluwarsa":
+      return satu?.tanggal_expired ?? "";
+    case "kode_unit":
+      return satu?.kode_unit ?? "";
+    case "nomor_seri":
+      return satu?.nomor_seri ?? "";
+    case "kuantitas":
+      return jumlahExcel(
+        posisi.reduce((total, item) => total + item.saldo, 0),
+        barang.desimal,
+      );
+    default: {
+      const kolom = data.kolom.find(
+        (item) => `atribut:${item.id_kolom}` === kunci,
+      );
+      const isi = kolom ? (barang.atribut[kolom.id_kolom] ?? "") : "";
+      return kolom?.tipe === "Angka" && isi ? formatAngka(isi) : isi;
+    }
+  }
+}
+
+/**
+ * Judul dan baris berkas ekspor. `barang` sudah tersaring seperti di layar;
+ * `tempat` membuang posisi di tempat lain. Barang tanpa posisi tetap muncul
+ * berkuantitas 0, karena justru itu yang perlu dicocokkan dengan fisiknya.
+ */
+export function susunEkspor(
+  data: DaftarInventaris,
+  barang: BarangInventaris[],
+  tempat: string,
+  pilihan: PilihanEkspor,
+): { headers: string[]; rows: Record<string, Sel>[] } {
+  const kolom = daftarKolomEkspor(data).filter((item) =>
+    pilihan.kolom.includes(item.kunci),
   );
+  const manual = pilihan.manual.map((judul) => judul.trim());
+  const headers = [...kolom.map((item) => item.judul), ...manual];
+  if (headers.length === 0) throw new Error("Pilih minimal satu kolom.");
+  if (manual.some((judul) => !judul)) {
+    throw new Error("Judul kolom isian manual tidak boleh kosong.");
+  }
+  const sudah = new Set<string>();
+  for (const judul of headers) {
+    const kunci = judul.toLowerCase();
+    // Baris ditulis berkunci judul, jadi judul kembar saling menimpa.
+    if (sudah.has(kunci))
+      throw new Error(`Judul kolom ${judul} dipakai dua kali.`);
+    sudah.add(kunci);
+  }
+
+  const perPosisi = kolom.some((item) => item.perPosisi);
+  const kelompok = barang.flatMap((item) => {
+    const posisi = tempat
+      ? item.posisi.filter(
+          (p) => p.tempat.toLowerCase() === tempat.toLowerCase(),
+        )
+      : item.posisi;
+    if (!perPosisi || posisi.length === 0) return [{ barang: item, posisi }];
+    return posisi.map((p) => ({ barang: item, posisi: [p] }));
+  });
+  const rows = kelompok.map((baris, index) =>
+    Object.fromEntries([
+      ...kolom.map((item) => [
+        item.judul,
+        isiKolom(item.kunci, baris.barang, baris.posisi, index + 1, data),
+      ]),
+      ...manual.map((judul) => [judul, ""]),
+    ]),
+  );
+  return { headers, rows };
+}
+
+export function eksporInventaris(
+  data: DaftarInventaris,
+  barang: BarangInventaris[],
+  tempat: string,
+  pilihan: PilihanEkspor,
+): Promise<DownloadResult> {
+  const { headers, rows } = susunEkspor(data, barang, tempat, pilihan);
+  const akhiran = tempat
+    ? `-${tempat.replace(/[\\/:*?"<>|\s]+/g, "-").toLowerCase()}`
+    : "";
   return saveWorkbook({
     headers,
     rows,
-    filename: `rekap-stok-${data.hari_ini}.xlsx`,
-    sheetName: "Rekap Stok",
+    filename: `inventaris-${data.hari_ini}${akhiran}.xlsx`,
+    sheetName: "Inventaris",
   });
 }
 
