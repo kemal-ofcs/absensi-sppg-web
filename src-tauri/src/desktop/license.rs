@@ -563,9 +563,17 @@ const IS_MOBILE: bool = cfg!(any(target_os = "android", target_os = "ios"));
 
 /// Id mesin yang bertahan melewati instal ulang aplikasi. Windows: MachineGuid
 /// (berubah bila Windows diinstal ulang, dan SAMA pada PC hasil kloning image).
-/// Linux: machine-id. Platform lain — dan kegagalan membaca — jatuh ke id acak
-/// aplikasi, yang hilang bila aplikasi dihapus beserta datanya.
+/// Linux: machine-id. Android: ANDROID_ID (berubah bila HP direset pabrik atau
+/// APK ditandatangani kunci lain). Platform lain — dan kegagalan membaca — jatuh
+/// ke id acak aplikasi, yang hilang bila aplikasi dihapus beserta datanya.
 fn hardware_id() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        android_id()
+            .map(|value| value.trim().to_lowercase())
+            // Nilai bawaan emulator/ROM lama yang sama di banyak HP.
+            .filter(|value| !value.is_empty() && value != "9774d56d682e549c")
+    }
     #[cfg(target_os = "windows")]
     {
         windows_registry::LOCAL_MACHINE
@@ -585,11 +593,54 @@ fn hardware_id() -> Option<String> {
     }
     #[cfg(not(any(
         target_os = "windows",
+        target_os = "android",
         all(target_os = "linux", not(target_os = "android"))
     )))]
     {
         None
     }
+}
+
+/// `Settings.Secure.ANDROID_ID` lewat JNI. JavaVM dan Activity diambil dari
+/// tao (diekspor Tauri, `doc(hidden)`): tanpa plugin Kotlin dan dependensi baru.
+#[cfg(target_os = "android")]
+fn android_id() -> Option<String> {
+    use tauri::tao::platform::android::prelude::{jni, main_android_context, JObject, JString};
+
+    fn read(env: &mut jni::JNIEnv, activity: &JObject) -> jni::errors::Result<Option<String>> {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        let key = env.new_string("android_id")?;
+        let value = env
+            .call_static_method(
+                "android/provider/Settings$Secure",
+                "getString",
+                "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;",
+                &[(&resolver).into(), (&key).into()],
+            )?
+            .l()?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(env.get_string(&JString::from(value))?.into()))
+    }
+
+    let context = main_android_context()?;
+    let vm = unsafe { jni::JavaVM::from_raw(context.java_vm.cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    // Global ref milik tao; tidak dilepas di sini.
+    let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
+    let result = read(&mut env, &activity);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    result.ok().flatten()
 }
 
 pub fn current_device_code(state: &DesktopState) -> Result<String, CommandError> {
