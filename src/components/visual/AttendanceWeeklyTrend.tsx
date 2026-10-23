@@ -3,9 +3,11 @@
 import { motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import type { TrenMingguan } from "@/lib/gateways/report";
 
 interface AttendanceWeeklyTrendProps {
-  rekapHarian: Record<string, unknown>[];
+  /** `null` selama dimuat. Pekan dan "hari ini" ditentukan server (WIB). */
+  tren: TrenMingguan | null;
   totalKaryawan: number;
 }
 
@@ -20,91 +22,66 @@ interface DayStat {
   rate: number;
 }
 
-const INDO_DAYS = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
+// Urutan tetap Senin-Minggu karena `tren.mulai` selalu hari Senin.
+const NAMA_HARI = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"];
 
 export function AttendanceWeeklyTrend({
-  rekapHarian,
+  tren,
   totalKaryawan,
 }: AttendanceWeeklyTrendProps) {
   const [hoveredDay, setHoveredDay] = useState<DayStat | null>(null);
 
-  // Generate 7 days back from today or from data
+  // Senin sampai Minggu pekan berjalan; hari yang belum tiba tampil kosong.
   const weeklyStats: DayStat[] = useMemo(() => {
-    const daysMap = new Map<
-      string,
-      { hadir: number; terlambat: number; sakitIzin: number; alfa: number }
-    >();
-
-    // Seed past 7 days
-    const today = new Date();
-    const resultDays: string[] = [];
-
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const dateKey = d.toLocaleDateString("en-CA");
-      resultDays.push(dateKey);
-      daysMap.set(dateKey, { hadir: 0, terlambat: 0, sakitIzin: 0, alfa: 0 });
-    }
-
-    // Populate from rekapHarian
-    for (const row of rekapHarian) {
-      const tgl = String(row.tanggal || "");
-      const stat = daysMap.get(tgl);
-      if (!stat) continue;
-      const status = String(row.status_kehadiran || "");
-      const telat = Number(row.menit_terlambat || 0);
-
-      if (status === "Hadir" || status === "Terlambat") {
-        if (telat > 0) {
-          stat.terlambat++;
-        } else {
-          stat.hadir++;
-        }
-      } else if (
-        status === "Sakit" ||
-        status === "Izin" ||
-        status === "Dispen"
-      ) {
-        stat.sakitIzin++;
-      } else if (status === "Alfa") {
-        stat.alfa++;
-      }
-    }
-
-    const totalSafe = Math.max(totalKaryawan, 1);
-
-    return resultDays.map((dateKey) => {
-      const stat = daysMap.get(dateKey) || {
+    // Selama dimuat tetap tujuh kolom kosong, supaya kartu tidak mengerut
+    // lalu melompat begitu datanya tiba.
+    if (!tren)
+      return NAMA_HARI.map((dayName) => ({
+        dateStr: dayName,
+        dayLabel: dayName,
         hadir: 0,
         terlambat: 0,
         sakitIzin: 0,
         alfa: 0,
-      };
-      const d = new Date(dateKey);
-      const dayName = INDO_DAYS[d.getDay()] || "Hari";
-      const shortDate = `${d.getDate()}/${d.getMonth() + 1}`;
-      const totalPresent = stat.hadir + stat.terlambat;
-      const rate = Math.min(100, Math.round((totalPresent / totalSafe) * 100));
+        totalPresent: 0,
+        rate: 0,
+      }));
+    const totalSafe = Math.max(totalKaryawan, 1);
+    // Tanggal dihitung dalam UTC supaya penambahan hari tidak bergeser oleh
+    // zona waktu perangkat; nilainya tetap tanggal WIB dari server.
+    const senin = new Date(`${tren.mulai}T00:00:00Z`);
+
+    return NAMA_HARI.map((dayName, i) => {
+      const d = new Date(senin);
+      d.setUTCDate(senin.getUTCDate() + i);
+      const dateKey = d.toISOString().slice(0, 10);
+      const stat = tren.hari.find((row) => row.tanggal === dateKey);
+      const hadir = stat?.tepat_waktu ?? 0;
+      const terlambat = stat?.terlambat ?? 0;
+      const totalPresent = hadir + terlambat;
 
       return {
         dateStr: dateKey,
-        dayLabel: `${dayName} (${shortDate})`,
-        hadir: stat.hadir,
-        terlambat: stat.terlambat,
-        sakitIzin: stat.sakitIzin,
-        alfa: stat.alfa,
+        dayLabel: `${dayName} (${d.getUTCDate()}/${d.getUTCMonth() + 1})`,
+        hadir,
+        terlambat,
+        sakitIzin: stat?.sakit_izin ?? 0,
+        alfa: stat?.alfa ?? 0,
         totalPresent,
-        rate,
+        rate: Math.min(100, Math.round((totalPresent / totalSafe) * 100)),
       };
     });
-  }, [rekapHarian, totalKaryawan]);
+  }, [tren, totalKaryawan]);
 
+  // Hanya Senin sampai hari ini: hari yang belum tiba selalu 0% dan akan
+  // menyeret rata-ratanya turun.
   const avgRate = useMemo(() => {
-    if (weeklyStats.length === 0) return 0;
-    const sum = weeklyStats.reduce((acc, curr) => acc + curr.rate, 0);
-    return Math.round(sum / weeklyStats.length);
-  }, [weeklyStats]);
+    if (!tren) return 0;
+    const elapsed = weeklyStats.filter((day) => day.dateStr <= tren.hari_ini);
+    if (elapsed.length === 0) return 0;
+    const sum = elapsed.reduce((acc, curr) => acc + curr.rate, 0);
+    return Math.round(sum / elapsed.length);
+  }, [weeklyStats, tren]);
 
   return (
     <div className="flex flex-col justify-between rounded-3xl border border-white/10 bg-slate-900/80 p-5 sm:p-6 shadow-xl">
@@ -116,7 +93,7 @@ export function AttendanceWeeklyTrend({
               <Icon name="clock" className="size-4" />
             </span>
             <h3 className="text-base font-black text-white">
-              Tren Kehadiran 7 Hari Terakhir
+              Tren Kehadiran Minggu Ini
             </h3>
           </div>
           <p className="mt-1 text-xs text-slate-400">
@@ -127,7 +104,7 @@ export function AttendanceWeeklyTrend({
         <div className="flex items-center gap-2">
           <div className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-right">
             <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
-              Rata-rata 7 Hari
+              Rata-rata Minggu Ini
             </div>
             <div className="font-mono text-base font-black text-sky-200">
               {avgRate}%

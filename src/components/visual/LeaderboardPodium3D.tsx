@@ -62,8 +62,8 @@ export function LeaderboardPodium3D({
             Papan Peringkat Kedisiplinan Karyawan
           </h3>
           <p className="text-xs text-slate-400">
-            Apresiasi karyawan dengan performa kehadiran terbaik dan jam kerja
-            produktif.
+            Karyawan aktif dengan hari hadir terbanyak bulan ini; bila seri,
+            yang total terlambatnya paling sedikit lebih dulu.
           </p>
         </div>
 

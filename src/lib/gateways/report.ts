@@ -3,9 +3,20 @@
 import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
-import type { DashboardMetrics, RekapBulananItem } from "@/lib/services/report";
+import type {
+  DashboardMetrics,
+  RekapBulananItem,
+  TrenMingguan,
+} from "@/lib/services/report";
 
-export type { DashboardMetrics, RekapBulananItem } from "@/lib/services/report";
+export type {
+  DashboardMetrics,
+  RekapBulananItem,
+  RekapTanggal,
+  TrenMingguan,
+} from "@/lib/services/report";
+
+import type { DataLaporanKehadiran } from "@/lib/validations/laporan-kehadiran";
 
 async function query<T>(kind: string, filter: Record<string, unknown> = {}) {
   if (isDesktopRuntime())
@@ -19,6 +30,8 @@ async function query<T>(kind: string, filter: Record<string, unknown> = {}) {
 }
 
 export const getDashboardMetrics = () => query<DashboardMetrics>("metrics");
+/** Senin-Minggu pekan berjalan, tidak mengikuti filter tanggal tabel. */
+export const getTrenMingguan = () => query<TrenMingguan>("weekly-trend");
 export const getRekapHarian = (
   filter: {
     tanggal?: string;
@@ -40,6 +53,11 @@ export const getRiwayatScan = (
 export const getRekapBulanan = (
   filter: { bulan?: string; tahun?: number; divisi?: string } = {},
 ) => query<RekapBulananItem[]>("monthly", filter);
+/** Data mentah ekspor laporan; disusun `susunLaporanKehadiran`. Izin `dashboard.export`. */
+export const getLaporanKehadiran = (filter: {
+  tanggal_mulai: string;
+  tanggal_selesai: string;
+}) => query<DataLaporanKehadiran>("attendance-report", filter);
 export const getTopKaryawanTerajin = (limit = 5) =>
   query<Record<string, unknown>[]>("top", { limit });
 

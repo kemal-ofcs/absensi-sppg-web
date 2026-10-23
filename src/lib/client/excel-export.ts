@@ -156,43 +156,77 @@ export function buildXlsxBuffer(
   headers: string[],
   rows: SelExcel[][],
 ): Uint8Array {
-  const encoder = new TextEncoder();
+  return buildXlsxWorkbook([{ nama: sheetName || "Sheet1", headers, rows }]);
+}
 
-  let sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>
-    <row r="1">`;
+export interface LembarXlsx {
+  /** Maksimal 31 karakter, tanpa tanda kurung siku, titik dua, *, ?, atau garis miring. */
+  nama: string;
+  headers: readonly string[];
+  rows: readonly (readonly SelExcel[])[];
+  /** Lebar kolom dalam satuan karakter Excel, sejajar `headers`. */
+  lebar?: readonly number[];
+  /** Baris judul dan N kolom pertama tetap terlihat saat digulir. */
+  kolomBeku?: number;
+}
 
+function lembarXml(lembar: LembarXlsx): string {
+  const { headers, rows, lebar, kolomBeku } = lembar;
+  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`;
+
+  if (kolomBeku !== undefined) {
+    const sel = `${columnLetter(kolomBeku)}2`;
+    const xSplit = kolomBeku > 0 ? ` xSplit="${kolomBeku}"` : "";
+    const panel = kolomBeku > 0 ? "bottomRight" : "bottomLeft";
+    xml += `<sheetViews><sheetView workbookViewId="0"><pane${xSplit} ySplit="1" topLeftCell="${sel}" activePane="${panel}" state="frozen"/><selection pane="${panel}" activeCell="${sel}" sqref="${sel}"/></sheetView></sheetViews>`;
+  }
+  if (lebar?.length) {
+    xml += `<cols>${lebar
+      .map(
+        (w, i) =>
+          `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`,
+      )
+      .join("")}</cols>`;
+  }
+
+  xml += `<sheetData><row r="1">`;
   headers.forEach((header, colIdx) => {
     const cellRef = `${columnLetter(colIdx)}1`;
-    sheetXml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(header)}</t></is></c>`;
+    xml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(header)}</t></is></c>`;
   });
-  sheetXml += `</row>`;
+  xml += `</row>`;
 
   rows.forEach((row, rowIdx) => {
     const rowNum = rowIdx + 2;
-    sheetXml += `<row r="${rowNum}">`;
+    xml += `<row r="${rowNum}">`;
     headers.forEach((_, colIdx) => {
       const cellRef = `${columnLetter(colIdx)}${rowNum}`;
       const rawVal = row[colIdx];
       if (rawVal instanceof AngkaExcel && Number.isFinite(rawVal.nilai)) {
-        sheetXml += `<c r="${cellRef}"><v>${rawVal.nilai}</v></c>`;
+        xml += `<c r="${cellRef}"><v>${rawVal.nilai}</v></c>`;
         return;
       }
       const val = rawVal === null || rawVal === undefined ? "" : String(rawVal);
-      sheetXml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(val)}</t></is></c>`;
+      xml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(val)}</t></is></c>`;
     });
-    sheetXml += `</row>`;
+    xml += `</row>`;
   });
 
-  sheetXml += `</sheetData></worksheet>`;
+  return `${xml}</sheetData></worksheet>`;
+}
+
+/** Rakit berkas `.xlsx` berisi beberapa sheet, urut sesuai larik. */
+export function buildXlsxWorkbook(lembar: readonly LembarXlsx[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const nomor = lembar.map((_, i) => i + 1);
 
   const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+${nomor.map((n) => `  <Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}
 </Types>`;
 
   const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -202,13 +236,13 @@ export function buildXlsxBuffer(
 
   const wbRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+${nomor.map((n) => `  <Relationship Id="rId${n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/>`).join("")}
 </Relationships>`;
 
   const wbXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="${escapeXml(sheetName || "Sheet1")}" sheetId="1" r:id="rId1"/>
+${lembar.map((l, i) => `    <sheet name="${escapeXml(l.nama)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}
   </sheets>
 </workbook>`;
 
@@ -217,7 +251,10 @@ export function buildXlsxBuffer(
     { name: "_rels/.rels", data: encoder.encode(relsXml) },
     { name: "xl/_rels/workbook.xml.rels", data: encoder.encode(wbRelsXml) },
     { name: "xl/workbook.xml", data: encoder.encode(wbXml) },
-    { name: "xl/worksheets/sheet1.xml", data: encoder.encode(sheetXml) },
+    ...lembar.map((l, i) => ({
+      name: `xl/worksheets/sheet${i + 1}.xml`,
+      data: encoder.encode(lembarXml(l)),
+    })),
   ]);
 }
 
