@@ -60,11 +60,38 @@ function normalizeDate(raw: string): string {
   return clean;
 }
 
+/** Kembar dengan `STATUS_KEHADIRAN_IMPORT` di `administration.rs`. */
+export const STATUS_KEHADIRAN_IMPORT = [
+  "Hadir",
+  "Sakit",
+  "Izin",
+  "Dispen",
+  "Alfa",
+] as const;
+/** Kembar dengan `STATUS_ABSEN_IMPORT` di `administration.rs`. */
+export const STATUS_ABSEN_IMPORT = [
+  "Lengkap",
+  "Belum Pulang",
+  "Perlu Verifikasi",
+  "Tidak Hadir",
+  "Tepat Waktu",
+  "Terlambat",
+  "Datang Lebih Awal",
+] as const;
+
 async function processRow(
   transaction: Transaction,
-  row: OfflineImportRow,
+  input: OfflineImportRow,
   operator: string,
 ) {
+  const statusAttendance = input.status_kehadiran?.trim() || "Hadir";
+  // Sakit/Izin/Dispen/Alfa tidak punya jam kerja: jam yang ikut terkirim
+  // (formulir manual mengisinya 07:00-15:00) dibuang supaya tidak menjadi
+  // jam kerja dan lembur di payroll. Sama dengan `update_attendance` Rust.
+  const tidakHadir = statusAttendance !== "Hadir";
+  const row: OfflineImportRow = tidakHadir
+    ? { ...input, jam_masuk: undefined, jam_pulang: undefined }
+    : input;
   const eventKey = `IMP-${randomUUID()}`;
   const now = new Date().toISOString();
   let date = normalizeDate(row.tanggal);
@@ -96,7 +123,17 @@ async function processRow(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !row.id_unik)
     return fail("Tanggal atau ID tidak valid.");
   if (
-    (!row.jam_masuk && !row.jam_pulang) ||
+    !(STATUS_KEHADIRAN_IMPORT as readonly string[]).includes(statusAttendance)
+  )
+    return fail(`Status kehadiran '${statusAttendance}' tidak dikenal.`);
+  const statusAbsenInput = row.status_absen?.trim() || "";
+  if (
+    statusAbsenInput &&
+    !(STATUS_ABSEN_IMPORT as readonly string[]).includes(statusAbsenInput)
+  )
+    return fail(`Status absen '${statusAbsenInput}' tidak dikenal.`);
+  if (
+    (!tidakHadir && !row.jam_masuk && !row.jam_pulang) ||
     (row.jam_masuk && !TIME.test(row.jam_masuk)) ||
     (row.jam_pulang && !TIME.test(row.jam_pulang))
   )
@@ -257,7 +294,9 @@ async function processRow(
 
   const checkIn = row.jam_masuk
     ? timestamp(date, row.jam_masuk)
-    : String(existing?.jam_masuk ?? "");
+    : tidakHadir
+      ? ""
+      : String(existing?.jam_masuk ?? "");
   const inTimeStr = row.jam_masuk || String(shiftRowData?.jam_masuk || "07:00");
   const nextDay = Boolean(
     row.jam_pulang &&
@@ -266,16 +305,19 @@ async function processRow(
   );
   const checkOut = row.jam_pulang
     ? timestamp(date, row.jam_pulang, nextDay)
-    : String(existing?.jam_pulang ?? "");
+    : tidakHadir
+      ? ""
+      : String(existing?.jam_pulang ?? "");
 
-  const statusAttendance = row.status_kehadiran?.trim() || "Hadir";
   const statusRecord =
-    row.status_absen?.trim() ||
-    (checkIn && checkOut
-      ? "Lengkap"
-      : checkIn
-        ? "Belum Pulang"
-        : "Perlu Verifikasi");
+    statusAbsenInput ||
+    (tidakHadir
+      ? "Tidak Hadir"
+      : checkIn && checkOut
+        ? "Lengkap"
+        : checkIn
+          ? "Belum Pulang"
+          : "Perlu Verifikasi");
   let durasiHadir: number | null = null;
   if (checkIn && checkOut) {
     const inDate = new Date(`${checkIn.replace(" ", "T")}+07:00`).getTime();
@@ -395,9 +437,12 @@ async function processRow(
       mode === "PENGGANTI" ? date : "",
     ],
   });
+  // Log hanya untuk jam yang dibawa baris INI. Jam yang diwarisi dari sesi
+  // dulu ikut ditulis ulang atas nama import ini, sehingga log Masuk menjadi
+  // ganda dan menghapus import Masuk tidak menghapus jam masuknya.
   for (const [kind, time] of [
-    ["Masuk", checkIn],
-    ["Pulang", checkOut],
+    ["Masuk", row.jam_masuk ? checkIn : ""],
+    ["Pulang", row.jam_pulang ? checkOut : ""],
   ] as const) {
     if (!time) continue;
     await transaction.execute({

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { db, ensureDbInitialized } from "@/lib/db";
 
 export interface PenugasanBackupInput {
@@ -12,11 +13,11 @@ export interface PenugasanBackupInput {
   catatan?: string;
 }
 
-export function generateIdBackup(): string {
-  const now = new Date();
-  const dateStr = now.toISOString().split("T")[0].replace(/-/g, "");
-  const randomNum = Math.floor(100 + Math.random() * 900);
-  return `BCK-${dateStr}-${randomNum}`;
+// Bentuk sama dengan jalur Rust: tanggal tugas + 10 heksadesimal acak.
+// Tiga digit acak sebelumnya hanya 900 kemungkinan per hari.
+export function generateIdBackup(tanggal: string): string {
+  const acak = randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase();
+  return `BCK-${tanggal.replace(/-/g, "")}-${acak}`;
 }
 
 function normalizeDate(raw: string): string {
@@ -26,6 +27,18 @@ function normalizeDate(raw: string): string {
     return `${y}-${m}-${d}`;
   }
   return clean;
+}
+
+/** Kembaran `selaraskan_status_backup` di `administration.rs`. */
+async function selaraskanStatusBackup(idKaryawan: string) {
+  await db.execute({
+    sql: `UPDATE master_data SET status_backup = CASE
+            WHEN EXISTS(SELECT 1 FROM backup_karyawan
+                        WHERE id_karyawan_pengganti = ?1 AND status_tugas = 'Aktif')
+            THEN 'BACKUP' ELSE 'NORMAL' END
+          WHERE id_unik = ?1;`,
+    args: [idKaryawan],
+  });
 }
 
 export async function buatPenugasanBackup(input: PenugasanBackupInput) {
@@ -69,6 +82,17 @@ export async function buatPenugasanBackup(input: PenugasanBackupInput) {
     };
   }
 
+  const shiftRes = await db.execute({
+    sql: "SELECT 1 FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    args: [input.id_shift_backup],
+  });
+  if (shiftRes.rows.length === 0) {
+    return {
+      sukses: false,
+      pesan: `Gagal: Shift backup #${input.id_shift_backup} tidak ditemukan.`,
+    };
+  }
+
   // Guard duplikasi: cek backup aktif yang sudah ada untuk karyawan+tanggal yang sama
   const duplikasiRes = await db.execute({
     sql: `SELECT id_backup FROM backup_karyawan
@@ -83,7 +107,7 @@ export async function buatPenugasanBackup(input: PenugasanBackupInput) {
     };
   }
 
-  const idBackup = generateIdBackup();
+  const idBackup = generateIdBackup(date);
   const nowStr = new Date().toISOString();
 
   await db.execute({
@@ -113,6 +137,7 @@ export async function buatPenugasanBackup(input: PenugasanBackupInput) {
       input.catatan || "",
     ],
   });
+  await selaraskanStatusBackup(String(pengganti.id_unik));
 
   return {
     sukses: true,
@@ -128,12 +153,21 @@ export async function batalkanPenugasanBackup(
   await ensureDbInitialized();
 
   const nowStr = new Date().toISOString();
-  await db.execute({
+  const res = await db.execute({
     sql: `UPDATE backup_karyawan SET 
           status_tugas = 'Dibatalkan', waktu_dibatalkan = ?, operator_pembatalan = ?
-          WHERE id_backup = ?;`,
+          WHERE id_backup = ? AND status_tugas = 'Aktif'
+          RETURNING id_karyawan_pengganti;`,
     args: [nowStr, kode_operator, id_backup],
   });
+  const pengganti = res.rows[0]?.id_karyawan_pengganti;
+  if (pengganti == null) {
+    return {
+      sukses: false,
+      pesan: "Penugasan backup aktif tidak ditemukan.",
+    };
+  }
+  await selaraskanStatusBackup(String(pengganti));
 
   return {
     sukses: true,
@@ -169,17 +203,21 @@ export async function hapusPenugasanBackup(
   id_backup: string,
   _kode_operator?: string,
 ) {
+  await ensureDbInitialized();
+
   const res = await db.execute({
-    sql: "DELETE FROM backup_karyawan WHERE id_backup = ?;",
+    sql: "DELETE FROM backup_karyawan WHERE id_backup = ? RETURNING id_karyawan_pengganti;",
     args: [id_backup],
   });
 
-  if (res.rowsAffected === 0) {
+  const pengganti = res.rows[0]?.id_karyawan_pengganti;
+  if (pengganti == null) {
     return {
       sukses: false,
       pesan: "Penugasan backup tidak ditemukan.",
     };
   }
+  await selaraskanStatusBackup(String(pengganti));
 
   return {
     sukses: true,

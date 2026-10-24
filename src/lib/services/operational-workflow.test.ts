@@ -22,7 +22,7 @@ const { prosesKoreksiAdmin, hapusKoreksiAdmin } = await import(
   "@/lib/services/correction"
 );
 const { prosesImportOffline } = await import("@/lib/services/offline-import");
-const { hapusLogScan, editAbsensiHarian } = await import(
+const { hapusLogScan, editAbsensiHarian, hapusImportOffline } = await import(
   "@/lib/services/history-mutation"
 );
 
@@ -788,5 +788,179 @@ describe("workflow operasional: hapus log scan merapikan riwayat asal", () => {
       args: [referensi],
     });
     expect(Number(akhir.rows[0]?.total)).toBe(0);
+  });
+});
+
+// Kembar dengan tes `hapus_koreksi_*` dan `import_tidak_hadir_*` di
+// `administration.rs`.
+describe("workflow operasional: hapus koreksi/import tidak merusak data lain", () => {
+  // Baris yang gagal sebelum disimpan tidak membawa eventKey.
+  const eventKeyDari = (
+    hasil: { pesan: string; eventKey?: string } | undefined,
+  ) => String(hasil?.eventKey);
+  const hitung = async (sql: string, args: string[]) =>
+    Number((await db.execute({ sql, args })).rows[0]?.total ?? Number.NaN);
+
+  test("hapus koreksi tidak menghapus absensi H-1 yang punya scan sendiri", async () => {
+    await prosesImportOffline(
+      [
+        {
+          tanggal: "2026-08-12",
+          id_unik: EMP_A.id,
+          jam_masuk: "07:00",
+          jam_pulang: "15:00",
+        },
+      ],
+      "SPD001",
+    );
+    const kor = await prosesKoreksiAdmin({
+      tanggal: "2026-08-13",
+      id_karyawan: EMP_A.id,
+      jenis_koreksi: "Sakit",
+      kode_operator: "SPD001",
+    });
+    expect(kor.sukses).toBe(true);
+    await hapusKoreksiAdmin(String(kor.id_referensi), "SPD001");
+
+    expect(
+      await hitung(
+        "SELECT COUNT(*) AS total FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-12';",
+        [EMP_A.id],
+      ),
+    ).toBe(1);
+    expect(
+      await hitung(
+        "SELECT COUNT(*) AS total FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-13';",
+        [EMP_A.id],
+      ),
+    ).toBe(0);
+  });
+
+  test("hapus koreksi mode pengganti ikut menghapus log dan absensinya", async () => {
+    const backup = await buatPenugasanBackup({
+      tanggal_tugas: "2026-08-15",
+      id_karyawan_asal: EMP_A.id,
+      id_karyawan_pengganti: EMP_B.id,
+      id_shift_backup: 2,
+      kode_operator: "SPD001",
+    });
+    expect(backup.sukses).toBe(true);
+    const kor = await prosesKoreksiAdmin({
+      tanggal: "2026-08-15",
+      id_karyawan: EMP_B.id,
+      jenis_koreksi: "Terlambat",
+      jam_koreksi: "15:30",
+      id_shift: 2,
+      kode_operator: "SPD001",
+    });
+    expect(kor.sukses).toBe(true);
+    expect(
+      await hitung(
+        "SELECT COUNT(*) AS total FROM absensi_harian WHERE id_karyawan = ? AND mode_tugas = 'PENGGANTI';",
+        [EMP_B.id],
+      ),
+    ).toBe(1);
+
+    await hapusKoreksiAdmin(String(kor.id_referensi), "SPD001");
+    expect(
+      await hitung(
+        `SELECT (SELECT COUNT(*) FROM log_scan WHERE id_karyawan = ?1 AND sumber_data = 'Koreksi Admin')
+              + (SELECT COUNT(*) FROM absensi_harian WHERE id_karyawan = ?1 AND tanggal = '2026-08-15') AS total;`,
+        [EMP_B.id],
+      ),
+    ).toBe(0);
+  });
+
+  test("koreksi menolak jam rusak dan shift yang tidak ada", async () => {
+    const jamRusak = await prosesKoreksiAdmin({
+      tanggal: "2026-08-16",
+      id_karyawan: EMP_A.id,
+      jenis_koreksi: "Lupa Absen Masuk",
+      jam_koreksi: "ab:cd",
+      kode_operator: "SPD001",
+    });
+    expect(jamRusak.sukses).toBe(false);
+    const shiftHantu = await prosesKoreksiAdmin({
+      tanggal: "2026-08-16",
+      id_karyawan: EMP_A.id,
+      jenis_koreksi: "Lupa Absen Masuk",
+      jam_koreksi: "07:00",
+      id_shift: 77,
+      kode_operator: "SPD001",
+    });
+    expect(shiftHantu.sukses).toBe(false);
+  });
+
+  test("import tidak hadir tanpa jam kerja; hapus satu import tidak menyentuh import lain", async () => {
+    const hasil = await prosesImportOffline(
+      [
+        {
+          tanggal: "2026-08-20",
+          id_unik: EMP_A.id,
+          jam_masuk: "07:00",
+          jam_pulang: "15:00",
+          status_kehadiran: "Alfa",
+        },
+        { tanggal: "2026-08-20", id_unik: EMP_B.id, jam_masuk: "07:00" },
+        { tanggal: "2026-08-20", id_unik: EMP_B.id, jam_pulang: "15:00" },
+        {
+          tanggal: "2026-08-20",
+          id_unik: EMP_B.id,
+          jam_masuk: "07:00",
+          status_kehadiran: "Libur",
+        },
+      ],
+      "SPD001",
+    );
+    expect(hasil.berhasil).toBe(3);
+    expect(hasil.gagal).toBe(1);
+
+    const alfa = (
+      await db.execute({
+        sql: "SELECT jam_masuk, jam_kerja, status_absen FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-20';",
+        args: [EMP_A.id],
+      })
+    ).rows[0];
+    expect(String(alfa?.jam_masuk)).toBe("");
+    expect(Number(alfa?.jam_kerja)).toBe(0);
+    expect(String(alfa?.status_absen)).toBe("Tidak Hadir");
+
+    await hapusImportOffline(eventKeyDari(hasil.results[1]), "SPD001");
+    const sisa = await db.execute({
+      sql: "SELECT jenis_scan FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = '2026-08-20';",
+      args: [EMP_B.id],
+    });
+    expect(sisa.rows.map((row) => String(row.jenis_scan))).toEqual(["Pulang"]);
+    const b = (
+      await db.execute({
+        sql: "SELECT jam_masuk, status_absen FROM absensi_harian WHERE id_karyawan = ? AND tanggal = '2026-08-20';",
+        args: [EMP_B.id],
+      })
+    ).rows[0];
+    expect(String(b?.jam_masuk)).toBe("");
+    expect(String(b?.status_absen)).toBe("Perlu Verifikasi");
+  });
+
+  test("hapus baris import Gagal tidak menyentuh absensi", async () => {
+    const hasil = await prosesImportOffline(
+      [
+        {
+          tanggal: "2026-08-21",
+          id_unik: EMP_A.id,
+          jam_masuk: "07:00",
+          jam_pulang: "15:00",
+        },
+        { tanggal: "2026-08-21", id_unik: EMP_A.id, jam_masuk: "ab:cd" },
+      ],
+      "SPD001",
+    );
+    expect(hasil.gagal).toBe(1);
+    await hapusImportOffline(eventKeyDari(hasil.results[1]), "SPD001");
+    expect(
+      await hitung(
+        "SELECT COUNT(*) AS total FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = '2026-08-21';",
+        [EMP_A.id],
+      ),
+    ).toBe(2);
   });
 });

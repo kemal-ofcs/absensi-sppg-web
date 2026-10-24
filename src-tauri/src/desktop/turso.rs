@@ -6741,10 +6741,18 @@ async fn apply_event_to_turso(
                         vec![json!(id_referensi)],
                     )
                     .await?;
+                // Log mode pengganti ber-id_referensi ID backup; dikenali dari
+                // stempel koreksinya. Payload lama tanpa stempel: klausa kedua mati.
+                let field = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
                 turso
                     .query_one(
-                        "DELETE FROM log_scan WHERE id_referensi = ?;",
-                        vec![json!(id_referensi)],
+                        "DELETE FROM log_scan WHERE id_referensi = ?1 OR (?2 <> '' AND sumber_data = 'Koreksi Admin' AND id_karyawan = ?3 AND tanggal_kerja = ?4 AND timestamp_scan = ?2 AND COALESCE(id_referensi, '') NOT LIKE 'KOR-%');",
+                        vec![
+                            json!(id_referensi),
+                            json!(field("timestamp")),
+                            json!(field("id_karyawan")),
+                            json!(field("tanggal")),
+                        ],
                     )
                     .await?;
             }
@@ -6872,10 +6880,19 @@ async fn apply_event_to_turso(
                         vec![json!(event_key)],
                     )
                     .await?;
+                // Kembar `delete_import_offline`: log mode pengganti dikenali dari
+                // stempel import, log tanpa referensi adalah data lama. Payload
+                // lama tanpa id_unik/tanggal: klausa kedua tidak cocok apa pun.
+                let field = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
                 turso
                     .query_one(
-                        "DELETE FROM log_scan WHERE id_referensi = ?;",
-                        vec![json!(event_key)],
+                        "DELETE FROM log_scan WHERE id_referensi = ?1 OR (?2 <> '' AND sumber_data IN ('Import Offline', 'Import Manual') AND id_karyawan = ?2 AND tanggal_kerja = ?3 AND ((?4 <> '' AND timestamp_scan = ?4 AND COALESCE(id_referensi, '') NOT LIKE 'IMP-%') OR COALESCE(id_referensi, '') = ''));",
+                        vec![
+                            json!(event_key),
+                            json!(field("id_unik")),
+                            json!(field("tanggal")),
+                            json!(field("timestamp_input")),
+                        ],
                     )
                     .await?;
             }

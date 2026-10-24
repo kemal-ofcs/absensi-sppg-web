@@ -4,8 +4,6 @@ import type { Client } from "@libsql/client";
 import { ApiRequestError } from "@/lib/server/http/api-response";
 import {
   type FaceTemplateDraft,
-  type FaceTemplateStatus,
-  toFaceTemplateStatus,
   validateFaceTemplate,
 } from "@/lib/validations/face-match";
 
@@ -15,9 +13,11 @@ import {
  * dengan yang didorong lewat event `face-template/save`.
  */
 
+// Baris mentah snake_case, bentuknya sama dengan `desktop_list_face_templates`:
+// gateway yang memetakannya lewat `toFaceTemplateStatus`, cukup sekali.
 export async function listFaceTemplates(
   client: Client,
-): Promise<FaceTemplateStatus[]> {
+): Promise<Record<string, unknown>[]> {
   // Kembar dengan `LIST_TEMPLATES_SQL` di `face_match.rs`.
   const result = await client.execute(
     `SELECT m.id_unik, COALESCE(m.nama, '') AS nama, COALESCE(m.jabatan_status, '') AS jabatan,
@@ -30,9 +30,7 @@ export async function listFaceTemplates(
              -- batas: satu baris per karyawan, dibatasi jumlah karyawan perusahaan
              ;`,
   );
-  return result.rows.map((row) =>
-    toFaceTemplateStatus(row as unknown as Record<string, unknown>),
-  );
+  return result.rows.map((row) => ({ ...row }));
 }
 
 export async function saveFaceTemplate(

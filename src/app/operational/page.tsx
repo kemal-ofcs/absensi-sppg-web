@@ -14,6 +14,7 @@ import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
+import { parseCsv } from "@/lib/client/xlsx";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
   batalkanPenugasanBackup,
@@ -224,6 +225,18 @@ export default function OperationalPage() {
     }
   }, [hydrated, isAuthenticated, tab, load]);
 
+  // Area ini terbuka bagi pemegang `backups.view` saja; tanpa ini mereka
+  // mendarat di tab Koreksi yang selalu ditolak 403 tanpa pesan.
+  useEffect(() => {
+    if (
+      user &&
+      !hasPermission(user, "corrections.view") &&
+      hasPermission(user, "backups.view")
+    ) {
+      setTab("backup");
+    }
+  }, [user]);
+
   useEffect(() => {
     const onSyncCompleted = () => {
       void load(tab, false, false);
@@ -248,11 +261,11 @@ export default function OperationalPage() {
         </option>
       ))
     ) : (
-      <>
-        <option value={1}>Shift 1 (07:00 - 15:00)</option>
-        <option value={2}>Shift 2 (15:00 - 23:00)</option>
-        <option value={3}>Shift 3 (23:00 - 07:00)</option>
-      </>
+      // Daftar palsu Shift 1/2/3 dulu membuat penugasan merujuk shift yang
+      // mungkin tidak ada; backend kini menolaknya, jadi cukup beri tahu.
+      <option value={0} disabled>
+        Daftar shift tidak dapat dimuat
+      </option>
     );
 
   const handleSelectBackupAsal = (ids: string[]) => {
@@ -430,18 +443,21 @@ export default function OperationalPage() {
 
   const submitBulkCsv = () =>
     run(async () => {
-      const lines = csv.trim().split("\n");
-      if (lines.length < 2) {
+      // Pembaca CSV bersama: menangani kutip ganda (keterangan berkoma) dan
+      // pemisah titik koma dari Excel berbahasa Indonesia.
+      const [headerParts = [], ...lines] = parseCsv(csv).rows;
+      if (lines.length < 1) {
         throw new Error(
           "CSV kosong atau hanya berisi header. Masukkan data minimal 1 baris.",
         );
       }
-      const headerParts = lines[0].split(",").map((h) => h.trim());
+      if (lines.length > BATAS_IMPORT_MASSAL) {
+        throw new Error(
+          `Import massal maksimal ${BATAS_IMPORT_MASSAL} baris sekali proses.`,
+        );
+      }
       const rows: OfflineImportRow[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        const parts = line.split(",").map((p) => p.trim());
+      for (const parts of lines) {
         const rowObj: Record<string, string> = {};
         headerParts.forEach((header, idx) => {
           rowObj[header] = parts[idx] ?? "";
@@ -469,6 +485,7 @@ export default function OperationalPage() {
           "tanggal,id_unik,jam_masuk,jam_pulang,status_kehadiran,keterangan\n",
         );
       }
+      await load("import", false, false);
     });
 
   if (isLoading || !hydrated) {
@@ -1160,7 +1177,7 @@ export default function OperationalPage() {
                             Batalkan
                           </button>
                         ) : null}
-                        {hasPermission(user, "backups.manage") ? (
+                        {hasPermission(user, "operational.delete") ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -1178,8 +1195,11 @@ export default function OperationalPage() {
                             <span>Hapus</span>
                           </button>
                         ) : null}
-                        {!hasPermission(user, "backups.manage") &&
-                        item.status_tugas !== "Aktif" ? (
+                        {!hasPermission(user, "operational.delete") &&
+                        !(
+                          item.status_tugas === "Aktif" &&
+                          hasPermission(user, "backups.manage")
+                        ) ? (
                           <span>-</span>
                         ) : null}
                       </div>

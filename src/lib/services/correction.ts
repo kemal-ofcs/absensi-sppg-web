@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import type { Transaction } from "@libsql/client";
 import {
   aturanShiftDariBaris,
@@ -9,6 +10,7 @@ import {
   isShiftFleksibel,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { selaraskanAbsensiSetelahHapus } from "@/lib/services/history-mutation";
 
 export interface KoreksiInput {
   tanggal: string; // YYYY-MM-DD
@@ -30,12 +32,14 @@ export interface KoreksiInput {
   mode_tugas?: string;
 }
 
-export function generateIdReferensiKoreksi(): string {
-  const now = new Date();
-  const dateStr = now.toISOString().split("T")[0].replace(/-/g, "");
-  const randomNum = Math.floor(1000 + Math.random() * 9000);
-  return `KOR-${dateStr}-${randomNum}`;
+// Bentuk sama dengan jalur Rust: tanggal koreksi + 12 heksadesimal acak.
+// Empat digit acak sebelumnya bertabrakan di kolom UNIQUE saat koreksi massal.
+export function generateIdReferensiKoreksi(tanggal: string): string {
+  const acak = randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+  return `KOR-${tanggal.replace(/-/g, "")}-${acak}`;
 }
+
+const JAM_KOREKSI = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function normalizeDate(raw: string): string {
   const clean = raw.trim();
@@ -75,6 +79,12 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     return {
       sukses: false,
       pesan: `Gagal: Jenis koreksi '${input.jenis_koreksi}' wajib menyertakan jam koreksi (HH:mm).`,
+    };
+  }
+  if (input.jam_koreksi && !JAM_KOREKSI.test(input.jam_koreksi)) {
+    return {
+      sukses: false,
+      pesan: `Gagal: Jam koreksi '${input.jam_koreksi}' harus berformat HH:mm.`,
     };
   }
 
@@ -187,6 +197,16 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
       modeTugas = "NORMAL";
       effectiveShiftId = normalShiftId;
     }
+  } else if (
+    backup &&
+    Number(input.id_shift) === Number(backup.id_shift_backup)
+  ) {
+    // Memilih shift backup secara eksplisit = bertugas sebagai pengganti,
+    // sama seperti jalur Rust.
+    modeTugas = "PENGGANTI";
+    backupId = String(backup.id_backup);
+    originalId = String(backup.id_karyawan_asal);
+    effectiveShiftId = Number(backup.id_shift_backup);
   }
 
   let idSesi =
@@ -260,6 +280,12 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     args: [effectiveShiftId],
   });
   let shiftData = shiftRes.rows[0] as Record<string, unknown> | undefined;
+  if (input.id_shift && !shiftData) {
+    return {
+      sukses: false,
+      pesan: `Gagal: Shift #${input.id_shift} tidak ditemukan.`,
+    };
+  }
 
   // Shift fleksibel (00:00-23:59) tidak punya rentang jadwal, jadi jam koreksi
   // apa pun sah. Tanpa pengecualian ini Smart Shift Detection menganggap shift
@@ -377,7 +403,7 @@ export async function prosesKoreksiAdmin(input: KoreksiInput) {
     }
   }
 
-  const idReferensi = generateIdReferensiKoreksi();
+  const idReferensi = generateIdReferensiKoreksi(date);
   const nowStr = new Date().toISOString();
 
   // ── Atomic transaction: semua mutasi multi-tabel dalam satu unit ────────
@@ -764,125 +790,55 @@ export async function hapusKoreksiAdmin(
   const kor = korRes.rows[0] as Record<string, unknown>;
   const idKaryawan = String(kor.id_karyawan);
   const tanggal = String(kor.tanggal);
+  const stempel = String(kor.timestamp ?? "");
   const nowStr = new Date().toISOString();
 
-  // 1. Hapus dari tabel koreksi_admin
-  await db.execute({
-    sql: "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
-    args: [idReferensi],
-  });
+  const transaction = await db.transaction("write");
+  try {
+    await transaction.execute({
+      sql: "DELETE FROM koreksi_admin WHERE id_referensi = ?;",
+      args: [idReferensi],
+    });
 
-  // 2. Hapus log scan terkait koreksi ini
-  await db.execute({
-    sql: "DELETE FROM log_scan WHERE id_referensi = ?;",
-    args: [idReferensi],
-  });
+    // Pada mode pengganti id_referensi log berisi ID backup (dibaca scanner
+    // sebagai identitas sesi), jadi lognya dikenali dari stempel waktu yang
+    // ditulis bersamaan dengan baris koreksinya.
+    await transaction.execute({
+      sql: `DELETE FROM log_scan
+            WHERE id_referensi = ?
+              OR (? <> '' AND sumber_data = 'Koreksi Admin' AND id_karyawan = ?
+                  AND tanggal_kerja = ? AND timestamp_scan = ?
+                  AND COALESCE(id_referensi, '') NOT LIKE 'KOR-%');`,
+      args: [idReferensi, stempel, idKaryawan, tanggal, stempel],
+    });
 
-  // 3. Cek remaining scan logs untuk karyawan di tanggal tersebut
-  const remainRes = await db.execute({
-    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
-    args: [idKaryawan, tanggal],
-  });
-
-  const absRes = await db.execute({
-    sql: "SELECT * FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day')) ORDER BY (CASE WHEN tanggal = ? THEN 0 ELSE 1 END) ASC LIMIT 1;",
-    args: [idKaryawan, tanggal, tanggal, tanggal],
-  });
-
-  if (absRes.rows.length > 0) {
-    const abs = absRes.rows[0] as Record<string, unknown>;
-    const idSesi = String(abs.id_sesi);
-
-    if (remainRes.rows.length === 0) {
-      await db.execute({
-        sql: "DELETE FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day'));",
-        args: [idKaryawan, tanggal, tanggal],
-      });
-    } else {
-      const inLog = remainRes.rows.find(
-        (r) => String(r.jenis_scan) === "Masuk",
-      );
-      const outLog = remainRes.rows.find(
-        (r) => String(r.jenis_scan) === "Pulang",
-      );
-
-      const inVal = inLog
-        ? `${tanggal} ${String(inLog.jam_scan).slice(0, 8)}`
-        : "";
-      const outVal = outLog
-        ? `${tanggal} ${String(outLog.jam_scan).slice(0, 8)}`
-        : "";
-      const statusAbsen =
-        inVal && outVal
-          ? "Lengkap"
-          : inVal
-            ? "Belum Pulang"
-            : "Perlu Verifikasi";
-
-      const idShift = Number(abs.id_shift || 1);
-      const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-        args: [idShift],
-      });
-      const aturanShift = aturanShiftDariBaris(
-        shiftRes.rows[0] as Record<string, unknown> | undefined,
-      );
-
-      const inMin = parseTimeToMinutes(inVal);
-      const outMin = parseTimeToMinutes(outVal);
-      let duration: number | null = null;
-      if (inMin !== null && outMin !== null) {
-        duration = outMin - inMin;
-        if (duration < 0) duration += 1440;
-      }
-
-      const hasil = hitungUlangAbsensiDariJam({
-        masukMenit: inMin,
-        durasiMenit: duration,
-        shift: aturanShift,
-      });
-      const calculatedLate = hasil.menitTerlambat;
-      const calculatedEarly = hasil.menitDatangAwal;
-      const calculatedWork = hasil.jamKerja;
-      const calculatedOvertime = hasil.lembur;
-      const calculatedShortage = hasil.jamKerjaKurang;
-
-      await db.execute({
-        sql: `UPDATE absensi_harian SET
-              jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
-              status_absen = ?, sumber = 'Scanner', update_terakhir = ?,
-              menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?
-              WHERE id_sesi = ?;`,
-        args: [
-          inVal,
-          outVal,
-          statusAbsen,
-          nowStr,
-          calculatedLate,
-          calculatedEarly,
-          calculatedWork,
-          calculatedOvertime,
-          calculatedShortage,
-          idSesi,
-        ],
-      });
-    }
-  }
-
-  // 4. Audit Log
-  await db.execute({
-    sql: `INSERT INTO audit_absensi (
-          waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
-        ) VALUES (?, 'Hapus Koreksi', ?, ?, ?, ?, ?, 'Berhasil');`,
-    args: [
-      nowStr,
-      tanggal,
+    await selaraskanAbsensiSetelahHapus(transaction, {
       idKaryawan,
-      String(kor.nama),
-      idReferensi,
-      `Koreksi '${kor.jenis_koreksi}' dihapus oleh Operator ${kodeOperator}.`,
-    ],
-  });
+      tanggal,
+      sumberDihapus: ["Koreksi Admin"],
+      nowStr,
+    });
+
+    await transaction.execute({
+      sql: `INSERT INTO audit_absensi (
+            waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
+          ) VALUES (?, 'Hapus Koreksi', ?, ?, ?, ?, ?, 'Berhasil');`,
+      args: [
+        nowStr,
+        tanggal,
+        idKaryawan,
+        String(kor.nama),
+        idReferensi,
+        `Koreksi '${kor.jenis_koreksi}' dihapus oleh Operator ${kodeOperator}.`,
+      ],
+    });
+    await transaction.commit();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  } finally {
+    transaction.close();
+  }
 
   return {
     sukses: true,

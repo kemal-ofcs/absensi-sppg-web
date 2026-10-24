@@ -51,11 +51,18 @@ export async function POST(request: NextRequest) {
           ? body.keterangan_admin.trim()
           : undefined,
       kode_operator: actor.kode_operator,
+      // Tanpa ini pilihan shift di formulir diam-diam diabaikan.
+      id_shift: body.id_shift == null ? undefined : Number(body.id_shift),
     };
     if (
       !/^\d{4}-\d{2}-\d{2}$/.test(draft.tanggal) ||
       !draft.id_karyawan ||
-      !CORRECTION_TYPES.has(jenis)
+      !CORRECTION_TYPES.has(jenis) ||
+      (draft.jam_koreksi &&
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.jam_koreksi)) ||
+      (draft.keterangan_admin?.length ?? 0) > 500 ||
+      (draft.id_shift !== undefined &&
+        !(Number.isSafeInteger(draft.id_shift) && draft.id_shift > 0))
     ) {
       throw new ApiRequestError("Data Koreksi Admin tidak valid.", 400);
     }

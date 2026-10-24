@@ -84,7 +84,9 @@ export async function DELETE(request: NextRequest) {
     await ensureServerDatabaseInitialized();
 
     if (action === "delete") {
-      const result = await hapusPenugasanBackup(id);
+      // Hapus permanen adalah izin sensitif, sama dengan `desktop_delete_backup`.
+      await requireWebPermission(request, "operational.delete");
+      const result = await hapusPenugasanBackup(id, actor.kode_operator);
       if (!result.sukses) throw new ApiRequestError(result.pesan, 400);
       const revision = await recordOperationalChange(getServerDatabase(), {
         domain: "backup",
@@ -97,6 +99,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     const result = await batalkanPenugasanBackup(id, actor.kode_operator);
+    if (!result.sukses) throw new ApiRequestError(result.pesan, 404);
     const revision = await recordOperationalChange(getServerDatabase(), {
       domain: "backup",
       entityKey: id,

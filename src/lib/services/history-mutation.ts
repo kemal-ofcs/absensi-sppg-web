@@ -1,5 +1,6 @@
 ﻿import "server-only";
 
+import type { Transaction } from "@libsql/client";
 import {
   aturanShiftDariBaris,
   hitungUlangAbsensiDariJam,
@@ -40,6 +41,126 @@ function formatDateTime(dateStr: string, timeStr: string): string {
   const m = parts[1].padStart(2, "0");
   const s = (parts[2] || "00").slice(0, 2).padStart(2, "0");
   return `${dateStr} ${h}:${m}:${s}`;
+}
+
+const STATUS_TIDAK_HADIR = new Set(["Sakit", "Izin", "Dispen", "Alfa"]);
+
+/**
+ * Menyelaraskan absensi satu tanggal setelah log koreksi/import dihapus.
+ *
+ * Hanya sesi bersumber `sumberDihapus` pada tanggal itu yang disentuh. Versi
+ * sebelumnya ikut menghapus absensi H-1 walau H-1 punya scan sendiri.
+ * Kembar dengan `selaraskan_absensi_setelah_hapus` di `administration.rs`.
+ */
+export async function selaraskanAbsensiSetelahHapus(
+  transaction: Transaction,
+  input: {
+    idKaryawan: string;
+    tanggal: string;
+    sumberDihapus: string[];
+    nowStr: string;
+  },
+) {
+  const { idKaryawan, tanggal, sumberDihapus, nowStr } = input;
+  const absRes = await transaction.execute({
+    sql: `SELECT id_sesi, id_shift FROM absensi_harian
+          WHERE id_karyawan = ? AND tanggal = ? AND sumber IN (${sumberDihapus.map(() => "?").join(", ")})
+          ORDER BY update_terakhir DESC LIMIT 1;`,
+    args: [idKaryawan, tanggal, ...sumberDihapus],
+  });
+  const abs = absRes.rows[0];
+  if (!abs) return;
+  const idSesi = String(abs.id_sesi);
+
+  const sisa = (
+    await transaction.execute({
+      sql: "SELECT jenis_scan, jam_scan, sumber_data FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
+      args: [idKaryawan, tanggal],
+    })
+  ).rows;
+  if (sisa.length === 0) {
+    await transaction.execute({
+      sql: "DELETE FROM absensi_harian WHERE id_sesi = ?;",
+      args: [idSesi],
+    });
+    return;
+  }
+
+  const inLog = sisa.find((r) => String(r.jenis_scan) === "Masuk");
+  const outLog = sisa.findLast((r) => String(r.jenis_scan) === "Pulang");
+  const tidakHadir = sisa.find((r) =>
+    STATUS_TIDAK_HADIR.has(String(r.jenis_scan)),
+  );
+  const sumber = String(sisa[0].sumber_data);
+
+  if (!inLog && !outLog && tidakHadir) {
+    // Yang tersisa koreksi Sakit/Izin/Dispen/Alfa: kembalikan status itu.
+    await transaction.execute({
+      sql: `UPDATE absensi_harian SET jam_masuk = '', jam_pulang = '', status_kehadiran = ?,
+            status_absen = 'Tidak Hadir', sumber = ?, update_terakhir = ?,
+            menit_terlambat = 0, menit_datang_awal = 0, jam_kerja = 0, lembur = 0, jam_kerja_kurang = 0
+            WHERE id_sesi = ?;`,
+      args: [String(tidakHadir.jenis_scan), sumber, nowStr, idSesi],
+    });
+    return;
+  }
+
+  const inVal = inLog ? formatDateTime(tanggal, String(inLog.jam_scan)) : "";
+  const inMin = parseTimeToMinutes(inVal);
+  const outJam = outLog ? String(outLog.jam_scan) : "";
+  const outJamMin = parseTimeToMinutes(outJam);
+  // Pulang lebih awal dari masuk berarti shift lintas hari.
+  const tanggalPulang =
+    inMin !== null && outJamMin !== null && outJamMin < inMin
+      ? (() => {
+          const d = new Date(`${tanggal}T00:00:00Z`);
+          d.setUTCDate(d.getUTCDate() + 1);
+          return d.toISOString().slice(0, 10);
+        })()
+      : tanggal;
+  const outVal = outLog ? formatDateTime(tanggalPulang, outJam) : "";
+  const outMin = parseTimeToMinutes(outVal);
+  let duration: number | null = null;
+  if (inMin !== null && outMin !== null) {
+    duration = outMin - inMin;
+    if (duration < 0) duration += 1440;
+  }
+
+  // Lima kolom yang sama dengan `load_shift_clock_rules` di Rust.
+  const shiftRes = await transaction.execute({
+    sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
+    args: [Number(abs.id_shift || 1)],
+  });
+  const hasil = hitungUlangAbsensiDariJam({
+    masukMenit: inMin,
+    durasiMenit: duration,
+    shift: aturanShiftDariBaris(
+      shiftRes.rows[0] as Record<string, unknown> | undefined,
+    ),
+  });
+  const statusAbsen =
+    inVal && outVal ? "Lengkap" : inVal ? "Belum Pulang" : "Perlu Verifikasi";
+
+  await transaction.execute({
+    sql: `UPDATE absensi_harian SET
+          jam_masuk = ?, jam_pulang = ?, status_kehadiran = 'Hadir',
+          status_absen = ?, sumber = ?, update_terakhir = ?,
+          menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?
+          WHERE id_sesi = ?;`,
+    args: [
+      inVal,
+      outVal,
+      statusAbsen,
+      sumber,
+      nowStr,
+      hasil.menitTerlambat,
+      hasil.menitDatangAwal,
+      hasil.jamKerja,
+      hasil.lembur,
+      hasil.jamKerjaKurang,
+      idSesi,
+    ],
+  });
 }
 
 export async function editAbsensiHarian(
@@ -498,117 +619,62 @@ export async function hapusImportOffline(
   const tanggal = String(imp.tanggal);
   const nowStr = new Date().toISOString();
 
-  // Delete import_offline row
-  await db.execute({
-    sql: "DELETE FROM import_offline WHERE event_key = ?;",
-    args: [eventKey],
-  });
+  const transaction = await db.transaction("write");
+  try {
+    await transaction.execute({
+      sql: "DELETE FROM import_offline WHERE event_key = ?;",
+      args: [eventKey],
+    });
 
-  // Delete related log_scan
-  await db.execute({
-    sql: "DELETE FROM log_scan WHERE id_referensi = ? OR (id_karyawan = ? AND tanggal_kerja = ? AND (sumber_data = 'Import Offline' OR sumber_data = 'Import Manual'));",
-    args: [eventKey, idUnik, tanggal],
-  });
-
-  // Check remaining scan logs
-  const remRes = await db.execute({
-    sql: "SELECT * FROM log_scan WHERE id_karyawan = ? AND tanggal_kerja = ? ORDER BY jam_scan ASC;",
-    args: [idUnik, tanggal],
-  });
-
-  const absRes = await db.execute({
-    sql: "SELECT * FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day')) ORDER BY (CASE WHEN tanggal = ? THEN 0 ELSE 1 END) ASC LIMIT 1;",
-    args: [idUnik, tanggal, tanggal, tanggal],
-  });
-
-  if (absRes.rows.length > 0) {
-    const abs = absRes.rows[0] as Record<string, unknown>;
-    const idSesi = String(abs.id_sesi);
-
-    if (remRes.rows.length === 0) {
-      await db.execute({
-        sql: "DELETE FROM absensi_harian WHERE id_karyawan = ? AND (tanggal = ? OR tanggal = date(?, '-1 day'));",
-        args: [idUnik, tanggal, tanggal],
-      });
-    } else {
-      const inLog = remRes.rows.find((r) => String(r.jenis_scan) === "Masuk");
-      const outLog = remRes.rows.find((r) => String(r.jenis_scan) === "Pulang");
-
-      const inVal = inLog
-        ? formatDateTime(tanggal, String(inLog.jam_scan))
-        : "";
-      const outVal = outLog
-        ? formatDateTime(tanggal, String(outLog.jam_scan))
-        : "";
-      const statusAbsen =
-        inVal && outVal
-          ? "Lengkap"
-          : inVal
-            ? "Belum Pulang"
-            : "Perlu Verifikasi";
-
-      const idShift = Number(abs.id_shift || 1);
-      const shiftRes = await db.execute({
-        sql: "SELECT jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, offset_istirahat_mulai FROM tbl_shift WHERE id_shift = ? LIMIT 1;",
-        args: [idShift],
-      });
-      const aturanShift = aturanShiftDariBaris(
-        shiftRes.rows[0] as Record<string, unknown> | undefined,
-      );
-
-      const inMin = parseTimeToMinutes(inVal);
-      const outMin = parseTimeToMinutes(outVal);
-      let duration: number | null = null;
-      if (inMin !== null && outMin !== null) {
-        duration = outMin - inMin;
-        if (duration < 0) duration += 1440;
-      }
-
-      const hasil = hitungUlangAbsensiDariJam({
-        masukMenit: inMin,
-        durasiMenit: duration,
-        shift: aturanShift,
-      });
-      const calculatedLate = hasil.menitTerlambat;
-      const calculatedEarly = hasil.menitDatangAwal;
-      const calculatedWork = hasil.jamKerja;
-      const calculatedOvertime = hasil.lembur;
-      const calculatedShortage = hasil.jamKerjaKurang;
-
-      await db.execute({
-        sql: `UPDATE absensi_harian SET
-              jam_masuk = ?, jam_pulang = ?, status_absen = ?, update_terakhir = ?,
-              menit_terlambat = ?, menit_datang_awal = ?, jam_kerja = ?, lembur = ?, jam_kerja_kurang = ?
-              WHERE id_sesi = ?;`,
+    // Baris Gagal tidak pernah menulis absensi maupun log scan.
+    if (String(imp.status_proses) !== "Gagal") {
+      // Log milik import INI saja: lewat event_key, atau — pada mode pengganti,
+      // yang id_referensi-nya berisi ID backup — lewat stempel waktu yang sama
+      // dengan baris importnya. Log tanpa referensi adalah data lama.
+      await transaction.execute({
+        sql: `DELETE FROM log_scan
+              WHERE id_referensi = ?
+                OR (sumber_data IN ('Import Offline', 'Import Manual')
+                    AND id_karyawan = ? AND tanggal_kerja = ?
+                    AND ((? <> '' AND timestamp_scan = ?
+                          AND COALESCE(id_referensi, '') NOT LIKE 'IMP-%')
+                      OR COALESCE(id_referensi, '') = ''));`,
         args: [
-          inVal,
-          outVal,
-          statusAbsen,
-          nowStr,
-          calculatedLate,
-          calculatedEarly,
-          calculatedWork,
-          calculatedOvertime,
-          calculatedShortage,
-          idSesi,
+          eventKey,
+          idUnik,
+          tanggal,
+          String(imp.timestamp_input ?? ""),
+          String(imp.timestamp_input ?? ""),
         ],
       });
+      await selaraskanAbsensiSetelahHapus(transaction, {
+        idKaryawan: idUnik,
+        tanggal,
+        sumberDihapus: ["Import Manual", "Import Offline"],
+        nowStr,
+      });
     }
-  }
 
-  await db.execute({
-    sql: `INSERT INTO audit_absensi (
-          waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
-        ) VALUES (?, 'Hapus Import Offline', ?, ?, ?, ?, ?, 'Berhasil');`,
-    args: [
-      nowStr,
-      tanggal,
-      idUnik,
-      String(imp.nama || "-"),
-      eventKey,
-      `Baris import offline dihapus oleh Operator ${kodeOperator}.`,
-    ],
-  });
+    await transaction.execute({
+      sql: `INSERT INTO audit_absensi (
+            waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status
+          ) VALUES (?, 'Hapus Import Offline', ?, ?, ?, ?, ?, 'Berhasil');`,
+      args: [
+        nowStr,
+        tanggal,
+        idUnik,
+        String(imp.nama || "-"),
+        eventKey,
+        `Baris import offline dihapus oleh Operator ${kodeOperator}.`,
+      ],
+    });
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  } finally {
+    transaction.close();
+  }
 
   return { sukses: true, pesan: "Data import offline berhasil dihapus." };
 }
