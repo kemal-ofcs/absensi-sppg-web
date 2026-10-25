@@ -1025,6 +1025,26 @@ fn result_from_decision(
     })
 }
 
+/// `true` bila `qrContent` berbentuk `id|token` dengan token milik `id_unik`.
+pub fn qr_token_matches(
+    state: &DesktopState,
+    input: &Value,
+    id_unik: &str,
+) -> Result<bool, CommandError> {
+    let qr = input.get("qrContent").and_then(Value::as_str).unwrap_or("");
+    let parts = qr.trim().split('|').map(str::trim).collect::<Vec<_>>();
+    if id_unik.is_empty() || parts.len() != 2 || parts[1].is_empty() {
+        return Ok(false);
+    }
+    storage::database(&state.data_dir)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ?1 AND TRIM(COALESCE(token_absensi, '')) = ?2);",
+            params![id_unik, parts[1]],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())
+}
+
 pub fn submit(
     state: &DesktopState,
     input: &Value,
@@ -2255,6 +2275,20 @@ mod tests {
             at,
         )
         .expect("scan result")
+    }
+
+    #[test]
+    fn foto_scan_hanya_untuk_token_yang_cocok() {
+        use super::qr_token_matches;
+        let (_directory, state) = fixture();
+        let cocok = |qr: &str| {
+            qr_token_matches(&state, &json!({ "qrContent": qr }), "K001").expect("cek token")
+        };
+        assert!(cocok("K001|TOKEN-TEST"));
+        assert!(!cocok("K001|TOKEN-SALAH"));
+        assert!(!cocok("K001"));
+        assert!(!qr_token_matches(&state, &json!({ "qrContent": "K001|TOKEN-TEST" }), "")
+            .expect("cek token"));
     }
 
     /// Vektor di bawah dieja ULANG PERSIS pada

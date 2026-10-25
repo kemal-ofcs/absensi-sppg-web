@@ -1018,6 +1018,14 @@ export default function ScannerPage() {
                         >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex items-center gap-3 min-w-0">
+                              {lastResult.fotoPersonil && (
+                                // biome-ignore lint/performance/noImgElement: data URI dari database
+                                <img
+                                  src={lastResult.fotoPersonil}
+                                  alt={`Foto ${lastResult.nama}`}
+                                  className="size-14 shrink-0 rounded-xl border border-white/10 object-cover sm:size-16"
+                                />
+                              )}
                               <div
                                 className={`size-9 sm:size-10 shrink-0 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg ${
                                   lastResult.sukses
@@ -1151,8 +1159,16 @@ export default function ScannerPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
+                      {lastResult.fotoPersonil && (
+                        // biome-ignore lint/performance/noImgElement: data URI dari database
+                        <img
+                          src={lastResult.fotoPersonil}
+                          alt={`Foto ${lastResult.nama}`}
+                          className="h-24 w-24 shrink-0 rounded-xl border border-white/10 object-cover"
+                        />
+                      )}
                       <div
-                        className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg ${
+                        className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-lg ${
                           lastResult.sukses
                             ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
                             : lastResult.pesan.includes("Scan ganda") ||

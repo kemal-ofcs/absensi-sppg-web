@@ -1230,19 +1230,75 @@ pub fn desktop_delete_shift(
 }
 
 #[tauri::command]
-pub fn desktop_submit_qr_scan(
+pub async fn desktop_submit_qr_scan(
     state: State<'_, DesktopState>,
     input: Value,
 ) -> Result<Value, CommandError> {
-    let operator = require_permission(&state, "scanner.use")?;
-    // Kebijakan diambil dari sesi, bukan dari payload: terminal yang dikuasai
-    // penyerang tidak boleh bisa mematikan kewajiban fotonya sendiri hanya
-    // dengan tidak mengirimkan sakelarnya.
-    let policy = scanner::ScanSecurityPolicy {
-        require_photo: operator.require_scan_photo,
-        require_ip_allowlist: operator.require_scan_ip_allowlist,
+    let result = {
+        let operator = require_permission(&state, "scanner.use")?;
+        // Kebijakan diambil dari sesi, bukan dari payload: terminal yang dikuasai
+        // penyerang tidak boleh bisa mematikan kewajiban fotonya sendiri hanya
+        // dengan tidak mengirimkan sakelarnya.
+        let policy = scanner::ScanSecurityPolicy {
+            require_photo: operator.require_scan_photo,
+            require_ip_allowlist: operator.require_scan_ip_allowlist,
+        };
+        scanner::submit(&state, &input, &operator.kode_operator, policy)?
     };
-    scanner::submit(&state, &input, &operator.kode_operator, policy)
+    Ok(attach_personnel_photo(&state, &input, result).await)
+}
+
+/// Batas tunggu foto dari cloud saat scan. `desktop_get_personnel_photo`
+/// memakai batas klien HTTP (60 detik), terlalu lama untuk antrean di gerbang.
+const SCAN_PHOTO_CLOUD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Foto profil di kartu hasil scan, hanya bila token QR cocok dengan pemiliknya:
+/// operator tidak bisa mengetik `id|asal` untuk melihat foto orang lain.
+/// Pasangan `withPersonnelPhoto` di `attendance-processor.ts`. Scan sudah
+/// tersimpan, jadi foto yang gagal dibaca tidak pernah membatalkannya.
+async fn attach_personnel_photo(state: &DesktopState, input: &Value, mut result: Value) -> Value {
+    let id_unik = result
+        .get("idKaryawan")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if !matches!(scanner::qr_token_matches(state, input, &id_unik), Ok(true)) {
+        return result;
+    }
+    let photo = match operational::get_personnel_photo_local(state, &id_unik) {
+        Ok(Some(photo)) => photo,
+        Ok(None) => {
+            let Ok(client) = state.get_turso_client() else {
+                return result;
+            };
+            let Ok(Ok(photo)) =
+                tokio::time::timeout(SCAN_PHOTO_CLOUD_TIMEOUT, client.get_personnel_photo(&id_unik))
+                    .await
+            else {
+                return result;
+            };
+            if let (Some(mime), Some(base64)) = (
+                photo.get("foto_mime").and_then(Value::as_str),
+                photo.get("foto_base64").and_then(Value::as_str),
+            ) {
+                let updated_at = photo
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let _ = operational::cache_personnel_photo_local(
+                    state, &id_unik, mime, base64, updated_at,
+                );
+            }
+            photo
+        }
+        Err(_) => return result,
+    };
+    let mime = photo.get("foto_mime").and_then(Value::as_str).unwrap_or("");
+    let base64 = photo.get("foto_base64").and_then(Value::as_str).unwrap_or("");
+    if matches!(mime, "image/jpeg" | "image/png" | "image/webp") && !base64.trim().is_empty() {
+        result["fotoPersonil"] = json!(format!("data:{mime};base64,{base64}"));
+    }
+    result
 }
 
 /// Foto bukti absensi.

@@ -63,4 +63,9 @@ export interface ScanResult {
   modeTugas?: "NORMAL" | "PENGGANTI";
   idSesi?: string;
   revision?: number;
+  /**
+   * Foto profil sebagai data URL, hanya bila token QR cocok dengan pemiliknya:
+   * operator tidak bisa mengetik `id|asal` untuk melihat foto orang lain.
+   */
+  fotoPersonil?: string;
 }

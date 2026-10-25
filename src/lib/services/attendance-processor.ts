@@ -129,8 +129,9 @@ export async function processWebAttendanceScan(
   const waktuScan = explicitDate(context.waktuScan);
   const transaction = await client.transaction("write");
 
+  let result: ScanResult;
   try {
-    const result = await processInTransaction(
+    result = await processInTransaction(
       transaction,
       payload,
       waktuScan,
@@ -145,12 +146,45 @@ export async function processWebAttendanceScan(
         )
       : undefined;
     await transaction.commit();
-    return revision === undefined ? result : { ...result, revision };
+    if (revision !== undefined) result = { ...result, revision };
   } catch (error) {
     await transaction.rollback();
     throw error;
   } finally {
     transaction.close();
+  }
+  return withPersonnelPhoto(client, payload.qrText, result);
+}
+
+/** Pasangan `attach_personnel_photo` di `commands.rs`. */
+async function withPersonnelPhoto(
+  client: Client,
+  qrText: string,
+  result: ScanResult,
+): Promise<ScanResult> {
+  const parsed = parseQrToken(qrText);
+  if (!parsed.valid || !result.idKaryawan) return result;
+  try {
+    const row = (
+      await client.execute({
+        sql: `SELECT f.foto_mime, f.foto_base64
+              FROM master_data m
+              JOIN personil_foto f ON f.id_unik = m.id_unik
+              WHERE m.id_unik = ? AND TRIM(COALESCE(m.token_absensi, '')) = ?
+                AND TRIM(COALESCE(f.foto_base64, '')) <> ''
+              LIMIT 1;`,
+        args: [result.idKaryawan, parsed.token],
+      })
+    ).rows[0];
+    const mime = String(row?.foto_mime ?? "");
+    if (!row || !ALLOWED_PHOTO_MIME.includes(mime)) return result;
+    return {
+      ...result,
+      fotoPersonil: `data:${mime};base64,${String(row.foto_base64)}`,
+    };
+  } catch {
+    // Scan sudah tersimpan; foto yang gagal dibaca tidak boleh membatalkannya.
+    return result;
   }
 }
 

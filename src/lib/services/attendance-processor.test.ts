@@ -530,6 +530,37 @@ describe("guard dan konsistensi integrasi Web", () => {
     expect(res.sukses).toBe(false);
     expect(res.pesan).toContain("Scan pulang sudah tercatat");
   });
+
+  test("foto profil hanya untuk token yang cocok dan MIME gambar", async () => {
+    await client.batch(
+      [
+        "DELETE FROM personil_foto;",
+        {
+          sql: `INSERT INTO personil_foto (id_unik, foto_mime, foto_base64, updated_at)
+                VALUES (?, 'image/jpeg', 'QUJD', '');`,
+          args: [EMPLOYEE.id],
+        },
+      ],
+      "write",
+    );
+
+    const asli = await scanAt(jakarta("2026-08-12", "07:00"));
+    expect(asli.sukses).toBe(true);
+    expect(asli.fotoPersonil).toBe("data:image/jpeg;base64,QUJD");
+
+    const palsu = await scanAt(jakarta("2026-08-12", "07:01"), {
+      qrText: `${EMPLOYEE.id}|TOKEN-SALAH`,
+    });
+    expect(palsu.sukses).toBe(false);
+    expect(palsu.fotoPersonil).toBeUndefined();
+
+    await client.execute({
+      sql: "UPDATE personil_foto SET foto_mime = 'text/html' WHERE id_unik = ?;",
+      args: [EMPLOYEE.id],
+    });
+    const mimeAsing = await scanAt(jakarta("2026-08-12", "07:02"));
+    expect(mimeAsing.fotoPersonil).toBeUndefined();
+  });
 });
 
 describe("verifikasi wajah 1:1 (cermin scanner.rs)", () => {
