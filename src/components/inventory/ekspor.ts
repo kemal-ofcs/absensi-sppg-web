@@ -12,7 +12,9 @@ import {
   formatJumlah,
   type KartuStok,
   type PosisiStok,
+  perluDijurnal,
   type RekapPengadaan,
+  type ServisInventaris,
   SKALA_DESIMAL,
 } from "@/lib/validations/inventory";
 import {
@@ -379,6 +381,7 @@ export function eksporPengadaan(
     "Nilai",
     "Nomor dokumen",
     "Disimpan di",
+    "Jurnal",
   ];
   const rows: Record<string, Sel>[] = rekap.baris.map((baris) => ({
     "Sumber dana": baris.sumber_dana || "Tanpa sumber dana",
@@ -393,6 +396,7 @@ export function eksporPengadaan(
     Nilai: baris.harga_satuan === null ? "" : new AngkaExcel(baris.nilai),
     "Nomor dokumen": baris.nomor_dokumen ?? "",
     "Disimpan di": baris.tempat_tujuan ?? "",
+    Jurnal: baris.nomor_jurnal ?? (perluDijurnal(baris) ? "Belum" : ""),
   }));
   rows.push({});
   for (const item of rekap.rekap) {
@@ -412,5 +416,55 @@ export function eksporPengadaan(
     rows,
     filename: `rekap-pengadaan-${dari}-${sampai}.xlsx`,
     sheetName: "Rekap Pengadaan",
+  });
+}
+
+/** Riwayat servis aset (v29), satu baris per servis. */
+export function eksporServis(
+  baris: ServisInventaris[],
+  dari: string,
+  sampai: string,
+): Promise<DownloadResult> {
+  const headers = [
+    "Kode",
+    "Nama barang",
+    "Unit",
+    "Jumlah",
+    "Tempat",
+    "Kondisi awal",
+    "Dibawa",
+    "Diservis oleh",
+    "Keluhan",
+    "Status",
+    "Kembali",
+    "Hasil",
+    "Biaya",
+    "Catatan",
+    "Dicatat oleh",
+    "Ditutup oleh",
+  ];
+  const rows: Record<string, Sel>[] = baris.map((servis) => ({
+    Kode: servis.kode_barang,
+    "Nama barang": servis.nama_barang,
+    Unit: servis.kode_unit ?? "",
+    Jumlah: new AngkaExcel(servis.jumlah),
+    Tempat: servis.tempat,
+    "Kondisi awal": servis.kondisi_awal,
+    Dibawa: servis.tanggal_mulai,
+    "Diservis oleh": servis.penyedia ?? "",
+    Keluhan: servis.keluhan,
+    Status: servis.status,
+    Kembali: servis.tanggal_selesai ?? "",
+    Hasil: servis.hasil ?? "",
+    Biaya: servis.biaya === null ? "" : new AngkaExcel(servis.biaya),
+    Catatan: servis.catatan_selesai ?? servis.alasan_batal ?? "",
+    "Dicatat oleh": servis.dibuka_oleh,
+    "Ditutup oleh": servis.ditutup_oleh ?? "",
+  }));
+  return saveWorkbook({
+    headers,
+    rows,
+    filename: `riwayat-servis-${dari}-${sampai}.xlsx`,
+    sheetName: "Servis",
   });
 }

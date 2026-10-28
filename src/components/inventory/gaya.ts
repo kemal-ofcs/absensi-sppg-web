@@ -13,6 +13,14 @@ export const TOMBOL_KEDUA =
 export const TOMBOL_BAHAYA =
   "min-h-11 px-4 py-2 text-sm font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300";
 
+/** Saran isian sumber dana di formulir Masuk dan Pengajuan. */
+export const SUMBER_DANA_UMUM = [
+  "Kas Perusahaan",
+  "Anggaran Operasional",
+  "Anggaran Divisi",
+  "Hibah",
+];
+
 /** Hanya untuk nilai awal isian tanggal; backend tetap memvalidasi dengan jam database. */
 export function hariIniWib(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(

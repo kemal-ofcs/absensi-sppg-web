@@ -6,8 +6,10 @@ import { invokeDesktop, kickDesktopSync } from "@/lib/runtime/desktop-commands";
 import type {
   BarangDraft,
   DaftarInventaris,
+  DaftarJurnalInventaris,
   DaftarPinjaman,
   DokumenInventaris,
+  JurnalInventarisDraft,
   KartuStok,
   KolomDraft,
   MutasiDraft,
@@ -15,6 +17,9 @@ import type {
   PenerimaInventaris,
   RekapPengadaan,
   RiwayatOpname,
+  RiwayatServis,
+  ServisDraft,
+  TutupServisDraft,
   UnitDraft,
 } from "@/lib/validations/inventory";
 
@@ -244,6 +249,106 @@ export async function getRekapPengadaan(
   return requestWebApi<RekapPengadaan>("/api/inventory/procurement", "POST", {
     dari,
     sampai,
+  });
+}
+
+/** Pengadaan dan hibah yang belum dijurnal (tab "Dari Inventaris" di Keuangan). */
+export async function getJurnalInventaris(
+  dari: string,
+  sampai: string,
+): Promise<DaftarJurnalInventaris> {
+  if (isDesktopRuntime()) {
+    return invokeDesktop<DaftarJurnalInventaris>(
+      "desktop_inventory_journal_pending",
+      { dari, sampai },
+    );
+  }
+  return requestWebApi<DaftarJurnalInventaris>(
+    "/api/inventory/journal/query",
+    "POST",
+    { dari, sampai },
+  );
+}
+
+export async function catatJurnalInventaris(
+  draft: JurnalInventarisDraft,
+): Promise<{ sukses: boolean; dijurnal: number; dibalik: number }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{
+      sukses: boolean;
+      dijurnal: number;
+      dibalik: number;
+    }>("desktop_inventory_journal_post", { draft });
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/inventory/journal", "POST", { draft });
+}
+
+/** Membuka servis aset, atau mengubah isian servis yang masih terbuka. */
+export async function simpanServis(
+  draft: ServisDraft,
+): Promise<{ sukses: boolean; id_servis: string }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; id_servis: string }>(
+      "desktop_inventory_service_save",
+      { draft },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/inventory/service", "POST", { draft });
+}
+
+export async function tutupServis(
+  draft: TutupServisDraft,
+): Promise<{ sukses: boolean; id_servis: string }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean; id_servis: string }>(
+      "desktop_inventory_service_close",
+      { draft },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/inventory/service/close", "POST", { draft });
+}
+
+export async function batalkanServis(
+  idServis: string,
+  alasan: string,
+): Promise<{ sukses: boolean }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean }>(
+      "desktop_inventory_service_cancel",
+      { idServis, alasan },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/inventory/service/cancel", "POST", {
+    idServis,
+    alasan,
+  });
+}
+
+/** Riwayat servis per rentang tanggal dibawa; `idBarang` untuk satu barang. */
+export async function getRiwayatServis(
+  dari: string,
+  sampai: string,
+  idBarang: string | null = null,
+): Promise<RiwayatServis> {
+  if (isDesktopRuntime()) {
+    return invokeDesktop<RiwayatServis>("desktop_inventory_service_history", {
+      dari,
+      sampai,
+      idBarang,
+    });
+  }
+  return requestWebApi<RiwayatServis>("/api/inventory/service/query", "POST", {
+    dari,
+    sampai,
+    idBarang,
   });
 }
 

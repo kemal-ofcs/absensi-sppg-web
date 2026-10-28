@@ -38,7 +38,8 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'tax_rules', 'bpjs_rules', 'payroll_runs', 'payroll_items', 'payroll_audit_logs',
         'password_reset_request', 'app_mail_config', 'absensi_foto',
         'hari_libur_whitelist', 'personil_foto', 'personil_wajah',
-        'inventory_barang', 'inventory_mutasi', 'inventory_unit', 'inventory_kolom',
+        'inventory_barang', 'inventory_mutasi', 'inventory_unit', 'inventory_kolom', 'inventory_servis',
+        'inventory_pengajuan', 'inventory_pengajuan_baris', 'inventory_penerimaan', 'inventory_penerimaan_foto',
         'keu_akun', 'keu_jurnal', 'keu_jurnal_baris',
         'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
         'keu_tutup_buku'

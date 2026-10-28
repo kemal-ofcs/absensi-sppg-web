@@ -27,6 +27,7 @@ export const SUMBER_JURNAL = [
   "Manual",
   "Kasbon",
   "Payroll",
+  "Inventaris",
   "Pembatalan",
 ] as const;
 
@@ -515,6 +516,8 @@ export function labelSumberKas(sumber: string): string {
       return "Pembayaran gaji";
     case "Kasbon":
       return "Kasbon karyawan";
+    case "Inventaris":
+      return "Pembelian barang dan servis";
     case "Manual":
       return "Jurnal umum";
     default:

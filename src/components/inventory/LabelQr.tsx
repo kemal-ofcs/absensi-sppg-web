@@ -16,7 +16,7 @@ import { INPUT, LABEL, pesanGalat, TOMBOL_KEDUA, TOMBOL_UTAMA } from "./gaya";
  * berikutnya, dan label yang terus terlihat tidak terhitung berulang.
  */
 const JEDA_LABEL_MS = 800;
-const MAKS_LABEL_PER_BARANG = 500;
+export const MAKS_LABEL_PER_BARANG = 500;
 const MAKS_LABEL_TOTAL = 2000;
 
 /**
@@ -133,9 +133,22 @@ function unitAda(barang: BarangInventaris) {
   return barang.posisi.filter((p) => p.kode_unit !== null && p.saldo > 0);
 }
 
-function jumlahBawaan(barang: BarangInventaris): string {
+/** `unit` membatasi unit yang dicetak per barang, misalnya unit baru dari satu penerimaan. */
+function unitDicetak(
+  barang: BarangInventaris,
+  unit?: Record<string, string[]>,
+) {
+  const pilihan = unit?.[barang.id_barang];
+  const ada = unitAda(barang);
+  return pilihan ? ada.filter((p) => pilihan.includes(p.id_batch ?? "")) : ada;
+}
+
+function jumlahBawaan(
+  barang: BarangInventaris,
+  unit?: Record<string, string[]>,
+): string {
   // Barang per unit: tepat satu label per unit, dengan QR unitnya sendiri.
-  if (barang.dilacak_unit) return String(unitAda(barang).length);
+  if (barang.dilacak_unit) return String(unitDicetak(barang, unit).length);
   // Aset: satu label per unit untuk ditempel. Habis Pakai: satu untuk raknya.
   return String(barang.tipe === "Aset" ? Math.max(barang.stok_total, 1) : 1);
 }
@@ -145,13 +158,21 @@ export function DialogLabel({
   barang,
   namaPerusahaan,
   onClose,
+  awal,
+  unitTerpilih,
 }: {
   barang: BarangInventaris[];
   namaPerusahaan: string | null;
   onClose: () => void;
+  /** Barang yang langsung terpilih -> jumlah label. */
+  awal?: Record<string, string>;
+  /** Unit yang dicetak per barang; tanpa ini semua unit yang masih ada. */
+  unitTerpilih?: Record<string, string[]>;
 }) {
   // Barang terpilih -> jumlah label (teks isian).
-  const [pilihan, setPilihan] = useState<Record<string, string>>({});
+  const [pilihan, setPilihan] = useState<Record<string, string>>(
+    () => awal ?? {},
+  );
   const [galat, setGalat] = useState<string | null>(null);
   const [menyiapkan, setMenyiapkan] = useState(false);
 
@@ -168,7 +189,9 @@ export function DialogLabel({
   const pilihSemua = (nilai: boolean) => {
     setPilihan(
       nilai
-        ? Object.fromEntries(barang.map((b) => [b.id_barang, jumlahBawaan(b)]))
+        ? Object.fromEntries(
+            barang.map((b) => [b.id_barang, jumlahBawaan(b, unitTerpilih)]),
+          )
         : {},
     );
   };
@@ -197,7 +220,7 @@ export function DialogLabel({
       const daftar = await Promise.all(
         terpilih.flatMap((b) =>
           b.dilacak_unit
-            ? unitAda(b).map(async (unit) => ({
+            ? unitDicetak(b, unitTerpilih).map(async (unit) => ({
                 nama_barang: b.nama_barang,
                 kode_barang: unit.nomor_seri
                   ? `${unit.kode_unit} · SN ${unit.nomor_seri}`
@@ -270,7 +293,10 @@ export function DialogLabel({
                         onChange={(e) => {
                           const berikut = { ...pilihan };
                           if (e.target.checked) {
-                            berikut[b.id_barang] = jumlahBawaan(b);
+                            berikut[b.id_barang] = jumlahBawaan(
+                              b,
+                              unitTerpilih,
+                            );
                           } else {
                             delete berikut[b.id_barang];
                           }

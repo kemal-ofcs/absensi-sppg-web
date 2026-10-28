@@ -2,34 +2,56 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { Client, InStatement, Transaction } from "@libsql/client";
+import { balikJurnalTx, tulisJurnalTx } from "@/lib/services/accounting";
+import { batasTutup } from "@/lib/services/tutup-buku";
 import {
   ALASAN_FORMULIR,
   asciiLower,
+  type BarangDraftParsed,
   type BarangInventaris,
+  type BarisBelumDijurnal,
   type BarisDokumen,
   type BarisPengadaan,
   bacaAtribut,
   barangDraftSchema,
   type DaftarInventaris,
+  type DaftarJurnalInventaris,
   type DaftarPinjaman,
   type DokumenInventaris,
   formatKodeBarang,
   formatKodeUnit,
+  type HasilServis,
+  idJurnalInventaris,
+  idJurnalServis,
+  idMutasiKondisiServis,
   idPembatalan,
+  isMutasiServis,
   isValidDate,
   jenisBeritaAcara,
+  jurnalInventarisDraftSchema,
   type KartuStok,
+  KELOMPOK_AKUN_JURNAL_INVENTARIS,
+  KETERANGAN_BALIK_INVENTARIS,
   KODE_PREFIX_SETTING_KEY,
+  KONDISI_BARANG,
   type KolomInventaris,
   type KolomUntukAtribut,
   type KondisiBarang,
   type KopPerusahaan,
+  keteranganJurnalInventaris,
+  keteranganJurnalServis,
   kolomDraftSchema,
+  kondisiHasilServis,
   MAKS_BARIS_DOKUMEN,
   MAKS_BARIS_KARTU_STOK,
   MAKS_BARIS_PENGADAAN,
   MAKS_BARIS_PINJAMAN,
+  MAKS_DAFTAR_JURNAL_INVENTARIS,
+  MAKS_JUMLAH,
+  MAKS_JURNAL_INVENTARIS,
   MAKS_KOLOM_AKTIF,
+  MAKS_RIWAYAT_SERVIS,
+  MAKS_SERVIS_TERBUKA,
   MAKS_UNIT_DAFTAR,
   type MutasiAsal,
   type MutasiDraftParsed,
@@ -43,23 +65,33 @@ import {
   type PinjamanAktif,
   type PosisiStok,
   parseKodePrefixes,
+  pasanganAkunJurnalInventaris,
+  pasanganAkunJurnalServis,
   type RekapPengadaan,
   type RiwayatOpname,
+  type RiwayatServis,
   rekapSumberDana,
+  type ServisInventaris,
+  servisDraftSchema,
   statusKedaluwarsa,
+  statusServis,
   stokMenipis,
   susunPembatalan,
   type TipeBarang,
   type TipeKolom,
+  tutupServisDraftSchema,
   unitDraftSchema,
   validasiUnit,
   validasiUnitEdit,
+  validateAlasanBatalServis,
   validateAtribut,
   validateBarang,
+  validateIsianServis,
   validateKodePrefixes,
   validateKolom,
   validateMutasi,
   validateOpname,
+  validateTutupServis,
 } from "@/lib/validations/inventory";
 
 /**
@@ -68,7 +100,7 @@ import {
  * Desktop/Mobile memeriksa saldo lokalnya sendiri.
  */
 
-type Executor = Pick<Client | Transaction, "execute">;
+export type Executor = Pick<Client | Transaction, "execute">;
 
 /**
  * Nilai satu mutasi dalam rupiah. Harga satuan selalu per 1 satuan, jadi
@@ -79,7 +111,7 @@ const NILAI_MUTASI_SQL = `CASE WHEN b.desimal = 1
         THEN (m.jumlah * COALESCE(m.harga_satuan, 0) + 50) / 100
         ELSE m.jumlah * COALESCE(m.harga_satuan, 0) END`;
 
-function newHexId(prefix: string): string {
+export function newHexId(prefix: string): string {
   return `${prefix}${randomUUID().replaceAll("-", "")}`;
 }
 
@@ -272,14 +304,14 @@ export async function deleteColumn(
   });
 }
 
-async function wibToday(client: Executor): Promise<string> {
+export async function wibToday(client: Executor): Promise<string> {
   const result = await client.execute(
     "SELECT date('now', '+7 hours') AS hari;",
   );
   return String(result.rows[0]?.hari ?? "");
 }
 
-async function withTransaction<T>(
+export async function withTransaction<T>(
   client: Client,
   work: (tx: Transaction) => Promise<T>,
 ): Promise<T> {
@@ -296,7 +328,7 @@ async function withTransaction<T>(
   }
 }
 
-function text(value: unknown): string | null {
+export function text(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
 }
 
@@ -445,6 +477,7 @@ export async function listInventory(client: Client): Promise<DaftarInventaris> {
     kategori,
     kode_prefix: await readKodePrefixes(client),
     kolom: await listKolom(client),
+    servis: await listServisTerbuka(client),
     hari_ini: await wibToday(client),
     nama_perusahaan: (await kopPerusahaan(client)).nama ?? null,
   };
@@ -493,66 +526,78 @@ export async function saveItem(
 ): Promise<{ sukses: true; id_barang: string; kode_barang: string }> {
   const parsed = barangDraftSchema.safeParse(rawDraft);
   if (!parsed.success) throw new Error("Data barang tidak valid.");
-  const checked = validateBarang(parsed.data);
+  const draft = parsed.data;
+  return withTransaction(client, async (tx) => ({
+    sukses: true as const,
+    ...(await saveItemTx(tx, draft, null)),
+  }));
+}
+
+/**
+ * Cermin `save_item_tx`: inti `saveItem` di dalam transaksi pemanggil.
+ * `idBaru` = id untuk barang baru (penerimaan pengajuan memakai
+ * `brg-<id_baris>`); null = id acak.
+ */
+export async function saveItemTx(
+  tx: Transaction,
+  draft: BarangDraftParsed,
+  idBaru: string | null,
+): Promise<{ id_barang: string; kode_barang: string }> {
+  const checked = validateBarang(draft);
   if (!checked.ok) throw new Error(checked.error);
   const valid = checked.value;
-
-  return withTransaction(client, async (tx) => {
-    const requestedId = parsed.data.id_barang?.trim() || null;
-    let idBarang = requestedId ?? newHexId("brg-");
-    if (requestedId) {
-      const existing = await tx.execute({
-        sql: "SELECT satuan, bisa_expired, desimal FROM inventory_barang WHERE id_barang = ?;",
+  const requestedId = draft.id_barang?.trim() || null;
+  let idBarang = requestedId ?? idBaru ?? newHexId("brg-");
+  if (requestedId) {
+    const existing = await tx.execute({
+      sql: "SELECT satuan, bisa_expired, desimal FROM inventory_barang WHERE id_barang = ?;",
+      args: [requestedId],
+    });
+    const row = existing.rows[0];
+    if (!row) throw new Error("Barang tidak ditemukan.");
+    // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
+    const berubah =
+      String(row.satuan) !== valid.satuan ||
+      (Number(row.bisa_expired) === 1) !== valid.bisa_expired ||
+      (Number(row.desimal) === 1) !== valid.desimal;
+    if (berubah) {
+      const history = await tx.execute({
+        sql: "SELECT EXISTS(SELECT 1 FROM inventory_mutasi WHERE id_barang = ? LIMIT 1) AS ada;",
         args: [requestedId],
       });
-      const row = existing.rows[0];
-      if (!row) throw new Error("Barang tidak ditemukan.");
-      // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
-      const berubah =
-        String(row.satuan) !== valid.satuan ||
-        (Number(row.bisa_expired) === 1) !== valid.bisa_expired ||
-        (Number(row.desimal) === 1) !== valid.desimal;
-      if (berubah) {
-        const history = await tx.execute({
-          sql: "SELECT EXISTS(SELECT 1 FROM inventory_mutasi WHERE id_barang = ? LIMIT 1) AS ada;",
-          args: [requestedId],
-        });
-        if (Number(history.rows[0]?.ada) === 1) {
-          throw new Error(
-            "Satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
-          );
-        }
+      if (Number(history.rows[0]?.ada) === 1) {
+        throw new Error(
+          "Satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
+        );
       }
-      idBarang = requestedId;
     }
+    idBarang = requestedId;
+  }
 
-    let kode = valid.kode_barang;
-    if (kode !== null) {
-      if (await kodeDipakai(tx, kode, idBarang)) {
-        throw new Error("Kode barang sudah dipakai barang lain.");
-      }
-    } else {
-      const prefixes = await readKodePrefixes(tx);
-      const diminta = parsed.data.kode_prefix?.trim();
-      let prefix = prefixes[0] as string;
-      if (diminta) {
-        const normal = normalizeKodePrefix(diminta);
-        if (normal === null || !prefixes.includes(normal)) {
-          throw new Error("Awalan kode tidak terdaftar.");
-        }
-        prefix = normal;
-      }
-      kode = await nextItemCode(tx, prefix, idBarang);
+  let kode = valid.kode_barang;
+  if (kode !== null) {
+    if (await kodeDipakai(tx, kode, idBarang)) {
+      throw new Error("Kode barang sudah dipakai barang lain.");
     }
-    const tempatUtama = await canonicalTempat(tx, valid.tempat_utama);
-    const atribut = validateAtribut(
-      parsed.data.atribut,
-      await kolomUntukAtribut(tx),
-    );
-    if (!atribut.ok) throw new Error(atribut.error);
+  } else {
+    const prefixes = await readKodePrefixes(tx);
+    const diminta = draft.kode_prefix?.trim();
+    let prefix = prefixes[0] as string;
+    if (diminta) {
+      const normal = normalizeKodePrefix(diminta);
+      if (normal === null || !prefixes.includes(normal)) {
+        throw new Error("Awalan kode tidak terdaftar.");
+      }
+      prefix = normal;
+    }
+    kode = await nextItemCode(tx, prefix, idBarang);
+  }
+  const tempatUtama = await canonicalTempat(tx, valid.tempat_utama);
+  const atribut = validateAtribut(draft.atribut, await kolomUntukAtribut(tx));
+  if (!atribut.ok) throw new Error(atribut.error);
 
-    await tx.execute({
-      sql: `INSERT INTO inventory_barang (
+  await tx.execute({
+    sql: `INSERT INTO inventory_barang (
               id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
               stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at, atribut,
               desimal
@@ -571,26 +616,25 @@ export async function saveItem(
               updated_at = excluded.updated_at,
               atribut = excluded.atribut,
               desimal = excluded.desimal;`,
-      args: [
-        idBarang,
-        kode,
-        valid.nama_barang,
-        valid.kategori,
-        valid.tipe,
-        valid.satuan,
-        valid.bisa_expired ? 1 : 0,
-        valid.stok_minimum,
-        tempatUtama,
-        valid.catatan,
-        valid.status_aktif ? 1 : 0,
-        Object.keys(atribut.value).length > 0
-          ? JSON.stringify(atribut.value)
-          : null,
-        valid.desimal ? 1 : 0,
-      ],
-    });
-    return { sukses: true as const, id_barang: idBarang, kode_barang: kode };
+    args: [
+      idBarang,
+      kode,
+      valid.nama_barang,
+      valid.kategori,
+      valid.tipe,
+      valid.satuan,
+      valid.bisa_expired ? 1 : 0,
+      valid.stok_minimum,
+      tempatUtama,
+      valid.catatan,
+      valid.status_aktif ? 1 : 0,
+      Object.keys(atribut.value).length > 0
+        ? JSON.stringify(atribut.value)
+        : null,
+      valid.desimal ? 1 : 0,
+    ],
   });
+  return { id_barang: idBarang, kode_barang: kode };
 }
 
 function insertMutasiStatement(
@@ -1045,6 +1089,11 @@ export async function cancelMutation(
     };
     const idBarang = String(row.id_barang);
     const satuan = String(row.satuan);
+    if (isMutasiServis(asal.id_mutasi)) {
+      throw new Error(
+        "Mutasi ini dibuat dari penutupan servis dan tidak bisa dibatalkan. Catat Perubahan Kondisi baru bila kondisinya salah.",
+      );
+    }
     const built = susunPembatalan(asal);
     if (!built.ok) throw new Error(built.error);
     const kebalikan = built.value;
@@ -1108,6 +1157,14 @@ export async function cancelMutation(
         asal.id_mutasi,
         dicatatOleh,
       ),
+    );
+    // Cermin `cancel_mutation`: jurnal pengadaan/hibah ikut dibalik di
+    // transaksi yang sama. Tanpa jurnal: tidak ada apa-apa.
+    await balikJurnalTx(
+      tx,
+      idJurnalInventaris(asal.id_mutasi),
+      KETERANGAN_BALIK_INVENTARIS,
+      dicatatOleh,
     );
     return { sukses: true as const, id_mutasi: kebalikan.id_mutasi };
   });
@@ -1458,9 +1515,10 @@ export async function procurement(
   const result = await client.execute({
     sql: `SELECT m.tanggal, b.kode_barang, b.nama_barang, b.satuan, m.alasan, m.jumlah,
                  m.harga_satuan, COALESCE(m.sumber_dana, '') AS sumber_dana, m.nomor_dokumen,
-                 m.tempat_tujuan, ${NILAI_MUTASI_SQL} AS nilai, b.desimal
+                 m.tempat_tujuan, ${NILAI_MUTASI_SQL} AS nilai, b.desimal, j.nomor AS nomor_jurnal
           FROM inventory_mutasi m
           JOIN inventory_barang b ON b.id_barang = m.id_barang
+          LEFT JOIN keu_jurnal j ON j.id_jurnal = 'jrn-inv-' || m.id_mutasi
           WHERE m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah', 'Saldo Awal')
             AND m.tanggal >= ? AND m.tanggal <= ?
             AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
@@ -1481,6 +1539,7 @@ export async function procurement(
     tempat_tujuan: text(row.tempat_tujuan),
     nilai: Number(row.nilai),
     desimal: Number(row.desimal) === 1,
+    nomor_jurnal: text(row.nomor_jurnal),
   }));
   const baris = semua.slice(0, MAKS_BARIS_PENGADAAN);
   const rekap = rekapSumberDana(
@@ -1496,6 +1555,667 @@ export async function procurement(
     total_nilai: rekap.reduce((sum, item) => sum + item.nilai, 0),
     terpotong: semua.length > MAKS_BARIS_PENGADAAN,
   };
+}
+
+/** Cermin `SYARAT_JURNAL_INVENTARIS_SQL` di `inventory.rs`. */
+const SYARAT_JURNAL_INVENTARIS_SQL = `m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah')
+        AND m.harga_satuan IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
+        AND NOT EXISTS (SELECT 1 FROM keu_jurnal j WHERE j.id_jurnal = 'jrn-inv-' || m.id_mutasi)`;
+
+/** Cermin `JURNAL_INVENTARIS_YATIM_SQL`. */
+const JURNAL_INVENTARIS_YATIM_SQL = `SELECT j.id_jurnal, j.nomor, j.tanggal, j.keterangan, j.id_sumber
+    FROM keu_jurnal j
+    WHERE j.sumber = 'Inventaris' AND j.id_sumber IS NOT NULL
+      AND j.id_jurnal = 'jrn-inv-' || j.id_sumber
+      AND EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || j.id_sumber)
+      AND NOT EXISTS (SELECT 1 FROM keu_jurnal p WHERE p.id_jurnal = 'batal-' || j.id_jurnal)
+    ORDER BY j.tanggal, j.id_jurnal
+    LIMIT 200;`;
+
+const KOLOM_BARIS_JURNAL = `m.id_mutasi, m.tanggal, m.alasan, b.tipe, b.nama_barang, b.satuan,
+    b.desimal, m.jumlah`;
+
+/** Cermin `journal_pending`. */
+export async function journalPending(
+  client: Client,
+  dari: string,
+  sampai: string,
+): Promise<DaftarJurnalInventaris> {
+  if (!isValidDate(dari) || !isValidDate(sampai) || dari > sampai) {
+    throw new Error("Rentang tanggal tidak valid.");
+  }
+  const batas = await batasTutup(client);
+  const result = await client.execute({
+    sql: `SELECT ${KOLOM_BARIS_JURNAL}, ${NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen,
+                 b.kode_barang, COALESCE(m.sumber_dana, '') AS sumber_dana, m.harga_satuan,
+                 (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref) AS id_pengajuan
+          FROM inventory_mutasi m
+          JOIN inventory_barang b ON b.id_barang = m.id_barang
+          WHERE ${SYARAT_JURNAL_INVENTARIS_SQL}
+            AND ${NILAI_MUTASI_SQL} > 0
+            AND m.tanggal >= ? AND m.tanggal <= ?
+          ORDER BY m.tanggal, m.created_at, m.id_mutasi
+          LIMIT 501;`,
+    args: [dari, sampai],
+  });
+  const semua: BarisBelumDijurnal[] = result.rows.map((row) => ({
+    id_mutasi: String(row.id_mutasi),
+    tanggal: String(row.tanggal),
+    alasan: String(row.alasan) as BarisBelumDijurnal["alasan"],
+    tipe: String(row.tipe) as TipeBarang,
+    kode_barang: String(row.kode_barang),
+    nama_barang: String(row.nama_barang),
+    satuan: String(row.satuan),
+    desimal: Number(row.desimal) === 1,
+    jumlah: Number(row.jumlah),
+    harga_satuan: Number(row.harga_satuan),
+    nilai: Number(row.nilai),
+    sumber_dana: String(row.sumber_dana),
+    nomor_dokumen: text(row.nomor_dokumen),
+    id_pengajuan: text(row.id_pengajuan),
+    periode_tertutup: batas !== null && String(row.tanggal) <= batas,
+  }));
+  const yatim = await client.execute(JURNAL_INVENTARIS_YATIM_SQL);
+  const servis = await client.execute({
+    sql: `SELECT s.id_servis, s.tanggal_selesai, b.kode_barang, b.nama_barang, u.kode_unit,
+                 s.penyedia, s.biaya
+          FROM inventory_servis s
+          JOIN inventory_barang b ON b.id_barang = s.id_barang
+          LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit
+          WHERE ${SYARAT_JURNAL_SERVIS_SQL}
+            AND s.tanggal_selesai >= ? AND s.tanggal_selesai <= ?
+          ORDER BY s.tanggal_selesai, s.id_servis
+          LIMIT ${MAKS_DAFTAR_JURNAL_INVENTARIS};`,
+    args: [dari, sampai],
+  });
+  return {
+    baris: semua.slice(0, MAKS_DAFTAR_JURNAL_INVENTARIS),
+    terpotong: semua.length > MAKS_DAFTAR_JURNAL_INVENTARIS,
+    perlu_dibalik: yatim.rows.map((row) => ({
+      id_jurnal: String(row.id_jurnal),
+      nomor: String(row.nomor),
+      tanggal: String(row.tanggal),
+      keterangan: String(row.keterangan),
+      id_mutasi: String(row.id_sumber),
+    })),
+    servis: servis.rows.map((row) => ({
+      id_servis: String(row.id_servis),
+      tanggal: String(row.tanggal_selesai),
+      kode_barang: String(row.kode_barang),
+      nama_barang: String(row.nama_barang),
+      kode_unit: text(row.kode_unit),
+      penyedia: text(row.penyedia),
+      nilai: Number(row.biaya),
+      periode_tertutup: batas !== null && String(row.tanggal_selesai) <= batas,
+    })),
+    batas_tutup: batas,
+  };
+}
+
+/** Cermin `SYARAT_JURNAL_SERVIS_SQL`. */
+const SYARAT_JURNAL_SERVIS_SQL = `s.tanggal_selesai IS NOT NULL AND s.dibatalkan_pada IS NULL
+        AND s.biaya > 0
+        AND NOT EXISTS (SELECT 1 FROM keu_jurnal j WHERE j.id_jurnal = 'jrn-' || s.id_servis)`;
+
+/** Cermin `assert_akun_kelompok` di `inventory.rs`. */
+async function assertAkunKelompok(
+  tx: Executor,
+  idAkun: string,
+  kelompok: readonly string[],
+) {
+  const result = await tx.execute({
+    sql: "SELECT kelompok FROM keu_akun WHERE id_akun = ? AND is_aktif = 1;",
+    args: [idAkun],
+  });
+  const nilai = text(result.rows[0]?.kelompok);
+  if (nilai === null || !kelompok.includes(nilai)) {
+    throw new Error(
+      `Akun yang dipilih harus akun ${kelompok.join(" atau ")} yang aktif.`,
+    );
+  }
+}
+
+function unikTerisi(daftar: readonly string[]): string[] {
+  const hasil: string[] = [];
+  for (const id of daftar.map((item) => item.trim())) {
+    if (id && !hasil.includes(id)) hasil.push(id);
+  }
+  return hasil;
+}
+
+/**
+ * Cermin `journal_post`: satu jurnal per baris dan pembalikan jurnal yatim,
+ * semuanya dalam SATU transaksi. Nilai dihitung ulang dari mutasi.
+ */
+export async function journalPost(
+  client: Client,
+  operator: string,
+  raw: unknown,
+): Promise<{ sukses: true; dijurnal: number; dibalik: number }> {
+  const parsed = jurnalInventarisDraftSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Data jurnal inventaris tidak valid.");
+  const draft = parsed.data;
+  const idMutasi = unikTerisi(draft.id_mutasi);
+  const balik = unikTerisi(draft.balik);
+  const idServis = unikTerisi(draft.id_servis);
+  if (idMutasi.length === 0 && balik.length === 0 && idServis.length === 0) {
+    throw new Error("Pilih minimal satu baris.");
+  }
+  if (
+    idMutasi.length + balik.length + idServis.length >
+    MAKS_JURNAL_INVENTARIS
+  ) {
+    throw new Error(
+      `Paling banyak ${MAKS_JURNAL_INVENTARIS} baris sekali catat.`,
+    );
+  }
+
+  return withTransaction(client, async (tx) => {
+    for (const id of idMutasi) {
+      const result = await tx.execute({
+        sql: `SELECT ${KOLOM_BARIS_JURNAL}, ${NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen
+              FROM inventory_mutasi m
+              JOIN inventory_barang b ON b.id_barang = m.id_barang
+              WHERE m.id_mutasi = ? AND ${SYARAT_JURNAL_INVENTARIS_SQL};`,
+        args: [id],
+      });
+      const row = result.rows[0];
+      if (!row || Number(row.nilai) <= 0) {
+        throw new Error(
+          "Ada baris yang sudah dijurnal, dibatalkan, atau tidak bisa dijurnal. Muat ulang daftarnya.",
+        );
+      }
+      const alasan = String(row.alasan);
+      const pasangan = pasanganAkunJurnalInventaris(
+        String(row.tipe),
+        alasan,
+        draft,
+      );
+      if (!pasangan.ok) throw new Error(pasangan.error);
+      const { debit, kredit } = pasangan.value;
+      await assertAkunKelompok(
+        tx,
+        debit,
+        KELOMPOK_AKUN_JURNAL_INVENTARIS.akun_debit_aset,
+      );
+      await assertAkunKelompok(
+        tx,
+        kredit,
+        alasan === "Hibah"
+          ? KELOMPOK_AKUN_JURNAL_INVENTARIS.akun_kredit_hibah
+          : KELOMPOK_AKUN_JURNAL_INVENTARIS.akun_kredit_bayar,
+      );
+      const idJurnal = idJurnalInventaris(String(row.id_mutasi));
+      const nilai = Number(row.nilai);
+      await tulisJurnalTx(
+        tx,
+        {
+          id_jurnal: idJurnal,
+          tanggal: String(row.tanggal),
+          keterangan: keteranganJurnalInventaris(
+            alasan,
+            String(row.nama_barang),
+            Number(row.jumlah),
+            Number(row.desimal) === 1,
+            String(row.satuan),
+            text(row.nomor_dokumen),
+          ),
+          sumber: "Inventaris",
+          id_sumber: String(row.id_mutasi),
+          id_jurnal_batal: null,
+          dibuat_oleh: operator,
+        },
+        [
+          {
+            id_baris: `${idJurnal}-1`,
+            id_akun: debit,
+            debit: nilai,
+            kredit: 0,
+            keterangan: null,
+            urutan: 1,
+          },
+          {
+            id_baris: `${idJurnal}-2`,
+            id_akun: kredit,
+            debit: 0,
+            kredit: nilai,
+            keterangan: null,
+            urutan: 2,
+          },
+        ],
+      );
+    }
+
+    for (const id of balik) {
+      const result = await tx.execute({
+        sql: `SELECT EXISTS(
+                SELECT 1 FROM keu_jurnal j
+                WHERE j.id_jurnal = ? AND j.sumber = 'Inventaris' AND j.id_sumber IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || j.id_sumber)
+                  AND NOT EXISTS (SELECT 1 FROM keu_jurnal p WHERE p.id_jurnal = 'batal-' || j.id_jurnal)) AS yatim;`,
+        args: [id],
+      });
+      if (Number(result.rows[0]?.yatim) !== 1) {
+        throw new Error(
+          "Ada jurnal yang sudah dibalik atau mutasinya belum dibatalkan. Muat ulang daftarnya.",
+        );
+      }
+      await balikJurnalTx(tx, id, KETERANGAN_BALIK_INVENTARIS, operator);
+    }
+
+    for (const id of idServis) {
+      const result = await tx.execute({
+        sql: `SELECT s.tanggal_selesai, b.nama_barang, u.kode_unit, s.penyedia, s.biaya
+              FROM inventory_servis s
+              JOIN inventory_barang b ON b.id_barang = s.id_barang
+              LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit
+              WHERE s.id_servis = ? AND ${SYARAT_JURNAL_SERVIS_SQL};`,
+        args: [id],
+      });
+      const row = result.rows[0];
+      if (!row) {
+        throw new Error(
+          "Ada servis yang sudah dijurnal atau tidak bisa dijurnal. Muat ulang daftarnya.",
+        );
+      }
+      const pasangan = pasanganAkunJurnalServis(draft);
+      if (!pasangan.ok) throw new Error(pasangan.error);
+      const { debit, kredit } = pasangan.value;
+      await assertAkunKelompok(
+        tx,
+        debit,
+        KELOMPOK_AKUN_JURNAL_INVENTARIS.akun_debit_servis,
+      );
+      await assertAkunKelompok(
+        tx,
+        kredit,
+        KELOMPOK_AKUN_JURNAL_INVENTARIS.akun_kredit_bayar,
+      );
+      const idJurnal = idJurnalServis(id);
+      const biaya = Number(row.biaya);
+      await tulisJurnalTx(
+        tx,
+        {
+          id_jurnal: idJurnal,
+          tanggal: String(row.tanggal_selesai),
+          keterangan: keteranganJurnalServis(
+            String(row.nama_barang),
+            text(row.kode_unit),
+            text(row.penyedia),
+          ),
+          sumber: "Inventaris",
+          id_sumber: id,
+          id_jurnal_batal: null,
+          dibuat_oleh: operator,
+        },
+        [
+          {
+            id_baris: `${idJurnal}-1`,
+            id_akun: debit,
+            debit: biaya,
+            kredit: 0,
+            keterangan: null,
+            urutan: 1,
+          },
+          {
+            id_baris: `${idJurnal}-2`,
+            id_akun: kredit,
+            debit: 0,
+            kredit: biaya,
+            keterangan: null,
+            urutan: 2,
+          },
+        ],
+      );
+    }
+    return {
+      sukses: true as const,
+      dijurnal: idMutasi.length + idServis.length,
+      dibalik: balik.length,
+    };
+  });
+}
+
+// Servis aset (v29)
+
+/** Cermin `KOLOM_SERVIS_SQL` di `inventory.rs`. */
+const KOLOM_SERVIS_SQL = `s.id_servis, s.id_barang, b.kode_barang, b.nama_barang, s.id_unit, u.kode_unit,
+    s.jumlah, s.tempat, s.kondisi_awal, s.tanggal_mulai, s.penyedia, s.keluhan, s.tanggal_selesai,
+    s.hasil, s.biaya, s.catatan_selesai, s.dibatalkan_pada, s.alasan_batal, s.dibuka_oleh, s.ditutup_oleh,
+    CAST(julianday(COALESCE(s.tanggal_selesai, date('now', '+7 hours'))) - julianday(s.tanggal_mulai) AS INTEGER) AS lama_hari
+    FROM inventory_servis s
+    JOIN inventory_barang b ON b.id_barang = s.id_barang
+    LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit`;
+
+function bacaServis(row: Record<string, unknown>): ServisInventaris {
+  const tanggalSelesai = text(row.tanggal_selesai);
+  const dibatalkanPada = text(row.dibatalkan_pada);
+  return {
+    id_servis: String(row.id_servis),
+    id_barang: String(row.id_barang),
+    kode_barang: String(row.kode_barang),
+    nama_barang: String(row.nama_barang),
+    id_unit: text(row.id_unit),
+    kode_unit: text(row.kode_unit),
+    jumlah: Number(row.jumlah),
+    tempat: String(row.tempat),
+    kondisi_awal: String(row.kondisi_awal) as KondisiBarang,
+    tanggal_mulai: String(row.tanggal_mulai),
+    penyedia: text(row.penyedia),
+    keluhan: String(row.keluhan),
+    status: statusServis(tanggalSelesai, dibatalkanPada),
+    tanggal_selesai: tanggalSelesai,
+    hasil: text(row.hasil) as HasilServis | null,
+    biaya:
+      row.biaya === null || row.biaya === undefined ? null : Number(row.biaya),
+    catatan_selesai: text(row.catatan_selesai),
+    dibatalkan_pada: dibatalkanPada,
+    alasan_batal: text(row.alasan_batal),
+    dibuka_oleh: String(row.dibuka_oleh),
+    ditutup_oleh: text(row.ditutup_oleh),
+    lama_hari: Number(row.lama_hari),
+  };
+}
+
+/** Cermin `list_servis_terbuka`. */
+async function listServisTerbuka(
+  client: Executor,
+): Promise<ServisInventaris[]> {
+  const result = await client.execute(
+    `SELECT ${KOLOM_SERVIS_SQL}
+     WHERE s.tanggal_selesai IS NULL AND s.dibatalkan_pada IS NULL
+     ORDER BY s.tanggal_mulai, s.id_servis
+     LIMIT ${MAKS_SERVIS_TERBUKA};`,
+  );
+  return result.rows.map((row) => bacaServis(row as Record<string, unknown>));
+}
+
+/** Cermin `service_history`. */
+export async function serviceHistory(
+  client: Client,
+  dari: string,
+  sampai: string,
+  idBarang: string | null,
+): Promise<RiwayatServis> {
+  if (!isValidDate(dari) || !isValidDate(sampai) || dari > sampai) {
+    throw new Error("Rentang tanggal tidak valid.");
+  }
+  const barang = idBarang?.trim() || null;
+  const result = await client.execute({
+    sql: `SELECT ${KOLOM_SERVIS_SQL}
+          WHERE s.tanggal_mulai >= ? AND s.tanggal_mulai <= ?
+            AND (? IS NULL OR s.id_barang = ?)
+          ORDER BY s.tanggal_mulai DESC, s.id_servis DESC
+          LIMIT 1001;`,
+    args: [dari, sampai, barang, barang],
+  });
+  const semua = result.rows.map((row) =>
+    bacaServis(row as Record<string, unknown>),
+  );
+  return {
+    baris: semua.slice(0, MAKS_RIWAYAT_SERVIS),
+    terpotong: semua.length > MAKS_RIWAYAT_SERVIS,
+  };
+}
+
+/** Cermin `servis_terbuka`. */
+async function servisTerbuka(tx: Executor, idServis: string) {
+  const result = await tx.execute({
+    sql: `SELECT id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai
+          FROM inventory_servis
+          WHERE id_servis = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;`,
+    args: [idServis],
+  });
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error(
+      "Servis ini sudah ditutup, dibatalkan, atau tidak ditemukan.",
+    );
+  }
+  return {
+    id_barang: String(row.id_barang),
+    id_unit: text(row.id_unit),
+    jumlah: Number(row.jumlah),
+    tempat: String(row.tempat),
+    kondisi_awal: String(row.kondisi_awal),
+    tanggal_mulai: String(row.tanggal_mulai),
+  };
+}
+
+/** Cermin `save_service`: buka servis, atau ubah isian servis yang masih terbuka. */
+export async function saveService(
+  client: Client,
+  operator: string,
+  raw: unknown,
+): Promise<{ sukses: true; id_servis: string }> {
+  const parsed = servisDraftSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Data servis tidak valid.");
+  const draft = parsed.data;
+  return withTransaction(client, async (tx) => {
+    const hariIni = await wibToday(tx);
+    const isian = validateIsianServis(
+      draft.tanggal_mulai,
+      draft.penyedia,
+      draft.keluhan,
+      hariIni,
+    );
+    if (!isian.ok) throw new Error(isian.error);
+    const { tanggal_mulai, penyedia, keluhan } = isian.value;
+
+    const idUbah = draft.id_servis?.trim();
+    if (idUbah) {
+      await servisTerbuka(tx, idUbah);
+      await tx.execute({
+        sql: `UPDATE inventory_servis SET tanggal_mulai = ?, penyedia = ?, keluhan = ?,
+                     updated_at = datetime('now')
+              WHERE id_servis = ?;`,
+        args: [tanggal_mulai, penyedia, keluhan, idUbah],
+      });
+      return { sukses: true as const, id_servis: idUbah };
+    }
+
+    const idBarang = draft.id_barang.trim();
+    const barang = await tx.execute({
+      sql: "SELECT tipe, satuan, status_aktif FROM inventory_barang WHERE id_barang = ?;",
+      args: [idBarang],
+    });
+    const info = barang.rows[0];
+    if (!info) throw new Error("Barang tidak ditemukan.");
+    if (String(info.tipe) !== "Aset") {
+      throw new Error("Hanya barang Aset yang bisa diservis.");
+    }
+    if (Number(info.status_aktif) !== 1) {
+      throw new Error("Barang sudah dinonaktifkan.");
+    }
+    const unitAda = await tx.execute({
+      sql: "SELECT EXISTS(SELECT 1 FROM inventory_unit WHERE id_barang = ?) AS ada;",
+      args: [idBarang],
+    });
+    const dilacak = Number(unitAda.rows[0]?.ada) === 1;
+    const idUnit = draft.id_unit?.trim() || null;
+
+    let jumlah: number;
+    let tempat: string;
+    let kondisiAwal: string;
+    if (dilacak) {
+      if (!idUnit) throw new Error("Pilih unit yang diservis.");
+      const posisi = await tx.execute({
+        sql: `SELECT tempat, kondisi FROM inventory_saldo
+              WHERE id_barang = ? AND id_batch = ? AND saldo > 0 LIMIT 1;`,
+        args: [idBarang, idUnit],
+      });
+      const baris = posisi.rows[0];
+      if (!baris) {
+        throw new Error(
+          "Unit ini tidak punya stok (sudah keluar, hilang, atau afkir).",
+        );
+      }
+      const sedang = await tx.execute({
+        sql: `SELECT EXISTS(SELECT 1 FROM inventory_servis
+                WHERE id_unit = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL) AS ada;`,
+        args: [idUnit],
+      });
+      if (Number(sedang.rows[0]?.ada) === 1) {
+        throw new Error("Unit ini masih dalam servis.");
+      }
+      jumlah = 1;
+      tempat = String(baris.tempat);
+      kondisiAwal = String(baris.kondisi);
+    } else {
+      if (idUnit) throw new Error("Barang ini tidak dicatat per unit.");
+      jumlah = draft.jumlah ?? 0;
+      if (jumlah < 1 || jumlah > MAKS_JUMLAH) {
+        throw new Error("Jumlah yang diservis tidak valid.");
+      }
+      const normal = normalizeTempat(draft.tempat ?? "");
+      if (!normal) throw new Error("Tempat barang wajib diisi.");
+      tempat = (await canonicalTempat(tx, normal)) ?? normal;
+      kondisiAwal = (draft.kondisi_awal ?? "").trim();
+      if (!(KONDISI_BARANG as readonly string[]).includes(kondisiAwal)) {
+        throw new Error("Kondisi barang tidak dikenal.");
+      }
+      const saldo = await saldoPosisi(tx, idBarang, tempat, kondisiAwal, null);
+      const sedang = await tx.execute({
+        sql: `SELECT COALESCE(SUM(jumlah), 0) AS n FROM inventory_servis
+              WHERE id_barang = ? AND id_unit IS NULL AND LOWER(tempat) = LOWER(?)
+                AND kondisi_awal = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;`,
+        args: [idBarang, tempat, kondisiAwal],
+      });
+      const tersedia = saldo - Number(sedang.rows[0]?.n ?? 0);
+      if (jumlah > tersedia) {
+        throw new Error(
+          `Stok ${kondisiAwal} di ${tempat} yang belum diservis tinggal ${Math.max(tersedia, 0)} ${String(info.satuan)}.`,
+        );
+      }
+    }
+
+    const id = newHexId("srv-");
+    await tx.execute({
+      sql: `INSERT INTO inventory_servis (
+              id_servis, id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai,
+              penyedia, keluhan, dibuka_oleh, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));`,
+      args: [
+        id,
+        idBarang,
+        idUnit,
+        jumlah,
+        tempat,
+        kondisiAwal,
+        tanggal_mulai,
+        penyedia,
+        keluhan,
+        operator,
+      ],
+    });
+    return { sukses: true as const, id_servis: id };
+  });
+}
+
+/** Cermin `close_service`. */
+export async function closeService(
+  client: Client,
+  operator: string,
+  raw: unknown,
+): Promise<{ sukses: true; id_servis: string }> {
+  const parsed = tutupServisDraftSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Data penutupan servis tidak valid.");
+  const idServis = parsed.data.id_servis.trim();
+  return withTransaction(client, async (tx) => {
+    const servis = await servisTerbuka(tx, idServis);
+    const hariIni = await wibToday(tx);
+    const valid = validateTutupServis(
+      parsed.data,
+      servis.tanggal_mulai,
+      hariIni,
+    );
+    if (!valid.ok) throw new Error(valid.error);
+    const { tanggal_selesai, hasil, biaya, catatan_selesai } = valid.value;
+
+    const kondisiBaru = kondisiHasilServis(servis.kondisi_awal, hasil);
+    if (kondisiBaru) {
+      const saldo = await saldoPosisi(
+        tx,
+        servis.id_barang,
+        servis.tempat,
+        servis.kondisi_awal,
+        servis.id_unit,
+      );
+      if (saldo < servis.jumlah) {
+        throw new Error(
+          `Stok ${servis.kondisi_awal} di ${servis.tempat} tinggal ${Math.max(saldo, 0)}, tidak cukup untuk mencatat kondisinya. Barang sudah dipindah sejak dibawa servis? Catat pemindahannya kembali dulu.`,
+        );
+      }
+      const mutasi: MutasiValid = {
+        jenis: "Pindah",
+        alasan: "Perubahan Kondisi",
+        tanggal: tanggal_selesai,
+        jumlah: servis.jumlah,
+        tempat_asal: servis.tempat,
+        kondisi_asal: servis.kondisi_awal as KondisiBarang,
+        tempat_tujuan: servis.tempat,
+        kondisi_tujuan: kondisiBaru,
+        id_batch: servis.id_unit,
+        tanggal_expired: null,
+        id_ref: idServis,
+        penerima_tipe: null,
+        penerima_id: null,
+        penerima_nama: null,
+        keperluan: null,
+        sumber_dana: null,
+        nomor_dokumen: null,
+        harga_satuan: null,
+        catatan: `Hasil servis: ${hasil}`,
+      };
+      await tx.execute(
+        insertMutasiStatement(
+          idMutasiKondisiServis(idServis),
+          servis.id_barang,
+          mutasi,
+          idServis,
+          operator,
+        ),
+      );
+    }
+
+    await tx.execute({
+      sql: `UPDATE inventory_servis SET tanggal_selesai = ?, hasil = ?, biaya = ?,
+                   catatan_selesai = ?, ditutup_oleh = ?, updated_at = datetime('now')
+            WHERE id_servis = ?;`,
+      args: [
+        tanggal_selesai,
+        hasil,
+        biaya,
+        catatan_selesai,
+        operator,
+        idServis,
+      ],
+    });
+    return { sukses: true as const, id_servis: idServis };
+  });
+}
+
+/** Cermin `cancel_service`. */
+export async function cancelService(
+  client: Client,
+  operator: string,
+  idServis: string,
+  alasan: string,
+): Promise<{ sukses: true }> {
+  const valid = validateAlasanBatalServis(alasan);
+  if (!valid.ok) throw new Error(valid.error);
+  const id = idServis.trim();
+  return withTransaction(client, async (tx) => {
+    await servisTerbuka(tx, id);
+    await tx.execute({
+      sql: `UPDATE inventory_servis SET dibatalkan_pada = datetime('now', '+7 hours'),
+                   alasan_batal = ?, ditutup_oleh = ?, updated_at = datetime('now')
+            WHERE id_servis = ?;`,
+      args: [valid.value, operator, id],
+    });
+    return { sukses: true as const };
+  });
 }
 
 /** Cermin `stock_card`. */

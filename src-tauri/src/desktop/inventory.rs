@@ -75,6 +75,340 @@ pub const MAKS_BARIS_PINJAMAN: usize = 500;
 /// (keputusan User, PRD §4.7). Cermin `INVENTORY_EXPIRY_WARNING_DAYS`.
 pub const INVENTORY_EXPIRY_WARNING_DAYS: i64 = 30;
 
+// Jurnal pengadaan (v28)
+
+/// Baris paling banyak dalam satu tekan "Catat ke jurnal". Cermin `MAKS_JURNAL_INVENTARIS`.
+pub const MAKS_JURNAL_INVENTARIS: usize = 200;
+/// Baris daftar "belum dijurnal" paling banyak. Cermin `MAKS_DAFTAR_JURNAL_INVENTARIS`.
+pub const MAKS_DAFTAR_JURNAL_INVENTARIS: usize = 500;
+
+/// Satu baris mutasi = satu jurnal berid tetap, sehingga dua perangkat yang
+/// menjurnal baris yang sama menghasilkan PK yang sama. Status "sudah
+/// dijurnal" tidak disimpan di mutasi (append-only), selalu diturunkan dari
+/// keberadaan id ini. Cermin `idJurnalInventaris`.
+pub fn id_jurnal_inventaris(id_mutasi: &str) -> String {
+    format!("jrn-inv-{id_mutasi}")
+}
+
+/// Cermin `formatJumlah` + `formatAngka`: titik ribuan, koma desimal; barang
+/// `desimal` selalu dua angka di belakang koma bila ada pecahannya.
+pub fn format_jumlah(nilai: i64, desimal: bool) -> String {
+    fn ribuan(digit: &str) -> String {
+        let mut kelompok: Vec<&str> = Vec::new();
+        let mut akhir = digit.len();
+        while akhir > 0 {
+            let awal = akhir.saturating_sub(3);
+            kelompok.insert(0, &digit[awal..akhir]);
+            akhir = awal;
+        }
+        kelompok.join(".")
+    }
+    let mutlak = nilai.unsigned_abs();
+    let teks = if desimal {
+        let (bulat, sisa) = (mutlak / 100, mutlak % 100);
+        if sisa == 0 {
+            ribuan(&bulat.to_string())
+        } else {
+            format!("{},{sisa:02}", ribuan(&bulat.to_string()))
+        }
+    } else {
+        ribuan(&mutlak.to_string())
+    };
+    if nilai < 0 {
+        format!("-{teks}")
+    } else {
+        teks
+    }
+}
+
+/// "Pengadaan Kertas HVS 3 rim (BA-01)", dipotong ke batas keterangan jurnal.
+/// Cermin `keteranganJurnalInventaris`.
+pub fn keterangan_jurnal_inventaris(
+    alasan: &str,
+    nama_barang: &str,
+    jumlah: i64,
+    desimal: bool,
+    satuan: &str,
+    nomor_dokumen: Option<&str>,
+) -> String {
+    let mut teks = format!(
+        "{alasan} {} {} {}",
+        nama_barang.trim(),
+        format_jumlah(jumlah, desimal),
+        satuan.trim()
+    );
+    if let Some(nomor) = nomor_dokumen.map(str::trim).filter(|nomor| !nomor.is_empty()) {
+        teks.push_str(&format!(" ({nomor})"));
+    }
+    teks.chars().take(super::accounting::MAKS_KETERANGAN).collect()
+}
+
+/// Akun yang dipilih untuk satu tekan. Cermin `AkunJurnalInventaris`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AkunJurnalInventaris {
+    #[serde(default)]
+    pub akun_debit_aset: Option<String>,
+    #[serde(default)]
+    pub akun_debit_habis_pakai: Option<String>,
+    #[serde(default)]
+    pub akun_kredit_bayar: Option<String>,
+    #[serde(default)]
+    pub akun_kredit_hibah: Option<String>,
+    #[serde(default)]
+    pub akun_debit_servis: Option<String>,
+}
+
+fn akun_terisi(akun: &Option<String>) -> Option<&str> {
+    akun.as_deref().map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Pasangan (debit, kredit) untuk satu baris: debit menurut tipe barang,
+/// kredit menurut alasan (Pengadaan = uang keluar, Hibah = sumbangan).
+/// Cermin `pasanganAkunJurnalInventaris`.
+pub fn pasangan_akun_jurnal_inventaris(
+    tipe: &str,
+    alasan: &str,
+    akun: &AkunJurnalInventaris,
+) -> Result<(String, String), String> {
+    let debit = match tipe {
+        "Aset" => akun_terisi(&akun.akun_debit_aset)
+            .ok_or("Pilih akun untuk barang Aset.")?,
+        "Habis Pakai" => akun_terisi(&akun.akun_debit_habis_pakai)
+            .ok_or("Pilih akun untuk barang Habis Pakai.")?,
+        _ => return Err(format!("Tipe barang {tipe} tidak dikenal.")),
+    };
+    let kredit = match alasan {
+        "Pengadaan" => akun_terisi(&akun.akun_kredit_bayar)
+            .ok_or("Pilih akun pembayaran pengadaan.")?,
+        "Hibah" => akun_terisi(&akun.akun_kredit_hibah)
+            .ok_or("Pilih akun pendapatan untuk hibah.")?,
+        _ => return Err(format!("Mutasi {alasan} tidak bisa dijurnal dari inventaris.")),
+    };
+    Ok((debit.to_owned(), kredit.to_owned()))
+}
+
+/// Pasangan (debit, kredit) untuk biaya servis (v29): akun biaya servis /
+/// akun pembayaran. Cermin `pasanganAkunJurnalServis`.
+pub fn pasangan_akun_jurnal_servis(akun: &AkunJurnalInventaris) -> Result<(String, String), String> {
+    let debit = akun_terisi(&akun.akun_debit_servis).ok_or("Pilih akun biaya servis.")?;
+    let kredit = akun_terisi(&akun.akun_kredit_bayar).ok_or("Pilih akun pembayaran servis.")?;
+    Ok((debit.to_owned(), kredit.to_owned()))
+}
+
+/// Kelompok akun yang sah untuk setiap peran. Cermin `KELOMPOK_AKUN_JURNAL_INVENTARIS`.
+pub const KELOMPOK_DEBIT_INVENTARIS: [&str; 2] = ["Aset", "Beban"];
+pub const KELOMPOK_KREDIT_BAYAR: [&str; 2] = ["Aset", "Kewajiban"];
+pub const KELOMPOK_KREDIT_HIBAH: [&str; 1] = ["Pendapatan"];
+
+// Servis aset (v29)
+
+/// Hasil penutupan servis. Cermin `HASIL_SERVIS`.
+pub const HASIL_SERVIS: [&str; 4] = ["Baik", "Rusak Ringan", "Rusak Berat", "Tidak Bisa Diperbaiki"];
+pub const MAKS_PENYEDIA_SERVIS: usize = 120;
+pub const MAKS_KELUHAN_SERVIS: usize = 500;
+pub const MAKS_CATATAN_SERVIS: usize = 500;
+/// Cermin `MAKS_SERVIS_TERBUKA` / `MAKS_RIWAYAT_SERVIS`.
+pub const MAKS_SERVIS_TERBUKA: usize = 500;
+pub const MAKS_RIWAYAT_SERVIS: usize = 1000;
+
+/// Mutasi Perubahan Kondisi yang ditulis saat servis ditutup. Berid tetap,
+/// jadi penutupan yang terkirim dua kali hanya memindahkan kondisi sekali.
+/// Cermin `idMutasiKondisiServis`.
+pub fn id_mutasi_kondisi_servis(id_servis: &str) -> String {
+    format!("{id_servis}-kondisi")
+}
+
+/// Mutasi hasil penutupan servis tidak bisa dibatalkan dari kartu stok:
+/// servisnya tetap "Selesai, Baik" padahal stoknya kembali rusak. Cermin `isMutasiServis`.
+pub fn is_mutasi_servis(id_mutasi: &str) -> bool {
+    id_mutasi.starts_with("srv-") && id_mutasi.ends_with("-kondisi")
+}
+
+/// Cermin `idJurnalServis`.
+pub fn id_jurnal_servis(id_servis: &str) -> String {
+    format!("jrn-{id_servis}")
+}
+
+/// Status tidak disimpan. Cermin `statusServis`.
+pub fn status_servis(tanggal_selesai: Option<&str>, dibatalkan_pada: Option<&str>) -> &'static str {
+    if dibatalkan_pada.is_some() {
+        "Dibatalkan"
+    } else if tanggal_selesai.is_some() {
+        "Selesai"
+    } else {
+        "Sedang diservis"
+    }
+}
+
+/// Kondisi baru yang dicatat saat servis ditutup, atau `None` bila stok tidak
+/// berubah: hasilnya sama dengan kondisi awal, atau "Tidak Bisa Diperbaiki"
+/// (afkir tetap lewat formulir Keluar ber-izin `inventory.adjust`).
+/// Cermin `kondisiHasilServis`.
+pub fn kondisi_hasil_servis(kondisi_awal: &str, hasil: &str) -> Option<&'static str> {
+    KONDISI_BARANG
+        .iter()
+        .copied()
+        .find(|kondisi| *kondisi == hasil)
+        .filter(|kondisi| *kondisi != kondisi_awal)
+}
+
+/// "Servis Proyektor (PRJ-03) di Toko Jaya". Cermin `keteranganJurnalServis`.
+pub fn keterangan_jurnal_servis(
+    nama_barang: &str,
+    kode_unit: Option<&str>,
+    penyedia: Option<&str>,
+) -> String {
+    let mut teks = format!("Servis {}", nama_barang.trim());
+    if let Some(kode) = kode_unit.map(str::trim).filter(|kode| !kode.is_empty()) {
+        teks.push_str(&format!(" ({kode})"));
+    }
+    if let Some(nama) = penyedia.map(str::trim).filter(|nama| !nama.is_empty()) {
+        teks.push_str(&format!(" di {nama}"));
+    }
+    teks.chars().take(super::accounting::MAKS_KETERANGAN).collect()
+}
+
+/// Isian yang boleh diubah selama servis terbuka.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IsianServis {
+    pub tanggal_mulai: String,
+    pub penyedia: Option<String>,
+    pub keluhan: String,
+}
+
+/// Cermin `validateIsianServis`.
+pub fn validate_isian_servis(
+    tanggal_mulai: &str,
+    penyedia: Option<&str>,
+    keluhan: &str,
+    hari_ini: &str,
+) -> Result<IsianServis, String> {
+    let tanggal_mulai = tanggal_mulai.trim();
+    if !is_valid_date(tanggal_mulai) {
+        return Err("Tanggal dibawa tidak valid.".into());
+    }
+    if tanggal_mulai > hari_ini {
+        return Err("Tanggal dibawa tidak boleh setelah hari ini.".into());
+    }
+    let keluhan = keluhan.trim();
+    if keluhan.is_empty() {
+        return Err("Keluhan wajib diisi.".into());
+    }
+    if keluhan.chars().count() > MAKS_KELUHAN_SERVIS {
+        return Err(format!("Keluhan maksimal {MAKS_KELUHAN_SERVIS} karakter."));
+    }
+    let penyedia = penyedia.map(str::trim).filter(|nama| !nama.is_empty());
+    if penyedia.is_some_and(|nama| nama.chars().count() > MAKS_PENYEDIA_SERVIS) {
+        return Err(format!("Nama penyedia servis maksimal {MAKS_PENYEDIA_SERVIS} karakter."));
+    }
+    Ok(IsianServis {
+        tanggal_mulai: tanggal_mulai.to_owned(),
+        penyedia: penyedia.map(str::to_owned),
+        keluhan: keluhan.to_owned(),
+    })
+}
+
+/// Draft buka atau ubah servis. Saat mengubah, hanya tanggal dibawa,
+/// penyedia, dan keluhan yang dipakai. Cermin `servisDraftSchema`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServisDraft {
+    #[serde(default)]
+    pub id_servis: Option<String>,
+    #[serde(default)]
+    pub id_barang: String,
+    #[serde(default)]
+    pub id_unit: Option<String>,
+    #[serde(default)]
+    pub jumlah: Option<i64>,
+    #[serde(default)]
+    pub tempat: Option<String>,
+    #[serde(default)]
+    pub kondisi_awal: Option<String>,
+    #[serde(default)]
+    pub tanggal_mulai: String,
+    #[serde(default)]
+    pub penyedia: Option<String>,
+    #[serde(default)]
+    pub keluhan: String,
+}
+
+/// Draft penutupan servis. Cermin `tutupServisDraftSchema`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TutupServisDraft {
+    #[serde(default)]
+    pub id_servis: String,
+    #[serde(default)]
+    pub tanggal_selesai: String,
+    #[serde(default)]
+    pub hasil: String,
+    #[serde(default)]
+    pub biaya: i64,
+    #[serde(default)]
+    pub catatan_selesai: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TutupServisValid {
+    pub tanggal_selesai: String,
+    pub hasil: String,
+    pub biaya: i64,
+    pub catatan_selesai: Option<String>,
+}
+
+/// Cermin `validateTutupServis`.
+pub fn validate_tutup_servis(
+    draft: &TutupServisDraft,
+    tanggal_mulai: &str,
+    hari_ini: &str,
+) -> Result<TutupServisValid, String> {
+    let tanggal = draft.tanggal_selesai.trim();
+    if !is_valid_date(tanggal) {
+        return Err("Tanggal kembali tidak valid.".into());
+    }
+    if tanggal > hari_ini {
+        return Err("Tanggal kembali tidak boleh setelah hari ini.".into());
+    }
+    if tanggal < tanggal_mulai {
+        return Err("Tanggal kembali tidak boleh sebelum tanggal dibawa.".into());
+    }
+    let hasil = draft.hasil.trim();
+    if !HASIL_SERVIS.contains(&hasil) {
+        return Err("Hasil servis tidak dikenal.".into());
+    }
+    if !(0..=MAKS_HARGA_SATUAN).contains(&draft.biaya) {
+        return Err("Biaya servis tidak valid.".into());
+    }
+    let catatan = draft
+        .catatan_selesai
+        .as_deref()
+        .map(str::trim)
+        .filter(|teks| !teks.is_empty());
+    if catatan.is_some_and(|teks| teks.chars().count() > MAKS_CATATAN_SERVIS) {
+        return Err(format!("Catatan maksimal {MAKS_CATATAN_SERVIS} karakter."));
+    }
+    Ok(TutupServisValid {
+        tanggal_selesai: tanggal.to_owned(),
+        hasil: hasil.to_owned(),
+        biaya: draft.biaya,
+        catatan_selesai: catatan.map(str::to_owned),
+    })
+}
+
+/// Cermin `validateAlasanBatalServis`.
+pub fn validate_alasan_batal_servis(alasan: &str) -> Result<String, String> {
+    let alasan = alasan.trim();
+    if alasan.is_empty() {
+        return Err("Alasan pembatalan wajib diisi.".into());
+    }
+    if alasan.chars().count() > MAKS_CATATAN_SERVIS {
+        return Err(format!("Alasan pembatalan maksimal {MAKS_CATATAN_SERVIS} karakter."));
+    }
+    Ok(alasan.to_owned())
+}
+
 /// Izin yang dituntut sebuah alasan mutasi. Pembatalan, opname, dan
 /// penghapusan stok mengurangi stok tanpa barangnya diterima siapa pun, jadi
 /// butuh izin sensitif. Command memeriksanya SEBELUM menulis apa pun.
@@ -311,7 +645,7 @@ pub fn is_valid_date(value: &str) -> bool {
     (1..=max_day).contains(&day)
 }
 
-fn clean(value: &Option<String>) -> Option<String> {
+pub(crate) fn clean(value: &Option<String>) -> Option<String> {
     value
         .as_deref()
         .map(str::trim)
@@ -1019,11 +1353,11 @@ pub fn validate_unit_edit(draft: &UnitDraft) -> Result<(Option<String>, Option<S
 
 // ── I/O ─────────────────────────────────────────────────────────────────────
 
-fn invalid(message: impl Into<String>) -> CommandError {
+pub(crate) fn invalid(message: impl Into<String>) -> CommandError {
     CommandError::new("VALIDATION_ERROR", message)
 }
 
-fn new_hex_id(prefix: &str) -> String {
+pub(crate) fn new_hex_id(prefix: &str) -> String {
     let mut bytes = [0u8; 16];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
     let mut id = String::with_capacity(prefix.len() + 32);
@@ -1360,7 +1694,7 @@ pub fn delete_column(state: &DesktopState, id_kolom: &str) -> Result<Value, Comm
     Ok(json!({ "sukses": true, "barang_dibersihkan": barang.len() }))
 }
 
-fn wib_today(connection: &Connection) -> String {
+pub(crate) fn wib_today(connection: &Connection) -> String {
     connection
         .query_row("SELECT date('now', '+7 hours');", [], |row| row.get(0))
         .unwrap_or_default()
@@ -1653,6 +1987,7 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
         "kategori": kategori,
         "kode_prefix": read_kode_prefixes(&connection)?,
         "kolom": list_kolom(&connection)?,
+        "servis": list_servis_terbuka(&connection)?,
         "hari_ini": wib_today(&connection),
         // Untuk label QR: profil perusahaan biasa menuntut `settings.manage`.
         "nama_perusahaan": kop_perusahaan(&connection)?["nama"].clone(),
@@ -1706,14 +2041,26 @@ pub fn list_recipients(state: &DesktopState) -> Result<Value, CommandError> {
 pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandError> {
     let draft: BarangDraft =
         serde_json::from_value(draft).map_err(|_| invalid("Data barang tidak valid."))?;
-    let valid = validate_barang(&draft).map_err(invalid)?;
     let client_id = sync::ensure_client_id(state)?;
-
     let mut connection = storage::database(&state.data_dir)?;
     let transaction = connection
         .transaction()
         .map_err(|_| CommandError::internal())?;
+    let (id_barang, kode_barang) = save_item_tx(&transaction, &client_id, &draft, None)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_barang": id_barang, "kode_barang": kode_barang }))
+}
 
+/// Inti `save_item` di dalam transaksi pemanggil. `id_baru` = id untuk barang
+/// baru (penerimaan pengajuan memakai `brg-<id_baris>`); kosong = id acak.
+/// Cermin `saveItemTx`.
+pub(crate) fn save_item_tx(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    draft: &BarangDraft,
+    id_baru: Option<&str>,
+) -> Result<(String, String), CommandError> {
+    let valid = validate_barang(draft).map_err(invalid)?;
     let requested_id = clean(&draft.id_barang);
     let existing: Option<(String, i64, i64)> = match requested_id.as_deref() {
         Some(id) => Some(
@@ -1729,7 +2076,9 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
         ),
         None => None,
     };
-    let id_barang = requested_id.unwrap_or_else(|| new_hex_id("brg-"));
+    let id_barang = requested_id
+        .or_else(|| id_baru.map(str::to_owned))
+        .unwrap_or_else(|| new_hex_id("brg-"));
 
     if let Some((satuan_lama, expired_lama, desimal_lama)) = existing {
         // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
@@ -1818,18 +2167,17 @@ pub fn save_item(state: &DesktopState, draft: Value) -> Result<Value, CommandErr
         )
         .map_err(|_| CommandError::internal())?;
 
-    let payload = barang_json(&transaction, &id_barang)?.ok_or_else(CommandError::internal)?;
+    let payload = barang_json(transaction, &id_barang)?.ok_or_else(CommandError::internal)?;
     sync::enqueue(
-        &transaction,
-        &client_id,
+        transaction,
+        client_id,
         "inventory-item",
         "save",
         &id_barang,
         &payload,
         None,
     )?;
-    transaction.commit().map_err(|_| CommandError::internal())?;
-    Ok(json!({ "sukses": true, "id_barang": id_barang, "kode_barang": kode_barang }))
+    Ok((id_barang, kode_barang))
 }
 
 fn kode_dipakai(
@@ -2483,6 +2831,11 @@ pub fn cancel_mutation(
         .map_err(|_| CommandError::internal())?
         .ok_or_else(|| invalid("Mutasi tidak ditemukan."))?;
     let (asal, id_barang, satuan) = asal;
+    if is_mutasi_servis(&asal.id_mutasi) {
+        return Err(invalid(
+            "Mutasi ini dibuat dari penutupan servis dan tidak bisa dibatalkan. Catat Perubahan Kondisi baru bila kondisinya salah.",
+        ));
+    }
     let kebalikan = build_cancellation(&asal).map_err(invalid)?;
 
     let sudah_batal: bool = transaction
@@ -2551,6 +2904,16 @@ pub fn cancel_mutation(
         &kebalikan.id_mutasi,
         &payload,
         None,
+    )?;
+    // Pengadaan/hibah yang sudah dijurnal ikut dibalik di transaksi yang sama,
+    // supaya stok dan pembukuan tidak bisa berpisah. Tanpa jurnal: tidak ada apa-apa.
+    super::accounting::balik_jurnal_tx(
+        &transaction,
+        state,
+        &client_id,
+        &id_jurnal_inventaris(&asal.id_mutasi),
+        KETERANGAN_BALIK_INVENTARIS.to_owned(),
+        dicatat_oleh,
     )?;
     transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true, "id_mutasi": kebalikan.id_mutasi }))
@@ -3017,9 +3380,10 @@ pub fn procurement(state: &DesktopState, dari: &str, sampai: &str) -> Result<Val
             &format!(
                 "SELECT m.tanggal, b.kode_barang, b.nama_barang, b.satuan, m.alasan, m.jumlah,
                         m.harga_satuan, COALESCE(m.sumber_dana, '') AS sumber_dana, m.nomor_dokumen,
-                        m.tempat_tujuan, {NILAI_MUTASI_SQL} AS nilai, b.desimal
+                        m.tempat_tujuan, {NILAI_MUTASI_SQL} AS nilai, b.desimal, j.nomor AS nomor_jurnal
                  FROM inventory_mutasi m
                  JOIN inventory_barang b ON b.id_barang = m.id_barang
+                 LEFT JOIN keu_jurnal j ON j.id_jurnal = 'jrn-inv-' || m.id_mutasi
                  WHERE m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah', 'Saldo Awal')
                    AND m.tanggal >= ? AND m.tanggal <= ?
                    AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
@@ -3047,6 +3411,7 @@ pub fn procurement(state: &DesktopState, dari: &str, sampai: &str) -> Result<Val
                 "tempat_tujuan": row.get::<_, Option<String>>(9)?,
                 "nilai": nilai,
                 "desimal": row.get::<_, i64>(11)? == 1,
+                "nomor_jurnal": row.get::<_, Option<String>>(12)?,
             }))
         })
         .map_err(|_| CommandError::internal())?
@@ -3075,6 +3440,923 @@ pub fn procurement(state: &DesktopState, dari: &str, sampai: &str) -> Result<Val
         "terpotong": terpotong,
     }))
 }
+
+/// Syarat baris Masuk yang bisa dijurnal (PRD §3.2), dipakai daftar dan
+/// penulis supaya keduanya tidak bisa berbeda. Nilai > 0 diperiksa terpisah
+/// karena bergantung pada `desimal`. Cermin `SYARAT_JURNAL_INVENTARIS_SQL`.
+pub const SYARAT_JURNAL_INVENTARIS_SQL: &str = "m.jenis = 'Masuk' AND m.alasan IN ('Pengadaan', 'Hibah')
+        AND m.harga_satuan IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
+        AND NOT EXISTS (SELECT 1 FROM keu_jurnal j WHERE j.id_jurnal = 'jrn-inv-' || m.id_mutasi)";
+
+/// Jurnal Inventaris yang mutasinya sudah dibatalkan tetapi jurnalnya belum
+/// dibalik: terjadi bila pembatalan dan penjurnalan dicatat di dua perangkat
+/// yang belum saling sinkron. Cermin `JURNAL_INVENTARIS_YATIM_SQL`.
+pub const JURNAL_INVENTARIS_YATIM_SQL: &str = "SELECT j.id_jurnal, j.nomor, j.tanggal, j.keterangan, j.id_sumber
+    FROM keu_jurnal j
+    WHERE j.sumber = 'Inventaris' AND j.id_sumber IS NOT NULL
+      AND j.id_jurnal = 'jrn-inv-' || j.id_sumber
+      AND EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || j.id_sumber)
+      AND NOT EXISTS (SELECT 1 FROM keu_jurnal p WHERE p.id_jurnal = 'batal-' || j.id_jurnal)
+    ORDER BY j.tanggal, j.id_jurnal
+    LIMIT 200;";
+
+struct BarisJurnalInventaris {
+    id_mutasi: String,
+    tanggal: String,
+    alasan: String,
+    tipe: String,
+    nama_barang: String,
+    satuan: String,
+    desimal: bool,
+    jumlah: i64,
+    nilai: i64,
+    nomor_dokumen: Option<String>,
+}
+
+fn baca_baris_jurnal(row: &rusqlite::Row<'_>) -> rusqlite::Result<BarisJurnalInventaris> {
+    Ok(BarisJurnalInventaris {
+        id_mutasi: row.get(0)?,
+        tanggal: row.get(1)?,
+        alasan: row.get(2)?,
+        tipe: row.get(3)?,
+        nama_barang: row.get(4)?,
+        satuan: row.get(5)?,
+        desimal: row.get::<_, i64>(6)? == 1,
+        jumlah: row.get(7)?,
+        nilai: row.get(8)?,
+        nomor_dokumen: row.get(9)?,
+    })
+}
+
+const KOLOM_BARIS_JURNAL: &str = "m.id_mutasi, m.tanggal, m.alasan, b.tipe, b.nama_barang, b.satuan,
+    b.desimal, m.jumlah";
+
+/// Daftar "Dari Inventaris" di Keuangan: baris yang belum dijurnal, jurnal yang
+/// perlu dibalik, dan batas tutup buku (baris di periode tertutup ditandai).
+pub fn journal_pending(state: &DesktopState, dari: &str, sampai: &str) -> Result<Value, CommandError> {
+    if !is_valid_date(dari) || !is_valid_date(sampai) || dari > sampai {
+        return Err(invalid("Rentang tanggal tidak valid."));
+    }
+    let connection = storage::database(&state.data_dir)?;
+    let batas = super::tutup_buku::batas_tutup(&connection)?;
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {KOLOM_BARIS_JURNAL}, {NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen,
+                    b.kode_barang, COALESCE(m.sumber_dana, '') AS sumber_dana, m.harga_satuan,
+                    (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref)
+             FROM inventory_mutasi m
+             JOIN inventory_barang b ON b.id_barang = m.id_barang
+             WHERE {SYARAT_JURNAL_INVENTARIS_SQL}
+               AND {NILAI_MUTASI_SQL} > 0
+               AND m.tanggal >= ? AND m.tanggal <= ?
+             ORDER BY m.tanggal, m.created_at, m.id_mutasi
+             LIMIT 501;"
+        ))
+        .map_err(|_| CommandError::internal())?;
+    let mut baris: Vec<Value> = statement
+        .query_map(params![dari, sampai], |row| {
+            let item = baca_baris_jurnal(row)?;
+            let tertutup = batas.as_deref().is_some_and(|batas| item.tanggal.as_str() <= batas);
+            Ok(json!({
+                "id_mutasi": item.id_mutasi,
+                "tanggal": item.tanggal,
+                "alasan": item.alasan,
+                "tipe": item.tipe,
+                "kode_barang": row.get::<_, String>(10)?,
+                "nama_barang": item.nama_barang,
+                "satuan": item.satuan,
+                "desimal": item.desimal,
+                "jumlah": item.jumlah,
+                "harga_satuan": row.get::<_, i64>(12)?,
+                "nilai": item.nilai,
+                "sumber_dana": row.get::<_, String>(11)?,
+                "nomor_dokumen": item.nomor_dokumen,
+                // Masuk hasil penerimaan pengajuan (v30): tautan ke laporannya.
+                "id_pengajuan": row.get::<_, Option<String>>(13)?,
+                "periode_tertutup": tertutup,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+    let terpotong = baris.len() > MAKS_DAFTAR_JURNAL_INVENTARIS;
+    baris.truncate(MAKS_DAFTAR_JURNAL_INVENTARIS);
+
+    let mut yatim = connection
+        .prepare(JURNAL_INVENTARIS_YATIM_SQL)
+        .map_err(|_| CommandError::internal())?;
+    let perlu_dibalik: Vec<Value> = yatim
+        .query_map([], |row| {
+            Ok(json!({
+                "id_jurnal": row.get::<_, String>(0)?,
+                "nomor": row.get::<_, String>(1)?,
+                "tanggal": row.get::<_, String>(2)?,
+                "keterangan": row.get::<_, String>(3)?,
+                "id_mutasi": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+
+    let mut servis_statement = connection
+        .prepare(&format!(
+            "SELECT s.id_servis, s.tanggal_selesai, b.kode_barang, b.nama_barang, u.kode_unit,
+                    s.penyedia, s.biaya
+             FROM inventory_servis s
+             JOIN inventory_barang b ON b.id_barang = s.id_barang
+             LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit
+             WHERE {SYARAT_JURNAL_SERVIS_SQL}
+               AND s.tanggal_selesai >= ? AND s.tanggal_selesai <= ?
+             ORDER BY s.tanggal_selesai, s.id_servis
+             LIMIT {MAKS_DAFTAR_JURNAL_INVENTARIS};"
+        ))
+        .map_err(|_| CommandError::internal())?;
+    let servis: Vec<Value> = servis_statement
+        .query_map(params![dari, sampai], |row| {
+            let tanggal: String = row.get(1)?;
+            let tertutup = batas.as_deref().is_some_and(|batas| tanggal.as_str() <= batas);
+            Ok(json!({
+                "id_servis": row.get::<_, String>(0)?,
+                "tanggal": tanggal,
+                "kode_barang": row.get::<_, String>(2)?,
+                "nama_barang": row.get::<_, String>(3)?,
+                "kode_unit": row.get::<_, Option<String>>(4)?,
+                "penyedia": row.get::<_, Option<String>>(5)?,
+                "nilai": row.get::<_, i64>(6)?,
+                "periode_tertutup": tertutup,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+    Ok(json!({
+        "baris": baris,
+        "terpotong": terpotong,
+        "perlu_dibalik": perlu_dibalik,
+        "servis": servis,
+        "batas_tutup": batas,
+    }))
+}
+
+/// Servis selesai berbiaya yang belum dijurnal (v29). Servis yang ditutup
+/// bersifat final, jadi tidak ada jurnal yatim untuknya. Cermin `SYARAT_JURNAL_SERVIS_SQL`.
+pub const SYARAT_JURNAL_SERVIS_SQL: &str = "s.tanggal_selesai IS NOT NULL AND s.dibatalkan_pada IS NULL
+        AND s.biaya > 0
+        AND NOT EXISTS (SELECT 1 FROM keu_jurnal j WHERE j.id_jurnal = 'jrn-' || s.id_servis)";
+
+/// Draft "Catat ke jurnal". Cermin `jurnalInventarisDraftSchema`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JurnalInventarisDraft {
+    #[serde(default)]
+    pub id_mutasi: Vec<String>,
+    #[serde(default)]
+    pub balik: Vec<String>,
+    #[serde(default)]
+    pub akun_debit_aset: Option<String>,
+    #[serde(default)]
+    pub akun_debit_habis_pakai: Option<String>,
+    #[serde(default)]
+    pub akun_kredit_bayar: Option<String>,
+    #[serde(default)]
+    pub akun_kredit_hibah: Option<String>,
+    #[serde(default)]
+    pub id_servis: Vec<String>,
+    #[serde(default)]
+    pub akun_debit_servis: Option<String>,
+}
+
+fn assert_akun_kelompok(
+    connection: &Connection,
+    id_akun: &str,
+    kelompok: &[&str],
+) -> Result<(), CommandError> {
+    let kelompok_akun: Option<String> = connection
+        .query_row(
+            "SELECT kelompok FROM keu_akun WHERE id_akun = ? AND is_aktif = 1;",
+            params![id_akun],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+    match kelompok_akun {
+        Some(nilai) if kelompok.contains(&nilai.as_str()) => Ok(()),
+        _ => Err(invalid(format!(
+            "Akun yang dipilih harus akun {} yang aktif.",
+            kelompok.join(" atau ")
+        ))),
+    }
+}
+
+fn unik_terisi(daftar: &[String]) -> Vec<String> {
+    let mut hasil: Vec<String> = Vec::new();
+    for id in daftar.iter().map(|id| id.trim()) {
+        if !id.is_empty() && !hasil.iter().any(|ada| ada == id) {
+            hasil.push(id.to_owned());
+        }
+    }
+    hasil
+}
+
+/// Menulis satu jurnal per baris yang dicentang, dan membalik jurnal yang
+/// mutasinya sudah dibatalkan, semuanya dalam SATU transaksi: satu baris yang
+/// tertolak (periode tertutup, sudah dijurnal perangkat lain) menolak semuanya.
+/// Nilai selalu dihitung ulang dari mutasi, tidak pernah dari layar.
+/// Cermin `postJurnalInventaris`.
+pub fn journal_post(state: &DesktopState, operator: &str, draft: Value) -> Result<Value, CommandError> {
+    let draft: JurnalInventarisDraft = serde_json::from_value(draft)
+        .map_err(|_| invalid("Data jurnal inventaris tidak valid."))?;
+    let id_mutasi = unik_terisi(&draft.id_mutasi);
+    let balik = unik_terisi(&draft.balik);
+    let id_servis = unik_terisi(&draft.id_servis);
+    if id_mutasi.is_empty() && balik.is_empty() && id_servis.is_empty() {
+        return Err(invalid("Pilih minimal satu baris."));
+    }
+    if id_mutasi.len() + balik.len() + id_servis.len() > MAKS_JURNAL_INVENTARIS {
+        return Err(invalid(format!(
+            "Paling banyak {MAKS_JURNAL_INVENTARIS} baris sekali catat."
+        )));
+    }
+    let akun = AkunJurnalInventaris {
+        akun_debit_aset: draft.akun_debit_aset,
+        akun_debit_habis_pakai: draft.akun_debit_habis_pakai,
+        akun_kredit_bayar: draft.akun_kredit_bayar,
+        akun_kredit_hibah: draft.akun_kredit_hibah,
+        akun_debit_servis: draft.akun_debit_servis,
+    };
+
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    for id in &id_mutasi {
+        let item = transaction
+            .query_row(
+                &format!(
+                    "SELECT {KOLOM_BARIS_JURNAL}, {NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen
+                     FROM inventory_mutasi m
+                     JOIN inventory_barang b ON b.id_barang = m.id_barang
+                     WHERE m.id_mutasi = ? AND {SYARAT_JURNAL_INVENTARIS_SQL};"
+                ),
+                params![id],
+                baca_baris_jurnal,
+            )
+            .optional()
+            .map_err(|_| CommandError::internal())?
+            .filter(|item| item.nilai > 0)
+            .ok_or_else(|| {
+                invalid("Ada baris yang sudah dijurnal, dibatalkan, atau tidak bisa dijurnal. Muat ulang daftarnya.")
+            })?;
+        let (debit, kredit) =
+            pasangan_akun_jurnal_inventaris(&item.tipe, &item.alasan, &akun).map_err(invalid)?;
+        assert_akun_kelompok(&transaction, &debit, &KELOMPOK_DEBIT_INVENTARIS)?;
+        if item.alasan == "Hibah" {
+            assert_akun_kelompok(&transaction, &kredit, &KELOMPOK_KREDIT_HIBAH)?;
+        } else {
+            assert_akun_kelompok(&transaction, &kredit, &KELOMPOK_KREDIT_BAYAR)?;
+        }
+        let id_jurnal = id_jurnal_inventaris(&item.id_mutasi);
+        super::accounting::tulis_jurnal_tx(
+            &transaction,
+            state,
+            &client_id,
+            super::accounting::HeaderTulis {
+                id_jurnal: id_jurnal.clone(),
+                tanggal: item.tanggal.clone(),
+                keterangan: keterangan_jurnal_inventaris(
+                    &item.alasan,
+                    &item.nama_barang,
+                    item.jumlah,
+                    item.desimal,
+                    &item.satuan,
+                    item.nomor_dokumen.as_deref(),
+                ),
+                sumber: "Inventaris",
+                id_sumber: Some(item.id_mutasi.clone()),
+                id_jurnal_batal: None,
+                dibuat_oleh: operator.to_owned(),
+            },
+            &[
+                super::accounting::BarisTulis {
+                    id_baris: format!("{id_jurnal}-1"),
+                    id_akun: debit,
+                    debit: item.nilai,
+                    kredit: 0,
+                    keterangan: None,
+                    urutan: 1,
+                },
+                super::accounting::BarisTulis {
+                    id_baris: format!("{id_jurnal}-2"),
+                    id_akun: kredit,
+                    debit: 0,
+                    kredit: item.nilai,
+                    keterangan: None,
+                    urutan: 2,
+                },
+            ],
+        )?;
+    }
+
+    for id in &balik {
+        let yatim: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM keu_jurnal j
+                    WHERE j.id_jurnal = ? AND j.sumber = 'Inventaris' AND j.id_sumber IS NOT NULL
+                      AND EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || j.id_sumber)
+                      AND NOT EXISTS (SELECT 1 FROM keu_jurnal p WHERE p.id_jurnal = 'batal-' || j.id_jurnal));",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        if !yatim {
+            return Err(invalid(
+                "Ada jurnal yang sudah dibalik atau mutasinya belum dibatalkan. Muat ulang daftarnya.",
+            ));
+        }
+        super::accounting::balik_jurnal_tx(
+            &transaction,
+            state,
+            &client_id,
+            id,
+            KETERANGAN_BALIK_INVENTARIS.to_owned(),
+            operator,
+        )?;
+    }
+
+    for id in &id_servis {
+        let (tanggal, nama_barang, kode_unit, penyedia, biaya): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = transaction
+            .query_row(
+                &format!(
+                    "SELECT s.tanggal_selesai, b.nama_barang, u.kode_unit, s.penyedia, s.biaya
+                     FROM inventory_servis s
+                     JOIN inventory_barang b ON b.id_barang = s.id_barang
+                     LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit
+                     WHERE s.id_servis = ? AND {SYARAT_JURNAL_SERVIS_SQL};"
+                ),
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()
+            .map_err(|_| CommandError::internal())?
+            .ok_or_else(|| {
+                invalid("Ada servis yang sudah dijurnal atau tidak bisa dijurnal. Muat ulang daftarnya.")
+            })?;
+        let (debit, kredit) = pasangan_akun_jurnal_servis(&akun).map_err(invalid)?;
+        assert_akun_kelompok(&transaction, &debit, &KELOMPOK_DEBIT_INVENTARIS)?;
+        assert_akun_kelompok(&transaction, &kredit, &KELOMPOK_KREDIT_BAYAR)?;
+        let id_jurnal = id_jurnal_servis(id);
+        super::accounting::tulis_jurnal_tx(
+            &transaction,
+            state,
+            &client_id,
+            super::accounting::HeaderTulis {
+                id_jurnal: id_jurnal.clone(),
+                tanggal,
+                keterangan: keterangan_jurnal_servis(
+                    &nama_barang,
+                    kode_unit.as_deref(),
+                    penyedia.as_deref(),
+                ),
+                sumber: "Inventaris",
+                id_sumber: Some(id.clone()),
+                id_jurnal_batal: None,
+                dibuat_oleh: operator.to_owned(),
+            },
+            &[
+                super::accounting::BarisTulis {
+                    id_baris: format!("{id_jurnal}-1"),
+                    id_akun: debit,
+                    debit: biaya,
+                    kredit: 0,
+                    keterangan: None,
+                    urutan: 1,
+                },
+                super::accounting::BarisTulis {
+                    id_baris: format!("{id_jurnal}-2"),
+                    id_akun: kredit,
+                    debit: 0,
+                    kredit: biaya,
+                    keterangan: None,
+                    urutan: 2,
+                },
+            ],
+        )?;
+    }
+
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({
+        "sukses": true,
+        "dijurnal": id_mutasi.len() + id_servis.len(),
+        "dibalik": balik.len(),
+    }))
+}
+
+/// Keterangan jurnal pembalik saat mutasi yang sudah dijurnal dibatalkan.
+/// Cermin `KETERANGAN_BALIK_INVENTARIS`.
+pub const KETERANGAN_BALIK_INVENTARIS: &str = "Pembatalan mutasi inventaris";
+
+// Servis aset: I/O
+
+/// Kolom daftar servis, bersama nama barang dan kode unit. `lama_hari` dihitung
+/// SQLite dengan tanggal WIB. Cermin `KOLOM_SERVIS_SQL`.
+const KOLOM_SERVIS_SQL: &str = "s.id_servis, s.id_barang, b.kode_barang, b.nama_barang, s.id_unit, u.kode_unit,
+    s.jumlah, s.tempat, s.kondisi_awal, s.tanggal_mulai, s.penyedia, s.keluhan, s.tanggal_selesai,
+    s.hasil, s.biaya, s.catatan_selesai, s.dibatalkan_pada, s.alasan_batal, s.dibuka_oleh, s.ditutup_oleh,
+    CAST(julianday(COALESCE(s.tanggal_selesai, date('now', '+7 hours'))) - julianday(s.tanggal_mulai) AS INTEGER) AS lama_hari
+    FROM inventory_servis s
+    JOIN inventory_barang b ON b.id_barang = s.id_barang
+    LEFT JOIN inventory_unit u ON u.id_unit = s.id_unit";
+
+fn baca_servis(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let tanggal_selesai: Option<String> = row.get(12)?;
+    let dibatalkan_pada: Option<String> = row.get(16)?;
+    Ok(json!({
+        "id_servis": row.get::<_, String>(0)?,
+        "id_barang": row.get::<_, String>(1)?,
+        "kode_barang": row.get::<_, String>(2)?,
+        "nama_barang": row.get::<_, String>(3)?,
+        "id_unit": row.get::<_, Option<String>>(4)?,
+        "kode_unit": row.get::<_, Option<String>>(5)?,
+        "jumlah": row.get::<_, i64>(6)?,
+        "tempat": row.get::<_, String>(7)?,
+        "kondisi_awal": row.get::<_, String>(8)?,
+        "tanggal_mulai": row.get::<_, String>(9)?,
+        "penyedia": row.get::<_, Option<String>>(10)?,
+        "keluhan": row.get::<_, String>(11)?,
+        "status": status_servis(tanggal_selesai.as_deref(), dibatalkan_pada.as_deref()),
+        "tanggal_selesai": tanggal_selesai,
+        "hasil": row.get::<_, Option<String>>(13)?,
+        "biaya": row.get::<_, Option<i64>>(14)?,
+        "catatan_selesai": row.get::<_, Option<String>>(15)?,
+        "dibatalkan_pada": dibatalkan_pada,
+        "alasan_batal": row.get::<_, Option<String>>(17)?,
+        "dibuka_oleh": row.get::<_, String>(18)?,
+        "ditutup_oleh": row.get::<_, Option<String>>(19)?,
+        "lama_hari": row.get::<_, i64>(20)?,
+    }))
+}
+
+/// Servis yang masih terbuka, ikut `list_inventory` supaya rincian barang,
+/// opname, dan Ringkasan memakai satu sumber.
+fn list_servis_terbuka(connection: &Connection) -> Result<Vec<Value>, CommandError> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {KOLOM_SERVIS_SQL}
+             WHERE s.tanggal_selesai IS NULL AND s.dibatalkan_pada IS NULL
+             ORDER BY s.tanggal_mulai, s.id_servis
+             LIMIT {MAKS_SERVIS_TERBUKA};"
+        ))
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], baca_servis)
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal());
+    rows
+}
+
+/// Riwayat servis menurut tanggal dibawa, terbaru di atas. `id_barang` untuk
+/// rincian satu barang.
+pub fn service_history(
+    state: &DesktopState,
+    dari: &str,
+    sampai: &str,
+    id_barang: Option<String>,
+) -> Result<Value, CommandError> {
+    if !is_valid_date(dari) || !is_valid_date(sampai) || dari > sampai {
+        return Err(invalid("Rentang tanggal tidak valid."));
+    }
+    let id_barang = id_barang.map(|id| id.trim().to_owned()).filter(|id| !id.is_empty());
+    let connection = storage::database(&state.data_dir)?;
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {KOLOM_SERVIS_SQL}
+             WHERE s.tanggal_mulai >= ? AND s.tanggal_mulai <= ?
+               AND (? IS NULL OR s.id_barang = ?)
+             ORDER BY s.tanggal_mulai DESC, s.id_servis DESC
+             LIMIT 1001;"
+        ))
+        .map_err(|_| CommandError::internal())?;
+    let mut baris: Vec<Value> = statement
+        .query_map(params![dari, sampai, id_barang, id_barang], baca_servis)
+        .map_err(|_| CommandError::internal())?
+        .collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())?;
+    let terpotong = baris.len() > MAKS_RIWAYAT_SERVIS;
+    baris.truncate(MAKS_RIWAYAT_SERVIS);
+    Ok(json!({ "baris": baris, "terpotong": terpotong }))
+}
+
+/// Satu baris utuh untuk payload event; handler cloud membaca kolom yang sama.
+fn servis_json(connection: &Connection, id_servis: &str) -> Result<Value, CommandError> {
+    connection
+        .query_row(
+            "SELECT id_servis, id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai,
+                    penyedia, keluhan, tanggal_selesai, hasil, biaya, catatan_selesai,
+                    dibatalkan_pada, alasan_batal, dibuka_oleh, ditutup_oleh, created_at, updated_at
+             FROM inventory_servis WHERE id_servis = ?;",
+            params![id_servis],
+            |row| {
+                Ok(json!({
+                    "id_servis": row.get::<_, String>(0)?,
+                    "id_barang": row.get::<_, String>(1)?,
+                    "id_unit": row.get::<_, Option<String>>(2)?,
+                    "jumlah": row.get::<_, i64>(3)?,
+                    "tempat": row.get::<_, String>(4)?,
+                    "kondisi_awal": row.get::<_, String>(5)?,
+                    "tanggal_mulai": row.get::<_, String>(6)?,
+                    "penyedia": row.get::<_, Option<String>>(7)?,
+                    "keluhan": row.get::<_, String>(8)?,
+                    "tanggal_selesai": row.get::<_, Option<String>>(9)?,
+                    "hasil": row.get::<_, Option<String>>(10)?,
+                    "biaya": row.get::<_, Option<i64>>(11)?,
+                    "catatan_selesai": row.get::<_, Option<String>>(12)?,
+                    "dibatalkan_pada": row.get::<_, Option<String>>(13)?,
+                    "alasan_batal": row.get::<_, Option<String>>(14)?,
+                    "dibuka_oleh": row.get::<_, String>(15)?,
+                    "ditutup_oleh": row.get::<_, Option<String>>(16)?,
+                    "created_at": row.get::<_, String>(17)?,
+                    "updated_at": row.get::<_, String>(18)?,
+                }))
+            },
+        )
+        .map_err(|_| CommandError::internal())
+}
+
+struct ServisTerbuka {
+    id_barang: String,
+    id_unit: Option<String>,
+    jumlah: i64,
+    tempat: String,
+    kondisi_awal: String,
+    tanggal_mulai: String,
+}
+
+/// Servis yang masih terbuka, atau galat yang sama di semua aksi.
+fn servis_terbuka(connection: &Connection, id_servis: &str) -> Result<ServisTerbuka, CommandError> {
+    connection
+        .query_row(
+            "SELECT id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai
+             FROM inventory_servis
+             WHERE id_servis = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;",
+            params![id_servis],
+            |row| {
+                Ok(ServisTerbuka {
+                    id_barang: row.get(0)?,
+                    id_unit: row.get(1)?,
+                    jumlah: row.get(2)?,
+                    tempat: row.get(3)?,
+                    kondisi_awal: row.get(4)?,
+                    tanggal_mulai: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .ok_or_else(|| invalid("Servis ini sudah ditutup, dibatalkan, atau tidak ditemukan."))
+}
+
+/// Membuka servis baru, atau mengubah tanggal dibawa, penyedia, dan keluhan
+/// servis yang masih terbuka. Stok tidak berubah: barangnya tetap di tempat
+/// asalnya. Cermin `saveService`.
+pub fn save_service(state: &DesktopState, operator: &str, draft: Value) -> Result<Value, CommandError> {
+    let draft: ServisDraft =
+        serde_json::from_value(draft).map_err(|_| invalid("Data servis tidak valid."))?;
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    let hari_ini = wib_today(&transaction);
+    let isian = validate_isian_servis(
+        &draft.tanggal_mulai,
+        draft.penyedia.as_deref(),
+        &draft.keluhan,
+        &hari_ini,
+    )
+    .map_err(invalid)?;
+
+    let id_ubah = draft.id_servis.as_deref().map(str::trim).filter(|id| !id.is_empty());
+    let id_servis = if let Some(id) = id_ubah {
+        servis_terbuka(&transaction, id)?;
+        transaction
+            .execute(
+                "UPDATE inventory_servis SET tanggal_mulai = ?, penyedia = ?, keluhan = ?,
+                        updated_at = datetime('now')
+                 WHERE id_servis = ?;",
+                params![isian.tanggal_mulai, isian.penyedia, isian.keluhan, id],
+            )
+            .map_err(|_| CommandError::internal())?;
+        id.to_owned()
+    } else {
+        let id_barang = draft.id_barang.trim();
+        let (tipe, satuan, status_aktif): (String, String, i64) = transaction
+            .query_row(
+                "SELECT tipe, satuan, status_aktif FROM inventory_barang WHERE id_barang = ?;",
+                params![id_barang],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|_| CommandError::internal())?
+            .ok_or_else(|| invalid("Barang tidak ditemukan."))?;
+        if tipe != "Aset" {
+            return Err(invalid("Hanya barang Aset yang bisa diservis."));
+        }
+        if status_aktif != 1 {
+            return Err(invalid("Barang sudah dinonaktifkan."));
+        }
+        let dilacak: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM inventory_unit WHERE id_barang = ?);",
+                params![id_barang],
+                |row| row.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        let id_unit = draft.id_unit.as_deref().map(str::trim).filter(|id| !id.is_empty());
+
+        let (id_unit, jumlah, tempat, kondisi_awal) = if dilacak {
+            let id_unit = id_unit.ok_or_else(|| invalid("Pilih unit yang diservis."))?;
+            let posisi: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT tempat, kondisi FROM inventory_saldo
+                     WHERE id_barang = ? AND id_batch = ? AND saldo > 0 LIMIT 1;",
+                    params![id_barang, id_unit],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|_| CommandError::internal())?;
+            let (tempat, kondisi) = posisi
+                .ok_or_else(|| invalid("Unit ini tidak punya stok (sudah keluar, hilang, atau afkir)."))?;
+            let sedang: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM inventory_servis
+                     WHERE id_unit = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL);",
+                    params![id_unit],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CommandError::internal())?;
+            if sedang {
+                return Err(invalid("Unit ini masih dalam servis."));
+            }
+            (Some(id_unit.to_owned()), 1, tempat, kondisi)
+        } else {
+            if id_unit.is_some() {
+                return Err(invalid("Barang ini tidak dicatat per unit."));
+            }
+            let jumlah = draft.jumlah.unwrap_or(0);
+            if !(1..=MAKS_JUMLAH).contains(&jumlah) {
+                return Err(invalid("Jumlah yang diservis tidak valid."));
+            }
+            let tempat = normalize_tempat(draft.tempat.as_deref().unwrap_or_default());
+            if tempat.is_empty() {
+                return Err(invalid("Tempat barang wajib diisi."));
+            }
+            let tempat = canonical_tempat(&transaction, &tempat)?;
+            let kondisi = draft.kondisi_awal.as_deref().unwrap_or_default().trim().to_owned();
+            if !KONDISI_BARANG.contains(&kondisi.as_str()) {
+                return Err(invalid("Kondisi barang tidak dikenal."));
+            }
+            let saldo = saldo_posisi(&transaction, id_barang, &tempat, &kondisi, None)?;
+            let sedang: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(SUM(jumlah), 0) FROM inventory_servis
+                     WHERE id_barang = ? AND id_unit IS NULL AND LOWER(tempat) = LOWER(?)
+                       AND kondisi_awal = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;",
+                    params![id_barang, tempat, kondisi],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CommandError::internal())?;
+            let tersedia = saldo - sedang;
+            if jumlah > tersedia {
+                return Err(invalid(format!(
+                    "Stok {kondisi} di {tempat} yang belum diservis tinggal {} {satuan}.",
+                    tersedia.max(0)
+                )));
+            }
+            (None, jumlah, tempat, kondisi)
+        };
+
+        let id = new_hex_id("srv-");
+        transaction
+            .execute(
+                "INSERT INTO inventory_servis (
+                    id_servis, id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai,
+                    penyedia, keluhan, dibuka_oleh, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));",
+                params![
+                    id,
+                    id_barang,
+                    id_unit,
+                    jumlah,
+                    tempat,
+                    kondisi_awal,
+                    isian.tanggal_mulai,
+                    isian.penyedia,
+                    isian.keluhan,
+                    operator
+                ],
+            )
+            .map_err(|_| CommandError::internal())?;
+        id
+    };
+
+    let payload = servis_json(&transaction, &id_servis)?;
+    sync::enqueue(&transaction, &client_id, "inventory-service", "save", &id_servis, &payload, None)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_servis": id_servis }))
+}
+
+/// Menutup servis. Bila kondisinya berubah, mutasi Pindah `Perubahan Kondisi`
+/// ditulis di transaksi yang sama. Cermin `closeService`.
+pub fn close_service(state: &DesktopState, operator: &str, draft: Value) -> Result<Value, CommandError> {
+    let draft: TutupServisDraft =
+        serde_json::from_value(draft).map_err(|_| invalid("Data penutupan servis tidak valid."))?;
+    let id_servis = draft.id_servis.trim().to_owned();
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    let servis = servis_terbuka(&transaction, &id_servis)?;
+    let hari_ini = wib_today(&transaction);
+    let valid = validate_tutup_servis(&draft, &servis.tanggal_mulai, &hari_ini).map_err(invalid)?;
+
+    if let Some(kondisi_baru) = kondisi_hasil_servis(&servis.kondisi_awal, &valid.hasil) {
+        let saldo = saldo_posisi(
+            &transaction,
+            &servis.id_barang,
+            &servis.tempat,
+            &servis.kondisi_awal,
+            servis.id_unit.as_deref(),
+        )?;
+        if saldo < servis.jumlah {
+            return Err(invalid(format!(
+                "Stok {} di {} tinggal {}, tidak cukup untuk mencatat kondisinya. Barang sudah dipindah sejak dibawa servis? Catat pemindahannya kembali dulu.",
+                servis.kondisi_awal,
+                servis.tempat,
+                saldo.max(0)
+            )));
+        }
+        let id_mutasi = id_mutasi_kondisi_servis(&id_servis);
+        let mutasi = MutasiValid {
+            jenis: "Pindah".into(),
+            alasan: "Perubahan Kondisi".into(),
+            tanggal: valid.tanggal_selesai.clone(),
+            jumlah: servis.jumlah,
+            tempat_asal: Some(servis.tempat.clone()),
+            kondisi_asal: Some(servis.kondisi_awal.clone()),
+            tempat_tujuan: Some(servis.tempat.clone()),
+            kondisi_tujuan: Some(kondisi_baru.to_owned()),
+            id_batch: servis.id_unit.clone(),
+            catatan: Some(format!("Hasil servis: {}", valid.hasil)),
+            ..MutasiValid::default()
+        };
+        insert_mutasi(
+            &transaction,
+            &id_mutasi,
+            &servis.id_barang,
+            &mutasi,
+            Some(&id_servis),
+            operator,
+        )?;
+        let payload = mutasi_json(&transaction, &id_mutasi)?.ok_or_else(CommandError::internal)?;
+        sync::enqueue(&transaction, &client_id, "inventory-mutation", "create", &id_mutasi, &payload, None)?;
+    }
+
+    transaction
+        .execute(
+            "UPDATE inventory_servis SET tanggal_selesai = ?, hasil = ?, biaya = ?,
+                    catatan_selesai = ?, ditutup_oleh = ?, updated_at = datetime('now')
+             WHERE id_servis = ?;",
+            params![
+                valid.tanggal_selesai,
+                valid.hasil,
+                valid.biaya,
+                valid.catatan_selesai,
+                operator,
+                id_servis
+            ],
+        )
+        .map_err(|_| CommandError::internal())?;
+    let payload = servis_json(&transaction, &id_servis)?;
+    sync::enqueue(&transaction, &client_id, "inventory-service", "close", &id_servis, &payload, None)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true, "id_servis": id_servis }))
+}
+
+/// Membatalkan servis yang belum ditutup. Stok tidak berubah. Cermin `cancelService`.
+pub fn cancel_service(
+    state: &DesktopState,
+    operator: &str,
+    id_servis: &str,
+    alasan: &str,
+) -> Result<Value, CommandError> {
+    let alasan = validate_alasan_batal_servis(alasan).map_err(invalid)?;
+    let id_servis = id_servis.trim();
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    servis_terbuka(&transaction, id_servis)?;
+    transaction
+        .execute(
+            "UPDATE inventory_servis SET dibatalkan_pada = datetime('now', '+7 hours'),
+                    alasan_batal = ?, ditutup_oleh = ?, updated_at = datetime('now')
+             WHERE id_servis = ?;",
+            params![alasan, operator, id_servis],
+        )
+        .map_err(|_| CommandError::internal())?;
+    let payload = servis_json(&transaction, id_servis)?;
+    sync::enqueue(&transaction, &client_id, "inventory-service", "cancel", id_servis, &payload, None)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
+/// Nilai `CLOUD_UPSERT_SERVIS_SQL` dari payload event. Payload cacat
+/// dilewati, tidak ditolak, supaya outbox tidak macet.
+pub fn cloud_servis_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
+    let id = payload_text(row, "id_servis").unwrap_or_else(|| entity_key.trim().to_owned());
+    let jumlah = row.get("jumlah").and_then(Value::as_i64).filter(|n| *n > 0)?;
+    let kondisi = payload_text(row, "kondisi_awal").filter(|k| KONDISI_BARANG.contains(&k.as_str()))?;
+    let tanggal = payload_text(row, "tanggal_mulai").filter(|t| is_valid_date(t))?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(vec![
+        json!(id),
+        json!(payload_text(row, "id_barang")?),
+        json!(payload_text(row, "id_unit")),
+        json!(jumlah),
+        json!(payload_text(row, "tempat")?),
+        json!(kondisi),
+        json!(tanggal),
+        json!(payload_text(row, "penyedia")),
+        json!(payload_text(row, "keluhan")?),
+        json!(payload_text(row, "dibuka_oleh")?),
+        json!(payload_text(row, "created_at")),
+    ])
+}
+
+/// Penutupan yang pertama sampai di cloud yang berlaku. Cermin `CLOUD_CLOSE_SERVIS_SQL`.
+pub fn cloud_close_servis_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
+    let id = payload_text(row, "id_servis").unwrap_or_else(|| entity_key.trim().to_owned());
+    let tanggal = payload_text(row, "tanggal_selesai").filter(|t| is_valid_date(t))?;
+    let hasil = payload_text(row, "hasil").filter(|h| HASIL_SERVIS.contains(&h.as_str()))?;
+    let biaya = row.get("biaya").and_then(Value::as_i64).filter(|b| *b >= 0)?;
+    Some(vec![
+        json!(tanggal),
+        json!(hasil),
+        json!(biaya),
+        json!(payload_text(row, "catatan_selesai")),
+        json!(payload_text(row, "ditutup_oleh")?),
+        json!(id),
+    ])
+}
+
+/// Cermin `CLOUD_CANCEL_SERVIS_SQL`.
+pub fn cloud_cancel_servis_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
+    let id = payload_text(row, "id_servis").unwrap_or_else(|| entity_key.trim().to_owned());
+    Some(vec![
+        json!(payload_text(row, "dibatalkan_pada")?),
+        json!(payload_text(row, "alasan_batal")?),
+        json!(payload_text(row, "ditutup_oleh")?),
+        json!(id),
+    ])
+}
+
+/// Membuka servis, atau mengubah isian selama servis masih terbuka di cloud.
+/// Servis yang sudah ditutup atau dibatalkan tidak tersentuh.
+pub const CLOUD_UPSERT_SERVIS_SQL: &str = "INSERT INTO inventory_servis (
+        id_servis, id_barang, id_unit, jumlah, tempat, kondisi_awal, tanggal_mulai,
+        penyedia, keluhan, dibuka_oleh, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+    ON CONFLICT(id_servis) DO UPDATE SET
+        tanggal_mulai = excluded.tanggal_mulai,
+        penyedia = excluded.penyedia,
+        keluhan = excluded.keluhan,
+        updated_at = datetime('now')
+    WHERE inventory_servis.tanggal_selesai IS NULL AND inventory_servis.dibatalkan_pada IS NULL;";
+
+pub const CLOUD_CLOSE_SERVIS_SQL: &str = "UPDATE inventory_servis
+    SET tanggal_selesai = ?, hasil = ?, biaya = ?, catatan_selesai = ?, ditutup_oleh = ?,
+        updated_at = datetime('now')
+    WHERE id_servis = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;";
+
+pub const CLOUD_CANCEL_SERVIS_SQL: &str = "UPDATE inventory_servis
+    SET dibatalkan_pada = ?, alasan_batal = ?, ditutup_oleh = ?, updated_at = datetime('now')
+    WHERE id_servis = ? AND tanggal_selesai IS NULL AND dibatalkan_pada IS NULL;";
 
 pub fn stock_card(
     state: &DesktopState,
@@ -3176,9 +4458,9 @@ pub fn stock_card(
     Ok(json!({ "saldo_awal": saldo_awal, "baris": baris, "terpotong": false }))
 }
 
-// ── Cloud ───────────────────────────────────────────────────────────────────
+// Cloud
 
-fn payload_text(row: &Value, key: &str) -> Option<String> {
+pub(crate) fn payload_text(row: &Value, key: &str) -> Option<String> {
     row.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -4884,6 +6166,82 @@ mod tests {
     /// Unit adalah batch-nya sendiri di opname. Sebelum diperbaiki, batch
     /// dibuang untuk barang tanpa kedaluwarsa, sehingga setiap unit (fisik 1)
     /// dibandingkan dengan stok tanpa nomor (0) dan tercatat +1.
+    /// Servis lokal (v29): buka mengunci jumlahnya, tutup memindah kondisi
+    /// lewat mutasi berid tetap, dan setiap langkah masuk outbox. Skenario
+    /// yang sama dengan `inventory-servis.test.ts`.
+    #[test]
+    fn servis_menutup_dengan_mutasi_kondisi_dan_masuk_outbox() {
+        let (_directory, state) = setup_state();
+        let id_barang = insert_item(&state, "Aset", false);
+        record_mutation(
+            &state,
+            "admin",
+            json!({"id_barang": id_barang, "jenis": "Masuk", "alasan": "Pengadaan", "jumlah": 3,
+                   "tempat_tujuan": "Lab"}),
+        )
+        .expect("masuk");
+        let connection = storage::database(&state.data_dir).expect("db");
+        let hari = wib_today(&connection);
+
+        let dibuka = save_service(
+            &state,
+            "sarpras",
+            json!({"id_barang": id_barang, "jumlah": 2, "tempat": "lab", "kondisi_awal": "Baik",
+                   "tanggal_mulai": hari, "keluhan": "Lampu mati"}),
+        )
+        .expect("buka servis");
+        let id = dibuka["id_servis"].as_str().expect("id").to_owned();
+        let galat = save_service(
+            &state,
+            "sarpras",
+            json!({"id_barang": id_barang, "jumlah": 2, "tempat": "Lab", "kondisi_awal": "Baik",
+                   "tanggal_mulai": hari, "keluhan": "Lagi"}),
+        )
+        .unwrap_err();
+        assert!(galat.message.contains("yang belum diservis tinggal 1"), "{}", galat.message);
+        let daftar = list_inventory(&state).expect("daftar");
+        assert_eq!(daftar["servis"][0]["tempat"], "Lab");
+        assert_eq!(daftar["servis"][0]["status"], "Sedang diservis");
+
+        close_service(
+            &state,
+            "sarpras",
+            json!({"id_servis": id, "tanggal_selesai": hari, "hasil": "Rusak Berat", "biaya": 125000}),
+        )
+        .expect("tutup servis");
+        let saldo = |kondisi: &str| -> i64 {
+            connection
+                .query_row(
+                    "SELECT COALESCE(SUM(saldo), 0) FROM inventory_saldo WHERE id_barang = ? AND kondisi = ?;",
+                    params![id_barang, kondisi],
+                    |row| row.get(0),
+                )
+                .expect("saldo")
+        };
+        assert_eq!((saldo("Baik"), saldo("Rusak Berat")), (1, 2));
+        assert!(close_service(
+            &state,
+            "sarpras",
+            json!({"id_servis": id, "tanggal_selesai": hari, "hasil": "Baik", "biaya": 0}),
+        )
+        .is_err());
+        let batal = cancel_mutation(&state, "sarpras", &format!("{id}-kondisi"), "Salah").unwrap_err();
+        assert!(batal.message.contains("penutupan servis"), "{}", batal.message);
+
+        let event: Vec<String> = connection
+            .prepare(
+                "SELECT operation FROM desktop_sync_outbox WHERE domain = 'inventory-service' ORDER BY rowid;",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("baris");
+        assert_eq!(event, vec!["save".to_owned(), "close".to_owned()]);
+        let pending = journal_pending(&state, "2026-01-01", &hari).expect("pending");
+        assert_eq!(pending["servis"][0]["nilai"], 125000);
+    }
+
     #[test]
     fn opname_counts_units_against_their_own_batch() {
         let (_directory, state) = setup_state();
@@ -5219,5 +6577,162 @@ mod tests {
             "brg-1"
         )
         .is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_jurnal_inventaris {
+    use super::*;
+
+    /// Vektor yang sama dengan `jurnal inventaris` di `validations/inventory.test.ts`.
+    #[test]
+    fn format_jumlah_sama_dengan_ts() {
+        let kasus: [(i64, bool, &str); 7] = [
+            (3, false, "3"),
+            (1234567, false, "1.234.567"),
+            (250, true, "2,50"),
+            (205, true, "2,05"),
+            (300, true, "3"),
+            (123456, true, "1.234,56"),
+            (-150, true, "-1,50"),
+        ];
+        for (nilai, desimal, harapan) in kasus {
+            assert_eq!(format_jumlah(nilai, desimal), harapan, "{nilai} {desimal}");
+        }
+    }
+
+    #[test]
+    fn keterangan_dan_id_jurnal_inventaris() {
+        assert_eq!(id_jurnal_inventaris("mut-1"), "jrn-inv-mut-1");
+        assert_eq!(
+            keterangan_jurnal_inventaris("Pengadaan", " Kertas HVS ", 3, false, "rim", Some(" BA-01 ")),
+            "Pengadaan Kertas HVS 3 rim (BA-01)"
+        );
+        assert_eq!(
+            keterangan_jurnal_inventaris("Hibah", "Alkohol", 250, true, "liter", Some("  ")),
+            "Hibah Alkohol 2,50 liter"
+        );
+        let panjang = keterangan_jurnal_inventaris("Pengadaan", &"é".repeat(300), 1, false, "unit", None);
+        assert_eq!(panjang.chars().count(), 200);
+    }
+
+    #[test]
+    fn pasangan_akun_menurut_tipe_dan_alasan() {
+        let akun = AkunJurnalInventaris {
+            akun_debit_aset: Some("akun-peralatan".into()),
+            akun_debit_habis_pakai: Some("akun-beban-atk".into()),
+            akun_kredit_bayar: Some("akun-kas".into()),
+            akun_kredit_hibah: Some("akun-pendapatan-lain".into()),
+            akun_debit_servis: Some("akun-beban-pemeliharaan".into()),
+        };
+        assert_eq!(
+            pasangan_akun_jurnal_inventaris("Aset", "Pengadaan", &akun),
+            Ok(("akun-peralatan".into(), "akun-kas".into()))
+        );
+        assert_eq!(
+            pasangan_akun_jurnal_inventaris("Habis Pakai", "Hibah", &akun),
+            Ok(("akun-beban-atk".into(), "akun-pendapatan-lain".into()))
+        );
+        let kosong = AkunJurnalInventaris {
+            akun_kredit_bayar: Some(" ".into()),
+            ..AkunJurnalInventaris::default()
+        };
+        assert_eq!(
+            pasangan_akun_jurnal_inventaris("Aset", "Pengadaan", &kosong),
+            Err("Pilih akun untuk barang Aset.".to_owned())
+        );
+        let tanpa_bayar = AkunJurnalInventaris {
+            akun_debit_aset: Some("akun-peralatan".into()),
+            ..AkunJurnalInventaris::default()
+        };
+        assert_eq!(
+            pasangan_akun_jurnal_inventaris("Aset", "Pengadaan", &tanpa_bayar),
+            Err("Pilih akun pembayaran pengadaan.".to_owned())
+        );
+        assert!(pasangan_akun_jurnal_inventaris("Aset", "Saldo Awal", &akun).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests_servis {
+    use super::*;
+
+    /// Vektor yang sama dengan `servis aset` di `validations/inventory.test.ts`.
+    #[test]
+    fn id_status_dan_kondisi_hasil_servis() {
+        assert_eq!(id_mutasi_kondisi_servis("srv-1"), "srv-1-kondisi");
+        assert_eq!(id_jurnal_servis("srv-1"), "jrn-srv-1");
+        assert!(is_mutasi_servis("srv-ab-kondisi"));
+        assert!(!is_mutasi_servis("mut-ab-kondisi"));
+        assert!(!is_mutasi_servis("srv-ab"));
+        assert_eq!(status_servis(None, None), "Sedang diservis");
+        assert_eq!(status_servis(Some("2026-10-02"), None), "Selesai");
+        assert_eq!(status_servis(None, Some("2026-10-02 08:00:00")), "Dibatalkan");
+        assert_eq!(kondisi_hasil_servis("Rusak Ringan", "Baik"), Some("Baik"));
+        assert_eq!(kondisi_hasil_servis("Rusak Ringan", "Rusak Ringan"), None);
+        assert_eq!(kondisi_hasil_servis("Rusak Berat", "Tidak Bisa Diperbaiki"), None);
+        assert_eq!(
+            keterangan_jurnal_servis(" Proyektor ", Some("PRJ-03"), Some(" Toko Jaya ")),
+            "Servis Proyektor (PRJ-03) di Toko Jaya"
+        );
+        assert_eq!(keterangan_jurnal_servis("Kursi", None, Some(" ")), "Servis Kursi");
+    }
+
+    #[test]
+    fn validasi_isian_dan_penutupan_servis() {
+        let hari = "2026-10-26";
+        assert_eq!(
+            validate_isian_servis("2026-10-20", Some("  "), " Lampu mati ", hari),
+            Ok(IsianServis {
+                tanggal_mulai: "2026-10-20".into(),
+                penyedia: None,
+                keluhan: "Lampu mati".into(),
+            })
+        );
+        assert_eq!(
+            validate_isian_servis("2026-10-27", None, "x", hari),
+            Err("Tanggal dibawa tidak boleh setelah hari ini.".to_owned())
+        );
+        assert_eq!(
+            validate_isian_servis("2026-10-20", None, "  ", hari),
+            Err("Keluhan wajib diisi.".to_owned())
+        );
+        let tutup = |tanggal: &str, hasil: &str, biaya: i64| TutupServisDraft {
+            id_servis: "srv-1".into(),
+            tanggal_selesai: tanggal.into(),
+            hasil: hasil.into(),
+            biaya,
+            catatan_selesai: Some(" ".into()),
+        };
+        assert_eq!(
+            validate_tutup_servis(&tutup("2026-10-25", "Baik", 350_000), "2026-10-20", hari),
+            Ok(TutupServisValid {
+                tanggal_selesai: "2026-10-25".into(),
+                hasil: "Baik".into(),
+                biaya: 350_000,
+                catatan_selesai: None,
+            })
+        );
+        assert_eq!(
+            validate_tutup_servis(&tutup("2026-10-19", "Baik", 0), "2026-10-20", hari),
+            Err("Tanggal kembali tidak boleh sebelum tanggal dibawa.".to_owned())
+        );
+        assert_eq!(
+            validate_tutup_servis(&tutup("2026-10-25", "Hilang", 0), "2026-10-20", hari),
+            Err("Hasil servis tidak dikenal.".to_owned())
+        );
+        assert_eq!(
+            validate_tutup_servis(&tutup("2026-10-25", "Baik", -1), "2026-10-20", hari),
+            Err("Biaya servis tidak valid.".to_owned())
+        );
+        assert_eq!(
+            validate_alasan_batal_servis("  "),
+            Err("Alasan pembatalan wajib diisi.".to_owned())
+        );
+        assert!(pasangan_akun_jurnal_servis(&AkunJurnalInventaris {
+            akun_debit_servis: Some("akun-beban-pemeliharaan".into()),
+            ..AkunJurnalInventaris::default()
+        })
+        .is_err());
     }
 }

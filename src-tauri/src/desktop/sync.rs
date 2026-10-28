@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     config::DesktopState,
+    inventory_pengajuan,
     models::{CommandError, DesktopSyncStatus},
     payroll_seed, storage,
     turso::TursoClient,
@@ -19,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 27;
+pub const CLIENT_SCHEMA_VERSION: i64 = 30;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -627,6 +628,119 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
     //
     // `delete_missing: false`: unit tidak pernah dihapus. Unit yang afkir atau
     // hilang tetap ada barisnya dengan saldo 0.
+    // ── v29: Servis aset ──
+    //
+    // `delete_missing: false`: servis tidak pernah dihapus; batal dan selesai
+    // adalah kolom. Barisnya berubah (buka → tutup), dan handler cloud hanya
+    // menulis selama servis masih terbuka.
+    SnapshotTable {
+        payload_key: "inventoryServices",
+        domain: "inventory-service",
+        table: "inventory_servis",
+        columns: &[
+            "id_servis",
+            "id_barang",
+            "id_unit",
+            "jumlah",
+            "tempat",
+            "kondisi_awal",
+            "tanggal_mulai",
+            "penyedia",
+            "keluhan",
+            "tanggal_selesai",
+            "hasil",
+            "biaya",
+            "catatan_selesai",
+            "dibatalkan_pada",
+            "alasan_batal",
+            "dibuka_oleh",
+            "ditutup_oleh",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_servis",
+        entity_column: "id_servis",
+        delete_missing: false,
+    },
+    // ── v30: Pengajuan pembelian ──
+    //
+    // Pengajuan dan penerimaan tidak pernah dihapus (batal, tolak, tutup adalah
+    // kolom), jadi `delete_missing: false`. Baris pengajuan `true`: tanpa
+    // tombstone, hanya ketiadaan baris di snapshot yang memberi tahu perangkat
+    // lain bahwa baris itu dibuang saat pengajuannya diubah. Selama event
+    // header-nya belum terkirim, barisnya dilindungi `PendingGuard`.
+    SnapshotTable {
+        payload_key: "inventoryRequests",
+        domain: "inventory-request",
+        table: "inventory_pengajuan",
+        columns: &[
+            "id_pengajuan",
+            "tanggal",
+            "seri",
+            "nomor_urut",
+            "nomor",
+            "keperluan",
+            "sumber_dana",
+            "catatan",
+            "sidik_baris",
+            "diajukan_oleh",
+            "disetujui_pada",
+            "disetujui_oleh",
+            "sidik_disetujui",
+            "catatan_persetujuan",
+            "ditolak_pada",
+            "ditolak_oleh",
+            "alasan_tolak",
+            "dibatalkan_pada",
+            "dibatalkan_oleh",
+            "alasan_batal",
+            "ditutup_pada",
+            "ditutup_oleh",
+            "alasan_tutup",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_pengajuan",
+        entity_column: "id_pengajuan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "inventoryRequestLines",
+        // Domain sendiri, pola `accounting-journal-line`.
+        domain: "inventory-request-line",
+        table: "inventory_pengajuan_baris",
+        columns: &[
+            "id_baris",
+            "id_pengajuan",
+            "urutan",
+            "id_barang",
+            "nama_barang",
+            "satuan",
+            "desimal",
+            "jumlah",
+            "harga_satuan",
+        ],
+        conflict_column: "id_baris",
+        entity_column: "id_baris",
+        delete_missing: true,
+    },
+    SnapshotTable {
+        payload_key: "inventoryReceipts",
+        domain: "inventory-receipt",
+        table: "inventory_penerimaan",
+        columns: &[
+            "id_penerimaan",
+            "id_pengajuan",
+            "tanggal",
+            "catatan",
+            "jumlah_foto",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_penerimaan",
+        entity_column: "id_penerimaan",
+        delete_missing: false,
+    },
     SnapshotTable {
         payload_key: "inventoryUnits",
         domain: "inventory-unit",
@@ -862,6 +976,16 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("inventory-item", "save"),
     ("inventory-mutation", "create"),
     ("inventory-unit", "save"),
+    ("inventory-service", "save"),
+    ("inventory-service", "close"),
+    ("inventory-service", "cancel"),
+    ("inventory-request", "save"),
+    ("inventory-request", "approve"),
+    ("inventory-request", "reject"),
+    ("inventory-request", "cancel"),
+    ("inventory-request", "close"),
+    ("inventory-receipt", "create"),
+    ("inventory-receipt-photo", "save"),
     ("inventory-column", "save"),
     ("log-scan", "delete"),
     ("offline-import", "delete"),
@@ -1000,8 +1124,18 @@ impl PendingGuard {
         self.by_domain_key.contains(&guard_key(domain, key))
     }
 
+    /// Baris pengajuan ikut terlindungi selama event header-nya belum terkirim:
+    /// satu event `inventory-request` membawa header dan seluruh barisnya.
+    /// Tanpa ini tarikan menimpa (atau menghapus) baris hasil suntingan lokal
+    /// sementara header-nya tetap versi lokal.
+    fn induk_tertunda(&self, domain: &str, key: &str) -> bool {
+        domain == "inventory-request-line"
+            && inventory_pengajuan::id_pengajuan_dari_baris(key)
+                .is_some_and(|induk| self.has("inventory-request", induk))
+    }
+
     fn row_has_unsynced_change(&self, definition: &SnapshotTable, row: &Value, key: &str) -> bool {
-        if self.has(definition.domain, key) {
+        if self.has(definition.domain, key) || self.induk_tertunda(definition.domain, key) {
             return true;
         }
         match definition.domain {
@@ -1267,7 +1401,10 @@ fn apply_table(
             definition.table, definition.entity_column
         );
         for key in local_keys {
-            if snapshot_keys.contains(&key) || guard.has(definition.domain, &key) {
+            if snapshot_keys.contains(&key)
+                || guard.has(definition.domain, &key)
+                || guard.induk_tertunda(definition.domain, &key)
+            {
                 continue;
             }
             let cache_key = guard_key(definition.domain, &key);

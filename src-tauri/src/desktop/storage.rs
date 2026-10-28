@@ -122,6 +122,81 @@ fn seed_payroll_rate_tables(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Definisi indeks dan trigger milik sebuah tabel, dibaca sebelum tabelnya
+/// dibangun ulang: DROP TABLE ikut membuang keduanya. Di cloud trigger
+/// `trg_sync_append_*` yang mengisi `sync_append_log`; tanpanya perangkat
+/// tidak pernah menerima baris baru tabel append-only.
+pub(crate) fn definisi_turunan(connection: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT sql FROM sqlite_master
+             WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL
+             ORDER BY type, name;",
+        )
+        .map_err(|_| format!("Indeks {table} tidak dapat dibaca."))?;
+    let rows = statement
+        .query_map(params![table], |row| row.get::<_, String>(0))
+        .map_err(|_| format!("Indeks {table} tidak dapat dibaca."))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|_| format!("Indeks {table} tidak dapat dibaca."))
+}
+
+/// v28: `Inventaris` (jurnal pengadaan dan servis) masuk CHECK
+/// `keu_jurnal.sumber`. Tanpa bangun ulang ini jurnal Inventaris dari cloud
+/// menggagalkan SELURUH snapshot lokal. Indeks dipasang ulang dari definisi
+/// lamanya SETELAH baris disalin. Idempoten lewat teks DDL-nya. Cerminan
+/// `TursoClient::ensure_journal_source_values` dan blok v28 `db-migrations.ts`.
+fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'keu_jurnal';",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| "Skema keu_jurnal tidak dapat diperiksa.".to_string())?;
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    if existing.contains("'Inventaris'") {
+        return Ok(());
+    }
+
+    let turunan = definisi_turunan(connection, "keu_jurnal")?
+        .into_iter()
+        .map(|sql| format!("{sql};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    const KOLOM: &str = "id_jurnal, tanggal, seri, nomor_urut, nomor, keterangan, sumber, \
+        id_sumber, id_jurnal_batal, dibuat_oleh, created_at";
+    let script = format!(
+        "BEGIN;
+        DROP TABLE IF EXISTS keu_jurnal__rebuild;
+        CREATE TABLE keu_jurnal__rebuild (
+          id_jurnal TEXT PRIMARY KEY,
+          tanggal TEXT NOT NULL,
+          seri TEXT NOT NULL,
+          nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+          nomor TEXT NOT NULL,
+          keterangan TEXT NOT NULL,
+          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembayaran', 'Tagihan', 'Inventaris', 'Pembatalan')),
+          id_sumber TEXT,
+          id_jurnal_batal TEXT,
+          dibuat_oleh TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO keu_jurnal__rebuild ({KOLOM}) SELECT {KOLOM} FROM keu_jurnal;
+        DROP TABLE keu_jurnal;
+        ALTER TABLE keu_jurnal__rebuild RENAME TO keu_jurnal;
+        {turunan}
+        COMMIT;"
+    );
+    connection
+        .execute_batch(&script)
+        .map_err(|_| "Tabel keu_jurnal tidak dapat dibangun ulang.".to_string())?;
+    Ok(())
+}
+
 pub fn initialize(path: &Path) -> Result<(), String> {
     let connection = database(path).map_err(|error| error.message)?;
     connection
@@ -700,6 +775,94 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_inventory_unit_barang ON inventory_unit(id_barang);
+      -- Servis aset (v29). Status diturunkan dari tanggal_selesai dan
+      -- dibatalkan_pada. DDL WAJIB identik dengan `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS inventory_servis (
+        id_servis TEXT PRIMARY KEY,
+        id_barang TEXT NOT NULL,
+        id_unit TEXT,
+        jumlah INTEGER NOT NULL CHECK (jumlah > 0),
+        tempat TEXT NOT NULL,
+        kondisi_awal TEXT NOT NULL CHECK (kondisi_awal IN ('Baik', 'Rusak Ringan', 'Rusak Berat')),
+        tanggal_mulai TEXT NOT NULL,
+        penyedia TEXT,
+        keluhan TEXT NOT NULL,
+        tanggal_selesai TEXT,
+        hasil TEXT CHECK (hasil IS NULL OR hasil IN ('Baik', 'Rusak Ringan', 'Rusak Berat', 'Tidak Bisa Diperbaiki')),
+        biaya INTEGER CHECK (biaya IS NULL OR biaya >= 0),
+        catatan_selesai TEXT,
+        dibatalkan_pada TEXT,
+        alasan_batal TEXT,
+        dibuka_oleh TEXT NOT NULL,
+        ditutup_oleh TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_servis_barang ON inventory_servis(id_barang);
+      -- Pengajuan pembelian (v30). Status diturunkan dari kolom waktu dan
+      -- jumlah yang sudah diterima. DDL WAJIB identik dengan `turso.rs` dan
+      -- `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS inventory_pengajuan (
+        id_pengajuan TEXT PRIMARY KEY,
+        tanggal TEXT NOT NULL,
+        seri TEXT NOT NULL,
+        nomor_urut INTEGER NOT NULL,
+        nomor TEXT NOT NULL,
+        keperluan TEXT NOT NULL,
+        sumber_dana TEXT,
+        catatan TEXT,
+        sidik_baris TEXT NOT NULL,
+        diajukan_oleh TEXT NOT NULL,
+        disetujui_pada TEXT,
+        disetujui_oleh TEXT,
+        sidik_disetujui TEXT,
+        catatan_persetujuan TEXT,
+        ditolak_pada TEXT,
+        ditolak_oleh TEXT,
+        alasan_tolak TEXT,
+        dibatalkan_pada TEXT,
+        dibatalkan_oleh TEXT,
+        alasan_batal TEXT,
+        ditutup_pada TEXT,
+        ditutup_oleh TEXT,
+        alasan_tutup TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_pengajuan_tanggal ON inventory_pengajuan(tanggal);
+      CREATE TABLE IF NOT EXISTS inventory_pengajuan_baris (
+        id_baris TEXT PRIMARY KEY,
+        id_pengajuan TEXT NOT NULL,
+        urutan INTEGER NOT NULL CHECK (urutan >= 1),
+        id_barang TEXT,
+        nama_barang TEXT NOT NULL,
+        satuan TEXT NOT NULL,
+        desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1)),
+        jumlah INTEGER NOT NULL CHECK (jumlah > 0),
+        harga_satuan INTEGER NOT NULL CHECK (harga_satuan >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_pengajuan_baris_induk ON inventory_pengajuan_baris(id_pengajuan);
+      CREATE TABLE IF NOT EXISTS inventory_penerimaan (
+        id_penerimaan TEXT PRIMARY KEY,
+        id_pengajuan TEXT NOT NULL,
+        tanggal TEXT NOT NULL,
+        catatan TEXT,
+        jumlah_foto INTEGER NOT NULL CHECK (jumlah_foto BETWEEN 1 AND 5),
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_penerimaan_pengajuan ON inventory_penerimaan(id_pengajuan);
+      -- Di luar snapshot, pola `absensi_foto`: didorong lewat outbox, ditarik
+      -- saat dibuka.
+      CREATE TABLE IF NOT EXISTS inventory_penerimaan_foto (
+        id_foto TEXT PRIMARY KEY,
+        id_penerimaan TEXT NOT NULL,
+        urutan INTEGER NOT NULL CHECK (urutan BETWEEN 1 AND 5),
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+        data_base64 TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_inventory_penerimaan_foto_induk ON inventory_penerimaan_foto(id_penerimaan);
       -- Definisi kolom tambahan barang (v25). Isinya di `inventory_barang.atribut`
       -- (JSON berkunci id_kolom); hapus = nonaktif. DDL WAJIB identik dengan
       -- `turso.rs` dan `db-migrations.ts`.
@@ -734,7 +897,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
         nomor TEXT NOT NULL,
         keterangan TEXT NOT NULL,
-        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembatalan')),
+        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Pembatalan')),
         id_sumber TEXT,
         id_jurnal_batal TEXT,
         dibuat_oleh TEXT NOT NULL,
@@ -966,6 +1129,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "desimal",
         "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
     )?;
+    // Sumber jurnal `Inventaris` (v28).
+    ensure_journal_source_values(&connection)?;
 
     // Hari kerja mingguan shift (v24), teks kanonik
     // `hari_kerja::validate_hari_kerja`. Bawaan tujuh hari: shift lama tidak
@@ -1151,6 +1316,11 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "inventory_barang",
     "inventory_mutasi",
     "inventory_unit",
+    "inventory_servis",
+    "inventory_pengajuan",
+    "inventory_pengajuan_baris",
+    "inventory_penerimaan",
+    "inventory_penerimaan_foto",
     "inventory_kolom",
     "keu_akun",
     "keu_jurnal",
@@ -1686,5 +1856,75 @@ mod tests {
             )
             .expect("legacy count");
         assert_eq!(leftover, 0, "baris seed lama harus dibersihkan");
+    }
+}
+
+#[cfg(test)]
+mod tests_journal_source_values {
+    /// Jurnal lama dibangun ulang untuk sumber `Inventaris` tanpa kehilangan
+    /// baris, indeks, maupun trigger (di cloud trigger itulah yang mengisi
+    /// `sync_append_log`), dan baris yang disalin tidak memicu trigger.
+    #[test]
+    fn jurnal_lama_dibangun_ulang_untuk_sumber_inventaris() {
+        let connection = rusqlite::Connection::open_in_memory().expect("database memori");
+        connection
+            .execute_batch(
+                "CREATE TABLE keu_jurnal (
+                    id_jurnal TEXT PRIMARY KEY,
+                    tanggal TEXT NOT NULL,
+                    seri TEXT NOT NULL,
+                    nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+                    nomor TEXT NOT NULL,
+                    keterangan TEXT NOT NULL,
+                    sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembayaran', 'Tagihan', 'Pembatalan')),
+                    id_sumber TEXT,
+                    id_jurnal_batal TEXT,
+                    dibuat_oleh TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX idx_keu_jurnal_tanggal ON keu_jurnal(tanggal);
+                CREATE TABLE sync_append_log (id INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, entity_key TEXT);
+                CREATE TRIGGER trg_sync_append_keu_jurnal AFTER INSERT ON keu_jurnal
+                BEGIN
+                  INSERT INTO sync_append_log (table_name, entity_key) VALUES ('keu_jurnal', NEW.id_jurnal);
+                END;
+                INSERT INTO keu_jurnal (id_jurnal, tanggal, seri, nomor_urut, nomor, keterangan, sumber, dibuat_oleh)
+                VALUES ('jrn-1', '2026-10-01', 'D0001', 1, 'JU/2026/D0001/0001', 'Saldo awal', 'Manual', 'admin');",
+            )
+            .expect("tabel lama");
+
+        super::ensure_journal_source_values(&connection).expect("bangun ulang");
+        super::ensure_journal_source_values(&connection).expect("idempoten");
+
+        let hitung = |sql: &str| -> i64 {
+            connection
+                .query_row(sql, [], |row| row.get(0))
+                .expect("hitung")
+        };
+        assert_eq!(hitung("SELECT COUNT(*) FROM keu_jurnal WHERE id_jurnal = 'jrn-1';"), 1);
+        assert_eq!(
+            hitung("SELECT COUNT(*) FROM sync_append_log;"),
+            1,
+            "penyalinan baris tidak boleh tercatat ulang di sync_append_log",
+        );
+        assert_eq!(
+            hitung("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('idx_keu_jurnal_tanggal', 'trg_sync_append_keu_jurnal');"),
+            2,
+        );
+
+        connection
+            .execute(
+                "INSERT INTO keu_jurnal (id_jurnal, tanggal, seri, nomor_urut, nomor, keterangan, sumber, dibuat_oleh)
+                 VALUES ('jrn-inv-mut-1', '2026-10-02', 'D0001', 2, 'JU/2026/D0001/0002', 'Pengadaan', 'Inventaris', 'admin');",
+                [],
+            )
+            .expect("sumber Inventaris diterima CHECK baru");
+        assert_eq!(hitung("SELECT COUNT(*) FROM sync_append_log;"), 2, "trigger tetap hidup");
+        assert!(connection
+            .execute(
+                "UPDATE keu_jurnal SET sumber = 'Asing' WHERE id_jurnal = 'jrn-1';",
+                [],
+            )
+            .is_err());
     }
 }

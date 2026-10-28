@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-inventory-service-close"
+description = "Enables the desktop_inventory_service_close command without any pre-configured scope."
+commands.allow = ["desktop_inventory_service_close"]
+
+[[permission]]
+identifier = "deny-desktop-inventory-service-close"
+description = "Denies the desktop_inventory_service_close command without any pre-configured scope."
+commands.deny = ["desktop_inventory_service_close"]

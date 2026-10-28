@@ -28,8 +28,11 @@ import {
   aksiPindaiOpname,
   asciiLower,
   bacaLabelInventaris,
+  HARI_SERVIS_LAMA,
   jumlahDariKetikan,
   KONDISI_BARANG,
+  perluDijurnal,
+  type ServisInventaris,
 } from "@/lib/validations/inventory";
 import { cetakBeritaAcara } from "./beritaAcara";
 import { eksporPengadaan } from "./ekspor";
@@ -46,6 +49,7 @@ import {
   TOMBOL_UTAMA,
 } from "./gaya";
 import { PemindaiLabel } from "./LabelQr";
+import { keteranganServis, servisPerUnit } from "./Servis";
 
 /**
  * Tab Fase 2: Ringkasan, Kedaluwarsa, Dipinjam, dan Opname. Dipakai apa
@@ -59,7 +63,8 @@ export type FilterKedaluwarsa = "perhatian" | "kedaluwarsa" | "semua";
 export type TujuanRingkasan =
   | { tab: "barang"; filter: FilterBarang }
   | { tab: "kedaluwarsa"; filter: FilterKedaluwarsa }
-  | { tab: "dipinjam" };
+  | { tab: "dipinjam" }
+  | { tab: "servis" };
 
 type SubmitRef = { current: boolean };
 
@@ -187,6 +192,20 @@ export function PanelRingkasan({
       gawat: false,
       tujuan: { tab: "dipinjam" },
     },
+    {
+      label: "Sedang diservis",
+      nilai: String(data.servis.length),
+      keterangan: (() => {
+        const lama = data.servis.filter(
+          (s) => s.lama_hari >= HARI_SERVIS_LAMA,
+        ).length;
+        return lama > 0
+          ? `${lama} sudah ${HARI_SERVIS_LAMA} hari atau lebih.`
+          : "Barang yang dibawa ke tukang servis.";
+      })(),
+      gawat: data.servis.some((s) => s.lama_hari >= HARI_SERVIS_LAMA),
+      tujuan: { tab: "servis" },
+    },
   ];
 
   if (data.barang.length === 0) {
@@ -200,7 +219,7 @@ export function PanelRingkasan({
 
   return (
     <div className="space-y-6">
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {kartu.map((item) => (
           <li key={item.label}>
             <button
@@ -374,6 +393,7 @@ function RekapPengadaanPanel({
             <p className="text-right text-sm font-semibold text-slate-100">
               Total {rupiah(rekap.total_nilai)}
             </p>
+            <BelumDijurnal rekap={rekap} />
             {rekap.terpotong ? (
               <p className="text-xs text-amber-300">
                 Hanya 5.000 baris pertama yang dihitung. Persempit rentang
@@ -384,6 +404,19 @@ function RekapPengadaanPanel({
         )
       ) : null}
     </section>
+  );
+}
+
+/** Ringkasan kolom "Jurnal" di Excel; penjurnalannya di Keuangan, tab Dari Inventaris. */
+function BelumDijurnal({ rekap }: { rekap: RekapPengadaan }) {
+  const belum = rekap.baris.filter(perluDijurnal);
+  if (belum.length === 0) return null;
+  const nilai = belum.reduce((sum, baris) => sum + baris.nilai, 0);
+  return (
+    <p className="text-sm text-amber-300">
+      {belum.length} baris ({rupiah(nilai)}) belum dicatat di pembukuan.
+      Bendahara mencatatnya dari halaman Keuangan, tab Dari Inventaris.
+    </p>
   );
 }
 
@@ -1125,9 +1158,16 @@ export function PanelOpname({
       ).length
     : 0;
   // Unit yang belum dipindai tetap dianggap ada sampai petugas memutuskan
-  // sendiri bahwa unit itu tidak ditemukan.
+  // sendiri bahwa unit itu tidak ditemukan. Unit yang sedang diservis tidak
+  // pernah ikut: barangnya memang sedang di luar.
+  const servisUnit = servisPerUnit(data);
   const unitBelumDipindai = adaPindaian
-    ? baris.filter((b) => b.kode_unit !== null && tidakDisentuh(b))
+    ? baris.filter(
+        (b) =>
+          b.kode_unit !== null &&
+          tidakDisentuh(b) &&
+          !(b.id_batch !== null && servisUnit.has(b.id_batch)),
+      )
     : [];
   const catatTidakDitemukan = () => {
     const kunci = new Set(unitBelumDipindai.map((b) => b.kunci));
@@ -1315,6 +1355,15 @@ export function PanelOpname({
                           {item.kode_unit ? ` · unit ${item.kode_unit}` : ""}
                           {item.dipindai ? " · dihitung dengan pindai" : ""}
                         </p>
+                        {item.id_batch !== null &&
+                        servisUnit.has(item.id_batch) ? (
+                          <p className="text-xs text-amber-300">
+                            {keteranganServis(
+                              servisUnit.get(item.id_batch) as ServisInventaris,
+                            )}
+                            ; tidak ikut dicatat tidak ditemukan.
+                          </p>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <label

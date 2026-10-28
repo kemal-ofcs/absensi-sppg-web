@@ -28,6 +28,7 @@ import {
   simpanAwalanKodeInventaris,
   simpanBarangInventaris,
 } from "@/lib/gateways/inventory";
+import { getPengajuan } from "@/lib/gateways/inventory-pengajuan";
 import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
 import {
   ALASAN_FORMULIR,
@@ -42,6 +43,7 @@ import {
   MAKS_KODE_PREFIX,
   normalizeKodePrefix,
   PENERIMA_TIPE,
+  type ServisInventaris,
   TIPE_BARANG,
 } from "@/lib/validations/inventory";
 import {
@@ -62,6 +64,7 @@ import {
   isianJumlah,
   LABEL,
   pesanGalat,
+  SUMBER_DANA_UMUM,
   TOMBOL_BAHAYA,
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
@@ -79,6 +82,16 @@ import {
   PanelRingkasan,
   type TujuanRingkasan,
 } from "./PanelPemantauan";
+import { jumlahPerluDiterima, PanelPengajuan } from "./Pengajuan";
+import {
+  type AksiServis,
+  DialogServis,
+  jumlahDiservis,
+  keteranganServis,
+  PanelServis,
+  ServisBarang,
+  servisPerUnit,
+} from "./Servis";
 import {
   bisaDaftarkanUnit,
   DialogDaftarkanUnit,
@@ -99,6 +112,8 @@ type Tab =
   | "catat"
   | "kedaluwarsa"
   | "dipinjam"
+  | "servis"
+  | "pengajuan"
   | "opname"
   | "kartu";
 type Feedback = { tone: "success" | "error"; message: string } | null;
@@ -120,12 +135,6 @@ const ALASAN_BAWAAN: Record<JenisMutasi, string> = {
   Keluar: "Pemakaian",
   Pindah: "Distribusi",
 };
-const SUMBER_DANA_UMUM = [
-  "Kas Perusahaan",
-  "Anggaran Operasional",
-  "Anggaran Divisi",
-  "Hibah",
-];
 
 function awalBulan(tanggal: string): string {
   return `${tanggal.slice(0, 8)}01`;
@@ -185,6 +194,7 @@ export function InventarisWorkspace({
     | { jenis: "ubah"; barang: BarangInventaris; posisi: PosisiStok }
     | null
   >(null);
+  const [aksiServis, setAksiServis] = useState<AksiServis | null>(null);
   const isSubmittingRef = useRef(false);
   const [mengimpor, setMengimpor] = useState(false);
 
@@ -303,12 +313,33 @@ export function InventarisWorkspace({
 
   useEffect(() => subscribeSyncCompleted(() => void muat()), [muat]);
 
+  // Tanda angka tab Pengajuan: di-ACC, barangnya belum diterima penuh.
+  const [perluDiterima, setPerluDiterima] = useState(0);
+  const muatPengajuan = useCallback(async () => {
+    try {
+      const hari = hariIniWib();
+      setPerluDiterima(jumlahPerluDiterima(await getPengajuan(hari, hari)));
+    } catch {
+      // Hanya tanda angka; tabnya sendiri menampilkan kegagalannya.
+      setPerluDiterima(0);
+    }
+  }, []);
+  useEffect(() => {
+    void muatPengajuan();
+  }, [muatPengajuan]);
+  useEffect(
+    () => subscribeSyncCompleted(() => void muatPengajuan()),
+    [muatPengajuan],
+  );
+
   const daftarTab: Record<Tab, string> = {
     ringkasan: "Ringkasan",
     barang: "Barang",
     catat: "Catat Mutasi",
     kedaluwarsa: "Kedaluwarsa",
     dipinjam: "Dipinjam",
+    servis: "Servis",
+    pengajuan: perluDiterima > 0 ? `Pengajuan (${perluDiterima})` : "Pengajuan",
     opname: "Opname",
     kartu: "Kartu Stok",
   };
@@ -319,6 +350,8 @@ export function InventarisWorkspace({
         "catat",
         "kedaluwarsa",
         "dipinjam",
+        "servis",
+        "pengajuan",
         "barang",
         "ringkasan",
         "opname",
@@ -330,6 +363,8 @@ export function InventarisWorkspace({
         "catat",
         "kedaluwarsa",
         "dipinjam",
+        "servis",
+        "pengajuan",
         "opname",
         "kartu",
       ];
@@ -435,6 +470,30 @@ export function InventarisWorkspace({
             onSelesai={selesai}
             onGalat={galat}
           />
+        ) : tab === "servis" ? (
+          <PanelServis
+            data={data}
+            canRecord={canRecord}
+            canAdjust={canAdjust}
+            onAksi={setAksiServis}
+            onAfkir={(idBarang) => {
+              setBarangCatat(idBarang);
+              setTab("catat");
+            }}
+            onInfo={info}
+            onGalat={galat}
+          />
+        ) : tab === "pengajuan" ? (
+          <PanelPengajuan
+            data={data}
+            canRecord={canRecord}
+            onInfo={info}
+            onBerubah={() => {
+              void muatPengajuan();
+              // Penerimaan menambah stok dan bisa membuat barang baru.
+              void muat();
+            }}
+          />
         ) : tab === "opname" ? (
           <PanelOpname
             data={data}
@@ -471,6 +530,7 @@ export function InventarisWorkspace({
             onUbahUnit={(barang, posisi) =>
               setUnitAksi({ jenis: "ubah", barang, posisi })
             }
+            onServis={setAksiServis}
           />
         ) : tab === "catat" ? (
           <FormMutasi
@@ -505,6 +565,19 @@ export function InventarisWorkspace({
             setFormBarang(null);
             setFeedback({ tone: "success", message });
             await muat();
+          }}
+        />
+      ) : null}
+
+      {aksiServis && data ? (
+        <DialogServis
+          aksi={aksiServis}
+          data={data}
+          isSubmittingRef={isSubmittingRef}
+          onClose={() => setAksiServis(null)}
+          onSelesai={async (message) => {
+            setAksiServis(null);
+            await selesai(message);
           }}
         />
       ) : null}
@@ -589,6 +662,7 @@ function DaftarBarang({
   onKartu,
   onDaftarkanUnit,
   onUbahUnit,
+  onServis,
 }: {
   filterAwal: FilterBarang;
   data: DaftarInventaris;
@@ -607,6 +681,7 @@ function DaftarBarang({
   onKartu: (barang: BarangInventaris) => void;
   onDaftarkanUnit: (barang: BarangInventaris) => void;
   onUbahUnit: (barang: BarangInventaris, posisi: PosisiStok) => void;
+  onServis: (aksi: AksiServis) => void;
 }) {
   const [cari, setCari] = useState("");
   const [kategori, setKategori] = useState("");
@@ -622,6 +697,7 @@ function DaftarBarang({
     () => data.kolom.filter((kolom) => kolom.is_aktif),
     [data.kolom],
   );
+  const servisUnit = useMemo(() => servisPerUnit(data), [data]);
 
   const daftar = useMemo(() => {
     const kata = cari.trim().toLowerCase();
@@ -1004,6 +1080,34 @@ function DaftarBarang({
                                 · kedaluwarsa {posisi.tanggal_expired}
                               </span>
                             ) : null}
+                            {posisi.id_batch &&
+                            servisUnit.has(posisi.id_batch) ? (
+                              <span className="block text-xs text-amber-300">
+                                {keteranganServis(
+                                  servisUnit.get(
+                                    posisi.id_batch,
+                                  ) as ServisInventaris,
+                                )}
+                              </span>
+                            ) : !barang.dilacak_unit &&
+                              jumlahDiservis(
+                                data,
+                                barang.id_barang,
+                                posisi.tempat,
+                                posisi.kondisi,
+                              ) > 0 ? (
+                              <span className="block text-xs text-amber-300">
+                                {angka(
+                                  jumlahDiservis(
+                                    data,
+                                    barang.id_barang,
+                                    posisi.tempat,
+                                    posisi.kondisi,
+                                  ),
+                                )}{" "}
+                                {barang.satuan} sedang diservis
+                              </span>
+                            ) : null}
                           </span>
                           <span
                             className={`font-semibold ${
@@ -1030,6 +1134,14 @@ function DaftarBarang({
                       ))}
                     </ul>
                   )
+                ) : null}
+                {buka && barang.tipe === "Aset" ? (
+                  <ServisBarang
+                    data={data}
+                    barang={barang}
+                    canRecord={canRecord}
+                    onAksi={onServis}
+                  />
                 ) : null}
               </li>
             );
@@ -2011,6 +2123,13 @@ function FormMutasi({
                         {unit.nomor_seri ? (
                           <span className="text-slate-400">
                             SN {unit.nomor_seri}
+                          </span>
+                        ) : null}
+                        {servisPerUnit(data).has(id) ? (
+                          <span className="text-amber-300">
+                            {keteranganServis(
+                              servisPerUnit(data).get(id) as ServisInventaris,
+                            )}
                           </span>
                         ) : null}
                       </label>

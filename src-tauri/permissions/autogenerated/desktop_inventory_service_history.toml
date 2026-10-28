@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-inventory-service-history"
+description = "Enables the desktop_inventory_service_history command without any pre-configured scope."
+commands.allow = ["desktop_inventory_service_history"]
+
+[[permission]]
+identifier = "deny-desktop-inventory-service-history"
+description = "Denies the desktop_inventory_service_history command without any pre-configured scope."
+commands.deny = ["desktop_inventory_service_history"]

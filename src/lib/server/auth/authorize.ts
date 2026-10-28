@@ -45,6 +45,32 @@ export async function requireWebSession(request: NextRequest) {
   return actor;
 }
 
+/**
+ * Cukup SALAH SATU izin, cermin `require_any_permission`. Lisensi tetap dinilai
+ * satu kali, memakai izin yang benar-benar dipegang pelaku.
+ */
+export async function requireAnyWebPermission(
+  request: NextRequest,
+  permissions: readonly PermissionKey[],
+) {
+  const token = request.cookies.get(WEB_SESSION_COOKIE)?.value ?? "";
+  const actor = await readWebSession(token);
+  const dipegang = permissions.find((permission) => {
+    try {
+      assertActorPermission(actor, permission);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!dipegang) {
+    // Melempar galat yang sama dengan gerbang satu izin (401 atau 403).
+    assertActorPermission(actor, permissions[0] as PermissionKey);
+  }
+  await assertWebLicense(request, dipegang ?? null);
+  return actor as NonNullable<typeof actor>;
+}
+
 export async function requireWebPermission(
   request: NextRequest,
   permission: PermissionKey,

@@ -12,34 +12,50 @@ import {
   formatKodeBarang,
   formatKodeUnit,
   type IzinInventaris,
+  idJurnalInventaris,
+  idJurnalServis,
+  idMutasiKondisiServis,
   isAngkaKanonik,
   isiLabelInventaris,
+  isMutasiServis,
   isValidDate,
   izinUntukAlasan,
   type JenisBeritaAcara,
   jenisBeritaAcara,
   jumlahDariKetikan,
   jumlahDariSelAngka,
+  jurnalInventarisDraftSchema,
+  keteranganJurnalInventaris,
+  keteranganJurnalServis,
   kolomDraftSchema,
+  kondisiHasilServis,
   mutasiDraftSchema,
   nomorKodeBerikutnya,
   normalizeKodePrefix,
   normalizeTempat,
   opnameDraftSchema,
   parseKodePrefixes,
+  pasanganAkunJurnalInventaris,
+  pasanganAkunJurnalServis,
   rekapSumberDana,
   type StatusKedaluwarsa,
+  servisDraftSchema,
   statusKedaluwarsa,
+  statusServis,
   stokMenipis,
   susunPembatalan,
+  tutupServisDraftSchema,
   validasiUnit,
   validasiUnitEdit,
+  validateAlasanBatalServis,
   validateAtribut,
   validateBarang,
+  validateIsianServis,
   validateKodePrefixes,
   validateKolom,
   validateMutasi,
   validateOpname,
+  validateTutupServis,
 } from "./inventory";
 
 const HARI_INI = "2026-10-07";
@@ -1203,5 +1219,193 @@ describe("jumlah desimal per barang", () => {
       expect(formatJumlah(nilai, desimal)).toBe(teks);
       if (nilai >= 0) expect(jumlahDariKetikan(teks, desimal)).toBe(nilai);
     }
+  });
+});
+
+// Vektor yang sama dengan `tests_jurnal_inventaris` di `desktop/inventory.rs`.
+describe("jurnal inventaris (vektor kembar inventory.rs)", () => {
+  test("format jumlah sama dengan Rust", () => {
+    const kasus: Array<[number, boolean, string]> = [
+      [3, false, "3"],
+      [1234567, false, "1.234.567"],
+      [250, true, "2,50"],
+      [205, true, "2,05"],
+      [300, true, "3"],
+      [123456, true, "1.234,56"],
+      [-150, true, "-1,50"],
+    ];
+    for (const [nilai, desimal, harapan] of kasus) {
+      expect(formatJumlah(nilai, desimal)).toBe(harapan);
+    }
+  });
+
+  test("keterangan dan id jurnal", () => {
+    expect(idJurnalInventaris("mut-1")).toBe("jrn-inv-mut-1");
+    expect(
+      keteranganJurnalInventaris(
+        "Pengadaan",
+        " Kertas HVS ",
+        3,
+        false,
+        "rim",
+        " BA-01 ",
+      ),
+    ).toBe("Pengadaan Kertas HVS 3 rim (BA-01)");
+    expect(
+      keteranganJurnalInventaris("Hibah", "Alkohol", 250, true, "liter", "  "),
+    ).toBe("Hibah Alkohol 2,50 liter");
+    const panjang = keteranganJurnalInventaris(
+      "Pengadaan",
+      "é".repeat(300),
+      1,
+      false,
+      "unit",
+      null,
+    );
+    expect(Array.from(panjang).length).toBe(200);
+  });
+
+  test("pasangan akun menurut tipe dan alasan", () => {
+    const akun = {
+      akun_debit_aset: "akun-peralatan",
+      akun_debit_habis_pakai: "akun-beban-atk",
+      akun_kredit_bayar: "akun-kas",
+      akun_kredit_hibah: "akun-pendapatan-lain",
+    };
+    expect(pasanganAkunJurnalInventaris("Aset", "Pengadaan", akun)).toEqual({
+      ok: true,
+      value: { debit: "akun-peralatan", kredit: "akun-kas" },
+    });
+    expect(pasanganAkunJurnalInventaris("Habis Pakai", "Hibah", akun)).toEqual({
+      ok: true,
+      value: { debit: "akun-beban-atk", kredit: "akun-pendapatan-lain" },
+    });
+    expect(
+      pasanganAkunJurnalInventaris("Aset", "Pengadaan", {
+        akun_kredit_bayar: " ",
+      }),
+    ).toEqual({ ok: false, error: "Pilih akun untuk barang Aset." });
+    expect(
+      pasanganAkunJurnalInventaris("Aset", "Pengadaan", {
+        akun_debit_aset: "akun-peralatan",
+      }),
+    ).toEqual({ ok: false, error: "Pilih akun pembayaran pengadaan." });
+    expect(pasanganAkunJurnalInventaris("Aset", "Saldo Awal", akun).ok).toBe(
+      false,
+    );
+  });
+
+  test("draft menolak kunci asing, termasuk dibuat_oleh", () => {
+    expect(
+      jurnalInventarisDraftSchema.safeParse({
+        id_mutasi: ["m-1"],
+        dibuat_oleh: "x",
+      }).success,
+    ).toBe(false);
+    expect(
+      jurnalInventarisDraftSchema.parse({ balik: ["j-1"] }).id_mutasi,
+    ).toEqual([]);
+  });
+});
+
+// Vektor yang sama dengan `tests_servis` di `desktop/inventory.rs`.
+describe("servis aset (vektor kembar inventory.rs)", () => {
+  test("id, status, dan kondisi hasil servis", () => {
+    expect(idMutasiKondisiServis("srv-1")).toBe("srv-1-kondisi");
+    expect(idJurnalServis("srv-1")).toBe("jrn-srv-1");
+    expect(isMutasiServis("srv-ab-kondisi")).toBe(true);
+    expect(isMutasiServis("mut-ab-kondisi")).toBe(false);
+    expect(isMutasiServis("srv-ab")).toBe(false);
+    expect(statusServis(null, null)).toBe("Sedang diservis");
+    expect(statusServis("2026-10-02", null)).toBe("Selesai");
+    expect(statusServis(null, "2026-10-02 08:00:00")).toBe("Dibatalkan");
+    expect(kondisiHasilServis("Rusak Ringan", "Baik")).toBe("Baik");
+    expect(kondisiHasilServis("Rusak Ringan", "Rusak Ringan")).toBeNull();
+    expect(
+      kondisiHasilServis("Rusak Berat", "Tidak Bisa Diperbaiki"),
+    ).toBeNull();
+    expect(keteranganJurnalServis(" Proyektor ", "PRJ-03", " Toko Jaya ")).toBe(
+      "Servis Proyektor (PRJ-03) di Toko Jaya",
+    );
+    expect(keteranganJurnalServis("Kursi", null, " ")).toBe("Servis Kursi");
+  });
+
+  test("validasi isian dan penutupan servis", () => {
+    const hari = "2026-10-26";
+    expect(
+      validateIsianServis("2026-10-20", "  ", " Lampu mati ", hari),
+    ).toEqual({
+      ok: true,
+      value: {
+        tanggal_mulai: "2026-10-20",
+        penyedia: null,
+        keluhan: "Lampu mati",
+      },
+    });
+    expect(validateIsianServis("2026-10-27", null, "x", hari)).toEqual({
+      ok: false,
+      error: "Tanggal dibawa tidak boleh setelah hari ini.",
+    });
+    expect(validateIsianServis("2026-10-20", null, "  ", hari)).toEqual({
+      ok: false,
+      error: "Keluhan wajib diisi.",
+    });
+    const tutup = (tanggal: string, hasil: string, biaya: number) =>
+      tutupServisDraftSchema.parse({
+        id_servis: "srv-1",
+        tanggal_selesai: tanggal,
+        hasil,
+        biaya,
+        catatan_selesai: " ",
+      });
+    expect(
+      validateTutupServis(
+        tutup("2026-10-25", "Baik", 350_000),
+        "2026-10-20",
+        hari,
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        tanggal_selesai: "2026-10-25",
+        hasil: "Baik",
+        biaya: 350_000,
+        catatan_selesai: null,
+      },
+    });
+    expect(
+      validateTutupServis(tutup("2026-10-19", "Baik", 0), "2026-10-20", hari),
+    ).toEqual({
+      ok: false,
+      error: "Tanggal kembali tidak boleh sebelum tanggal dibawa.",
+    });
+    expect(
+      validateTutupServis(tutup("2026-10-25", "Hilang", 0), "2026-10-20", hari),
+    ).toEqual({ ok: false, error: "Hasil servis tidak dikenal." });
+    expect(
+      validateTutupServis(tutup("2026-10-25", "Baik", -1), "2026-10-20", hari),
+    ).toEqual({ ok: false, error: "Biaya servis tidak valid." });
+    expect(validateAlasanBatalServis("  ")).toEqual({
+      ok: false,
+      error: "Alasan pembatalan wajib diisi.",
+    });
+    expect(
+      pasanganAkunJurnalServis({ akun_debit_servis: "akun-beban-pemeliharaan" })
+        .ok,
+    ).toBe(false);
+  });
+
+  test("draft servis menolak kunci asing, termasuk dibuka_oleh", () => {
+    expect(
+      servisDraftSchema.safeParse({
+        id_barang: "b",
+        keluhan: "x",
+        dibuka_oleh: "y",
+      }).success,
+    ).toBe(false);
+    expect(
+      tutupServisDraftSchema.safeParse({ id_servis: "s", ditutup_oleh: "y" })
+        .success,
+    ).toBe(false);
   });
 });

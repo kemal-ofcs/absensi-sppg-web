@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, face_match, inventory, license, loan, tutup_buku,
+    accounting, face_match, inventory, inventory_pengajuan, license, loan, tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
@@ -2474,6 +2474,154 @@ pub fn desktop_inventory_procurement(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "inventory.view")?;
     inventory::procurement(&state, &dari, &sampai)
+}
+
+/// Membuka servis aset, atau mengubah isian servis yang masih terbuka.
+#[tauri::command]
+pub fn desktop_inventory_service_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory::save_service(&state, &operator.username, draft)
+}
+
+/// Menutup servis; kondisi barang yang berubah dicatat sebagai mutasi.
+#[tauri::command]
+pub fn desktop_inventory_service_close(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory::close_service(&state, &operator.username, draft)
+}
+
+/// Membatalkan servis yang belum ditutup. Stok tidak berubah.
+#[tauri::command]
+pub fn desktop_inventory_service_cancel(
+    state: State<'_, DesktopState>,
+    id_servis: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory::cancel_service(&state, &operator.username, &id_servis, &alasan)
+}
+
+/// Pengajuan pembelian untuk tab Pengajuan dan Keuangan: yang masih terbuka,
+/// plus yang sudah selesai dalam rentang tanggal.
+#[tauri::command]
+pub fn desktop_inventory_request_list(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["inventory.view", "accounting.view"])?;
+    inventory_pengajuan::list_requests(&state, &dari, &sampai)
+}
+
+/// Mengajukan pembelian, atau mengubah pengajuan yang masih Menunggu.
+#[tauri::command]
+pub fn desktop_inventory_request_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory_pengajuan::save_request(&state, &operator.username, draft)
+}
+
+/// Membatalkan pengajuan yang masih Menunggu.
+#[tauri::command]
+pub fn desktop_inventory_request_cancel(
+    state: State<'_, DesktopState>,
+    id_pengajuan: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory_pengajuan::cancel_request(&state, &operator.username, &id_pengajuan, &alasan)
+}
+
+/// Menutup pengajuan yang sisanya tidak akan datang.
+#[tauri::command]
+pub fn desktop_inventory_request_close(
+    state: State<'_, DesktopState>,
+    id_pengajuan: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory_pengajuan::close_request(&state, &operator.username, &id_pengajuan, &alasan)
+}
+
+/// Mencatat penerimaan barang berfoto untuk pengajuan yang sudah di-ACC.
+#[tauri::command]
+pub fn desktop_inventory_receipt_create(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "inventory.record")?;
+    inventory_pengajuan::receive_request(&state, &operator.username, draft)
+}
+
+/// Satu foto penerimaan: salinan lokal, atau dari cloud bila perangkat ini
+/// tidak mencatatnya. `null` = belum terkirim atau sedang offline.
+#[tauri::command]
+pub async fn desktop_inventory_receipt_photo(
+    state: State<'_, DesktopState>,
+    id_foto: String,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["inventory.view", "accounting.view"])?;
+    if let Some(foto) = inventory_pengajuan::receipt_photo_local(&state, &id_foto)? {
+        return Ok(foto);
+    }
+    let Ok(client) = state.get_turso_client() else {
+        return Ok(Value::Null);
+    };
+    match tokio::time::timeout(SCAN_PHOTO_CLOUD_TIMEOUT, client.get_receipt_photo(&id_foto)).await {
+        Ok(Ok(foto)) => Ok(foto),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// ACC atau Tolak pengajuan pembelian (akuntansi).
+#[tauri::command]
+pub fn desktop_inventory_request_decide(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.manage")?;
+    inventory_pengajuan::decide_request(&state, &operator.username, operator.is_superadmin, draft)
+}
+
+/// Riwayat servis per rentang tanggal dibawa, opsional untuk satu barang.
+#[tauri::command]
+pub fn desktop_inventory_service_history(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+    id_barang: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.view")?;
+    inventory::service_history(&state, &dari, &sampai, id_barang)
+}
+
+/// Pengadaan dan hibah yang belum dijurnal, plus jurnal yang mutasinya sudah dibatalkan.
+#[tauri::command]
+pub fn desktop_inventory_journal_pending(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    inventory::journal_pending(&state, &dari, &sampai)
+}
+
+/// Menjurnal baris inventaris yang dicentang dan membalik jurnal yatimnya.
+#[tauri::command]
+pub fn desktop_inventory_journal_post(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.manage")?;
+    inventory::journal_post(&state, &operator.username, draft)
 }
 
 #[tauri::command]

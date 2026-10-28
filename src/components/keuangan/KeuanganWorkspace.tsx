@@ -17,10 +17,12 @@ import {
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
+import { jumlahMenunggu } from "@/components/inventory/Pengajuan";
 import {
   eksporBukuBesar,
   eksporNeracaSaldo,
 } from "@/components/keuangan/eksporKeuangan";
+import { JurnalInventaris } from "@/components/keuangan/JurnalInventaris";
 import {
   BarisEkspor,
   LaporanKeuangan,
@@ -45,6 +47,8 @@ import {
   type NeracaSaldo,
   simpanAkun,
 } from "@/lib/gateways/accounting";
+import { getJurnalInventaris } from "@/lib/gateways/inventory";
+import { getPengajuan } from "@/lib/gateways/inventory-pengajuan";
 import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
 import {
   BATAS_DAFTAR_JURNAL,
@@ -64,11 +68,19 @@ import {
  * `FeedbackBanner` kedua workspace punya props yang berbeda.
  */
 
-type Tab = "jurnal" | "buku" | "neraca" | "laporan" | "tutup" | "akun";
+type Tab =
+  | "jurnal"
+  | "inventaris"
+  | "buku"
+  | "neraca"
+  | "laporan"
+  | "tutup"
+  | "akun";
 type Feedback = { tone: "success" | "error"; message: string } | null;
 
 const LABEL_TAB: Record<Tab, string> = {
   jurnal: "Jurnal",
+  inventaris: "Dari Inventaris",
   buku: "Buku Besar",
   neraca: "Neraca Saldo",
   laporan: "Laporan",
@@ -139,6 +151,36 @@ export function KeuanganWorkspace() {
     [muatPerhatian],
   );
 
+  // Tanda angka di tab Dari Inventaris: semua yang belum dijurnal sepanjang
+  // masa, jurnal yang perlu dibalik, dan pengajuan pembelian yang menunggu.
+  const [belumDijurnal, setBelumDijurnal] = useState(0);
+  const muatBelumDijurnal = useCallback(async () => {
+    try {
+      const hari = hariIniWib();
+      const menunggu = await getPengajuan(hari, hari).then(
+        jumlahMenunggu,
+        () => 0,
+      );
+      const hasil = await getJurnalInventaris("2000-01-01", hari);
+      setBelumDijurnal(
+        hasil.baris.length +
+          hasil.perlu_dibalik.length +
+          hasil.servis.length +
+          menunggu,
+      );
+    } catch {
+      // Hanya tanda angka; tabnya sendiri menampilkan kegagalannya.
+      setBelumDijurnal(0);
+    }
+  }, []);
+  useEffect(() => {
+    void muatBelumDijurnal();
+  }, [muatBelumDijurnal]);
+  useEffect(
+    () => subscribeSyncCompleted(() => void muatBelumDijurnal()),
+    [muatBelumDijurnal],
+  );
+
   const info = (message: string) => setFeedback({ tone: "success", message });
 
   return (
@@ -168,6 +210,12 @@ export function KeuanganWorkspace() {
               <span className="ml-2 rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-slate-950">
                 {perhatian}
                 <span className="sr-only"> perlu ditinjau</span>
+              </span>
+            ) : null}
+            {id === "inventaris" && belumDijurnal > 0 ? (
+              <span className="ml-2 rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-slate-950">
+                {belumDijurnal}
+                <span className="sr-only"> belum dijurnal</span>
               </span>
             ) : null}
           </button>
@@ -219,6 +267,13 @@ export function KeuanganWorkspace() {
             bolehKelola={bolehKelola}
             bolehBatal={bolehBatal}
             onInfo={info}
+          />
+        ) : tab === "inventaris" ? (
+          <JurnalInventaris
+            akun={akun}
+            bolehKelola={bolehKelola}
+            onInfo={info}
+            onBerubah={() => void muatBelumDijurnal()}
           />
         ) : tab === "buku" ? (
           <PanelBukuBesar akun={akun} />

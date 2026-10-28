@@ -23,7 +23,7 @@ use super::{config::DesktopState, license, models::CommandError, storage, sync};
 pub const KELOMPOK_AKUN: [&str; 5] = ["Aset", "Kewajiban", "Ekuitas", "Pendapatan", "Beban"];
 pub const SALDO_NORMAL: [&str; 2] = ["Debit", "Kredit"];
 /// WAJIB sama dengan CHECK `keu_jurnal.sumber` di ketiga DDL.
-pub const SUMBER_JURNAL: [&str; 4] = ["Manual", "Kasbon", "Payroll", "Pembatalan"];
+pub const SUMBER_JURNAL: [&str; 5] = ["Manual", "Kasbon", "Payroll", "Inventaris", "Pembatalan"];
 
 pub const MAKS_NOMINAL: i64 = 1_000_000_000_000;
 pub const MAKS_BARIS_JURNAL: usize = 100;
@@ -1357,6 +1357,7 @@ pub fn label_sumber_kas(sumber: &str) -> &'static str {
     match sumber {
         "Payroll" => "Pembayaran gaji",
         "Kasbon" => "Kasbon karyawan",
+        "Inventaris" => "Pembelian barang dan servis",
         "Manual" => "Jurnal umum",
         _ => "Pembatalan",
     }

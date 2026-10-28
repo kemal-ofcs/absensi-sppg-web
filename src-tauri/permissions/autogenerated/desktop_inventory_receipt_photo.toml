@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-inventory-receipt-photo"
+description = "Enables the desktop_inventory_receipt_photo command without any pre-configured scope."
+commands.allow = ["desktop_inventory_receipt_photo"]
+
+[[permission]]
+identifier = "deny-desktop-inventory-receipt-photo"
+description = "Denies the desktop_inventory_receipt_photo command without any pre-configured scope."
+commands.deny = ["desktop_inventory_receipt_photo"]

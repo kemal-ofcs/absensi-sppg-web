@@ -4,6 +4,7 @@ pub mod config;
 pub mod face_match;
 mod hari_kerja;
 mod inventory;
+mod inventory_pengajuan;
 mod accounting;
 mod loan;
 mod tutup_buku;

@@ -325,7 +325,7 @@ export const barangDraftSchema = z
   .strict();
 
 export type BarangDraft = z.input<typeof barangDraftSchema>;
-type BarangDraftParsed = z.output<typeof barangDraftSchema>;
+export type BarangDraftParsed = z.output<typeof barangDraftSchema>;
 
 export interface BarangValid {
   kode_barang: string | null;
@@ -868,6 +868,8 @@ export interface DaftarInventaris {
   nama_perusahaan: string | null;
   /** Semua kolom tambahan, aktif maupun tidak, urut waktu dibuat. */
   kolom: KolomInventaris[];
+  /** Servis yang masih terbuka (v29), tertua lebih dulu. */
+  servis: ServisInventaris[];
 }
 
 export interface PenerimaInventaris {
@@ -1000,6 +1002,8 @@ export interface BarisPengadaan {
   nomor_dokumen: string | null;
   tempat_tujuan: string | null;
   nilai: number;
+  /** Nomor jurnal `jrn-inv-<id_mutasi>`, atau null bila belum dijurnal. */
+  nomor_jurnal: string | null;
 }
 
 export interface RekapPengadaan {
@@ -1505,4 +1509,439 @@ export function formatJumlah(nilai: number, desimal: boolean): string {
     sisa ? `${bulat}.${String(sisa).padStart(2, "0")}` : String(bulat),
   );
   return nilai < 0 ? `-${teks}` : teks;
+}
+
+// Jurnal pengadaan (v28)
+
+/** Cermin `MAKS_JURNAL_INVENTARIS`: baris paling banyak dalam satu tekan. */
+export const MAKS_JURNAL_INVENTARIS = 200;
+/** Cermin `MAKS_DAFTAR_JURNAL_INVENTARIS`. */
+export const MAKS_DAFTAR_JURNAL_INVENTARIS = 500;
+/** Akun yang diisi otomatis di layar, hanya bila akunnya masih aktif. Backend tidak memakai bawaan. */
+export const AKUN_JURNAL_INVENTARIS_BAWAAN = {
+  akun_debit_aset: "akun-peralatan",
+  akun_debit_habis_pakai: "akun-beban-atk",
+  akun_kredit_bayar: "akun-kas",
+  akun_kredit_hibah: "akun-pendapatan-lain",
+  akun_debit_servis: "akun-beban-pemeliharaan",
+} as const;
+/** Cermin `KELOMPOK_DEBIT_INVENTARIS` / `KELOMPOK_KREDIT_BAYAR` / `KELOMPOK_KREDIT_HIBAH`. */
+export const KELOMPOK_AKUN_JURNAL_INVENTARIS = {
+  akun_debit_aset: ["Aset", "Beban"],
+  akun_debit_habis_pakai: ["Aset", "Beban"],
+  akun_kredit_bayar: ["Aset", "Kewajiban"],
+  akun_kredit_hibah: ["Pendapatan"],
+  akun_debit_servis: ["Aset", "Beban"],
+} as const;
+/** Cermin `KETERANGAN_BALIK_INVENTARIS`. */
+export const KETERANGAN_BALIK_INVENTARIS = "Pembatalan mutasi inventaris";
+/** Cermin `MAKS_KETERANGAN` di `validations/accounting.ts`. */
+const MAKS_KETERANGAN_JURNAL = 200;
+
+/**
+ * Baris rekap pengadaan yang semestinya punya jurnal tetapi belum: Pengadaan
+ * atau Hibah berharga. Saldo Awal dan baris tanpa harga tidak pernah dijurnal.
+ */
+export function perluDijurnal(baris: BarisPengadaan): boolean {
+  return (
+    baris.nomor_jurnal === null &&
+    (baris.alasan === "Pengadaan" || baris.alasan === "Hibah") &&
+    baris.harga_satuan !== null &&
+    baris.nilai > 0
+  );
+}
+
+/** Cermin `id_jurnal_inventaris`: satu baris mutasi = satu jurnal berid tetap. */
+export function idJurnalInventaris(idMutasi: string): string {
+  return `jrn-inv-${idMutasi}`;
+}
+
+/** Cermin `keterangan_jurnal_inventaris`. */
+export function keteranganJurnalInventaris(
+  alasan: string,
+  namaBarang: string,
+  jumlah: number,
+  desimal: boolean,
+  satuan: string,
+  nomorDokumen: string | null,
+): string {
+  let teks = `${alasan} ${namaBarang.trim()} ${formatJumlah(jumlah, desimal)} ${satuan.trim()}`;
+  const nomor = nomorDokumen?.trim();
+  if (nomor) teks += ` (${nomor})`;
+  return Array.from(teks).slice(0, MAKS_KETERANGAN_JURNAL).join("");
+}
+
+export interface AkunJurnalInventaris {
+  akun_debit_aset?: string | null;
+  akun_debit_habis_pakai?: string | null;
+  akun_kredit_bayar?: string | null;
+  akun_kredit_hibah?: string | null;
+  akun_debit_servis?: string | null;
+}
+
+function akunTerisi(akun: string | null | undefined): string | null {
+  const nilai = akun?.trim();
+  return nilai ? nilai : null;
+}
+
+/** Cermin `pasangan_akun_jurnal_inventaris`: debit menurut tipe, kredit menurut alasan. */
+export function pasanganAkunJurnalInventaris(
+  tipe: string,
+  alasan: string,
+  akun: AkunJurnalInventaris,
+): Hasil<{ debit: string; kredit: string }> {
+  let debit: string | null;
+  if (tipe === "Aset") {
+    debit = akunTerisi(akun.akun_debit_aset);
+    if (!debit) return { ok: false, error: "Pilih akun untuk barang Aset." };
+  } else if (tipe === "Habis Pakai") {
+    debit = akunTerisi(akun.akun_debit_habis_pakai);
+    if (!debit) {
+      return { ok: false, error: "Pilih akun untuk barang Habis Pakai." };
+    }
+  } else {
+    return { ok: false, error: `Tipe barang ${tipe} tidak dikenal.` };
+  }
+  let kredit: string | null;
+  if (alasan === "Pengadaan") {
+    kredit = akunTerisi(akun.akun_kredit_bayar);
+    if (!kredit)
+      return { ok: false, error: "Pilih akun pembayaran pengadaan." };
+  } else if (alasan === "Hibah") {
+    kredit = akunTerisi(akun.akun_kredit_hibah);
+    if (!kredit) {
+      return { ok: false, error: "Pilih akun pendapatan untuk hibah." };
+    }
+  } else {
+    return {
+      ok: false,
+      error: `Mutasi ${alasan} tidak bisa dijurnal dari inventaris.`,
+    };
+  }
+  return { ok: true, value: { debit, kredit } };
+}
+
+const idAkunOpsional = z.string().trim().max(120).nullable().optional();
+
+/** Cermin `JurnalInventarisDraft` (`deny_unknown_fields`). */
+export const jurnalInventarisDraftSchema = z
+  .object({
+    id_mutasi: z
+      .array(z.string().trim().min(1).max(120))
+      .max(MAKS_JURNAL_INVENTARIS)
+      .default([]),
+    balik: z
+      .array(z.string().trim().min(1).max(160))
+      .max(MAKS_JURNAL_INVENTARIS)
+      .default([]),
+    akun_debit_aset: idAkunOpsional,
+    akun_debit_habis_pakai: idAkunOpsional,
+    akun_kredit_bayar: idAkunOpsional,
+    akun_kredit_hibah: idAkunOpsional,
+    id_servis: z
+      .array(z.string().trim().min(1).max(120))
+      .max(MAKS_JURNAL_INVENTARIS)
+      .default([]),
+    akun_debit_servis: idAkunOpsional,
+  })
+  .strict();
+export type JurnalInventarisDraft = z.input<typeof jurnalInventarisDraftSchema>;
+
+export interface BarisBelumDijurnal {
+  id_mutasi: string;
+  tanggal: string;
+  alasan: "Pengadaan" | "Hibah";
+  tipe: TipeBarang;
+  kode_barang: string;
+  nama_barang: string;
+  satuan: string;
+  desimal: boolean;
+  jumlah: number;
+  harga_satuan: number;
+  nilai: number;
+  sumber_dana: string;
+  nomor_dokumen: string | null;
+  /** Masuk hasil penerimaan pengajuan (v30); null untuk Masuk biasa. */
+  id_pengajuan: string | null;
+  periode_tertutup: boolean;
+}
+
+export interface JurnalPerluDibalik {
+  id_jurnal: string;
+  nomor: string;
+  tanggal: string;
+  keterangan: string;
+  id_mutasi: string;
+}
+
+export interface DaftarJurnalInventaris {
+  baris: BarisBelumDijurnal[];
+  terpotong: boolean;
+  perlu_dibalik: JurnalPerluDibalik[];
+  /** Biaya servis yang belum dijurnal (v29). */
+  servis: BarisServisBelumDijurnal[];
+  batas_tutup: string | null;
+}
+
+// Servis aset (v29)
+
+/** Cermin `HASIL_SERVIS`. */
+export const HASIL_SERVIS = [
+  "Baik",
+  "Rusak Ringan",
+  "Rusak Berat",
+  "Tidak Bisa Diperbaiki",
+] as const;
+export type HasilServis = (typeof HASIL_SERVIS)[number];
+export const MAKS_PENYEDIA_SERVIS = 120;
+export const MAKS_KELUHAN_SERVIS = 500;
+export const MAKS_CATATAN_SERVIS = 500;
+/** Servis terbuka selama ini atau lebih ditandai di Ringkasan (hanya layar). */
+export const HARI_SERVIS_LAMA = 30;
+/** Cermin `MAKS_SERVIS_TERBUKA` / `MAKS_RIWAYAT_SERVIS`. */
+export const MAKS_SERVIS_TERBUKA = 500;
+export const MAKS_RIWAYAT_SERVIS = 1000;
+
+/** Cermin `id_mutasi_kondisi_servis`. */
+export function idMutasiKondisiServis(idServis: string): string {
+  return `${idServis}-kondisi`;
+}
+
+/** Cermin `is_mutasi_servis`: mutasi hasil penutupan servis tidak bisa dibatalkan. */
+export function isMutasiServis(idMutasi: string): boolean {
+  return idMutasi.startsWith("srv-") && idMutasi.endsWith("-kondisi");
+}
+
+/** Cermin `id_jurnal_servis`. */
+export function idJurnalServis(idServis: string): string {
+  return `jrn-${idServis}`;
+}
+
+export type StatusServis = "Sedang diservis" | "Selesai" | "Dibatalkan";
+
+/** Cermin `status_servis`. */
+export function statusServis(
+  tanggalSelesai: string | null,
+  dibatalkanPada: string | null,
+): StatusServis {
+  if (dibatalkanPada !== null) return "Dibatalkan";
+  if (tanggalSelesai !== null) return "Selesai";
+  return "Sedang diservis";
+}
+
+/** Cermin `kondisi_hasil_servis`: kondisi baru, atau null bila stok tidak berubah. */
+export function kondisiHasilServis(
+  kondisiAwal: string,
+  hasil: string,
+): KondisiBarang | null {
+  const kondisi = KONDISI_BARANG.find((item) => item === hasil);
+  return kondisi && kondisi !== kondisiAwal ? kondisi : null;
+}
+
+/** Cermin `keterangan_jurnal_servis`. */
+export function keteranganJurnalServis(
+  namaBarang: string,
+  kodeUnit: string | null,
+  penyedia: string | null,
+): string {
+  let teks = `Servis ${namaBarang.trim()}`;
+  const kode = kodeUnit?.trim();
+  if (kode) teks += ` (${kode})`;
+  const nama = penyedia?.trim();
+  if (nama) teks += ` di ${nama}`;
+  return Array.from(teks).slice(0, MAKS_KETERANGAN_JURNAL).join("");
+}
+
+export interface IsianServis {
+  tanggal_mulai: string;
+  penyedia: string | null;
+  keluhan: string;
+}
+
+/** Cermin `validate_isian_servis`. */
+export function validateIsianServis(
+  tanggalMulai: string,
+  penyedia: string | null | undefined,
+  keluhan: string,
+  hariIni: string,
+): Hasil<IsianServis> {
+  const tanggal = tanggalMulai.trim();
+  if (!isValidDate(tanggal)) {
+    return { ok: false, error: "Tanggal dibawa tidak valid." };
+  }
+  if (tanggal > hariIni) {
+    return { ok: false, error: "Tanggal dibawa tidak boleh setelah hari ini." };
+  }
+  const isiKeluhan = keluhan.trim();
+  if (!isiKeluhan) return { ok: false, error: "Keluhan wajib diisi." };
+  if (Array.from(isiKeluhan).length > MAKS_KELUHAN_SERVIS) {
+    return {
+      ok: false,
+      error: `Keluhan maksimal ${MAKS_KELUHAN_SERVIS} karakter.`,
+    };
+  }
+  const namaPenyedia = penyedia?.trim() || null;
+  if (
+    namaPenyedia !== null &&
+    Array.from(namaPenyedia).length > MAKS_PENYEDIA_SERVIS
+  ) {
+    return {
+      ok: false,
+      error: `Nama penyedia servis maksimal ${MAKS_PENYEDIA_SERVIS} karakter.`,
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      tanggal_mulai: tanggal,
+      penyedia: namaPenyedia,
+      keluhan: isiKeluhan,
+    },
+  };
+}
+
+/** Cermin `ServisDraft` (`deny_unknown_fields`). */
+export const servisDraftSchema = z
+  .object({
+    id_servis: z.string().trim().max(120).nullable().optional(),
+    id_barang: z.string().trim().max(120).default(""),
+    id_unit: z.string().trim().max(120).nullable().optional(),
+    jumlah: z.number().int().nullable().optional(),
+    tempat: z.string().max(200).nullable().optional(),
+    kondisi_awal: z.string().max(40).nullable().optional(),
+    tanggal_mulai: z.string().max(10).default(""),
+    penyedia: z.string().max(400).nullable().optional(),
+    keluhan: z.string().max(2000).default(""),
+  })
+  .strict();
+export type ServisDraft = z.input<typeof servisDraftSchema>;
+
+/** Cermin `TutupServisDraft` (`deny_unknown_fields`). */
+export const tutupServisDraftSchema = z
+  .object({
+    id_servis: z.string().trim().max(120).default(""),
+    tanggal_selesai: z.string().max(10).default(""),
+    hasil: z.string().max(40).default(""),
+    biaya: z.number().int().default(0),
+    catatan_selesai: z.string().max(2000).nullable().optional(),
+  })
+  .strict();
+export type TutupServisDraft = z.input<typeof tutupServisDraftSchema>;
+
+export interface TutupServisValid {
+  tanggal_selesai: string;
+  hasil: HasilServis;
+  biaya: number;
+  catatan_selesai: string | null;
+}
+
+/** Cermin `validate_tutup_servis`. */
+export function validateTutupServis(
+  draft: z.output<typeof tutupServisDraftSchema>,
+  tanggalMulai: string,
+  hariIni: string,
+): Hasil<TutupServisValid> {
+  const tanggal = draft.tanggal_selesai.trim();
+  if (!isValidDate(tanggal)) {
+    return { ok: false, error: "Tanggal kembali tidak valid." };
+  }
+  if (tanggal > hariIni) {
+    return {
+      ok: false,
+      error: "Tanggal kembali tidak boleh setelah hari ini.",
+    };
+  }
+  if (tanggal < tanggalMulai) {
+    return {
+      ok: false,
+      error: "Tanggal kembali tidak boleh sebelum tanggal dibawa.",
+    };
+  }
+  const hasil = HASIL_SERVIS.find((item) => item === draft.hasil.trim());
+  if (!hasil) return { ok: false, error: "Hasil servis tidak dikenal." };
+  if (draft.biaya < 0 || draft.biaya > MAKS_HARGA_SATUAN) {
+    return { ok: false, error: "Biaya servis tidak valid." };
+  }
+  const catatan = draft.catatan_selesai?.trim() || null;
+  if (catatan !== null && Array.from(catatan).length > MAKS_CATATAN_SERVIS) {
+    return {
+      ok: false,
+      error: `Catatan maksimal ${MAKS_CATATAN_SERVIS} karakter.`,
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      tanggal_selesai: tanggal,
+      hasil,
+      biaya: draft.biaya,
+      catatan_selesai: catatan,
+    },
+  };
+}
+
+/** Cermin `validate_alasan_batal_servis`. */
+export function validateAlasanBatalServis(alasan: string): Hasil<string> {
+  const isi = alasan.trim();
+  if (!isi) return { ok: false, error: "Alasan pembatalan wajib diisi." };
+  if (Array.from(isi).length > MAKS_CATATAN_SERVIS) {
+    return {
+      ok: false,
+      error: `Alasan pembatalan maksimal ${MAKS_CATATAN_SERVIS} karakter.`,
+    };
+  }
+  return { ok: true, value: isi };
+}
+
+/** Cermin `pasangan_akun_jurnal_servis`. */
+export function pasanganAkunJurnalServis(
+  akun: AkunJurnalInventaris,
+): Hasil<{ debit: string; kredit: string }> {
+  const debit = akunTerisi(akun.akun_debit_servis);
+  if (!debit) return { ok: false, error: "Pilih akun biaya servis." };
+  const kredit = akunTerisi(akun.akun_kredit_bayar);
+  if (!kredit) return { ok: false, error: "Pilih akun pembayaran servis." };
+  return { ok: true, value: { debit, kredit } };
+}
+
+export interface ServisInventaris {
+  id_servis: string;
+  id_barang: string;
+  kode_barang: string;
+  nama_barang: string;
+  id_unit: string | null;
+  kode_unit: string | null;
+  jumlah: number;
+  tempat: string;
+  kondisi_awal: KondisiBarang;
+  tanggal_mulai: string;
+  penyedia: string | null;
+  keluhan: string;
+  status: StatusServis;
+  tanggal_selesai: string | null;
+  hasil: HasilServis | null;
+  biaya: number | null;
+  catatan_selesai: string | null;
+  dibatalkan_pada: string | null;
+  alasan_batal: string | null;
+  dibuka_oleh: string;
+  ditutup_oleh: string | null;
+  /** Hari sejak dibawa, sampai kembali atau sampai hari ini (WIB). */
+  lama_hari: number;
+}
+
+export interface RiwayatServis {
+  baris: ServisInventaris[];
+  terpotong: boolean;
+}
+
+export interface BarisServisBelumDijurnal {
+  id_servis: string;
+  tanggal: string;
+  kode_barang: string;
+  nama_barang: string;
+  kode_unit: string | null;
+  penyedia: string | null;
+  nilai: number;
+  periode_tertutup: boolean;
 }
