@@ -176,11 +176,15 @@ html.light .page-header-description {
 
 /* Inactive navigation links in light mode */
 html[data-theme="light"] header nav a:not(.bg-sky-400):not(.bg-sky-500),
-html.light header nav a:not(.bg-sky-400):not(.bg-sky-500) {
+html.light header nav a:not(.bg-sky-400):not(.bg-sky-500),
+html[data-theme="light"] #app-sidebar nav a:not(.bg-sky-400),
+html.light #app-sidebar nav a:not(.bg-sky-400) {
   color: #334155 !important;
 }
 html[data-theme="light"] header nav a:not(.bg-sky-400):not(.bg-sky-500):hover,
-html.light header nav a:not(.bg-sky-400):not(.bg-sky-500):hover {
+html.light header nav a:not(.bg-sky-400):not(.bg-sky-500):hover,
+html[data-theme="light"] #app-sidebar nav a:not(.bg-sky-400):hover,
+html.light #app-sidebar nav a:not(.bg-sky-400):hover {
   background-color: #f1f5f9 !important;
   color: #0f172a !important;
 }

@@ -20,100 +20,122 @@ interface NavigationItem {
   label: string;
 }
 
-const NAVIGATION: NavigationItem[] = [
-  { area: "home", href: "/", icon: "home", label: "Home" },
-  { area: "scanner", href: "/scanner", icon: "scanner", label: "QR Scanner" },
+interface NavigationGroup {
+  label: string;
+  items: NavigationItem[];
+}
+
+const NAVIGATION_GROUPS: NavigationGroup[] = [
   {
-    area: "dashboard",
-    href: "/dashboard",
-    icon: "dashboard",
-    label: "Dashboard",
-  },
-  { area: "history", href: "/history", icon: "clock", label: "Riwayat" },
-  { area: "karyawan", href: "/karyawan", icon: "user", label: "Karyawan" },
-  { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
-  { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
-  {
-    area: "holidays",
-    href: "/holidays",
-    icon: "calendar",
-    label: "Hari Libur",
-  },
-  {
-    area: "operational",
-    href: "/operational",
-    icon: "tools",
-    label: "Operasional",
-  },
-  {
-    area: "payroll",
-    href: "/payroll",
-    icon: "document",
-    label: "Penggajian",
-  },
-  {
-    area: "audit",
-    href: "/audit-absensi",
-    icon: "alert",
-    label: "Audit Absensi",
-  },
-  {
-    area: "operators",
-    href: "/operators",
-    icon: "users",
-    label: "Operator",
-  },
-  {
-    area: "password_reset",
-    href: "/riwayat-reset-password",
-    icon: "lock",
-    label: "Riwayat Reset",
+    label: "Absensi",
+    items: [
+      { area: "home", href: "/", icon: "home", label: "Home" },
+      {
+        area: "scanner",
+        href: "/scanner",
+        icon: "scanner",
+        label: "QR Scanner",
+      },
+      {
+        area: "dashboard",
+        href: "/dashboard",
+        icon: "dashboard",
+        label: "Dashboard",
+      },
+      { area: "history", href: "/history", icon: "clock", label: "Riwayat" },
+      {
+        area: "audit",
+        href: "/audit-absensi",
+        icon: "alert",
+        label: "Audit Absensi",
+      },
+      {
+        area: "attendance_photo",
+        href: "/foto-absensi",
+        icon: "eye",
+        label: "Foto Absensi",
+      },
+      {
+        area: "face_template",
+        href: "/wajah",
+        icon: "user",
+        label: "Pendaftaran Wajah",
+      },
+    ],
   },
   {
-    area: "attendance_photo",
-    href: "/foto-absensi",
-    icon: "eye",
-    label: "Foto Absensi",
+    label: "SDM",
+    items: [
+      { area: "karyawan", href: "/karyawan", icon: "user", label: "Karyawan" },
+      { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
+      { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
+      {
+        area: "holidays",
+        href: "/holidays",
+        icon: "calendar",
+        label: "Hari Libur",
+      },
+      {
+        area: "payroll",
+        href: "/payroll",
+        icon: "document",
+        label: "Penggajian",
+      },
+      { area: "kasbon", href: "/kasbon", icon: "users", label: "Kasbon" },
+    ],
   },
   {
-    area: "face_template",
-    href: "/wajah",
-    icon: "user",
-    label: "Pendaftaran Wajah",
+    label: "Keuangan & Aset",
+    items: [
+      {
+        area: "keuangan",
+        href: "/keuangan",
+        icon: "document",
+        label: "Keuangan",
+      },
+      {
+        area: "inventaris",
+        href: "/inventaris",
+        icon: "box",
+        label: "Inventaris",
+      },
+      {
+        area: "operational",
+        href: "/operational",
+        icon: "tools",
+        label: "Operasional",
+      },
+    ],
   },
   {
-    area: "inventaris",
-    href: "/inventaris",
-    icon: "box",
-    label: "Inventaris",
-  },
-  {
-    area: "keuangan",
-    href: "/keuangan",
-    icon: "document",
-    label: "Keuangan",
-  },
-  {
-    area: "kasbon",
-    href: "/kasbon",
-    icon: "users",
-    label: "Kasbon",
-  },
-  {
-    area: "settings",
-    href: "/settings",
-    icon: "settings",
-    label: "Pengaturan",
+    label: "Sistem",
+    items: [
+      {
+        area: "operators",
+        href: "/operators",
+        icon: "users",
+        label: "Operator",
+      },
+      {
+        area: "password_reset",
+        href: "/riwayat-reset-password",
+        icon: "lock",
+        label: "Riwayat Reset",
+      },
+      {
+        area: "settings",
+        href: "/settings",
+        icon: "settings",
+        label: "Pengaturan",
+      },
+    ],
   },
 ];
 
-const PRIMARY_AREAS = new Set<AppArea>([
-  "home",
-  "scanner",
-  "dashboard",
-  "history",
-]);
 const MOBILE_FIXED_AREAS = new Set<AppArea>(["home", "scanner", "dashboard"]);
+
+/** Lebar `xl` Tailwind: di atasnya sidebar menempel, di bawahnya melayang. */
+const SIDEBAR_PINNED_QUERY = "(min-width: 80rem)";
 
 function routeIsActive(pathname: string, href: string) {
   return href === "/"
@@ -124,12 +146,10 @@ function routeIsActive(pathname: string, href: string) {
 function NavigationLink({
   item,
   pathname,
-  compact = false,
   onNavigate,
 }: {
   item: NavigationItem;
   pathname: string;
-  compact?: boolean;
   onNavigate?: () => void;
 }) {
   const active = routeIsActive(pathname, item.href);
@@ -138,9 +158,7 @@ function NavigationLink({
       href={item.href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
-      className={`group flex items-center gap-2 rounded-xl font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
-        compact ? "min-h-10 px-2.5 text-xs xl:px-3" : "min-h-11 px-4 text-sm"
-      } ${
+      className={`group flex min-h-10 items-center gap-2.5 rounded-xl px-3 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
         active
           ? "bg-sky-400 text-slate-950 shadow-lg shadow-sky-950/20"
           : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
@@ -152,26 +170,32 @@ function NavigationLink({
   );
 }
 
-export function HeaderBar() {
+export function HeaderBar({
+  sidebarPinned,
+  onSidebarPinnedChange,
+}: {
+  sidebarPinned: boolean;
+  onSidebarPinnedChange: (pinned: boolean) => void;
+}) {
   const { user, logout } = useAuth();
   const isOnline = useOnlineStatus();
   const pathname = usePathname();
   const appName = useAppName();
   const companyName = useCompanyName();
-  const [desktopMenuOpen, setDesktopMenuOpen] = useState(false);
+  const [sidebarOverlayOpen, setSidebarOverlayOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
-    if (!desktopMenuOpen && !mobileMenuOpen) return;
+    if (!sidebarOverlayOpen && !mobileMenuOpen) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setDesktopMenuOpen(false);
+        setSidebarOverlayOpen(false);
         setMobileMenuOpen(false);
       }
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [desktopMenuOpen, mobileMenuOpen]);
+  }, [sidebarOverlayOpen, mobileMenuOpen]);
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -184,18 +208,11 @@ export function HeaderBar() {
 
   if (!user) return null;
 
-  const visibleNavigation = NAVIGATION.filter((item) =>
-    canAccessArea(user, item.area),
-  );
-  const primaryNavigation = visibleNavigation.filter((item) =>
-    PRIMARY_AREAS.has(item.area),
-  );
-  const managementNavigation = visibleNavigation.filter(
-    (item) => !PRIMARY_AREAS.has(item.area),
-  );
-  const activeManagementItem = managementNavigation.find((item) =>
-    routeIsActive(pathname, item.href),
-  );
+  const visibleGroups = NAVIGATION_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => canAccessArea(user, item.area)),
+  })).filter((group) => group.items.length > 0);
+  const visibleNavigation = visibleGroups.flatMap((group) => group.items);
 
   const mobileNavigation = visibleNavigation.filter((item) =>
     MOBILE_FIXED_AREAS.has(item.area),
@@ -216,17 +233,36 @@ export function HeaderBar() {
     (item) => !mobileNavigation.some((direct) => direct.area === item.area),
   );
 
+  const toggleSidebar = () => {
+    if (window.matchMedia(SIDEBAR_PINNED_QUERY).matches) {
+      onSidebarPinnedChange(!sidebarPinned);
+    } else {
+      setSidebarOverlayOpen((open) => !open);
+    }
+  };
+  const closeMenus = () => {
+    setSidebarOverlayOpen(false);
+    setMobileMenuOpen(false);
+  };
+
   return (
     <>
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/90 px-3 py-2.5 shadow-xl shadow-slate-950/30 backdrop-blur-xl sm:px-5">
-        <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3 xl:gap-4">
+      <header className="sticky top-0 z-50 h-16 border-b border-white/10 bg-slate-950/90 px-3 shadow-xl shadow-slate-950/30 backdrop-blur-xl sm:px-5">
+        <div className="flex h-full w-full items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              aria-controls="app-sidebar"
+              aria-label="Tampilkan atau sembunyikan menu samping"
+              title="Menu samping"
+              className="hidden size-10 shrink-0 place-items-center rounded-xl text-slate-300 transition hover:bg-white/[0.07] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:grid"
+            >
+              <Icon name="menu" className="size-5" />
+            </button>
             <Link
               href="/"
-              onClick={() => {
-                setDesktopMenuOpen(false);
-                setMobileMenuOpen(false);
-              }}
+              onClick={closeMenus}
               className="group flex min-w-0 shrink-0 items-center gap-2 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               aria-label={`Buka Home ${BRANDING.appDisplayName}`}
             >
@@ -248,82 +284,17 @@ export function HeaderBar() {
                 </span>
               </span>
             </Link>
-
-            <nav
-              aria-label="Navigasi utama"
-              className="hidden items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 lg:flex"
-            >
-              {primaryNavigation.map((item) => (
-                <NavigationLink
-                  key={item.href}
-                  item={item}
-                  pathname={pathname}
-                  compact
-                  onNavigate={() => setDesktopMenuOpen(false)}
-                />
-              ))}
-
-              {managementNavigation.length > 0 ? (
-                <div className="relative">
-                  <button
-                    type="button"
-                    aria-expanded={desktopMenuOpen}
-                    aria-controls="desktop-management-menu"
-                    onClick={() => setDesktopMenuOpen((open) => !open)}
-                    className={`flex min-h-10 items-center gap-1.5 rounded-xl px-2.5 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 xl:px-3 ${
-                      activeManagementItem
-                        ? "bg-sky-400 text-slate-950"
-                        : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
-                    }`}
-                  >
-                    <Icon
-                      name={activeManagementItem?.icon ?? "tools"}
-                      className="size-4"
-                    />
-                    <span className="max-w-20 truncate xl:max-w-24">
-                      {activeManagementItem?.label ?? "Kelola"}
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className={`text-[10px] transition ${desktopMenuOpen ? "rotate-180" : ""}`}
-                    >
-                      ▼
-                    </span>
-                  </button>
-
-                  {desktopMenuOpen ? (
-                    <div
-                      id="desktop-management-menu"
-                      className="absolute left-0 top-[calc(100%+0.65rem)] z-50 w-64 rounded-2xl border border-white/10 bg-slate-900/98 p-2 shadow-2xl shadow-slate-950/70 backdrop-blur-xl"
-                    >
-                      <p className="px-3 pb-2 pt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                        Manajemen aplikasi
-                      </p>
-                      {managementNavigation.map((item) => (
-                        <NavigationLink
-                          key={item.href}
-                          item={item}
-                          pathname={pathname}
-                          onNavigate={() => setDesktopMenuOpen(false)}
-                        />
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </nav>
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            {/* Theme Switcher Toggle */}
             <ThemeToggle variant="compact" />
 
-            <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-1.5 xl:flex">
+            <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-1.5 lg:flex">
               <span className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-xs font-black text-slate-950">
                 {user.nama_operator.charAt(0).toUpperCase()}
               </span>
               <span className="min-w-0 leading-tight">
-                <span className="block max-w-24 truncate text-xs font-bold text-white xl:max-w-28">
+                <span className="block max-w-28 truncate text-xs font-bold text-white">
                   {user.nama_operator}
                 </span>
                 <span className="block text-[10px] font-medium text-sky-300">
@@ -344,6 +315,42 @@ export function HeaderBar() {
           </div>
         </div>
       </header>
+
+      {sidebarOverlayOpen ? (
+        <button
+          type="button"
+          aria-label="Tutup menu samping"
+          onClick={() => setSidebarOverlayOpen(false)}
+          className="fixed inset-0 top-16 z-30 hidden bg-black/40 backdrop-blur-sm lg:block xl:hidden"
+        />
+      ) : null}
+
+      <aside
+        id="app-sidebar"
+        className={`fixed bottom-0 left-0 top-16 z-40 hidden w-64 flex-col overflow-y-auto overscroll-contain border-r border-white/10 bg-slate-950/90 px-3 pb-6 pt-2 shadow-xl shadow-slate-950/30 backdrop-blur-xl ${
+          sidebarOverlayOpen ? "lg:flex" : ""
+        } ${sidebarPinned ? "xl:flex" : "xl:hidden"}`}
+      >
+        <nav aria-label="Navigasi utama">
+          {visibleGroups.map((group) => (
+            <div key={group.label} className="pt-3">
+              <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                {group.label}
+              </p>
+              <div className="grid gap-0.5">
+                {group.items.map((item) => (
+                  <NavigationLink
+                    key={item.href}
+                    item={item}
+                    pathname={pathname}
+                    onNavigate={() => setSidebarOverlayOpen(false)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </nav>
+      </aside>
 
       {mobileMenuOpen ? (
         <div className="fixed inset-0 z-[60] lg:hidden">
