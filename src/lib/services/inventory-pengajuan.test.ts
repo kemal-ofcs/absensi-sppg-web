@@ -721,6 +721,25 @@ describe("penerimaan di database", () => {
       sidik_baris: awal.sidik_baris,
     });
 
+    // Satuan barang baru yang dirapikan tetap diperiksa aturan barang.
+    await expect(
+      receivePengajuan(client, "sarpras", {
+        id_pengajuan: id,
+        tanggal: hari,
+        baris: [
+          {
+            id_baris: `${id}-3`,
+            jumlah: 2,
+            harga_satuan: 4000000,
+            tempat: "Lab",
+            tipe: "Aset",
+            satuan: "s".repeat(21),
+          },
+        ],
+        foto,
+      }),
+    ).rejects.toThrow("Baris 3: Satuan maksimal 20 karakter.");
+
     const terima = await receivePengajuan(client, "sarpras", {
       id_pengajuan: id,
       tanggal: hari,
@@ -739,6 +758,7 @@ describe("penerimaan di database", () => {
           tipe: "Aset",
           kategori: "Elektronik",
           per_unit: true,
+          nama_barang: " Proyektor Epson EB-X51 ",
         },
       ],
       foto,
@@ -790,6 +810,14 @@ describe("penerimaan di database", () => {
       "SELECT COUNT(*) AS n FROM inventory_barang WHERE id_barang LIKE 'brg-pgj-%';",
     );
     expect(Number(barangBaru.rows[0]?.n)).toBe(2);
+    const proyektor = await client.execute({
+      sql: "SELECT nama_barang FROM inventory_barang WHERE id_barang = ?;",
+      args: [`brg-${id}-3`],
+    });
+    expect(String(proyektor.rows[0]?.nama_barang)).toBe(
+      "Proyektor Epson EB-X51",
+    );
+    expect(p.baris[2]?.nama_barang).toBe("Proyektor");
     const satu = await fotoPenerimaan(client, `${terima.id_penerimaan}-2`);
     expect(satu?.data_base64).toBe("QUJD");
     expect(

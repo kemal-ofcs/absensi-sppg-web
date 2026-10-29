@@ -203,6 +203,11 @@ export const PERMISSION_CATALOG = [
   },
   { key: "accounting.reverse", name: "Batalkan Jurnal", group: "Keuangan" },
   { key: "accounting.close", name: "Tutup Buku", group: "Keuangan" },
+  {
+    key: "installment.cancel",
+    name: "Batalkan Pembayaran & Tutup Kontrak Cicilan",
+    group: "Keuangan",
+  },
   { key: "loan.view", name: "Lihat Kasbon Karyawan", group: "Keuangan" },
   { key: "loan.manage", name: "Ajukan & Kelola Kasbon", group: "Keuangan" },
   {
@@ -263,6 +268,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Menutup buku mengunci jurnal seluruh perangkat untuk periode itu, dan
   // memutuskan bentrokan menentukan potret saldo mana yang berlaku.
   "accounting.close",
+  // Membatalkan pembayaran cicilan membalik jurnalnya, dan menutup kontrak
+  // membuat sisa utangnya hanya bisa dibereskan dengan jurnal manual.
+  "installment.cancel",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [

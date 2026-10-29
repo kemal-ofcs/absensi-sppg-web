@@ -3,6 +3,13 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { Client, Transaction } from "@libsql/client";
 import {
+  aktifkanTx,
+  hargaDiterimaSql,
+  setujuiTx,
+  simpanSyaratTx,
+  syaratPerPengajuan,
+} from "@/lib/services/cicilan";
+import {
   type Executor,
   newHexId,
   recordMutationTx,
@@ -12,6 +19,12 @@ import {
   withTransaction,
 } from "@/lib/services/inventory";
 import { SERI_WEB } from "@/lib/validations/accounting";
+import {
+  type Syarat,
+  syaratDraftSchema,
+  validasiSyarat,
+  wajibTerimaPenuh,
+} from "@/lib/validations/cicilan";
 import {
   barangDraftSchema,
   isValidDate,
@@ -198,13 +211,28 @@ export async function savePengajuan(
     const isian = valid.value;
     await isiBarangTerdaftar(tx, isian.baris);
     const sidik = sidikBaris(isian.baris);
+    let syarat: Syarat | null = null;
+    if (isian.cara_bayar === "Cicilan") {
+      const total = isian.baris.reduce(
+        (jumlah, b) => jumlah + nilaiBaris(b.jumlah, b.harga_satuan, b.desimal),
+        0,
+      );
+      const hasil = validasiSyarat(
+        draft.cicilan ?? syaratDraftSchema.parse({}),
+        total,
+        isian.tanggal,
+        isian.tanggal,
+      );
+      if (!hasil.ok) throw new Error(hasil.error);
+      syarat = hasil.value;
+    }
 
     let idPengajuan = draft.id_pengajuan?.trim() || null;
     if (idPengajuan) {
       await wajibMenunggu(tx, idPengajuan);
       await tx.execute({
         sql: `UPDATE inventory_pengajuan SET tanggal = ?, keperluan = ?, sumber_dana = ?,
-                     catatan = ?, sidik_baris = ?, updated_at = datetime('now')
+                     catatan = ?, sidik_baris = ?, cara_bayar = ?, updated_at = datetime('now')
               WHERE id_pengajuan = ?;`,
         args: [
           isian.tanggal,
@@ -212,6 +240,7 @@ export async function savePengajuan(
           isian.sumber_dana,
           isian.catatan,
           sidik,
+          isian.cara_bayar,
           idPengajuan,
         ],
       });
@@ -229,8 +258,8 @@ export async function savePengajuan(
       await tx.execute({
         sql: `INSERT INTO inventory_pengajuan (
                 id_pengajuan, tanggal, seri, nomor_urut, nomor, keperluan, sumber_dana,
-                catatan, sidik_baris, diajukan_oleh, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));`,
+                catatan, sidik_baris, diajukan_oleh, cara_bayar, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));`,
         args: [
           idPengajuan,
           isian.tanggal,
@@ -242,10 +271,13 @@ export async function savePengajuan(
           isian.catatan,
           sidik,
           operator,
+          isian.cara_bayar,
         ],
       });
     }
     await tulisBaris(tx, idPengajuan, isian.baris);
+    // Kontrak lama dibiarkan saat pindah ke Tunai: pembacanya menyaring cara bayar.
+    if (syarat) await simpanSyaratTx(tx, idPengajuan, syarat);
     return { sukses: true as const, id_pengajuan: idPengajuan };
   });
 }
@@ -312,6 +344,24 @@ export async function decidePengajuan(
         ],
       });
       if (hasil.rowsAffected === 0) {
+        throw new Error(
+          "Isi pengajuan berubah sejak daftar ini dimuat. Muat ulang lalu periksa lagi.",
+        );
+      }
+      const cara = await tx.execute({
+        sql: "SELECT cara_bayar FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+        args: [id],
+      });
+      const bersih = (nilai: string | null | undefined) =>
+        nilai?.trim() || null;
+      if (String(cara.rows[0]?.cara_bayar) === "Cicilan") {
+        await setujuiTx(tx, id, parsed.data.sidik_syarat, [
+          bersih(parsed.data.id_akun_utang),
+          bersih(parsed.data.id_akun_bunga),
+          bersih(parsed.data.id_akun_denda),
+        ]);
+      } else if (bersih(parsed.data.sidik_syarat)) {
+        // Dilihat sebagai Cicilan, sekarang Tunai.
         throw new Error(
           "Isi pengajuan berubah sejak daftar ini dimuat. Muat ulang lalu periksa lagi.",
         );
@@ -431,6 +481,7 @@ export async function listPengajuan(
     });
     penerimaanPer.set(id, daftar);
   }
+  const syaratPer = await syaratPerPengajuan(client, PILIH_SQL, dari, sampai);
   const perPengajuan = new Map<string, BarisPengajuan[]>();
   for (const row of barisResult.rows) {
     const desimal = Number(row.desimal) === 1;
@@ -473,6 +524,11 @@ export async function listPengajuan(
         sumber_dana: text(row.sumber_dana),
         catatan: text(row.catatan),
         sidik_baris: String(row.sidik_baris),
+        cara_bayar: String(row.cara_bayar) === "Cicilan" ? "Cicilan" : "Tunai",
+        cicilan:
+          String(row.cara_bayar) === "Cicilan"
+            ? (syaratPer.get(id) ?? null)
+            : null,
         diajukan_oleh: String(row.diajukan_oleh),
         disetujui_pada: text(row.disetujui_pada),
         disetujui_oleh: text(row.disetujui_oleh),
@@ -541,7 +597,8 @@ export async function receivePengajuan(
       );
     }
     const header = await tx.execute({
-      sql: "SELECT nomor, sumber_dana, disetujui_pada FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+      sql: `SELECT nomor, sumber_dana, disetujui_pada, tanggal, cara_bayar
+            FROM inventory_pengajuan WHERE id_pengajuan = ?;`,
       args: [idPengajuan],
     });
     const info = header.rows[0];
@@ -570,6 +627,15 @@ export async function receivePengajuan(
     );
     if (!valid.ok) throw new Error(valid.error);
     const { tanggal, catatan, dicatat } = valid.value;
+    const bercicilan = String(info.cara_bayar) === "Cicilan";
+    if (bercicilan) {
+      const penuh = wajibTerimaPenuh(
+        acc.map((b) => [b.id_baris, b.urutan, b.jumlah - b.diterima]),
+        draft.baris.map((b) => [b.id_baris, b.jumlah]),
+      );
+      if (!penuh.ok) throw new Error(penuh.error);
+      if (!draft.cicilan) throw new Error("Syarat cicilan final wajib diisi.");
+    }
 
     const label: HasilPenerimaan["label"] = [];
     for (const indeks of dicatat) {
@@ -588,8 +654,8 @@ export async function receivePengajuan(
             await saveItemTx(
               tx,
               barangDraftSchema.parse({
-                nama_barang: baris.nama_barang,
-                satuan: baris.satuan,
+                nama_barang: isian.nama_barang?.trim() || baris.nama_barang,
+                satuan: isian.satuan?.trim() || baris.satuan,
                 desimal: baris.desimal,
                 tipe: isian.tipe ?? "",
                 kategori: isian.kategori ?? null,
@@ -633,6 +699,23 @@ export async function receivePengajuan(
         .filter((id) => !sebelum.has(id))
         .sort();
       label.push({ id_barang: idBarang, jumlah: isian.jumlah, mutasi: baru });
+    }
+
+    // Syarat final dinilai terhadap harga sebenarnya, jadi sesudah mutasinya
+    // tertulis; galat apa pun membatalkan seluruh transaksi.
+    if (bercicilan && draft.cicilan) {
+      const harga = await tx.execute({
+        sql: `SELECT ${hargaDiterimaSql()} AS harga FROM inventory_pengajuan p WHERE p.id_pengajuan = ?;`,
+        args: [idPengajuan],
+      });
+      const syarat = validasiSyarat(
+        draft.cicilan,
+        Number(harga.rows[0]?.harga ?? 0),
+        String(info.tanggal),
+        tanggal,
+      );
+      if (!syarat.ok) throw new Error(syarat.error);
+      await aktifkanTx(tx, idPengajuan, syarat.value);
     }
 
     const idPenerimaan = newHexId("trm-");

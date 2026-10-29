@@ -40,6 +40,7 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'hari_libur_whitelist', 'personil_foto', 'personil_wajah',
         'inventory_barang', 'inventory_mutasi', 'inventory_unit', 'inventory_kolom', 'inventory_servis',
         'inventory_pengajuan', 'inventory_pengajuan_baris', 'inventory_penerimaan', 'inventory_penerimaan_foto',
+        'keu_cicilan', 'keu_cicilan_jadwal', 'keu_cicilan_bayar', 'keu_cicilan_bayar_batal',
         'keu_akun', 'keu_jurnal', 'keu_jurnal_baris',
         'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
         'keu_tutup_buku'

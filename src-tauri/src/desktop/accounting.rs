@@ -23,7 +23,7 @@ use super::{config::DesktopState, license, models::CommandError, storage, sync};
 pub const KELOMPOK_AKUN: [&str; 5] = ["Aset", "Kewajiban", "Ekuitas", "Pendapatan", "Beban"];
 pub const SALDO_NORMAL: [&str; 2] = ["Debit", "Kredit"];
 /// WAJIB sama dengan CHECK `keu_jurnal.sumber` di ketiga DDL.
-pub const SUMBER_JURNAL: [&str; 5] = ["Manual", "Kasbon", "Payroll", "Inventaris", "Pembatalan"];
+pub const SUMBER_JURNAL: [&str; 6] = ["Manual", "Kasbon", "Payroll", "Inventaris", "Cicilan", "Pembatalan"];
 
 pub const MAKS_NOMINAL: i64 = 1_000_000_000_000;
 pub const MAKS_BARIS_JURNAL: usize = 100;
@@ -1358,6 +1358,7 @@ pub fn label_sumber_kas(sumber: &str) -> &'static str {
         "Payroll" => "Pembayaran gaji",
         "Kasbon" => "Kasbon karyawan",
         "Inventaris" => "Pembelian barang dan servis",
+        "Cicilan" => "Pembayaran cicilan pembelian",
         "Manual" => "Jurnal umum",
         _ => "Pembatalan",
     }
@@ -1754,7 +1755,7 @@ mod tests {
     #[test]
     fn bagan_akun_bawaan() {
         let akun = akun_bawaan();
-        assert_eq!(akun.len(), 24);
+        assert_eq!(akun.len(), 27);
         assert!(is_akun_sistem("akun-kas"));
         assert!(!is_akun_sistem("akun-peralatan"));
         assert_eq!(akun.iter().filter(|a| a.sistem).count(), 8);
@@ -1770,7 +1771,7 @@ mod tests {
 
     fn draft_akun(ubah: Value) -> AkunDraft {
         let mut dasar = json!({
-            "kode": " 5-1700 ",
+            "kode": " 5-1750 ",
             "nama": " Beban Transport ",
             "kelompok": "Beban",
             "saldo_normal": "Debit"
@@ -1786,7 +1787,7 @@ mod tests {
         assert_eq!(
             validate_akun(&draft_akun(json!({}))),
             Ok(AkunValid {
-                kode: "5-1700".into(),
+                kode: "5-1750".into(),
                 nama: "Beban Transport".into(),
                 kelompok: "Beban".into(),
                 saldo_normal: "Debit".into(),
@@ -2105,7 +2106,7 @@ mod tests {
     fn seed_akun_ditanam_tanpa_outbox() {
         let (_dir, state) = state_uji();
         let akun = list_accounts(&state).expect("daftar akun");
-        assert_eq!(akun["items"].as_array().expect("items").len(), 24);
+        assert_eq!(akun["items"].as_array().expect("items").len(), 27);
         assert!(outbox(&state, "accounting-account").is_empty());
     }
 
@@ -2218,7 +2219,7 @@ mod tests {
 
         let baru = save_account(
             &state,
-            json!({ "kode": "5-1700", "nama": "Beban Transport", "kelompok": "Beban", "saldo_normal": "Debit", "is_aktif": false }),
+            json!({ "kode": "5-1750", "nama": "Beban Transport", "kelompok": "Beban", "saldo_normal": "Debit", "is_aktif": false }),
         )
         .expect("akun baru");
         assert_eq!(outbox(&state, "accounting-account").len(), 1);

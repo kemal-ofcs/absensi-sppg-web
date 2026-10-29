@@ -144,7 +144,7 @@ pub fn keterangan_jurnal_inventaris(
 }
 
 /// Akun yang dipilih untuk satu tekan. Cermin `AkunJurnalInventaris`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkunJurnalInventaris {
     #[serde(default)]
@@ -1988,6 +1988,7 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
         "kode_prefix": read_kode_prefixes(&connection)?,
         "kolom": list_kolom(&connection)?,
         "servis": list_servis_terbuka(&connection)?,
+        "belum_lunas": list_belum_lunas(&connection)?,
         "hari_ini": wib_today(&connection),
         // Untuk label QR: profil perusahaan biasa menuntut `settings.manage`.
         "nama_perusahaan": kop_perusahaan(&connection)?["nama"].clone(),
@@ -2853,6 +2854,20 @@ pub fn cancel_mutation(
     if asal.alasan == "Peminjaman" && jumlah_kembali(&transaction, &asal.id_mutasi)? > 0 {
         return Err(invalid("Batalkan dulu pengembalian peminjaman ini."));
     }
+    // v31: penerimaan bercicilan terkunci begitu kontraknya punya pembayaran.
+    let kontrak: Option<String> = transaction
+        .query_row(
+            super::cicilan::KONTRAK_BERBAYAR_MUTASI_SQL,
+            params![asal.id_mutasi],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+    if let Some(kontrak) = kontrak {
+        return Err(invalid(format!(
+            "Mutasi ini bagian dari kontrak cicilan {kontrak} yang sudah punya pembayaran. Batalkan pembayarannya dulu."
+        )));
+    }
 
     if let (Some(tempat), Some(kondisi)) = (
         kebalikan.tempat_asal.as_deref(),
@@ -3504,7 +3519,11 @@ pub fn journal_pending(state: &DesktopState, dari: &str, sampai: &str) -> Result
         .prepare(&format!(
             "SELECT {KOLOM_BARIS_JURNAL}, {NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen,
                     b.kode_barang, COALESCE(m.sumber_dana, '') AS sumber_dana, m.harga_satuan,
-                    (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref)
+                    (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref),
+                    (SELECT c.id_akun_utang FROM inventory_pengajuan_baris r
+                     JOIN inventory_pengajuan p ON p.id_pengajuan = r.id_pengajuan AND p.cara_bayar = 'Cicilan'
+                     JOIN keu_cicilan c ON c.id_pengajuan = p.id_pengajuan
+                     WHERE r.id_baris = m.id_ref)
              FROM inventory_mutasi m
              JOIN inventory_barang b ON b.id_barang = m.id_barang
              WHERE {SYARAT_JURNAL_INVENTARIS_SQL}
@@ -3534,6 +3553,8 @@ pub fn journal_pending(state: &DesktopState, dari: &str, sampai: &str) -> Result
                 "nomor_dokumen": item.nomor_dokumen,
                 // Masuk hasil penerimaan pengajuan (v30): tautan ke laporannya.
                 "id_pengajuan": row.get::<_, Option<String>>(13)?,
+                // Penerimaan bercicilan (v31): akun kredit dikunci ke utang kontrak.
+                "akun_kredit_cicilan": row.get::<_, Option<String>>(14)?,
                 "periode_tertutup": tertutup,
             }))
         })
@@ -3711,8 +3732,21 @@ pub fn journal_post(state: &DesktopState, operator: &str, draft: Value) -> Resul
             .ok_or_else(|| {
                 invalid("Ada baris yang sudah dijurnal, dibatalkan, atau tidak bisa dijurnal. Muat ulang daftarnya.")
             })?;
+        // Penerimaan bercicilan: kredit selalu akun utang kontraknya (v31 §3.5),
+        // pilihan layar diabaikan.
+        let utang_cicilan: Option<String> = transaction
+            .query_row(super::cicilan::AKUN_UTANG_MUTASI_SQL, params![id], |row| row.get(0))
+            .optional()
+            .map_err(|_| CommandError::internal())?;
+        let akun_baris = match utang_cicilan {
+            Some(utang) => AkunJurnalInventaris {
+                akun_kredit_bayar: Some(utang),
+                ..akun.clone()
+            },
+            None => akun.clone(),
+        };
         let (debit, kredit) =
-            pasangan_akun_jurnal_inventaris(&item.tipe, &item.alasan, &akun).map_err(invalid)?;
+            pasangan_akun_jurnal_inventaris(&item.tipe, &item.alasan, &akun_baris).map_err(invalid)?;
         assert_akun_kelompok(&transaction, &debit, &KELOMPOK_DEBIT_INVENTARIS)?;
         if item.alasan == "Hibah" {
             assert_akun_kelompok(&transaction, &kredit, &KELOMPOK_KREDIT_HIBAH)?;
@@ -3909,6 +3943,25 @@ fn baca_servis(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 
 /// Servis yang masih terbuka, ikut `list_inventory` supaya rincian barang,
 /// opname, dan Ringkasan memakai satu sumber.
+/// Barang dari kontrak cicilan yang belum lunas (v31), untuk tanda di rincian
+/// barang dan peringatan di formulir Keluar.
+fn list_belum_lunas(connection: &Connection) -> Result<Vec<Value>, CommandError> {
+    let mut statement = connection
+        .prepare(&super::cicilan::barang_belum_lunas_sql())
+        .map_err(|_| CommandError::internal())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id_barang": row.get::<_, String>(0)?,
+                "kontrak": row.get::<_, String>(1)?,
+                "kreditur": row.get::<_, String>(2)?,
+            }))
+        })
+        .map_err(|_| CommandError::internal())?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|_| CommandError::internal())
+}
+
 fn list_servis_terbuka(connection: &Connection) -> Result<Vec<Value>, CommandError> {
     let mut statement = connection
         .prepare(&format!(

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{
-    accounting,
+    accounting, cicilan,
     config::DesktopState,
     inventory::{
         self, clean, invalid, is_valid_date, new_hex_id, payload_text, wib_today, BarangDraft,
@@ -170,6 +170,12 @@ pub struct PengajuanDraft {
     pub catatan: Option<String>,
     #[serde(default)]
     pub baris: Vec<BarisDraft>,
+    /// v31: `Tunai` (bawaan) atau `Cicilan`.
+    #[serde(default)]
+    pub cara_bayar: String,
+    /// Syarat cicilan; hanya dibaca bila `cara_bayar` = Cicilan.
+    #[serde(default)]
+    pub cicilan: Option<cicilan::SyaratDraft>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -178,6 +184,7 @@ pub struct PengajuanValid {
     pub keperluan: String,
     pub sumber_dana: Option<String>,
     pub catatan: Option<String>,
+    pub cara_bayar: &'static str,
     /// Baris barang terdaftar membawa nama, satuan, dan desimal kosong; I/O
     /// mengisinya dari `inventory_barang`.
     pub baris: Vec<BarisValid>,
@@ -222,6 +229,11 @@ pub fn validate_pengajuan(
             "Catatan maksimal {MAKS_CATATAN_PENGAJUAN} karakter."
         ));
     }
+    let cara_bayar = match draft.cara_bayar.trim() {
+        "" | "Tunai" => "Tunai",
+        "Cicilan" => "Cicilan",
+        _ => return Err("Cara bayar tidak dikenal.".into()),
+    };
     if draft.baris.is_empty() {
         return Err("Isi minimal satu barang.".into());
     }
@@ -298,6 +310,7 @@ pub fn validate_pengajuan(
         keperluan,
         sumber_dana,
         catatan,
+        cara_bayar,
         baris,
     })
 }
@@ -327,6 +340,16 @@ pub struct KeputusanDraft {
     pub sidik_baris: String,
     #[serde(default)]
     pub catatan: Option<String>,
+    /// v31: sidik syarat cicilan yang dilihat dan akun kontrak pilihan
+    /// akuntansi (kosong = akun bawaan). Hanya untuk pengajuan Cicilan.
+    #[serde(default)]
+    pub sidik_syarat: Option<String>,
+    #[serde(default)]
+    pub id_akun_utang: Option<String>,
+    #[serde(default)]
+    pub id_akun_bunga: Option<String>,
+    #[serde(default)]
+    pub id_akun_denda: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -431,7 +454,12 @@ pub struct BarisTerimaDraft {
     /// Barang Masuk pertama yang memulai pencatatan per unit.
     #[serde(default)]
     pub per_unit: bool,
-    // Hanya untuk barang baru.
+    // Hanya untuk barang baru. Nama dan satuan yang dirapikan saat diterima;
+    // kosong = dari baris pengajuan, yang tetap menyimpan ejaan aslinya.
+    #[serde(default)]
+    pub nama_barang: Option<String>,
+    #[serde(default)]
+    pub satuan: Option<String>,
     #[serde(default)]
     pub tipe: Option<String>,
     #[serde(default)]
@@ -453,6 +481,9 @@ pub struct PenerimaanDraft {
     pub baris: Vec<BarisTerimaDraft>,
     #[serde(default)]
     pub foto: Vec<FotoDraft>,
+    /// v31: syarat final dari kontrak yang ditandatangani (pengajuan Cicilan).
+    #[serde(default)]
+    pub cicilan: Option<cicilan::SyaratDraft>,
 }
 
 /// Satu baris pengajuan yang di-ACC beserta yang sudah diterima.
@@ -628,6 +659,7 @@ const KOLOM_PENGAJUAN: &[&str] = &[
     "sumber_dana",
     "catatan",
     "sidik_baris",
+    "cara_bayar",
     "diajukan_oleh",
     "disetujui_pada",
     "disetujui_oleh",
@@ -706,7 +738,12 @@ fn pengajuan_payload(
             header_json,
         )
         .map_err(|_| CommandError::internal())?;
-    Ok(json!({ "pengajuan": header, "baris": baris_json(transaction, id_pengajuan)? }))
+    let cicilan = cicilan::cicilan_payload(transaction, &cicilan::id_cicilan(id_pengajuan))?;
+    Ok(json!({
+        "pengajuan": header,
+        "baris": baris_json(transaction, id_pengajuan)?,
+        "cicilan": cicilan,
+    }))
 }
 
 /// Status satu pengajuan menurut database lokal.
@@ -844,6 +881,23 @@ pub fn save_request(
     let mut valid = validate_pengajuan(&draft, &hari_ini).map_err(invalid)?;
     isi_barang_terdaftar(&transaction, &mut valid.baris)?;
     let sidik = sidik_baris(&valid.baris);
+    let syarat = if valid.cara_bayar == "Cicilan" {
+        let total: i128 = valid
+            .baris
+            .iter()
+            .map(|b| i128::from(nilai_baris(b.jumlah, b.harga_satuan, b.desimal)))
+            .sum();
+        let syarat = cicilan::validate_syarat(
+            &draft.cicilan.clone().unwrap_or_default(),
+            i64::try_from(total).unwrap_or(i64::MAX),
+            &valid.tanggal,
+            &valid.tanggal,
+        )
+        .map_err(invalid)?;
+        Some(syarat)
+    } else {
+        None
+    };
 
     let id_pengajuan = match clean(&draft.id_pengajuan) {
         Some(id) => {
@@ -851,7 +905,7 @@ pub fn save_request(
             transaction
                 .execute(
                     "UPDATE inventory_pengajuan SET tanggal = ?, keperluan = ?, sumber_dana = ?,
-                            catatan = ?, sidik_baris = ?, updated_at = datetime('now')
+                            catatan = ?, sidik_baris = ?, cara_bayar = ?, updated_at = datetime('now')
                      WHERE id_pengajuan = ?;",
                     params![
                         valid.tanggal,
@@ -859,6 +913,7 @@ pub fn save_request(
                         valid.sumber_dana,
                         valid.catatan,
                         sidik,
+                        valid.cara_bayar,
                         id
                     ],
                 )
@@ -881,8 +936,8 @@ pub fn save_request(
                 .execute(
                     "INSERT INTO inventory_pengajuan (
                         id_pengajuan, tanggal, seri, nomor_urut, nomor, keperluan, sumber_dana,
-                        catatan, sidik_baris, diajukan_oleh, created_at, updated_at
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));",
+                        catatan, sidik_baris, diajukan_oleh, cara_bayar, created_at, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'));",
                     params![
                         id,
                         valid.tanggal,
@@ -893,7 +948,8 @@ pub fn save_request(
                         valid.sumber_dana,
                         valid.catatan,
                         sidik,
-                        operator
+                        operator,
+                        valid.cara_bayar
                     ],
                 )
                 .map_err(|_| CommandError::internal())?;
@@ -901,6 +957,11 @@ pub fn save_request(
         }
     };
     tulis_baris(&transaction, &id_pengajuan, &valid.baris)?;
+    // Kontrak lama dibiarkan saat pindah ke Tunai: semua pembacanya menyaring
+    // `cara_bayar = 'Cicilan'`.
+    if let Some(syarat) = &syarat {
+        cicilan::simpan_syarat_tx(&transaction, &id_pengajuan, syarat)?;
+    }
 
     let payload = pengajuan_payload(&transaction, &id_pengajuan)?;
     sync::enqueue(
@@ -994,6 +1055,30 @@ pub fn decide_request(
                 )
                 .map_err(|_| CommandError::internal())?;
             if sidik_lokal != sidik {
+                return Err(invalid(
+                    "Isi pengajuan berubah sejak daftar ini dimuat. Muat ulang lalu periksa lagi.",
+                ));
+            }
+            let cara_bayar: String = transaction
+                .query_row(
+                    "SELECT cara_bayar FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+                    params![id_pengajuan],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CommandError::internal())?;
+            if cara_bayar == "Cicilan" {
+                cicilan::setujui_tx(
+                    &transaction,
+                    id_pengajuan,
+                    draft.sidik_syarat.as_deref(),
+                    [
+                        clean(&draft.id_akun_utang),
+                        clean(&draft.id_akun_bunga),
+                        clean(&draft.id_akun_denda),
+                    ],
+                )?;
+            } else if clean(&draft.sidik_syarat).is_some() {
+                // Dilihat sebagai Cicilan, sekarang Tunai.
                 return Err(invalid(
                     "Isi pengajuan berubah sejak daftar ini dimuat. Muat ulang lalu periksa lagi.",
                 ));
@@ -1230,6 +1315,8 @@ pub fn list_requests(
         }
     }
 
+    let mut syarat_per = cicilan::syarat_per_pengajuan(&transaction, &pilih, dari, sampai)?;
+
     let terpotong = headers.len() > MAKS_DAFTAR_PENGAJUAN;
     headers.truncate(MAKS_DAFTAR_PENGAJUAN);
     let pengajuan = headers
@@ -1281,6 +1368,11 @@ pub fn list_requests(
                 "total".into(),
                 json!(i64::try_from(total).unwrap_or(i64::MAX)),
             );
+            let syarat = match header["cara_bayar"].as_str() {
+                Some("Cicilan") => syarat_per.remove(&id).unwrap_or(Value::Null),
+                _ => Value::Null,
+            };
+            header.insert("cicilan".into(), syarat);
             header.insert("baris".into(), Value::Array(baris));
             header.insert(
                 "penerimaan".into(),
@@ -1352,11 +1444,26 @@ pub fn receive_request(
             "Penerimaan hanya untuk pengajuan Disetujui atau Diterima sebagian.",
         ));
     }
-    let (nomor, sumber_dana, disetujui_pada): (String, Option<String>, String) = transaction
+    let (nomor, sumber_dana, disetujui_pada, tanggal_pengajuan, cara_bayar): (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = transaction
         .query_row(
-            "SELECT nomor, sumber_dana, disetujui_pada FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+            "SELECT nomor, sumber_dana, disetujui_pada, tanggal, cara_bayar
+             FROM inventory_pengajuan WHERE id_pengajuan = ?;",
             params![id_pengajuan],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|_| CommandError::internal())?;
     let acc: Vec<BarisAccLokal> = {
@@ -1396,6 +1503,22 @@ pub fn receive_request(
     let hari_ini = wib_today(&transaction);
     let tanggal_acc: String = disetujui_pada.chars().take(10).collect();
     let valid = validate_penerimaan(&draft, &tanggal_acc, &hari_ini, &ringkas).map_err(invalid)?;
+    let bercicilan = cara_bayar == "Cicilan";
+    if bercicilan {
+        let sisa: Vec<(&str, i64, i64)> = acc
+            .iter()
+            .map(|b| (b.id_baris.as_str(), b.urutan, b.jumlah - b.diterima))
+            .collect();
+        let kiriman: Vec<(&str, i64)> = draft
+            .baris
+            .iter()
+            .map(|b| (b.id_baris.as_str(), b.jumlah))
+            .collect();
+        cicilan::wajib_terima_penuh(&sisa, &kiriman).map_err(invalid)?;
+        if draft.cicilan.is_none() {
+            return Err(invalid("Syarat cicilan final wajib diisi."));
+        }
+    }
 
     let mut label = Vec::with_capacity(valid.dicatat.len());
     for indeks in &valid.dicatat {
@@ -1417,8 +1540,9 @@ pub fn receive_request(
                     .map_err(|_| CommandError::internal())?;
                 if !ada {
                     let barang = BarangDraft {
-                        nama_barang: baris.nama_barang.clone(),
-                        satuan: baris.satuan.clone(),
+                        nama_barang: clean(&isian.nama_barang)
+                            .unwrap_or_else(|| baris.nama_barang.clone()),
+                        satuan: clean(&isian.satuan).unwrap_or_else(|| baris.satuan.clone()),
                         desimal: baris.desimal,
                         tipe: isian.tipe.clone().unwrap_or_default(),
                         kategori: isian.kategori.clone(),
@@ -1464,6 +1588,24 @@ pub fn receive_request(
             .collect();
         baru.sort();
         label.push(json!({ "id_barang": id_barang, "jumlah": isian.jumlah, "mutasi": baru }));
+    }
+
+    // Syarat final dinilai terhadap harga sebenarnya, jadi sesudah mutasinya
+    // tertulis; galat apa pun membatalkan seluruh transaksi.
+    if let (true, Some(isian)) = (bercicilan, &draft.cicilan) {
+        let harga: i64 = transaction
+            .query_row(
+                &format!(
+                    "SELECT {} FROM inventory_pengajuan p WHERE p.id_pengajuan = ?;",
+                    cicilan::harga_diterima_sql()
+                ),
+                params![id_pengajuan],
+                |row| row.get(0),
+            )
+            .map_err(|_| CommandError::internal())?;
+        let syarat = cicilan::validate_syarat(isian, harga, &tanggal_pengajuan, &valid.tanggal)
+            .map_err(invalid)?;
+        cicilan::aktifkan_tx(&transaction, &client_id, &id_pengajuan, &syarat)?;
     }
 
     let id_penerimaan = new_hex_id("trm-");
@@ -1576,14 +1718,15 @@ pub fn receipt_photo_local(
 /// `CLOUD_UPSERT_PENGAJUAN_SQL`.
 pub const CLOUD_UPSERT_PENGAJUAN_SQL: &str = "INSERT INTO inventory_pengajuan (
         id_pengajuan, tanggal, seri, nomor_urut, nomor, keperluan, sumber_dana, catatan,
-        sidik_baris, diajukan_oleh, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+        sidik_baris, diajukan_oleh, cara_bayar, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
     ON CONFLICT(id_pengajuan) DO UPDATE SET
         tanggal = excluded.tanggal,
         keperluan = excluded.keperluan,
         sumber_dana = excluded.sumber_dana,
         catatan = excluded.catatan,
         sidik_baris = excluded.sidik_baris,
+        cara_bayar = excluded.cara_bayar,
         updated_at = datetime('now')
     WHERE inventory_pengajuan.disetujui_pada IS NULL AND inventory_pengajuan.ditolak_pada IS NULL
       AND inventory_pengajuan.dibatalkan_pada IS NULL;";
@@ -1613,11 +1756,15 @@ pub const CLOUD_BUANG_BARIS_SQL: &str = "DELETE FROM inventory_pengajuan_baris
       AND EXISTS (SELECT 1 FROM inventory_pengajuan p WHERE p.id_pengajuan = ? AND p.sidik_baris = ?
         AND p.disetujui_pada IS NULL AND p.ditolak_pada IS NULL AND p.dibatalkan_pada IS NULL);";
 
-/// ACC yang pertama sampai berlaku, dan hanya atas isi yang dilihat.
+/// ACC yang pertama sampai berlaku, dan hanya atas isi yang dilihat: baris,
+/// cara bayar, dan (v31) syarat cicilannya. Parameter terakhir: id, sidik
+/// baris, cara bayar, sidik syarat (kosong untuk Tunai).
 pub const CLOUD_APPROVE_PENGAJUAN_SQL: &str = "UPDATE inventory_pengajuan
     SET disetujui_pada = ?, disetujui_oleh = ?, sidik_disetujui = ?, catatan_persetujuan = ?,
         updated_at = datetime('now')
-    WHERE id_pengajuan = ? AND sidik_baris = ?
+    WHERE id_pengajuan = ? AND sidik_baris = ? AND cara_bayar = ?
+      AND (cara_bayar = 'Tunai' OR EXISTS (SELECT 1 FROM keu_cicilan c
+           WHERE c.id_pengajuan = inventory_pengajuan.id_pengajuan AND c.sidik_syarat = ?))
       AND disetujui_pada IS NULL AND ditolak_pada IS NULL AND dibatalkan_pada IS NULL;";
 
 pub const CLOUD_REJECT_PENGAJUAN_SQL: &str = "UPDATE inventory_pengajuan
@@ -1682,6 +1829,11 @@ pub fn cloud_save_statements(
         });
     }
     let sidik = sidik_baris(&baris);
+    let cara_bayar = match payload_text(header, "cara_bayar").as_deref() {
+        None | Some("Tunai") => "Tunai",
+        Some("Cicilan") => "Cicilan",
+        Some(_) => return None,
+    };
 
     let mut statements = vec![(
         CLOUD_UPSERT_PENGAJUAN_SQL,
@@ -1696,6 +1848,7 @@ pub fn cloud_save_statements(
             json!(payload_text(header, "catatan")),
             json!(sidik),
             json!(payload_text(header, "diajukan_oleh")?),
+            json!(cara_bayar),
             json!(payload_text(header, "created_at")),
         ],
     )];
@@ -1727,12 +1880,24 @@ pub fn cloud_save_statements(
             json!(sidik),
         ],
     ));
+    if cara_bayar == "Cicilan" {
+        statements.extend(cicilan::cloud_draf_statements(
+            payload.get("cicilan").unwrap_or(&Value::Null),
+            &id,
+        ));
+    }
     Some(statements)
 }
 
 pub fn cloud_approve_values(payload: &Value, entity_key: &str) -> Option<Vec<Value>> {
     let (header, id) = header_payload(payload, entity_key)?;
     let sidik = payload_text(header, "sidik_disetujui")?;
+    let cara_bayar = payload_text(header, "cara_bayar").unwrap_or_else(|| "Tunai".to_owned());
+    let sidik_syarat = payload
+        .get("cicilan")
+        .and_then(|c| c.get("cicilan"))
+        .and_then(|c| payload_text(c, "sidik_syarat"))
+        .unwrap_or_default();
     Some(vec![
         json!(payload_text(header, "disetujui_pada")?),
         json!(payload_text(header, "disetujui_oleh")?),
@@ -1740,7 +1905,20 @@ pub fn cloud_approve_values(payload: &Value, entity_key: &str) -> Option<Vec<Val
         json!(payload_text(header, "catatan_persetujuan")),
         json!(id),
         json!(sidik),
+        json!(cara_bayar),
+        json!(sidik_syarat),
     ])
+}
+
+/// Statement kedua event approve untuk pengajuan Cicilan: total yang di-ACC
+/// dan akun kontrak.
+pub fn cloud_approve_cicilan_values(payload: &Value, entity_key: &str) -> Option<Vec<Value>> {
+    let (header, id) = header_payload(payload, entity_key)?;
+    if payload_text(header, "cara_bayar").as_deref() != Some("Cicilan") {
+        return None;
+    }
+    let disetujui_pada = payload_text(header, "disetujui_pada")?;
+    cicilan::cloud_setujui_values(payload, &id, &disetujui_pada)
 }
 
 pub fn cloud_reject_values(payload: &Value, entity_key: &str) -> Option<Vec<Value>> {
@@ -2372,13 +2550,28 @@ mod tests {
         )
         .expect("acc");
 
+        // Satuan barang baru yang dirapikan tetap diperiksa aturan barang.
+        let satuan_panjang = receive_request(
+            &state,
+            "sarpras",
+            json!({"id_pengajuan": id, "tanggal": hari, "baris": [
+                {"id_baris": format!("{id}-3"), "jumlah": 2, "harga_satuan": 4000000, "tempat": "Lab",
+                 "tipe": "Aset", "satuan": "s".repeat(21)}], "foto": foto}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            satuan_panjang.message,
+            "Baris 3: Satuan maksimal 20 karakter."
+        );
+
         let terima = receive_request(
             &state,
             "sarpras",
             json!({"id_pengajuan": id, "tanggal": hari, "baris": [
                 {"id_baris": format!("{id}-1"), "jumlah": 10, "harga_satuan": 9000, "tempat": "Gudang"},
                 {"id_baris": format!("{id}-3"), "jumlah": 2, "harga_satuan": 4000000, "tempat": "Lab",
-                 "tipe": "Aset", "kategori": "Elektronik", "per_unit": true}], "foto": foto}),
+                 "tipe": "Aset", "kategori": "Elektronik", "per_unit": true,
+                 "nama_barang": " Proyektor Epson EB-X51 "}], "foto": foto}),
         )
         .expect("terima pertama");
         assert_eq!(terima["label"][1]["id_barang"], format!("brg-{id}-3"));
@@ -2420,6 +2613,18 @@ mod tests {
             )
             .expect("hitung");
         assert_eq!(barang_baru, 2);
+        let nama_proyektor: String = connection
+            .query_row(
+                "SELECT nama_barang FROM inventory_barang WHERE id_barang = ?;",
+                params![format!("brg-{id}-3")],
+                |row| row.get(0),
+            )
+            .expect("nama");
+        assert_eq!(nama_proyektor, "Proyektor Epson EB-X51");
+        assert_eq!(
+            daftar["pengajuan"][0]["baris"][2]["nama_barang"],
+            "Proyektor"
+        );
         let foto_lokal = receipt_photo_local(
             &state,
             &format!("{}-2", terima["id_penerimaan"].as_str().unwrap()),

@@ -119,9 +119,12 @@ export function JurnalInventaris({
     peranDibutuhkan.add(
       b.tipe === "Aset" ? "akun_debit_aset" : "akun_debit_habis_pakai",
     );
-    peranDibutuhkan.add(
-      b.alasan === "Hibah" ? "akun_kredit_hibah" : "akun_kredit_bayar",
-    );
+    // Penerimaan bercicilan berkredit tetap: akun utang kontraknya (v31).
+    if (b.akun_kredit_cicilan === null) {
+      peranDibutuhkan.add(
+        b.alasan === "Hibah" ? "akun_kredit_hibah" : "akun_kredit_bayar",
+      );
+    }
   }
   if (servisTerpilih.length > 0) {
     peranDibutuhkan.add("akun_debit_servis");
@@ -330,6 +333,14 @@ export function JurnalInventaris({
                         {b.nomor_dokumen ? ` · ${b.nomor_dokumen}` : ""}
                         {b.periode_tertutup ? " · periode sudah ditutup" : ""}
                       </p>
+                      {b.akun_kredit_cicilan ? (
+                        <p className="text-violet-300">
+                          Cicilan: kredit ke{" "}
+                          {akun.find((a) => a.id_akun === b.akun_kredit_cicilan)
+                            ?.nama ?? "akun utang kontrak"}
+                          , tidak bisa diganti
+                        </p>
+                      ) : null}
                       {b.id_pengajuan ? (
                         <button
                           type="button"

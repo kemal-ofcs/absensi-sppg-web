@@ -18,6 +18,7 @@ import {
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
 import { jumlahMenunggu } from "@/components/inventory/Pengajuan";
+import { CicilanWorkspace } from "@/components/keuangan/CicilanWorkspace";
 import {
   eksporBukuBesar,
   eksporNeracaSaldo,
@@ -47,6 +48,7 @@ import {
   type NeracaSaldo,
   simpanAkun,
 } from "@/lib/gateways/accounting";
+import { getCicilan } from "@/lib/gateways/cicilan";
 import { getJurnalInventaris } from "@/lib/gateways/inventory";
 import { getPengajuan } from "@/lib/gateways/inventory-pengajuan";
 import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
@@ -60,6 +62,7 @@ import {
   SUMBER_JURNAL,
   saldoNormalBawaan,
 } from "@/lib/validations/accounting";
+import { jumlahPerhatianCicilan } from "@/lib/validations/cicilan";
 
 /**
  * Seluruh UI pembukuan, dipakai apa adanya oleh halaman Web/Desktop dan
@@ -71,6 +74,7 @@ import {
 type Tab =
   | "jurnal"
   | "inventaris"
+  | "cicilan"
   | "buku"
   | "neraca"
   | "laporan"
@@ -81,6 +85,7 @@ type Feedback = { tone: "success" | "error"; message: string } | null;
 const LABEL_TAB: Record<Tab, string> = {
   jurnal: "Jurnal",
   inventaris: "Dari Inventaris",
+  cicilan: "Cicilan",
   buku: "Buku Besar",
   neraca: "Neraca Saldo",
   laporan: "Laporan",
@@ -107,6 +112,7 @@ export function KeuanganWorkspace() {
   const bolehKelola = hasPermission(user, "accounting.manage");
   const bolehBatal = hasPermission(user, "accounting.reverse");
   const bolehTutup = hasPermission(user, "accounting.close");
+  const bolehBatalCicilan = hasPermission(user, "installment.cancel");
 
   const [tab, setTab] = useState<Tab>("jurnal");
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -181,6 +187,25 @@ export function KeuanganWorkspace() {
     [muatBelumDijurnal],
   );
 
+  // Tanda angka di tab Cicilan: kontrak Menunggak, Menunggu ACC ulang, lebih
+  // bayar, dan angsuran yang jatuh tempo dalam 7 hari.
+  const [perhatianCicilan, setPerhatianCicilan] = useState(0);
+  const muatPerhatianCicilan = useCallback(async () => {
+    try {
+      setPerhatianCicilan(jumlahPerhatianCicilan(await getCicilan()));
+    } catch {
+      // Hanya tanda angka; tabnya sendiri menampilkan kegagalannya.
+      setPerhatianCicilan(0);
+    }
+  }, []);
+  useEffect(() => {
+    void muatPerhatianCicilan();
+  }, [muatPerhatianCicilan]);
+  useEffect(
+    () => subscribeSyncCompleted(() => void muatPerhatianCicilan()),
+    [muatPerhatianCicilan],
+  );
+
   const info = (message: string) => setFeedback({ tone: "success", message });
 
   return (
@@ -210,6 +235,12 @@ export function KeuanganWorkspace() {
               <span className="ml-2 rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-slate-950">
                 {perhatian}
                 <span className="sr-only"> perlu ditinjau</span>
+              </span>
+            ) : null}
+            {id === "cicilan" && perhatianCicilan > 0 ? (
+              <span className="ml-2 rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-slate-950">
+                {perhatianCicilan}
+                <span className="sr-only"> perlu perhatian</span>
               </span>
             ) : null}
             {id === "inventaris" && belumDijurnal > 0 ? (
@@ -273,7 +304,18 @@ export function KeuanganWorkspace() {
             akun={akun}
             bolehKelola={bolehKelola}
             onInfo={info}
-            onBerubah={() => void muatBelumDijurnal()}
+            onBerubah={() => {
+              void muatBelumDijurnal();
+              void muatPerhatianCicilan();
+            }}
+          />
+        ) : tab === "cicilan" ? (
+          <CicilanWorkspace
+            akun={akun}
+            bolehKelola={bolehKelola}
+            bolehBatal={bolehBatalCicilan}
+            onInfo={info}
+            onBerubah={() => void muatPerhatianCicilan()}
           />
         ) : tab === "buku" ? (
           <PanelBukuBesar akun={akun} />

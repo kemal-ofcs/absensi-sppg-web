@@ -870,6 +870,16 @@ export interface DaftarInventaris {
   kolom: KolomInventaris[];
   /** Servis yang masih terbuka (v29), tertua lebih dulu. */
   servis: ServisInventaris[];
+  /** Barang dari kontrak cicilan yang belum lunas (v31). */
+  belum_lunas: BarangBelumLunas[];
+}
+
+/** Cermin `list_belum_lunas`. */
+export interface BarangBelumLunas {
+  id_barang: string;
+  /** Nomor kontrak, atau nomor pengajuan bila nomor kontrak kosong. */
+  kontrak: string;
+  kreditur: string;
 }
 
 export interface PenerimaInventaris {
@@ -1663,6 +1673,8 @@ export interface BarisBelumDijurnal {
   nomor_dokumen: string | null;
   /** Masuk hasil penerimaan pengajuan (v30); null untuk Masuk biasa. */
   id_pengajuan: string | null;
+  /** Penerimaan bercicilan (v31): akun kredit yang dikunci; null = bebas. */
+  akun_kredit_cicilan: string | null;
   periode_tertutup: boolean;
 }
 

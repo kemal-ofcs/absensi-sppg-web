@@ -75,7 +75,7 @@ function jurnal(
 describe("akuntansi Web terhadap skema cloud asli", () => {
   test("bagan akun bawaan tertanam", async () => {
     const { items } = await listAccounts(client);
-    expect(items.length).toBe(24);
+    expect(items.length).toBe(27);
     expect(items.find((akun) => akun.id_akun === "akun-kas")?.sistem).toBe(
       true,
     );
@@ -167,7 +167,7 @@ describe("akuntansi Web terhadap skema cloud asli", () => {
     ).rejects.toThrow("Kode akun sudah dipakai akun lain.");
 
     const baru = await saveAccount(client, {
-      kode: "5-1700",
+      kode: "5-1750",
       nama: "Beban Transport",
       kelompok: "Beban",
       saldo_normal: "Debit",

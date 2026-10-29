@@ -188,6 +188,27 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     uniqueColumns: [],
     dependsOn: ["inventory_penerimaan"],
   },
+  // v31 — kontrak cicilan pembelian, jadwal, pembayaran, dan pembatalannya.
+  {
+    table: "keu_cicilan",
+    uniqueColumns: [],
+    dependsOn: ["inventory_pengajuan"],
+  },
+  {
+    table: "keu_cicilan_jadwal",
+    uniqueColumns: [],
+    dependsOn: ["keu_cicilan"],
+  },
+  {
+    table: "keu_cicilan_bayar",
+    uniqueColumns: [],
+    dependsOn: ["keu_cicilan"],
+  },
+  {
+    table: "keu_cicilan_bayar_batal",
+    uniqueColumns: [],
+    dependsOn: ["keu_cicilan_bayar"],
+  },
 
   // Lapisan 7 — pembukuan (v21). Kunci TEXT buatan klien, tanpa UNIQUE.
   { table: "keu_akun", uniqueColumns: [], dependsOn: [] },

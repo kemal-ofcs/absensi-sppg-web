@@ -96,6 +96,14 @@
     "sistem": true
   },
   {
+    "id_akun": "akun-utang-cicilan",
+    "kode": "2-1600",
+    "nama": "Utang Cicilan",
+    "kelompok": "Kewajiban",
+    "saldo_normal": "Kredit",
+    "sistem": false
+  },
+  {
     "id_akun": "akun-modal",
     "kode": "3-1000",
     "nama": "Modal Pemilik",
@@ -179,6 +187,22 @@
     "id_akun": "akun-beban-transportasi",
     "kode": "5-1600",
     "nama": "Beban Transportasi",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-bunga",
+    "kode": "5-1700",
+    "nama": "Beban Bunga",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": false
+  },
+  {
+    "id_akun": "akun-beban-denda",
+    "kode": "5-1800",
+    "nama": "Beban Denda",
     "kelompok": "Beban",
     "saldo_normal": "Debit",
     "sistem": false

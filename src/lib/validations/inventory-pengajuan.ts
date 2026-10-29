@@ -10,6 +10,10 @@
 
 import { z } from "zod";
 import {
+  type SyaratPengajuan,
+  syaratDraftSchema,
+} from "@/lib/validations/cicilan";
+import {
   type Hasil,
   isValidDate,
   MAKS_HARGA_SATUAN,
@@ -112,6 +116,10 @@ export const pengajuanDraftSchema = z
     catatan: z.string().max(4000).nullable().optional(),
     // Batas longgar penahan beban; pesan batas sebenarnya dari validatePengajuan.
     baris: z.array(barisDraftSchema).max(1000).default([]),
+    /** v31: `Tunai` (bawaan) atau `Cicilan`. */
+    cara_bayar: z.string().max(20).default("Tunai"),
+    /** Syarat cicilan; hanya dibaca bila `cara_bayar` = Cicilan. */
+    cicilan: syaratDraftSchema.nullable().optional(),
   })
   .strict();
 export type PengajuanDraft = z.input<typeof pengajuanDraftSchema>;
@@ -124,6 +132,11 @@ export const keputusanDraftSchema = z
     keputusan: z.string().max(20).default(""),
     sidik_baris: z.string().max(200).default(""),
     catatan: z.string().max(4000).nullable().optional(),
+    /** v31: sidik syarat yang dilihat dan akun kontrak (kosong = bawaan). */
+    sidik_syarat: z.string().max(200).nullable().optional(),
+    id_akun_utang: z.string().max(160).nullable().optional(),
+    id_akun_bunga: z.string().max(160).nullable().optional(),
+    id_akun_denda: z.string().max(160).nullable().optional(),
   })
   .strict();
 export type KeputusanDraft = z.input<typeof keputusanDraftSchema>;
@@ -142,6 +155,7 @@ export interface PengajuanValid {
   keperluan: string;
   sumber_dana: string | null;
   catatan: string | null;
+  cara_bayar: "Tunai" | "Cicilan";
   /** Barang terdaftar membawa nama, satuan, dan desimal kosong; service mengisinya. */
   baris: BarisValid[];
 }
@@ -192,6 +206,11 @@ export function validatePengajuan(
       error: `Catatan maksimal ${MAKS_CATATAN_PENGAJUAN} karakter.`,
     };
   }
+  const caraBayarIsian = draft.cara_bayar.trim();
+  if (!["", "Tunai", "Cicilan"].includes(caraBayarIsian)) {
+    return { ok: false, error: "Cara bayar tidak dikenal." };
+  }
+  const cara_bayar = caraBayarIsian === "Cicilan" ? "Cicilan" : "Tunai";
   if (draft.baris.length === 0) {
     return { ok: false, error: "Isi minimal satu barang." };
   }
@@ -271,7 +290,7 @@ export function validatePengajuan(
   }
   return {
     ok: true,
-    value: { tanggal, keperluan, sumber_dana, catatan, baris },
+    value: { tanggal, keperluan, sumber_dana, catatan, cara_bayar, baris },
   };
 }
 
@@ -373,6 +392,9 @@ export interface Pengajuan {
   sumber_dana: string | null;
   catatan: string | null;
   sidik_baris: string;
+  cara_bayar: "Tunai" | "Cicilan";
+  /** Syarat cicilan; `null` untuk pengajuan Tunai. */
+  cicilan: SyaratPengajuan | null;
   diajukan_oleh: string;
   disetujui_pada: string | null;
   disetujui_oleh: string | null;
@@ -431,6 +453,8 @@ const barisTerimaDraftSchema = z
     kondisi: z.string().max(40).nullable().optional(),
     tanggal_expired: z.string().max(10).nullable().optional(),
     per_unit: z.boolean().default(false),
+    nama_barang: z.string().max(1000).nullable().optional(),
+    satuan: z.string().max(200).nullable().optional(),
     tipe: z.string().max(40).nullable().optional(),
     kategori: z.string().max(400).nullable().optional(),
     bisa_expired: z.boolean().default(false),
@@ -445,6 +469,8 @@ export const penerimaanDraftSchema = z
     catatan: z.string().max(4000).nullable().optional(),
     baris: z.array(barisTerimaDraftSchema).max(1000).default([]),
     foto: z.array(fotoDraftSchema).max(20).default([]),
+    /** v31: syarat final dari kontrak yang ditandatangani (pengajuan Cicilan). */
+    cicilan: syaratDraftSchema.nullable().optional(),
   })
   .strict();
 export type PenerimaanDraft = z.input<typeof penerimaanDraftSchema>;

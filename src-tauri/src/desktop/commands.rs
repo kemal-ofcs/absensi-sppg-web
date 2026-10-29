@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, face_match, inventory, inventory_pengajuan, license, loan, tutup_buku,
+    accounting, cicilan, face_match, inventory, inventory_pengajuan, license, loan, tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
@@ -2589,6 +2589,55 @@ pub fn desktop_inventory_request_decide(
 ) -> Result<Value, CommandError> {
     let operator = require_permission(&state, "accounting.manage")?;
     inventory_pengajuan::decide_request(&state, &operator.username, operator.is_superadmin, draft)
+}
+
+/// Kontrak cicilan pembelian beserta jadwal dan pembayarannya (tab Cicilan).
+#[tauri::command]
+pub fn desktop_installment_list(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    cicilan::list_installments(&state)
+}
+
+/// ACC ulang syarat final cicilan yang lebih mahal dari yang di-ACC.
+#[tauri::command]
+pub fn desktop_installment_reapprove(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.manage")?;
+    cicilan::reapprove(&state, &operator.username, operator.is_superadmin, draft)
+}
+
+/// Menutup kontrak cicilan (barang ditarik, retur, putus kontrak).
+#[tauri::command]
+pub fn desktop_installment_close(
+    state: State<'_, DesktopState>,
+    id_cicilan: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "installment.cancel")?;
+    cicilan::close(&state, &operator.username, &id_cicilan, &alasan)
+}
+
+/// Mencatat pembayaran atau denda cicilan beserta jurnalnya.
+#[tauri::command]
+pub fn desktop_installment_payment(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "accounting.manage")?;
+    cicilan::record_payment(&state, &operator.username, draft)
+}
+
+/// Membatalkan pembayaran cicilan dengan jurnal pembalik.
+#[tauri::command]
+pub fn desktop_installment_payment_cancel(
+    state: State<'_, DesktopState>,
+    id_bayar: String,
+    alasan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "installment.cancel")?;
+    cicilan::cancel_payment(&state, &operator.username, &id_bayar, &alasan)
 }
 
 /// Riwayat servis per rentang tanggal dibawa, opsional untuk satu barang.

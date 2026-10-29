@@ -27,6 +27,8 @@ use super::{
     inventory,
     // Pengajuan pembelian: sidik baris dihitung ulang dengan aturan lokal.
     inventory_pengajuan,
+    // Kontrak cicilan: sidik syarat dihitung ulang dengan aturan lokal.
+    cicilan,
     // Bentuk akun dan jurnal dicek dengan aturan yang sama dengan lokal.
     accounting,
     // Bentuk kasbon, mutasi, dan penundaannya dicek dengan aturan lokal.
@@ -815,6 +817,27 @@ const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
         table: "inventory_penerimaan",
         sql: "SELECT * FROM inventory_penerimaan ORDER BY created_at, id_penerimaan;",
     },
+    // v31: pembelian cicilan.
+    SnapshotSource {
+        payload_key: "installments",
+        table: "keu_cicilan",
+        sql: "SELECT * FROM keu_cicilan ORDER BY id_cicilan;",
+    },
+    SnapshotSource {
+        payload_key: "installmentSchedules",
+        table: "keu_cicilan_jadwal",
+        sql: "SELECT * FROM keu_cicilan_jadwal ORDER BY id_cicilan, ke;",
+    },
+    SnapshotSource {
+        payload_key: "installmentPayments",
+        table: "keu_cicilan_bayar",
+        sql: "SELECT * FROM keu_cicilan_bayar ORDER BY created_at, id_bayar;",
+    },
+    SnapshotSource {
+        payload_key: "installmentPaymentCancels",
+        table: "keu_cicilan_bayar_batal",
+        sql: "SELECT * FROM keu_cicilan_bayar_batal ORDER BY created_at, id_bayar;",
+    },
     // ── v25: Kolom tambahan barang ──
     SnapshotSource {
         payload_key: "inventoryColumns",
@@ -1277,7 +1300,7 @@ impl TursoClient {
         Ok(elapsed)
     }
 
-    /// v28: `Inventaris` masuk CHECK `keu_jurnal.sumber`. Cerminan
+    /// v28: `Inventaris`, lalu v31: `Cicilan`, masuk CHECK `keu_jurnal.sumber`. Cerminan
     /// `ensure_journal_source_values` di `storage.rs` dan blok v28
     /// `db-migrations.ts`. Indeks dan trigger (`trg_sync_append_keu_jurnal`,
     /// pulse, tombstone) dipasang ulang dari definisinya sendiri di transaksi
@@ -1297,7 +1320,7 @@ impl TursoClient {
         let Some(existing) = existing else {
             return Ok(());
         };
-        if existing.contains("'Inventaris'") {
+        if existing.contains("'Cicilan'") {
             return Ok(());
         }
 
@@ -1326,7 +1349,7 @@ impl TursoClient {
                     nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
                     nomor TEXT NOT NULL,
                     keterangan TEXT NOT NULL,
-                    sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembayaran', 'Tagihan', 'Inventaris', 'Pembatalan')),
+                    sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
                     id_sumber TEXT,
                     id_jurnal_batal TEXT,
                     dibuat_oleh TEXT NOT NULL,
@@ -1937,7 +1960,8 @@ impl TursoClient {
                   ditutup_oleh TEXT,
                   alasan_tutup TEXT,
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  cara_bayar TEXT NOT NULL DEFAULT 'Tunai' CHECK (cara_bayar IN ('Tunai', 'Cicilan'))
                 );"#,
                 vec![],
             ),
@@ -1994,6 +2018,83 @@ impl TursoClient {
                 "CREATE INDEX IF NOT EXISTS idx_inventory_penerimaan_foto_induk ON inventory_penerimaan_foto(id_penerimaan);",
                 vec![],
             ),
+            // Pembelian cicilan (v31). WAJIB identik dengan `storage.rs` dan
+            // `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS keu_cicilan (
+                  id_cicilan TEXT PRIMARY KEY,
+                  id_pengajuan TEXT NOT NULL,
+                  kreditur TEXT NOT NULL,
+                  nomor_kontrak TEXT,
+                  uang_muka INTEGER NOT NULL CHECK (uang_muka >= 0),
+                  pola TEXT NOT NULL CHECK (pola IN ('Berkala', 'Manual')),
+                  setiap INTEGER,
+                  satuan TEXT CHECK (satuan IS NULL OR satuan IN ('Hari', 'Minggu', 'Bulan', 'Tahun')),
+                  id_akun_utang TEXT NOT NULL,
+                  id_akun_bunga TEXT NOT NULL,
+                  id_akun_denda TEXT NOT NULL,
+                  sidik_syarat TEXT NOT NULL,
+                  total_disetujui INTEGER,
+                  diaktifkan_pada TEXT,
+                  disetujui_ulang_pada TEXT,
+                  disetujui_ulang_oleh TEXT,
+                  sidik_disetujui_ulang TEXT,
+                  ditutup_pada TEXT,
+                  ditutup_oleh TEXT,
+                  alasan_tutup TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_keu_cicilan_pengajuan ON keu_cicilan(id_pengajuan);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS keu_cicilan_jadwal (
+                  id_jadwal TEXT PRIMARY KEY,
+                  id_cicilan TEXT NOT NULL,
+                  ke INTEGER NOT NULL CHECK (ke >= 0),
+                  jatuh_tempo TEXT NOT NULL,
+                  nominal INTEGER NOT NULL CHECK (nominal >= 0)
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_keu_cicilan_jadwal_induk ON keu_cicilan_jadwal(id_cicilan);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS keu_cicilan_bayar (
+                  id_bayar TEXT PRIMARY KEY,
+                  id_cicilan TEXT NOT NULL,
+                  jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Denda')),
+                  tanggal TEXT NOT NULL,
+                  nominal INTEGER NOT NULL CHECK (nominal >= 0),
+                  potongan INTEGER NOT NULL DEFAULT 0 CHECK (potongan >= 0),
+                  alasan_potongan TEXT,
+                  keterangan TEXT,
+                  referensi TEXT,
+                  id_akun_bayar TEXT NOT NULL,
+                  dicatat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_keu_cicilan_bayar_induk ON keu_cicilan_bayar(id_cicilan);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS keu_cicilan_bayar_batal (
+                  id_bayar TEXT PRIMARY KEY,
+                  alasan TEXT NOT NULL,
+                  dibatalkan_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
             // Definisi kolom tambahan barang (v25). WAJIB identik dengan
             // `storage.rs` dan `db-migrations.ts`.
             Statement::new(
@@ -2031,7 +2132,7 @@ impl TursoClient {
                     nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
                     nomor TEXT NOT NULL,
                     keterangan TEXT NOT NULL,
-                    sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Pembatalan')),
+                    sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
                     id_sumber TEXT,
                     id_jurnal_batal TEXT,
                     dibuat_oleh TEXT NOT NULL,
@@ -2364,6 +2465,7 @@ impl TursoClient {
                 ('loan.view', 'Lihat Kasbon Karyawan', 'Keuangan', 'Melihat pinjaman karyawan, sisa, dan riwayat cicilannya.', 1, 1410),
                 ('loan.manage', 'Ajukan & Kelola Kasbon', 'Keuangan', 'Mengajukan kasbon, menunda cicilan, dan mencatat pelunasan tunai.', 1, 1411),
                 ('loan.approve', 'Setujui & Batalkan Kasbon', 'Keuangan', 'Menyetujui (mencairkan), menolak, atau membatalkan kasbon karyawan.', 1, 1412),
+                ('installment.cancel', 'Batalkan Pembayaran & Tutup Kontrak Cicilan', 'Keuangan', 'Membatalkan pembayaran cicilan pembelian dan menutup kontrak cicilan.', 1, 1404),
                 ('accounting.close', 'Tutup Buku', 'Keuangan', 'Menutup dan membuka kembali periode pembukuan, serta memutuskan bentrokan tutup buku.', 1, 1403);"#,
                 vec![],
             ),
@@ -2377,7 +2479,7 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
-                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'accounting.reverse', 'loan.approve', 'accounting.close');"#,
+                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'accounting.reverse', 'loan.approve', 'accounting.close', 'installment.cancel');"#,
                 vec![],
             ),
             // Seed Settings
@@ -2647,6 +2749,8 @@ impl TursoClient {
             ("inventory_kolom", "dihapus_pada", "ALTER TABLE inventory_kolom ADD COLUMN dihapus_pada TEXT;"),
             // Jumlah desimal per barang (v27).
             ("inventory_barang", "desimal", "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));"),
+            // Cara bayar pengajuan (v31). Baris lama otomatis Tunai.
+            ("inventory_pengajuan", "cara_bayar", "ALTER TABLE inventory_pengajuan ADD COLUMN cara_bayar TEXT NOT NULL DEFAULT 'Tunai' CHECK (cara_bayar IN ('Tunai', 'Cicilan'));"),
             ("import_offline", "timestamp_input", "ALTER TABLE import_offline ADD COLUMN timestamp_input TEXT;"),
             ("import_offline", "id_unik", "ALTER TABLE import_offline ADD COLUMN id_unik TEXT;"),
             ("import_offline", "status_absen", "ALTER TABLE import_offline ADD COLUMN status_absen TEXT;"),
@@ -2978,6 +3082,17 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // Pembelian cicilan (v31).
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (31, 'inventory-installment', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2027, 'inventory-installment-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -3192,7 +3307,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2026;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2027;",
                 vec![],
             )
             .await
@@ -5608,6 +5723,11 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("inventory-request", "close") => ("inventory-request", "close"),
         ("inventory-receipt", "create") => ("inventory-receipt", "create"),
         ("inventory-receipt-photo", "save") => ("inventory-receipt-photo", "save"),
+        ("installment", "activate") => ("installment", "activate"),
+        ("installment", "reapprove") => ("installment", "reapprove"),
+        ("installment", "close") => ("installment", "close"),
+        ("installment-payment", "create") => ("installment-payment", "create"),
+        ("installment-payment-cancel", "create") => ("installment-payment-cancel", "create"),
         ("inventory-column", "save") => ("inventory-column", "save"),
         ("attendance", "scan") => ("attendance", "scan"),
         ("attendance", "create") => ("attendance", "create"),
@@ -6476,6 +6596,13 @@ async fn apply_event_to_turso(
                     .query_one(inventory_pengajuan::CLOUD_APPROVE_PENGAJUAN_SQL, values)
                     .await?;
             }
+            // Pengajuan Cicilan: total yang di-ACC dan akun kontrak, hanya bila
+            // ACC di atas barusan berlaku.
+            if let Some(values) = inventory_pengajuan::cloud_approve_cicilan_values(payload, entity_key) {
+                turso
+                    .query_one(cicilan::CLOUD_SETUJUI_CICILAN_SQL, values)
+                    .await?;
+            }
         }
         ("inventory-request", "reject") => {
             if let Some(values) = inventory_pengajuan::cloud_reject_values(payload, entity_key) {
@@ -6512,6 +6639,37 @@ async fn apply_event_to_turso(
                 turso
                     .query_one(inventory_pengajuan::CLOUD_INSERT_FOTO_SQL, values)
                     .await?;
+            }
+        }
+        // Kontrak cicilan: syarat final saat penerimaan (berlaku selama belum
+        // ada pembayaran), ACC ulang atas sidik yang dilihat, dan tutup.
+        ("installment", "activate") => {
+            if let Some(statements) = cicilan::cloud_activate_statements(payload, entity_key) {
+                for (sql, values) in statements {
+                    turso.query_one(sql, values).await?;
+                }
+            }
+        }
+        ("installment", "reapprove") => {
+            if let Some(values) = cicilan::cloud_reapprove_values(payload, entity_key) {
+                turso.query_one(cicilan::CLOUD_ACC_ULANG_SQL, values).await?;
+            }
+        }
+        ("installment", "close") => {
+            if let Some(values) = cicilan::cloud_close_values(payload, entity_key) {
+                turso.query_one(cicilan::CLOUD_TUTUP_CICILAN_SQL, values).await?;
+            }
+        }
+        // Pembayaran dan pembatalannya append-only; cloud tidak pernah menolak
+        // karena sisa jadwal atau tanggal, karena uangnya sudah keluar.
+        ("installment-payment", "create") => {
+            if let Some(values) = cicilan::cloud_payment_values(payload, entity_key) {
+                turso.query_one(cicilan::CLOUD_INSERT_BAYAR_SQL, values).await?;
+            }
+        }
+        ("installment-payment-cancel", "create") => {
+            if let Some(values) = cicilan::cloud_payment_cancel_values(payload, entity_key) {
+                turso.query_one(cicilan::CLOUD_INSERT_BATAL_SQL, values).await?;
             }
         }
         ("inventory-column", "save") => {
@@ -10551,7 +10709,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 
@@ -10591,7 +10749,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 
@@ -10630,7 +10788,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 
@@ -10670,7 +10828,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 
@@ -10707,7 +10865,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 
@@ -10745,7 +10903,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027);",
                 )
                 .expect("siapkan database lama");
 

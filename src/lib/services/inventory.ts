@@ -3,10 +3,16 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { Client, InStatement, Transaction } from "@libsql/client";
 import { balikJurnalTx, tulisJurnalTx } from "@/lib/services/accounting";
+import {
+  AKUN_UTANG_MUTASI_SQL,
+  barangBelumLunasSql,
+  KONTRAK_BERBAYAR_MUTASI_SQL,
+} from "@/lib/services/cicilan";
 import { batasTutup } from "@/lib/services/tutup-buku";
 import {
   ALASAN_FORMULIR,
   asciiLower,
+  type BarangBelumLunas,
   type BarangDraftParsed,
   type BarangInventaris,
   type BarisBelumDijurnal,
@@ -107,7 +113,7 @@ export type Executor = Pick<Client | Transaction, "execute">;
  * barang desimal dibagi 100 dan dibulatkan ke rupiah terdekat per baris.
  * Cermin `NILAI_MUTASI_SQL` di `inventory.rs`.
  */
-const NILAI_MUTASI_SQL = `CASE WHEN b.desimal = 1
+export const NILAI_MUTASI_SQL = `CASE WHEN b.desimal = 1
         THEN (m.jumlah * COALESCE(m.harga_satuan, 0) + 50) / 100
         ELSE m.jumlah * COALESCE(m.harga_satuan, 0) END`;
 
@@ -478,6 +484,7 @@ export async function listInventory(client: Client): Promise<DaftarInventaris> {
     kode_prefix: await readKodePrefixes(client),
     kolom: await listKolom(client),
     servis: await listServisTerbuka(client),
+    belum_lunas: await listBelumLunas(client),
     hari_ini: await wibToday(client),
     nama_perusahaan: (await kopPerusahaan(client)).nama ?? null,
   };
@@ -1112,6 +1119,16 @@ export async function cancelMutation(
     ) {
       throw new Error("Batalkan dulu pengembalian peminjaman ini.");
     }
+    // v31: penerimaan bercicilan terkunci begitu kontraknya punya pembayaran.
+    const kontrak = await tx.execute({
+      sql: KONTRAK_BERBAYAR_MUTASI_SQL,
+      args: [asal.id_mutasi],
+    });
+    if (kontrak.rows[0]) {
+      throw new Error(
+        `Mutasi ini bagian dari kontrak cicilan ${String(kontrak.rows[0].kontrak)} yang sudah punya pembayaran. Batalkan pembayarannya dulu.`,
+      );
+    }
 
     if (kebalikan.tempat_asal !== null && kebalikan.kondisi_asal !== null) {
       const saldo = await saldoPosisi(
@@ -1589,7 +1606,11 @@ export async function journalPending(
   const result = await client.execute({
     sql: `SELECT ${KOLOM_BARIS_JURNAL}, ${NILAI_MUTASI_SQL} AS nilai, m.nomor_dokumen,
                  b.kode_barang, COALESCE(m.sumber_dana, '') AS sumber_dana, m.harga_satuan,
-                 (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref) AS id_pengajuan
+                 (SELECT r.id_pengajuan FROM inventory_pengajuan_baris r WHERE r.id_baris = m.id_ref) AS id_pengajuan,
+                 (SELECT c.id_akun_utang FROM inventory_pengajuan_baris r
+                  JOIN inventory_pengajuan p ON p.id_pengajuan = r.id_pengajuan AND p.cara_bayar = 'Cicilan'
+                  JOIN keu_cicilan c ON c.id_pengajuan = p.id_pengajuan
+                  WHERE r.id_baris = m.id_ref) AS akun_kredit_cicilan
           FROM inventory_mutasi m
           JOIN inventory_barang b ON b.id_barang = m.id_barang
           WHERE ${SYARAT_JURNAL_INVENTARIS_SQL}
@@ -1614,6 +1635,7 @@ export async function journalPending(
     sumber_dana: String(row.sumber_dana),
     nomor_dokumen: text(row.nomor_dokumen),
     id_pengajuan: text(row.id_pengajuan),
+    akun_kredit_cicilan: text(row.akun_kredit_cicilan),
     periode_tertutup: batas !== null && String(row.tanggal) <= batas,
   }));
   const yatim = await client.execute(JURNAL_INVENTARIS_YATIM_SQL);
@@ -1727,10 +1749,18 @@ export async function journalPost(
         );
       }
       const alasan = String(row.alasan);
+      // Penerimaan bercicilan: kredit selalu akun utang kontraknya (v31 §3.5),
+      // pilihan layar diabaikan.
+      const utang = await tx.execute({
+        sql: AKUN_UTANG_MUTASI_SQL,
+        args: [id],
+      });
       const pasangan = pasanganAkunJurnalInventaris(
         String(row.tipe),
         alasan,
-        draft,
+        utang.rows[0]
+          ? { ...draft, akun_kredit_bayar: String(utang.rows[0].id_akun_utang) }
+          : draft,
       );
       if (!pasangan.ok) throw new Error(pasangan.error);
       const { debit, kredit } = pasangan.value;
@@ -1919,6 +1949,16 @@ function bacaServis(row: Record<string, unknown>): ServisInventaris {
 }
 
 /** Cermin `list_servis_terbuka`. */
+/** Cermin `list_belum_lunas`: barang dari kontrak cicilan yang belum lunas. */
+async function listBelumLunas(client: Executor): Promise<BarangBelumLunas[]> {
+  const result = await client.execute(barangBelumLunasSql());
+  return result.rows.map((row) => ({
+    id_barang: String(row.id_barang),
+    kontrak: String(row.kontrak),
+    kreditur: String(row.kreditur),
+  }));
+}
+
 async function listServisTerbuka(
   client: Executor,
 ): Promise<ServisInventaris[]> {

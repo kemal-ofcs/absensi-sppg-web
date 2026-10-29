@@ -934,6 +934,17 @@ function DaftarBarang({
                       {barang.kategori ? ` · ${barang.kategori}` : ""}
                       {barang.bisa_expired ? " · berkedaluwarsa" : ""}
                     </p>
+                    {data.belum_lunas.some(
+                      (b) => b.id_barang === barang.id_barang,
+                    ) ? (
+                      <p className="mt-1 text-xs font-medium text-violet-300">
+                        Belum lunas:{" "}
+                        {data.belum_lunas
+                          .filter((b) => b.id_barang === barang.id_barang)
+                          .map((b) => `${b.kreditur} (${b.kontrak})`)
+                          .join(", ")}
+                      </p>
+                    ) : null}
                     {barang.kode_ganda ? (
                       <p className="mt-1 text-xs font-medium text-amber-300">
                         Kode {barang.kode_barang} juga dipakai barang lain.
@@ -1996,6 +2007,14 @@ function FormMutasi({
               </option>
             ))}
           </select>
+          {jenis === "Keluar" &&
+          barang &&
+          data.belum_lunas.some((b) => b.id_barang === barang.id_barang) ? (
+            <p className="mt-1 text-xs text-violet-300">
+              Barang ini masih dicicil dan belum lunas. Pastikan kreditur dan
+              akuntansi tahu sebelum barangnya dikeluarkan.
+            </p>
+          ) : null}
         </div>
         {pakaiUnit ? (
           <div>

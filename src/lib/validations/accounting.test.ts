@@ -83,8 +83,8 @@ describe("saldo", () => {
 });
 
 describe("bagan akun bawaan", () => {
-  test("24 akun, akun sistem ditandai, saldo normal sesuai kelompok", () => {
-    expect(AKUN_BAWAAN.length).toBe(24);
+  test("27 akun, akun sistem ditandai, saldo normal sesuai kelompok", () => {
+    expect(AKUN_BAWAAN.length).toBe(27);
     expect(AKUN_SISTEM_IDS.has("akun-kas")).toBe(true);
     expect(AKUN_SISTEM_IDS.has("akun-peralatan")).toBe(false);
     expect(AKUN_SISTEM_IDS.size).toBe(8);
@@ -100,7 +100,7 @@ describe("bagan akun bawaan", () => {
 
 describe("validateAkun", () => {
   const sah = {
-    kode: " 5-1700 ",
+    kode: " 5-1750 ",
     nama: " Beban Transport ",
     kelompok: "Beban",
     saldo_normal: "Debit",
@@ -111,7 +111,7 @@ describe("validateAkun", () => {
     expect(hasil).toEqual({
       ok: true,
       value: {
-        kode: "5-1700",
+        kode: "5-1750",
         nama: "Beban Transport",
         kelompok: "Beban",
         saldo_normal: "Debit",

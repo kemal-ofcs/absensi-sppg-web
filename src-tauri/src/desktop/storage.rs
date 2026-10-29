@@ -141,9 +141,9 @@ pub(crate) fn definisi_turunan(connection: &Connection, table: &str) -> Result<V
         .map_err(|_| format!("Indeks {table} tidak dapat dibaca."))
 }
 
-/// v28: `Inventaris` (jurnal pengadaan dan servis) masuk CHECK
-/// `keu_jurnal.sumber`. Tanpa bangun ulang ini jurnal Inventaris dari cloud
-/// menggagalkan SELURUH snapshot lokal. Indeks dipasang ulang dari definisi
+/// v28: `Inventaris` (jurnal pengadaan dan servis), lalu v31: `Cicilan`, masuk
+/// CHECK `keu_jurnal.sumber`. Tanpa bangun ulang ini jurnal sumber baru dari
+/// cloud menggagalkan SELURUH snapshot lokal. Indeks dipasang ulang dari definisi
 /// lamanya SETELAH baris disalin. Idempoten lewat teks DDL-nya. Cerminan
 /// `TursoClient::ensure_journal_source_values` dan blok v28 `db-migrations.ts`.
 fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
@@ -158,7 +158,7 @@ fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
     let Some(existing) = existing else {
         return Ok(());
     };
-    if existing.contains("'Inventaris'") {
+    if existing.contains("'Cicilan'") {
         return Ok(());
     }
 
@@ -179,7 +179,7 @@ fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
           nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
           nomor TEXT NOT NULL,
           keterangan TEXT NOT NULL,
-          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Pembayaran', 'Tagihan', 'Inventaris', 'Pembatalan')),
+          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
           id_sumber TEXT,
           id_jurnal_batal TEXT,
           dibuat_oleh TEXT NOT NULL,
@@ -827,7 +827,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         ditutup_oleh TEXT,
         alasan_tutup TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        cara_bayar TEXT NOT NULL DEFAULT 'Tunai' CHECK (cara_bayar IN ('Tunai', 'Cicilan'))
       );
       CREATE INDEX IF NOT EXISTS idx_inventory_pengajuan_tanggal ON inventory_pengajuan(tanggal);
       CREATE TABLE IF NOT EXISTS inventory_pengajuan_baris (
@@ -863,6 +864,64 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_inventory_penerimaan_foto_induk ON inventory_penerimaan_foto(id_penerimaan);
+      -- Pembelian cicilan (v31, port dari Manajemen Sekolah v65). Kontrak lahir dari pengajuan bercara bayar
+      -- Cicilan; status, sisa, dan angsuran ke berapa diturunkan dari jadwal
+      -- dan pembayaran. DDL WAJIB identik dengan `turso.rs` dan
+      -- `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS keu_cicilan (
+        id_cicilan TEXT PRIMARY KEY,
+        id_pengajuan TEXT NOT NULL,
+        kreditur TEXT NOT NULL,
+        nomor_kontrak TEXT,
+        uang_muka INTEGER NOT NULL CHECK (uang_muka >= 0),
+        pola TEXT NOT NULL CHECK (pola IN ('Berkala', 'Manual')),
+        setiap INTEGER,
+        satuan TEXT CHECK (satuan IS NULL OR satuan IN ('Hari', 'Minggu', 'Bulan', 'Tahun')),
+        id_akun_utang TEXT NOT NULL,
+        id_akun_bunga TEXT NOT NULL,
+        id_akun_denda TEXT NOT NULL,
+        sidik_syarat TEXT NOT NULL,
+        total_disetujui INTEGER,
+        diaktifkan_pada TEXT,
+        disetujui_ulang_pada TEXT,
+        disetujui_ulang_oleh TEXT,
+        sidik_disetujui_ulang TEXT,
+        ditutup_pada TEXT,
+        ditutup_oleh TEXT,
+        alasan_tutup TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_cicilan_pengajuan ON keu_cicilan(id_pengajuan);
+      CREATE TABLE IF NOT EXISTS keu_cicilan_jadwal (
+        id_jadwal TEXT PRIMARY KEY,
+        id_cicilan TEXT NOT NULL,
+        ke INTEGER NOT NULL CHECK (ke >= 0),
+        jatuh_tempo TEXT NOT NULL,
+        nominal INTEGER NOT NULL CHECK (nominal >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_cicilan_jadwal_induk ON keu_cicilan_jadwal(id_cicilan);
+      CREATE TABLE IF NOT EXISTS keu_cicilan_bayar (
+        id_bayar TEXT PRIMARY KEY,
+        id_cicilan TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Denda')),
+        tanggal TEXT NOT NULL,
+        nominal INTEGER NOT NULL CHECK (nominal >= 0),
+        potongan INTEGER NOT NULL DEFAULT 0 CHECK (potongan >= 0),
+        alasan_potongan TEXT,
+        keterangan TEXT,
+        referensi TEXT,
+        id_akun_bayar TEXT NOT NULL,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_keu_cicilan_bayar_induk ON keu_cicilan_bayar(id_cicilan);
+      CREATE TABLE IF NOT EXISTS keu_cicilan_bayar_batal (
+        id_bayar TEXT PRIMARY KEY,
+        alasan TEXT NOT NULL,
+        dibatalkan_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       -- Definisi kolom tambahan barang (v25). Isinya di `inventory_barang.atribut`
       -- (JSON berkunci id_kolom); hapus = nonaktif. DDL WAJIB identik dengan
       -- `turso.rs` dan `db-migrations.ts`.
@@ -897,7 +956,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
         nomor TEXT NOT NULL,
         keterangan TEXT NOT NULL,
-        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Pembatalan')),
+        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
         id_sumber TEXT,
         id_jurnal_batal TEXT,
         dibuat_oleh TEXT NOT NULL,
@@ -1130,6 +1189,13 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
     )?;
     // Sumber jurnal `Inventaris` (v28).
+    // Cara bayar pengajuan (v31). Baris lama otomatis Tunai.
+    ensure_column(
+        &connection,
+        "inventory_pengajuan",
+        "cara_bayar",
+        "ALTER TABLE inventory_pengajuan ADD COLUMN cara_bayar TEXT NOT NULL DEFAULT 'Tunai' CHECK (cara_bayar IN ('Tunai', 'Cicilan'));",
+    )?;
     ensure_journal_source_values(&connection)?;
 
     // Hari kerja mingguan shift (v24), teks kanonik
@@ -1321,6 +1387,11 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "inventory_pengajuan_baris",
     "inventory_penerimaan",
     "inventory_penerimaan_foto",
+    // v31: kontrak cicilan pembelian, milik perusahaan database asalnya.
+    "keu_cicilan",
+    "keu_cicilan_jadwal",
+    "keu_cicilan_bayar",
+    "keu_cicilan_bayar_batal",
     "inventory_kolom",
     "keu_akun",
     "keu_jurnal",
@@ -1920,6 +1991,13 @@ mod tests_journal_source_values {
             )
             .expect("sumber Inventaris diterima CHECK baru");
         assert_eq!(hitung("SELECT COUNT(*) FROM sync_append_log;"), 2, "trigger tetap hidup");
+        connection
+            .execute(
+                "INSERT INTO keu_jurnal (id_jurnal, tanggal, seri, nomor_urut, nomor, keterangan, sumber, dibuat_oleh)
+                 VALUES ('jrn-cby-1', '2026-10-03', 'D0001', 3, 'JU/2026/D0001/0003', 'Bayar cicilan', 'Cicilan', 'admin');",
+                [],
+            )
+            .expect("sumber Cicilan diterima CHECK baru");
         assert!(connection
             .execute(
                 "UPDATE keu_jurnal SET sumber = 'Asing' WHERE id_jurnal = 'jrn-1';",

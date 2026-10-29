@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     config::DesktopState,
-    inventory_pengajuan,
+    cicilan, inventory_pengajuan,
     models::{CommandError, DesktopSyncStatus},
     payroll_seed, storage,
     turso::TursoClient,
@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 30;
+pub const CLIENT_SCHEMA_VERSION: i64 = 31;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -684,6 +684,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "catatan",
             "sidik_baris",
             "diajukan_oleh",
+            "cara_bayar",
             "disetujui_pada",
             "disetujui_oleh",
             "sidik_disetujui",
@@ -739,6 +740,86 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_penerimaan",
         entity_column: "id_penerimaan",
+        delete_missing: false,
+    },
+    // v31: pembelian cicilan (port dari Manajemen Sekolah v65).
+    //
+    // Kontrak tidak pernah dihapus (tutup adalah kolom), jadi
+    // `delete_missing: false`. Perusahaan tidak punya tombstone: jadwal yang
+    // hilang karena syaratnya disimpan ulang dipangkas lewat
+    // `delete_missing: true`, dan `PendingGuard::induk_tertunda` melindunginya
+    // selama event induknya (pengajuan atau kontrak) tertunda. Pembayaran dan
+    // pembatalannya tidak pernah dihapus.
+    SnapshotTable {
+        payload_key: "installments",
+        domain: "installment",
+        table: "keu_cicilan",
+        columns: &[
+            "id_cicilan",
+            "id_pengajuan",
+            "kreditur",
+            "nomor_kontrak",
+            "uang_muka",
+            "pola",
+            "setiap",
+            "satuan",
+            "id_akun_utang",
+            "id_akun_bunga",
+            "id_akun_denda",
+            "sidik_syarat",
+            "total_disetujui",
+            "diaktifkan_pada",
+            "disetujui_ulang_pada",
+            "disetujui_ulang_oleh",
+            "sidik_disetujui_ulang",
+            "ditutup_pada",
+            "ditutup_oleh",
+            "alasan_tutup",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_cicilan",
+        entity_column: "id_cicilan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "installmentSchedules",
+        domain: "installment-schedule",
+        table: "keu_cicilan_jadwal",
+        columns: &["id_jadwal", "id_cicilan", "ke", "jatuh_tempo", "nominal"],
+        conflict_column: "id_jadwal",
+        entity_column: "id_jadwal",
+        delete_missing: true,
+    },
+    SnapshotTable {
+        payload_key: "installmentPayments",
+        domain: "installment-payment",
+        table: "keu_cicilan_bayar",
+        columns: &[
+            "id_bayar",
+            "id_cicilan",
+            "jenis",
+            "tanggal",
+            "nominal",
+            "potongan",
+            "alasan_potongan",
+            "keterangan",
+            "referensi",
+            "id_akun_bayar",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_bayar",
+        entity_column: "id_bayar",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "installmentPaymentCancels",
+        domain: "installment-payment-cancel",
+        table: "keu_cicilan_bayar_batal",
+        columns: &["id_bayar", "alasan", "dibatalkan_oleh", "created_at"],
+        conflict_column: "id_bayar",
+        entity_column: "id_bayar",
         delete_missing: false,
     },
     SnapshotTable {
@@ -986,6 +1067,11 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("inventory-request", "close"),
     ("inventory-receipt", "create"),
     ("inventory-receipt-photo", "save"),
+    ("installment", "activate"),
+    ("installment", "reapprove"),
+    ("installment", "close"),
+    ("installment-payment", "create"),
+    ("installment-payment-cancel", "create"),
     ("inventory-column", "save"),
     ("log-scan", "delete"),
     ("offline-import", "delete"),
@@ -1128,10 +1214,24 @@ impl PendingGuard {
     /// satu event `inventory-request` membawa header dan seluruh barisnya.
     /// Tanpa ini tarikan menimpa (atau menghapus) baris hasil suntingan lokal
     /// sementara header-nya tetap versi lokal.
+    ///
+    /// Pola yang sama untuk kontrak cicilan (v31): kontrak Draf ikut event
+    /// pengajuan, dan jadwalnya ikut event pengajuan atau event kontrak
+    /// (`installment/activate`).
     fn induk_tertunda(&self, domain: &str, key: &str) -> bool {
-        domain == "inventory-request-line"
-            && inventory_pengajuan::id_pengajuan_dari_baris(key)
+        let pengajuan_tertunda = |id_cicilan: &str| {
+            cicilan::id_pengajuan_dari_cicilan(id_cicilan)
                 .is_some_and(|induk| self.has("inventory-request", induk))
+        };
+        match domain {
+            "inventory-request-line" => inventory_pengajuan::id_pengajuan_dari_baris(key)
+                .is_some_and(|induk| self.has("inventory-request", induk)),
+            "installment" => pengajuan_tertunda(key),
+            "installment-schedule" => cicilan::id_cicilan_dari_jadwal(key).is_some_and(|induk| {
+                self.has("installment", induk) || pengajuan_tertunda(induk)
+            }),
+            _ => false,
+        }
     }
 
     fn row_has_unsynced_change(&self, definition: &SnapshotTable, row: &Value, key: &str) -> bool {
@@ -4488,5 +4588,24 @@ mod tests {
             )
             .expect("failed count");
         assert_eq!(failed_count, 0);
+    }
+
+    /// Kontrak cicilan dan jadwalnya mengikuti outbox induknya, di upsert
+    /// maupun di blok hapus `delete_missing`.
+    #[test]
+    fn kontrak_cicilan_terlindungi_oleh_outbox_induk() {
+        let mut guard = super::PendingGuard::default();
+        guard
+            .by_domain_key
+            .insert(super::guard_key("inventory-request", "pgj-a"));
+        assert!(guard.induk_tertunda("inventory-request-line", "pgj-a-2"));
+        assert!(guard.induk_tertunda("installment", "cil-pgj-a"));
+        assert!(guard.induk_tertunda("installment-schedule", "cil-pgj-a-3"));
+        assert!(!guard.induk_tertunda("installment-schedule", "cil-pgj-b-3"));
+        guard
+            .by_domain_key
+            .insert(super::guard_key("installment", "cil-pgj-b"));
+        assert!(guard.induk_tertunda("installment-schedule", "cil-pgj-b-0"));
+        assert!(!guard.induk_tertunda("installment", "cil-pgj-c"));
     }
 }
