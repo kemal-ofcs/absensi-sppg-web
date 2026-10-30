@@ -61,6 +61,12 @@ const NAVIGATION_GROUPS: NavigationGroup[] = [
         icon: "user",
         label: "Pendaftaran Wajah",
       },
+      {
+        area: "operational",
+        href: "/operational",
+        icon: "tools",
+        label: "Operasional",
+      },
     ],
   },
   {
@@ -98,12 +104,6 @@ const NAVIGATION_GROUPS: NavigationGroup[] = [
         href: "/inventaris",
         icon: "box",
         label: "Inventaris",
-      },
-      {
-        area: "operational",
-        href: "/operational",
-        icon: "tools",
-        label: "Operasional",
       },
     ],
   },
