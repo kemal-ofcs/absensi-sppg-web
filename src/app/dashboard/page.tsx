@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { EksporLaporanKehadiran } from "@/components/dashboard/EksporLaporanKehadiran";
 import { Icon } from "@/components/ui/Icon";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { AnimatedCounter } from "@/components/visual/AnimatedCounter";
 import { AttendanceGaugeGate } from "@/components/visual/AttendanceGaugeGate";
 import { AttendanceWeeklyTrend } from "@/components/visual/AttendanceWeeklyTrend";
@@ -787,13 +788,13 @@ export default function DashboardPage() {
 
               {/* Division Filter */}
               {availableDivisions.length > 0 ? (
-                <select
+                <PilihCari
                   value={divisionFilter}
                   onChange={(e) => {
                     setDivisionFilter(e.target.value);
                     setCurrentPage(1);
                   }}
-                  className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500 font-sans cursor-pointer"
+                  className="w-56 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500 font-sans"
                 >
                   <option value="all">Semua Divisi</option>
                   {availableDivisions.map((div) => (
@@ -801,7 +802,7 @@ export default function DashboardPage() {
                       Divisi: {div}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               ) : null}
 
               {/* Status Filter (Daily only) */}

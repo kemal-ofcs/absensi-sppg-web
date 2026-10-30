@@ -26,8 +26,10 @@ import {
 } from "@/components/personnel/UbahMassal";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { saveFileWithPicker } from "@/lib/client/download";
 import {
@@ -365,6 +367,21 @@ export default function KaryawanPage() {
       return;
     }
 
+    const lanjut = await konfirmasiData([
+      { label: "ID", nilai: formData.id_unik },
+      { label: "Kode", nilai: formData.kode_karyawan },
+      { label: "Nama", nilai: formData.nama },
+      { label: "Divisi", nilai: formData.divisi },
+      {
+        label: "Shift",
+        nilai: String(
+          shiftList.find(
+            (s) => Number(s.id_shift) === Number(formData.id_shift),
+          )?.nama_shift ?? "",
+        ),
+      },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     try {
       if (isEditing && editId) {
@@ -666,10 +683,10 @@ export default function KaryawanPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-          <select
+          <PilihCari
             value={filterDivisi}
             onChange={(e) => setFilterDivisi(e.target.value)}
-            className="min-h-10 rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500"
+            className="min-h-10 w-56 rounded-xl border border-slate-800 bg-slate-950 px-3 text-xs text-slate-300 outline-none focus:border-sky-500"
           >
             <option value="">Semua Divisi</option>
             {divisions.map((div) => (
@@ -677,7 +694,7 @@ export default function KaryawanPage() {
                 {div}
               </option>
             ))}
-          </select>
+          </PilihCari>
 
           <select
             value={filterStatus}
@@ -1370,7 +1387,7 @@ export default function KaryawanPage() {
                 >
                   Shift Kerja:
                 </label>
-                <select
+                <PilihCari
                   id="employee-shift"
                   value={formData.id_shift}
                   onChange={(e) =>
@@ -1388,7 +1405,7 @@ export default function KaryawanPage() {
                       {String(s.jam_pulang)})
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               </div>
               <div>
                 <label

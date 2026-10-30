@@ -15,8 +15,8 @@ export default function WajahPage() {
   }
 
   return (
-    <AppShell>
-      <div className="space-y-6">
+    <AppShell contentClassName="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div className="space-y-6 py-6 md:py-8">
         <PageHeader
           eyebrow="Keamanan absensi"
           title="Pendaftaran Wajah"

@@ -11,6 +11,8 @@ import {
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
 import { PengajuanKeuangan } from "@/components/inventory/Pengajuan";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { PilihCari } from "@/components/ui/PilihCari";
 import type { AkunItem } from "@/lib/gateways/accounting";
 import {
   catatJurnalInventaris,
@@ -148,6 +150,25 @@ export function JurnalInventaris({
 
   async function kirim(draft: Parameters<typeof catatJurnalInventaris>[0]) {
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      {
+        label: "Mutasi dijurnal",
+        nilai: draft.id_mutasi?.length
+          ? `${draft.id_mutasi.length} baris`
+          : null,
+      },
+      {
+        label: "Servis dijurnal",
+        nilai: draft.id_servis?.length
+          ? `${draft.id_servis.length} baris`
+          : null,
+      },
+      {
+        label: "Jurnal dibalik",
+        nilai: draft.balik?.length ? `${draft.balik.length} jurnal` : null,
+      },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setSibuk(true);
     setGalatSimpan(null);
@@ -424,7 +445,7 @@ export function JurnalInventaris({
                       <label htmlFor={`jinv-${peran}`} className={LABEL}>
                         {LABEL_PERAN[peran]}
                       </label>
-                      <select
+                      <PilihCari
                         id={`jinv-${peran}`}
                         className={INPUT}
                         value={pilihanAkun[peran]}
@@ -441,7 +462,7 @@ export function JurnalInventaris({
                             {a.kode} {a.nama}
                           </option>
                         ))}
-                      </select>
+                      </PilihCari>
                     </div>
                   ))}
               </div>

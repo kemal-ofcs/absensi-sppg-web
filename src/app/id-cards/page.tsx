@@ -8,6 +8,7 @@ import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { canAccessArea } from "@/lib/auth/access";
 import { saveFileWithPicker } from "@/lib/client/download";
@@ -2582,7 +2583,7 @@ export default function IdCardsPage() {
               >
                 Pilih Jenis Elemen:
               </label>
-              <select
+              <PilihCari
                 id="el-type-select"
                 value={`${newElementType}|${newElementSourceKey}`}
                 onChange={(e) => {
@@ -2656,7 +2657,7 @@ export default function IdCardsPage() {
                 <option value="text|company.terms">
                   Syarat & Ketentuan Penggunaan
                 </option>
-              </select>
+              </PilihCari>
             </div>
 
             <label className="block space-y-1.5 text-xs font-bold text-slate-300">

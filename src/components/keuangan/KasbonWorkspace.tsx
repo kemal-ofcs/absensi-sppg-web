@@ -17,7 +17,9 @@ import {
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
 import { PilihAkunBayar } from "@/components/keuangan/PilihAkunBayar";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -304,6 +306,17 @@ function DialogPengajuan({
   async function simpan(event: FormEvent) {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      {
+        label: "Personil",
+        nilai: orang?.find((item) => item.id_karyawan === idKaryawan)?.nama,
+      },
+      { label: "Pokok", nilai: formatRupiah(bacaNominal(pokok)) },
+      { label: "Cicilan per bulan", nilai: formatRupiah(bacaNominal(cicilan)) },
+      { label: "Mulai potong", nilai: mulai },
+      { label: "Keterangan", nilai: keterangan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -337,7 +350,7 @@ function DialogPengajuan({
           <label className={LABEL} htmlFor="kasbon-orang">
             Peminjam
           </label>
-          <select
+          <PilihCari
             id="kasbon-orang"
             required
             className={INPUT}
@@ -353,7 +366,7 @@ function DialogPengajuan({
                 {item.nama} ({item.divisi})
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -715,8 +728,16 @@ function DialogDetail({
           sisaBisaDilunasi > 0 ? (
             <form
               className="space-y-3 p-3 rounded-lg border border-slate-800"
-              onSubmit={(event) => {
+              onSubmit={async (event) => {
                 event.preventDefault();
+                const lanjut = await konfirmasiData([
+                  { label: "Pelunasan", nilai: pinjaman.nama_karyawan },
+                  {
+                    label: "Jumlah dibayar",
+                    nilai: formatRupiah(bacaNominal(jumlahLunas)),
+                  },
+                ]);
+                if (!lanjut) return;
                 void jalankan(async () => {
                   const jumlah = bacaNominal(jumlahLunas);
                   await lunasiPinjaman(idPinjaman, jumlah, akunKas);
@@ -766,8 +787,14 @@ function DialogDetail({
           sisaBisaDilunasi > 0 ? (
             <form
               className="space-y-3 p-3 rounded-lg border border-slate-800"
-              onSubmit={(event) => {
+              onSubmit={async (event) => {
                 event.preventDefault();
+                const lanjut = await konfirmasiData([
+                  { label: "Tunda cicilan", nilai: pinjaman.nama_karyawan },
+                  { label: "Bulan gaji", nilai: bulanTunda },
+                  { label: "Alasan", nilai: alasanTunda },
+                ]);
+                if (!lanjut) return;
                 void jalankan(async () => {
                   await tundaCicilan(
                     idPinjaman,

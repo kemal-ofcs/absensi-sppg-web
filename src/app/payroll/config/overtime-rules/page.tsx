@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { hasPermission } from "@/lib/auth/access";
@@ -142,6 +143,24 @@ export default function OvertimeRulesPage() {
   const handleSaveModal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTier) return;
+    const lanjut = await konfirmasiData([
+      {
+        label: "Jenis",
+        nilai:
+          editingTier.rule_type === "HARI_LIBUR" ? "Hari libur" : "Hari kerja",
+      },
+      { label: "Urutan", nilai: String(editingTier.tier_order ?? 1) },
+      { label: "Jam mulai", nilai: String(editingTier.hour_start ?? 0) },
+      {
+        label: "Jam akhir",
+        nilai:
+          editingTier.hour_end == null
+            ? "Tanpa batas"
+            : String(editingTier.hour_end),
+      },
+      { label: "Pengali", nilai: String(editingTier.multiplier ?? 1) },
+    ]);
+    if (!lanjut) return;
     setSaving(true);
     setFeedback(null);
     try {

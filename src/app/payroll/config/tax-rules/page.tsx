@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { hasPermission } from "@/lib/auth/access";
@@ -18,6 +19,7 @@ import {
 } from "@/lib/gateways/payroll";
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const IDR = new Intl.NumberFormat("id-ID", {
   style: "currency",
@@ -147,6 +149,26 @@ export default function TaxRulesPage() {
   const handleSaveModal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingRule) return;
+    const lanjut = await konfirmasiData([
+      { label: "Kategori", nilai: editingRule.category },
+      {
+        label: "Batas bawah",
+        nilai: IDR.format(Number(editingRule.bracket_min ?? 0)),
+      },
+      {
+        label: "Batas atas",
+        nilai:
+          editingRule.bracket_max == null
+            ? "Tanpa batas"
+            : IDR.format(editingRule.bracket_max),
+      },
+      { label: "Tarif", nilai: `${editingRule.rate_percentage ?? 0}%` },
+      {
+        label: "Berlaku mulai",
+        nilai: tanggalTampil(editingRule.effective_date ?? ""),
+      },
+    ]);
+    if (!lanjut) return;
     setSaving(true);
     setFeedback(null);
     try {

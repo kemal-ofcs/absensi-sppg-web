@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useRef, useState } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import {
@@ -12,6 +13,7 @@ import {
   MAKS_LIBUR_MASSAL,
   rentangTanggal,
 } from "@/lib/validations/hari-kerja";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const LABEL_JENIS: Record<string, string> = {
   "Libur Nasional": "Libur Nasional",
@@ -64,6 +66,17 @@ export function LiburMassalDialog({
       setGalat("Tanggal akhir tidak boleh sebelum tanggal mulai.");
       return;
     }
+    const lanjut = await konfirmasiData([
+      { label: "Nama libur", nilai: nama },
+      { label: "Jenis", nilai: jenis },
+      {
+        label: "Rentang",
+        nilai: `${tanggalTampil(mulai)} sampai ${tanggalTampil(sampai)}`,
+      },
+      { label: "Hari baru", nilai: `${rentangBaru.length} hari` },
+      { label: "Keterangan", nilai: keterangan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setSaving(true);
     setGalat(null);

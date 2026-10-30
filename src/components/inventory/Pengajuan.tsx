@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { optimizeImageFile } from "@/lib/client/image-optimizer";
 import { useAuth } from "@/lib/context/AuthContext";
 import { type AkunItem, daftarAkun } from "@/lib/gateways/accounting";
@@ -453,6 +455,19 @@ function DialogPenerimaan({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Pengajuan", nilai: pengajuan.nomor },
+      { label: "Tanggal terima", nilai: tanggalTampil(tanggal) },
+      ...sisa.map((b) => ({
+        label: b.nama_barang,
+        nilai: isian[b.id_baris]?.jumlah.trim()
+          ? `${isian[b.id_baris]?.jumlah} ${b.satuan}`
+          : null,
+      })),
+      { label: "Foto", nilai: foto.length > 0 ? `${foto.length} foto` : null },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -999,6 +1014,21 @@ function DialogPengajuan({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Tanggal", nilai: tanggalTampil(tanggal) },
+      { label: "Keperluan", nilai: keperluan },
+      { label: "Sumber dana", nilai: sumberDana },
+      { label: "Cara bayar", nilai: caraBayar },
+      ...baris.map((b, indeks) => ({
+        label: `Baris ${indeks + 1}`,
+        nilai: `${
+          data.barang.find((item) => item.id_barang === b.idBarang)
+            ?.nama_barang ?? b.nama
+        }: ${b.jumlah}`,
+      })),
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -1117,7 +1147,7 @@ function DialogPengajuan({
                     >
                       Barang {indeks + 1}
                     </label>
-                    <select
+                    <PilihCari
                       id={`inv-pgj-barang-${b.kunci}`}
                       value={b.idBarang}
                       onChange={(e) =>
@@ -1131,7 +1161,7 @@ function DialogPengajuan({
                           {item.nama_barang} ({item.kode_barang})
                         </option>
                       ))}
-                    </select>
+                    </PilihCari>
                   </div>
                   {baris.length > 1 ? (
                     <button
@@ -1348,6 +1378,7 @@ export function DialogAlasan({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    if (!(await konfirmasiData([{ label, nilai: alasan }]))) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -1779,6 +1810,12 @@ function DialogKeputusan({
 
   const putuskan = async (keputusan: "ACC" | "Tolak") => {
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Pengajuan", nilai: pengajuan.nomor },
+      { label: "Keputusan", nilai: keputusan === "ACC" ? "Setujui" : "Tolak" },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -1846,7 +1883,7 @@ function DialogKeputusan({
                   <label htmlFor={`keu-pgj-akun-${kunci}`} className={LABEL}>
                     {label}
                   </label>
-                  <select
+                  <PilihCari
                     id={`keu-pgj-akun-${kunci}`}
                     value={akunKontrak[kunci]}
                     disabled={akun === null}
@@ -1872,7 +1909,7 @@ function DialogKeputusan({
                     {akun === null || akun.length === 0 ? (
                       <option value={akunKontrak[kunci]}>Akun bawaan</option>
                     ) : null}
-                  </select>
+                  </PilihCari>
                 </div>
               ))}
             </div>

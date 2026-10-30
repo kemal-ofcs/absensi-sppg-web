@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { INPUT, LABEL } from "@/components/inventory/gaya";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { type AkunItem, daftarAkun } from "@/lib/gateways/accounting";
@@ -75,7 +76,7 @@ export function PilihAkunBayar({
       <label className={LABEL} htmlFor={id}>
         {label}
       </label>
-      <select
+      <PilihCari
         id={id}
         className={INPUT}
         value={value || bawaan}
@@ -91,7 +92,7 @@ export function PilihAkunBayar({
             </option>
           ))
         )}
-      </select>
+      </PilihCari>
       {galat ? <p className="mt-1 text-xs text-rose-100">{galat}</p> : null}
     </div>
   );

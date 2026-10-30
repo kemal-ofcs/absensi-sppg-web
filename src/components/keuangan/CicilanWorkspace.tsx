@@ -18,6 +18,7 @@ import {
 } from "@/components/inventory/gaya";
 import { DialogAlasan } from "@/components/inventory/Pengajuan";
 import { PilihAkunBayar } from "@/components/keuangan/PilihAkunBayar";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -251,6 +252,19 @@ function DialogBayar({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Jenis", nilai: jenis === "Bayar" ? "Pembayaran" : "Denda" },
+      { label: "Tanggal", nilai: tanggalTampil(tanggal) },
+      { label: "Nominal", nilai: formatRupiah(nilai) },
+      {
+        label: "Potongan",
+        nilai: nilaiPotongan > 0 ? formatRupiah(nilaiPotongan) : null,
+      },
+      { label: "Alasan potongan", nilai: alasan },
+      { label: "Referensi", nilai: referensi },
+      { label: "Keterangan", nilai: keterangan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -804,6 +818,12 @@ export function CicilanWorkspace({
 
   const accUlang = async (k: KontrakCicilan) => {
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Tindakan", nilai: "ACC ulang syarat final" },
+      { label: "Nomor kontrak", nilai: k.nomor_kontrak },
+      { label: "Kreditur", nilai: k.kreditur },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     try {
       await accUlangCicilan(k.id_cicilan, k.sidik_syarat);

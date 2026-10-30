@@ -7,7 +7,9 @@ import {
   useMemo,
   useState,
 } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import {
   type BarangInventaris,
   batalkanServis,
@@ -175,6 +177,47 @@ export function DialogServis({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData(
+      aksi.jenis === "buka" || aksi.jenis === "ubah"
+        ? [
+            {
+              label: "Barang",
+              nilai: servis ? namaServis(servis) : barang?.nama_barang,
+            },
+            { label: "Diambil dari", nilai: dipilih?.label },
+            {
+              label: "Jumlah",
+              nilai:
+                barang && !barang.dilacak_unit
+                  ? `${jumlah} ${barang.satuan}`
+                  : null,
+            },
+            { label: "Tanggal dibawa", nilai: tanggalTampil(tanggalMulai) },
+            { label: "Diservis oleh", nilai: penyedia },
+            { label: "Keluhan", nilai: keluhan },
+          ]
+        : aksi.jenis === "tutup"
+          ? [
+              { label: "Barang", nilai: namaServis(aksi.servis) },
+              {
+                label: "Tanggal kembali",
+                nilai: tanggalTampil(tanggalSelesai),
+              },
+              { label: "Kondisi", nilai: hasil },
+              {
+                label: "Biaya",
+                nilai: biaya.trim()
+                  ? rupiah(Number(biaya.replace(/D/g, "") || "0"))
+                  : null,
+              },
+              { label: "Catatan", nilai: catatan },
+            ]
+          : [
+              { label: "Barang", nilai: namaServis(aksi.servis) },
+              { label: "Alasan pembatalan", nilai: alasan },
+            ],
+    );
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -247,7 +290,7 @@ export function DialogServis({
               <label htmlFor="inv-servis-barang" className={LABEL}>
                 Barang
               </label>
-              <select
+              <PilihCari
                 id="inv-servis-barang"
                 required
                 value={idBarang}
@@ -263,14 +306,19 @@ export function DialogServis({
                     {b.nama_barang} ({b.kode_barang})
                   </option>
                 ))}
-              </select>
+              </PilihCari>
+              <p className="mt-1 text-xs text-slate-400">
+                Hanya barang bertipe Aset yang aktif yang bisa diservis. Barang
+                Habis Pakai tidak muncul; bila tipenya salah, ubah di tab
+                Barang.
+              </p>
             </div>
             {barang ? (
               <div>
                 <label htmlFor="inv-servis-posisi" className={LABEL}>
                   {barang.dilacak_unit ? "Unit" : "Diambil dari"}
                 </label>
-                <select
+                <PilihCari
                   id="inv-servis-posisi"
                   required
                   value={pilihanPosisi}
@@ -287,7 +335,7 @@ export function DialogServis({
                       {p.label}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               </div>
             ) : null}
             {barang && !barang.dilacak_unit ? (

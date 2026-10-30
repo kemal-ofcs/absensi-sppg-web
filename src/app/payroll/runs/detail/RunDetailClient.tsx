@@ -10,6 +10,7 @@ import { RunStatusBadge } from "@/components/payroll/RunStatusBadge";
 import { SlipGajiPrintView } from "@/components/payroll/SlipGajiPrintView";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
@@ -92,6 +93,12 @@ export default function RunDetailClient() {
 
   const handleExecuteTransition = async () => {
     if (!targetStatus) return;
+    const lanjut = await konfirmasiData([
+      { label: "Batch", nilai: runId },
+      { label: "Status baru", nilai: targetStatus },
+      { label: "Catatan", nilai: statusNotes },
+    ]);
+    if (!lanjut) return;
     setTransitioning(true);
     setFeedback(null);
     try {

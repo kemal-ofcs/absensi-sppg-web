@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
 import {
@@ -138,6 +140,14 @@ export function HolidayWhitelistPanel({ canManage }: Props) {
       return;
     }
 
+    const lanjut = await konfirmasiData([
+      {
+        label: "Berlaku untuk",
+        nilai: draft.scope_type === "SHIFT" ? "Shift" : "Divisi",
+      },
+      { label: "Nilai", nilai: draft.scope_value },
+    ]);
+    if (!lanjut) return;
     setSaving(true);
     try {
       if (editingId) {
@@ -364,7 +374,7 @@ export function HolidayWhitelistPanel({ canManage }: Props) {
                 {draft.scope_type === "SHIFT" ? "Shift" : "Nama Divisi"}
               </label>
               {draft.scope_type === "SHIFT" ? (
-                <select
+                <PilihCari
                   id="whitelist-scope-value"
                   value={draft.scope_value}
                   onChange={(event) =>
@@ -381,7 +391,7 @@ export function HolidayWhitelistPanel({ canManage }: Props) {
                       {shift.kode} - {shift.nama}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               ) : (
                 <>
                   <input

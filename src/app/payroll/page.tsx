@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { VirtualPayrollTable } from "@/components/payroll/VirtualPayrollTable";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
@@ -17,6 +18,7 @@ import {
   type PayrollRecapRow,
 } from "@/lib/gateways/payroll";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const IDR = new Intl.NumberFormat("id-ID", {
   style: "currency",
@@ -82,6 +84,12 @@ export default function PayrollDashboardPage() {
   }, [isHydrated, authLoading, isAuthenticated, user, loadData, router]);
 
   const handleCreateRun = async () => {
+    const lanjut = await konfirmasiData([
+      { label: "Tindakan", nilai: "Buat proses gaji baru" },
+      { label: "Periode mulai", nilai: tanggalTampil(periodStart) },
+      { label: "Periode akhir", nilai: tanggalTampil(periodEnd) },
+    ]);
+    if (!lanjut) return;
     setCreating(true);
     setFeedback(null);
     try {

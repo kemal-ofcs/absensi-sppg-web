@@ -29,7 +29,9 @@ import {
   LaporanKeuangan,
 } from "@/components/keuangan/LaporanKeuangan";
 import { TutupBukuPanel } from "@/components/keuangan/TutupBukuPanel";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -63,6 +65,7 @@ import {
   saldoNormalBawaan,
 } from "@/lib/validations/accounting";
 import { jumlahPerhatianCicilan } from "@/lib/validations/cicilan";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 /**
  * Seluruh UI pembukuan, dipakai apa adanya oleh halaman Web/Desktop dan
@@ -585,6 +588,14 @@ function DialogCatatJurnal({
   async function simpan(event: FormEvent) {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Tanggal", nilai: tanggalTampil(tanggal) },
+      { label: "Keterangan", nilai: keterangan },
+      { label: "Jumlah baris", nilai: `${baris.length} baris` },
+      { label: "Total debit", nilai: formatRupiah(totalDebit) },
+      { label: "Total kredit", nilai: formatRupiah(totalKredit) },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -661,7 +672,7 @@ function DialogCatatJurnal({
                 <label className={LABEL} htmlFor={`baris-akun-${item.kunci}`}>
                   Akun baris {indeks + 1}
                 </label>
-                <select
+                <PilihCari
                   id={`baris-akun-${item.kunci}`}
                   className={INPUT}
                   value={item.id_akun}
@@ -675,7 +686,7 @@ function DialogCatatJurnal({
                       {pilihan.kode} {pilihan.nama}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               </div>
               <div>
                 <label className={LABEL} htmlFor={`baris-debit-${item.kunci}`}>
@@ -847,6 +858,11 @@ function DialogDetailJurnal({
   async function batalkan(event: FormEvent) {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Jurnal", nilai: detail?.jurnal.nomor },
+      { label: "Alasan pembatalan", nilai: alasan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMembatalkan(true);
     setGalatBatal(null);
@@ -1022,7 +1038,7 @@ function PanelBukuBesar({ akun }: { akun: AkunItem[] }) {
           <label className={LABEL} htmlFor="buku-akun">
             Akun
           </label>
-          <select
+          <PilihCari
             id="buku-akun"
             className={INPUT}
             value={idAkun}
@@ -1033,7 +1049,7 @@ function PanelBukuBesar({ akun }: { akun: AkunItem[] }) {
                 {item.kode} {item.nama}
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div>
           <label className={LABEL} htmlFor="buku-dari">
@@ -1353,6 +1369,14 @@ function PanelAkun({
   async function simpan(event: FormEvent) {
     event.preventDefault();
     if (!draft || isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Kode", nilai: draft.kode },
+      { label: "Nama akun", nilai: draft.nama },
+      { label: "Kelompok", nilai: draft.kelompok },
+      { label: "Saldo normal", nilai: draft.saldo_normal },
+      { label: "Status", nilai: draft.is_aktif ? "Aktif" : "Nonaktif" },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {

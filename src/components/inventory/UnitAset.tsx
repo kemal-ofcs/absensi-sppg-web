@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import {
   type BarangInventaris,
@@ -147,6 +148,12 @@ export function DialogUnit({
   const kirim = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || !posisi.id_batch) return;
+    const lanjut = await konfirmasiData([
+      { label: "Unit", nilai: posisi.kode_unit },
+      { label: "Nomor seri", nilai: nomorSeri },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);

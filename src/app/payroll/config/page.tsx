@@ -6,8 +6,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { DAILY_RATE_MAX, DAILY_RATE_MIN } from "@/lib/constants/payroll";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -25,6 +27,7 @@ import {
 } from "@/lib/gateways/payroll";
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const IDR = new Intl.NumberFormat("id-ID", {
   style: "currency",
@@ -165,6 +168,36 @@ export default function PayrollConfigPage() {
 
   const handleSaveSalary = async (e: React.FormEvent) => {
     e.preventDefault();
+    const lanjut = await konfirmasiData([
+      {
+        label: "Karyawan",
+        nilai: String(
+          employees.find(
+            (emp) => String(emp.id_unik) === draftSalary.id_karyawan,
+          )?.nama ?? draftSalary.id_karyawan,
+        ),
+      },
+      {
+        label: "Skema",
+        nilai:
+          draftSalary.salary_type === "FLAT_DAILY"
+            ? "Gaji harian tetap"
+            : "Per jam",
+      },
+      {
+        label: "Tarif",
+        nilai:
+          draftSalary.salary_type === "FLAT_DAILY"
+            ? `${IDR.format(draftSalary.daily_rate ?? 0)}/hari`
+            : `${IDR.format(draftSalary.rate_per_hour ?? 0)}/jam`,
+      },
+      { label: "Status PTKP", nilai: draftSalary.ptkp_status },
+      {
+        label: "Berlaku mulai",
+        nilai: tanggalTampil(draftSalary.effective_date ?? ""),
+      },
+    ]);
+    if (!lanjut) return;
     try {
       await saveSalaryConfig(draftSalary);
       setModalSalaryOpen(false);
@@ -263,6 +296,32 @@ export default function PayrollConfigPage() {
 
   const handleSaveComponent = async (e: React.FormEvent) => {
     e.preventDefault();
+    const lanjut = await konfirmasiData([
+      { label: "Nama komponen", nilai: draftComp.name },
+      {
+        label: "Kategori",
+        nilai: draftComp.category === "ALLOWANCE" ? "Tunjangan" : "Potongan",
+      },
+      {
+        label: "Nilai",
+        nilai:
+          draftComp.calc_type === "FIXED"
+            ? IDR.format(draftComp.default_value ?? 0)
+            : `${draftComp.default_value ?? 0}%`,
+      },
+      {
+        label: "Penerima",
+        nilai:
+          draftComp.applies_to === "ALL"
+            ? "Semua karyawan"
+            : String(
+                employees.find(
+                  (emp) => String(emp.id_unik) === String(draftComp.applies_to),
+                )?.nama ?? String(draftComp.applies_to),
+              ),
+      },
+    ]);
+    if (!lanjut) return;
     try {
       await savePayrollComponent(draftComp);
       setModalCompOpen(false);
@@ -734,9 +793,13 @@ export default function PayrollConfigPage() {
               className="space-y-4 text-sm text-slate-300"
             >
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">
+                <label
+                  htmlFor="salary-employee-select"
+                  className="block text-xs font-semibold text-slate-400 uppercase mb-1"
+                >
                   <span>Pilih Karyawan</span>
-                  <select
+                  <PilihCari
+                    id="salary-employee-select"
                     value={draftSalary.id_karyawan}
                     onChange={(e) =>
                       setDraftSalary((prev) => ({
@@ -763,7 +826,7 @@ export default function PayrollConfigPage() {
                         {String(emp.id_unik)})
                       </option>
                     ))}
-                  </select>
+                  </PilihCari>
                 </label>
               </div>
 
@@ -853,9 +916,13 @@ export default function PayrollConfigPage() {
                   )}
                 </div>
                 <div className="min-w-0">
-                  <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">
+                  <label
+                    htmlFor="salary-ptkp-select"
+                    className="block text-xs font-semibold text-slate-400 uppercase mb-1"
+                  >
                     <span>Status PTKP (Pajak)</span>
-                    <select
+                    <PilihCari
+                      id="salary-ptkp-select"
                       value={draftSalary.ptkp_status}
                       onChange={(e) =>
                         setDraftSalary((prev) => ({
@@ -873,7 +940,7 @@ export default function PayrollConfigPage() {
                       <option value="K/1">K/1 (Kawin 1 Tanggungan)</option>
                       <option value="K/2">K/2 (Kawin 2 Tanggungan)</option>
                       <option value="K/3">K/3 (Kawin 3 Tanggungan)</option>
-                    </select>
+                    </PilihCari>
                   </label>
                 </div>
               </div>
@@ -940,9 +1007,12 @@ export default function PayrollConfigPage() {
                 masing-masing dipertahankan. Kembali ke skema per jam dilakukan
                 per karyawan.
               </p>
-              <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">
+              <label
+                htmlFor="bulk-scope-select"
+                className="block text-xs font-semibold text-slate-400 uppercase mb-1"
+              >
                 <span>Cakupan</span>
-                <select
+                <PilihCari
                   id="bulk-scope-select"
                   value={bulkDraft.divisi}
                   onChange={(e) =>
@@ -959,7 +1029,7 @@ export default function PayrollConfigPage() {
                       Divisi {divisi}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="block min-w-0 text-xs font-semibold text-slate-400 uppercase mb-1">
@@ -1118,9 +1188,12 @@ export default function PayrollConfigPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">
+                <label
+                  htmlFor="component-applies-to-select"
+                  className="block text-xs font-semibold text-slate-400 uppercase mb-1"
+                >
                   <span>Penerima</span>
-                  <select
+                  <PilihCari
                     id="component-applies-to-select"
                     value={draftComp.applies_to ?? "ALL"}
                     onChange={(e) =>
@@ -1140,7 +1213,7 @@ export default function PayrollConfigPage() {
                         {String(emp.nama)} ({String(emp.id_unik)})
                       </option>
                     ))}
-                  </select>
+                  </PilihCari>
                 </label>
                 <p className="mt-1 text-xs text-slate-500">
                   Komponen &quot;Semua karyawan&quot; tidak berlaku untuk skema

@@ -12,7 +12,9 @@ import {
 import { PilihPersonil } from "@/components/operational/PilihPersonil";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { parseCsv } from "@/lib/client/xlsx";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -37,6 +39,7 @@ import {
 import { getDaftarShift } from "@/lib/gateways/shift";
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 type Tab = "correction" | "backup" | "import";
 
@@ -349,7 +352,15 @@ export default function OperationalPage() {
       setConfirmKoreksi({ ids, sudahAda: sudahAda.map(namaKaryawan) });
       return;
     }
-    void executeCorrection(ids);
+    void konfirmasiData([
+      { label: "Tanggal", nilai: tanggalTampil(correction.tanggal) },
+      { label: "Karyawan", nilai: namaKaryawan(ids[0] as string) },
+      { label: "Jenis koreksi", nilai: correction.jenis_koreksi },
+      { label: "Jam", nilai: correction.jam_koreksi },
+      { label: "Keterangan", nilai: correction.keterangan_admin },
+    ]).then((lanjut) => {
+      if (lanjut) void executeCorrection(ids);
+    });
   };
 
   const submitBackup = () =>
@@ -359,6 +370,28 @@ export default function OperationalPage() {
           "Pilih Karyawan Asal dan Karyawan Pengganti terlebih dahulu.",
         );
       }
+      const lanjut = await konfirmasiData([
+        { label: "Tanggal", nilai: tanggalTampil(backup.tanggal_tugas) },
+        {
+          label: "Karyawan asal",
+          nilai: namaKaryawan(backup.id_karyawan_asal),
+        },
+        {
+          label: "Pengganti",
+          nilai: namaKaryawan(backup.id_karyawan_pengganti),
+        },
+        {
+          label: "Shift",
+          nilai: String(
+            shifts.find(
+              (s) => Number(s.id_shift) === Number(backup.id_shift_backup),
+            )?.nama_shift ?? "",
+          ),
+        },
+        { label: "Alasan", nilai: backup.alasan_backup },
+        { label: "Catatan", nilai: backup.catatan },
+      ]);
+      if (!lanjut) return;
       const result = await buatPenugasanBackup({
         tanggal_tugas: backup.tanggal_tugas,
         id_karyawan_asal: backup.id_karyawan_asal,
@@ -393,6 +426,16 @@ export default function OperationalPage() {
       if (ids.length === 0) {
         throw new Error("Pilih minimal satu karyawan terlebih dahulu.");
       }
+      const lanjut = await konfirmasiData([
+        { label: "Tanggal", nilai: tanggalTampil(manualEntry.tanggal) },
+        { label: "Karyawan", nilai: ids.map(namaKaryawan).join(", ") },
+        { label: "Jam masuk", nilai: manualEntry.jam_masuk },
+        { label: "Jam pulang", nilai: manualEntry.jam_pulang },
+        { label: "Status kehadiran", nilai: manualEntry.status_kehadiran },
+        { label: "Status absen", nilai: manualEntry.status_absen },
+        { label: "Keterangan", nilai: manualEntry.keterangan },
+      ]);
+      if (!lanjut) return;
       const rows: OfflineImportRow[] = ids.map((idKaryawan) => {
         const found = cariKaryawan(idKaryawan);
         return {
@@ -646,7 +689,7 @@ export default function OperationalPage() {
               <span className="text-slate-400 block mb-1">
                 Shift / Jadwal Kerja
               </span>
-              <select
+              <PilihCari
                 aria-label="Pilih shift"
                 className={inputClass}
                 value={correction.id_shift}
@@ -659,13 +702,13 @@ export default function OperationalPage() {
               >
                 <option value={0}>Ikuti shift masing-masing karyawan</option>
                 {shiftOptions}
-              </select>
+              </PilihCari>
             </div>
 
             {/* Jenis Koreksi */}
             <div>
               <span className="text-slate-400 block mb-1">Jenis Koreksi</span>
-              <select
+              <PilihCari
                 aria-label="Jenis koreksi"
                 className={inputClass}
                 value={correction.jenis_koreksi}
@@ -689,7 +732,7 @@ export default function OperationalPage() {
                   Kendala Sistem - Jam Pulang
                 </option>
                 <option value="Terlambat">Terlambat (Disesuaikan)</option>
-              </select>
+              </PilihCari>
             </div>
 
             {/* Jam Koreksi */}
@@ -782,7 +825,7 @@ export default function OperationalPage() {
               <span className="text-slate-400 block mb-1">
                 Shift Backup Ditugaskan
               </span>
-              <select
+              <PilihCari
                 aria-label="Shift backup"
                 className={inputClass}
                 value={backup.id_shift_backup}
@@ -794,7 +837,7 @@ export default function OperationalPage() {
                 }
               >
                 {shiftOptions}
-              </select>
+              </PilihCari>
             </div>
 
             {/* Alasan Backup */}
@@ -984,7 +1027,7 @@ export default function OperationalPage() {
               <span className="text-amber-400 block mb-1 font-semibold">
                 Status Absen
               </span>
-              <select
+              <PilihCari
                 aria-label="Status Absen"
                 className={inputClass}
                 value={manualEntry.status_absen}
@@ -1007,7 +1050,7 @@ export default function OperationalPage() {
                 <option value="Tepat Waktu">Tepat Waktu</option>
                 <option value="Terlambat">Terlambat</option>
                 <option value="Datang Lebih Awal">Datang Lebih Awal</option>
-              </select>
+              </PilihCari>
             </div>
 
             {/* Keterangan */}

@@ -6,8 +6,10 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -189,6 +191,27 @@ export default function MasterOperatorPage() {
   const submitOperator = async (event: FormEvent) => {
     event.preventDefault();
     if (!user) return;
+    const lanjut = await konfirmasiData([
+      { label: "Kode", nilai: operatorDraft.kodeOperator },
+      { label: "Nama", nilai: operatorDraft.name },
+      { label: "Username", nilai: operatorDraft.username },
+      { label: "Email", nilai: operatorDraft.email },
+      { label: "No. HP", nilai: operatorDraft.noHp },
+      {
+        label: "Role",
+        nilai: roles.find((role) => role.id === operatorDraft.roleId)?.name,
+      },
+      { label: "Status", nilai: operatorDraft.status },
+      {
+        label: "Password",
+        nilai: operatorDraft.password
+          ? editingOperator
+            ? "Diubah"
+            : "Diisi"
+          : null,
+      },
+    ]);
+    if (!lanjut) return;
     setSaving(true);
     setFeedback(null);
     try {
@@ -261,6 +284,13 @@ export default function MasterOperatorPage() {
   const submitRole = async (event: FormEvent) => {
     event.preventDefault();
     if (!user) return;
+    const lanjut = await konfirmasiData([
+      { label: "Nama role", nilai: roleDraft.name },
+      { label: "Deskripsi", nilai: roleDraft.description },
+      { label: "Status", nilai: roleDraft.status },
+      { label: "Jumlah izin", nilai: `${selectedPermissions.size} izin` },
+    ]);
+    if (!lanjut) return;
     setSaving(true);
     setFeedback(null);
     try {
@@ -599,7 +629,7 @@ function OperatorFormModal({
                 </p>
               </div>
             ) : (
-              <select
+              <PilihCari
                 id="operator-role"
                 value={draft.roleId}
                 onChange={(event) =>
@@ -618,7 +648,7 @@ function OperatorFormModal({
                       {role.name}
                     </option>
                   ))}
-              </select>
+              </PilihCari>
             )}
           </FormField>
           <FormField label="Status" htmlFor="operator-status">

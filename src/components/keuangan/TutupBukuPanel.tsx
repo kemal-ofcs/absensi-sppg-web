@@ -16,6 +16,7 @@ import {
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import {
   bukaKembaliBuku,
@@ -361,6 +362,19 @@ function DialogTinjau({
 
   async function jalankan(aksi: "pakai" | "tolak" | "ulang") {
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      {
+        label: "Tindakan",
+        nilai:
+          aksi === "ulang"
+            ? "Tutup ulang dengan saldo terkini"
+            : aksi === "pakai"
+              ? "Pakai versi ini"
+              : "Tolak versi ini",
+      },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setSibuk(true);
     setGalat(null);
@@ -571,6 +585,10 @@ function DialogTutup({
   async function simpan(event: FormEvent) {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Tutup buku sampai", nilai: tanggalTampil(sampai) },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setSibuk(true);
     setGalat(null);
@@ -646,6 +664,10 @@ function DialogBuka({
   async function simpan(event: FormEvent) {
     event.preventDefault();
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Alasan buka kembali", nilai: alasan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setSibuk(true);
     setGalat(null);

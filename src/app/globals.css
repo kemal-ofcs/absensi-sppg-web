@@ -339,26 +339,46 @@ html.light div.bg-slate-900\/60 button.bg-sky-500 * {
 
 /* Inactive Segmented Tab Buttons */
 html[data-theme="light"] .bg-slate-900\/60
-  button:not(.bg-gradient-to-r):not(.bg-sky-500),
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ),
 html[data-theme="light"]
   div.bg-slate-950
-  button:not(.bg-gradient-to-r):not(.bg-sky-500),
-html.light .bg-slate-900\/60 button:not(.bg-gradient-to-r):not(.bg-sky-500),
-html.light div.bg-slate-950 button:not(.bg-gradient-to-r):not(.bg-sky-500) {
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ),
+html.light
+  .bg-slate-900\/60
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ),
+html.light
+  div.bg-slate-950
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ) {
   color: #475569 !important;
 }
 html[data-theme="light"]
   .bg-slate-900\/60
-  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ):hover,
 html[data-theme="light"]
   div.bg-slate-950
-  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ):hover,
 html.light
   .bg-slate-900\/60
-  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover,
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ):hover,
 html.light
   div.bg-slate-950
-  button:not(.bg-gradient-to-r):not(.bg-sky-500):hover {
+  button:not(.bg-gradient-to-r):not(.bg-sky-500):not(.bg-sky-600):not(
+    .bg-sky-700
+  ):hover {
   color: #0f172a !important;
   background-color: #e2e8f0 !important;
 }
@@ -806,9 +826,15 @@ html.light label {
   color: #334155 !important;
 }
 
+html[data-theme="light"] .divide-slate-800 > * + *,
+html.light .divide-slate-800 > * + * {
+  border-color: #e2e8f0 !important;
+}
+
 /* Solid colored buttons & gradients retain white text */
 html[data-theme="light"] .bg-sky-500,
 html[data-theme="light"] .bg-sky-600,
+html[data-theme="light"] .bg-sky-700,
 html[data-theme="light"] .bg-blue-600,
 html[data-theme="light"] .bg-emerald-600,
 html[data-theme="light"] .bg-emerald-500,
@@ -817,6 +843,7 @@ html[data-theme="light"] .bg-rose-500,
 html[data-theme="light"] .bg-amber-600,
 html.light .bg-sky-500,
 html.light .bg-sky-600,
+html.light .bg-sky-700,
 html.light .bg-blue-600,
 html.light .bg-emerald-600,
 html.light .bg-emerald-500,
@@ -827,6 +854,7 @@ html.light .bg-amber-600 {
 }
 html[data-theme="light"] .bg-sky-500 *,
 html[data-theme="light"] .bg-sky-600 *,
+html[data-theme="light"] .bg-sky-700 *,
 html[data-theme="light"] .bg-blue-600 *,
 html[data-theme="light"] .bg-emerald-600 *,
 html[data-theme="light"] .bg-emerald-500 *,
@@ -835,6 +863,7 @@ html[data-theme="light"] .bg-rose-500 *,
 html[data-theme="light"] .bg-amber-600 *,
 html.light .bg-sky-500 *,
 html.light .bg-sky-600 *,
+html.light .bg-sky-700 *,
 html.light .bg-blue-600 *,
 html.light .bg-emerald-600 *,
 html.light .bg-emerald-500 *,

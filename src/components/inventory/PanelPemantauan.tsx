@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import {
   type BarangInventaris,
   catatMutasiInventaris,
@@ -34,6 +36,7 @@ import {
   perluDijurnal,
   type ServisInventaris,
 } from "@/lib/validations/inventory";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 import { cetakBeritaAcara } from "./beritaAcara";
 import { eksporPengadaan } from "./ekspor";
 import {
@@ -462,6 +465,14 @@ export function PanelKedaluwarsa({
   const musnahkan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || !target) return;
+    const lanjut = await konfirmasiData([
+      { label: "Barang", nilai: target.barang.nama_barang },
+      { label: "Tempat", nilai: target.posisi.tempat },
+      { label: "Dimusnahkan", nilai: `${jumlah} ${target.barang.satuan}` },
+      { label: "Nomor berita acara", nilai: nomorBa },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
@@ -685,6 +696,15 @@ export function PanelPinjaman({
   const kembalikan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || !target) return;
+    const lanjut = await konfirmasiData([
+      { label: "Barang", nilai: target.nama_barang },
+      { label: "Dikembalikan", nilai: `${jumlah} ${target.satuan}` },
+      { label: "Tanggal", nilai: tanggalTampil(tanggal) },
+      { label: "Disimpan di", nilai: tempat },
+      { label: "Kondisi", nilai: target.tipe === "Aset" ? kondisi : null },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
@@ -1235,6 +1255,12 @@ export function PanelOpname({
   const simpan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || baris.length === 0) return;
+    const lanjut = await konfirmasiData([
+      { label: "Tempat", nilai: tempat },
+      { label: "Barang dihitung", nilai: `${baris.length} baris` },
+      { label: "Catatan", nilai: catatan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
@@ -1285,7 +1311,7 @@ export function PanelOpname({
           <label htmlFor="inv-opname-tempat" className={LABEL}>
             Tempat yang dihitung
           </label>
-          <select
+          <PilihCari
             id="inv-opname-tempat"
             value={tempat}
             onChange={(e) => pilihTempat(e.target.value)}
@@ -1297,7 +1323,7 @@ export function PanelOpname({
                 {nilai}
               </option>
             ))}
-          </select>
+          </PilihCari>
           <p className="text-xs text-slate-400">
             Satu tempat sebaiknya dihitung satu orang. Saldo sistem dihitung
             ulang saat disimpan, jadi mutasi yang terjadi sementara tetap
@@ -1418,7 +1444,7 @@ export function PanelOpname({
                   <label htmlFor="inv-tambah-barang" className={LABEL}>
                     Barang
                   </label>
-                  <select
+                  <PilihCari
                     id="inv-tambah-barang"
                     value={tambahBarang}
                     onChange={(e) => {
@@ -1435,7 +1461,7 @@ export function PanelOpname({
                           {b.nama_barang} ({b.kode_barang})
                         </option>
                       ))}
-                  </select>
+                  </PilihCari>
                 </div>
                 {barangTambah?.tipe === "Aset" ? (
                   <div>
@@ -1467,7 +1493,7 @@ export function PanelOpname({
                         dengan tanggal kedaluwarsanya.
                       </p>
                     ) : (
-                      <select
+                      <PilihCari
                         id="inv-tambah-batch"
                         value={tambahBatch}
                         onChange={(e) => setTambahBatch(e.target.value)}
@@ -1479,7 +1505,7 @@ export function PanelOpname({
                             Kedaluwarsa {batch.tanggal ?? "tanpa tanggal"}
                           </option>
                         ))}
-                      </select>
+                      </PilihCari>
                     )}
                   </div>
                 ) : null}

@@ -1,11 +1,13 @@
-﻿"use client";
+"use client";
 
 import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -19,6 +21,7 @@ import {
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useDebounce } from "@/lib/hooks/useDebounce";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const SCAN_PAGE_SIZE = 500;
 
@@ -140,6 +143,16 @@ export default function HistoryPage() {
 
   const handleSaveEdit = async () => {
     if (!editData || isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Karyawan", nilai: editData.nama },
+      { label: "Tanggal", nilai: tanggalTampil(editData.tanggal) },
+      { label: "Jam masuk", nilai: editData.jam_masuk },
+      { label: "Jam pulang", nilai: editData.jam_pulang },
+      { label: "Status kehadiran", nilai: editData.status_kehadiran },
+      { label: "Status absen", nilai: editData.status_absen },
+      { label: "Keterangan", nilai: editData.keterangan },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setActionBusy(true);
     setError(null);
@@ -854,7 +867,7 @@ export default function HistoryPage() {
             <span className="text-[11px] text-slate-400 font-semibold">
               Divisi
             </span>
-            <select
+            <PilihCari
               value={selectedDivisi}
               onChange={(e) => {
                 setSelectedDivisi(e.target.value);
@@ -868,7 +881,7 @@ export default function HistoryPage() {
                   {div}
                 </option>
               ))}
-            </select>
+            </PilihCari>
           </div>
 
           {/* Status Filter */}
@@ -876,7 +889,7 @@ export default function HistoryPage() {
             <span className="text-[11px] text-slate-400 font-semibold">
               Status
             </span>
-            <select
+            <PilihCari
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
               className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-slate-300 outline-none focus:border-sky-500"
@@ -910,7 +923,7 @@ export default function HistoryPage() {
                   <option value="Dispen">Kehadiran: Dispen</option>
                 </>
               )}
-            </select>
+            </PilihCari>
           </div>
 
           {/* Sorting Filter: ASC / DESC / Name */}

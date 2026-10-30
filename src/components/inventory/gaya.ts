@@ -1,7 +1,11 @@
 // Kelas dan helper yang dipakai bersama `InventarisWorkspace` dan
 // `PanelPemantauan`. Ikut disalin ke Mobile lewat `filesToCopy`.
 
-import { formatJumlah, jumlahDariKetikan } from "@/lib/validations/inventory";
+import {
+  formatJumlah,
+  type JenisMutasi,
+  jumlahDariKetikan,
+} from "@/lib/validations/inventory";
 
 export const INPUT =
   "w-full min-h-11 text-sm rounded-lg px-3 py-2 bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500";
@@ -64,6 +68,53 @@ export function bacaJumlah(
     );
   }
   return nilai;
+}
+
+export interface PerubahanStok {
+  label: string;
+  sebelum: number;
+  sesudah: number;
+}
+
+/** Perkiraan stok bila mutasi disimpan. Kosong selama jumlahnya belum sah. */
+export function perubahanStok({
+  jenis,
+  jumlah,
+  stokTotal,
+  asal,
+  tujuan,
+}: {
+  jenis: JenisMutasi;
+  jumlah: number | null;
+  stokTotal: number;
+  asal: { label: string; saldo: number } | null;
+  tujuan: { label: string; saldo: number } | null;
+}): PerubahanStok[] {
+  if (jumlah === null || jumlah <= 0) return [];
+  const baris: PerubahanStok[] = [];
+  if (asal && jenis !== "Masuk") {
+    baris.push({
+      label: asal.label,
+      sebelum: asal.saldo,
+      sesudah: asal.saldo - jumlah,
+    });
+  }
+  if (tujuan && jenis !== "Keluar") {
+    baris.push({
+      label: tujuan.label,
+      sebelum: tujuan.saldo,
+      sesudah: tujuan.saldo + jumlah,
+    });
+  }
+  // Pindah tidak mengubah total semua tempat.
+  if (jenis !== "Pindah") {
+    baris.push({
+      label: "Total semua tempat",
+      sebelum: stokTotal,
+      sesudah: jenis === "Masuk" ? stokTotal + jumlah : stokTotal - jumlah,
+    });
+  }
+  return baris;
 }
 
 export function pesanGalat(error: unknown, cadangan: string): string {

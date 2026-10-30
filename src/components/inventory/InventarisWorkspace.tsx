@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -39,6 +41,7 @@ import {
   JENIS_MUTASI,
   type JenisMutasi,
   jenisBeritaAcara,
+  jumlahDariKetikan,
   KONDISI_BARANG,
   MAKS_KODE_PREFIX,
   normalizeKodePrefix,
@@ -50,6 +53,7 @@ import {
   describeImportReport,
   runImport,
 } from "@/lib/validations/inventory-import";
+import { tanggalTampil } from "@/lib/validations/tutup-buku";
 import { DialogEkspor } from "./DialogEkspor";
 import {
   bacaImporBarang,
@@ -63,6 +67,7 @@ import {
   INPUT,
   isianJumlah,
   LABEL,
+  perubahanStok,
   pesanGalat,
   SUMBER_DANA_UMUM,
   TOMBOL_BAHAYA,
@@ -811,7 +816,7 @@ function DaftarBarang({
           <label htmlFor="inv-filter-kategori" className={LABEL}>
             Kategori
           </label>
-          <select
+          <PilihCari
             id="inv-filter-kategori"
             value={kategori}
             onChange={(e) => setKategori(e.target.value)}
@@ -823,13 +828,13 @@ function DaftarBarang({
                 {nama}
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div>
           <label htmlFor="inv-filter-tempat" className={LABEL}>
             Tempat
           </label>
-          <select
+          <PilihCari
             id="inv-filter-tempat"
             value={tempat}
             onChange={(e) => setTempat(e.target.value)}
@@ -841,7 +846,7 @@ function DaftarBarang({
                 {nama}
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div>
           <label htmlFor="inv-filter-stok" className={LABEL}>
@@ -1247,6 +1252,17 @@ function FormBarang({
       setGalat(pesanGalat(error, "Stok minimum tidak valid."));
       return;
     }
+    const lanjut = await konfirmasiData([
+      { label: "Nama barang", nilai: nama },
+      { label: "Kode", nilai: kode.trim() || `Otomatis, awalan ${awalan}` },
+      { label: "Tipe", nilai: tipe },
+      { label: "Satuan", nilai: satuan },
+      { label: "Kategori", nilai: kategori },
+      { label: "Tempat utama", nilai: tempatUtama },
+      { label: "Stok minimum", nilai: `${stokMinimum || "0"} ${satuan}` },
+      { label: "Status", nilai: barang && !aktif ? "Nonaktif" : null },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -1321,7 +1337,7 @@ function FormBarang({
               <label htmlFor="inv-awalan" className={LABEL}>
                 Awalan kode
               </label>
-              <select
+              <PilihCari
                 id="inv-awalan"
                 value={awalan}
                 onChange={(e) => setAwalan(e.target.value)}
@@ -1332,7 +1348,7 @@ function FormBarang({
                     {nilai}
                   </option>
                 ))}
-              </select>
+              </PilihCari>
             </div>
           ) : null}
           <div>
@@ -1570,6 +1586,11 @@ function FormAwalanKode({
 
   const simpan = async () => {
     if (isSubmittingRef.current) return;
+    const lanjut = await konfirmasiData([
+      { label: "Daftar awalan", nilai: daftar.join(", ") },
+      { label: "Awalan bawaan", nilai: daftar[0] },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     setGalat(null);
@@ -1759,7 +1780,6 @@ function FormMutasi({
   const [penerimaTipe, setPenerimaTipe] = useState("");
   const [penerimaId, setPenerimaId] = useState("");
   const [penerimaNama, setPenerimaNama] = useState("");
-  const [cariPenerima, setCariPenerima] = useState("");
   const [keperluan, setKeperluan] = useState("");
   const [catatan, setCatatan] = useState("");
   const [penerima, setPenerima] = useState<PenerimaInventaris | null>(null);
@@ -1846,12 +1866,41 @@ function FormMutasi({
       );
   }, [butuhPenerima, penerima]);
 
-  const personilTersaring = useMemo(() => {
-    const kata = cariPenerima.trim().toLowerCase();
-    return (penerima?.personil ?? [])
-      .filter((orang) => !kata || orang.nama.toLowerCase().includes(kata))
-      .slice(0, 100);
-  }, [penerima, cariPenerima]);
+  const jumlahKetik = pakaiUnit
+    ? unitDipilih.length
+    : barang
+      ? jumlahDariKetikan(jumlah, barang.desimal)
+      : null;
+  const labelAsal = pakaiUnit
+    ? grupAsal && `${grupAsal.tempat} · ${grupAsal.kondisi}`
+    : asal && `${asal.tempat} · ${asal.kondisi}`;
+  const saldoAsal = pakaiUnit
+    ? (grupAsal?.unit ?? []).reduce((sum, p) => sum + p.saldo, 0)
+    : (asal?.saldo ?? 0);
+  const kondisiMasuk = barang?.tipe === "Aset" ? kondisiTujuan : "Baik";
+  const namaTujuan = tempatTujuan.trim();
+  const perubahan = barang
+    ? perubahanStok({
+        jenis,
+        jumlah: jumlahKetik,
+        stokTotal: barang.stok_total,
+        asal: labelAsal ? { label: labelAsal, saldo: saldoAsal } : null,
+        tujuan: namaTujuan
+          ? {
+              label: `${namaTujuan} · ${kondisiMasuk}`,
+              saldo: barang.posisi
+                .filter(
+                  (p) =>
+                    p.tempat.toLowerCase() === namaTujuan.toLowerCase() &&
+                    p.kondisi === kondisiMasuk,
+                )
+                .reduce((sum, p) => sum + p.saldo, 0),
+            }
+          : null,
+      })
+    : [];
+  const teksStok = (nilai: number) =>
+    `${angka(nilai, barang?.desimal ?? false)} ${barang?.satuan ?? ""}`;
 
   const reset = () => {
     setJumlah("");
@@ -1863,19 +1912,53 @@ function FormMutasi({
     setCatatan("");
     setPenerimaId("");
     setPenerimaNama("");
-    setCariPenerima("");
   };
 
   const simpan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || !barang) return;
+    let jumlahCatat: number;
+    try {
+      jumlahCatat = pakaiUnit
+        ? unitDipilih.length
+        : bacaJumlah(jumlah, barang.desimal);
+    } catch (error) {
+      onGalat(pesanGalat(error, "Jumlah tidak valid."));
+      return;
+    }
+    const lanjut = await konfirmasiData([
+      {
+        label: "Barang",
+        nilai: `${barang.nama_barang} (${barang.kode_barang})`,
+      },
+      { label: "Jenis", nilai: `${jenis} · ${alasan}` },
+      { label: "Jumlah", nilai: teksStok(jumlahCatat) },
+      { label: "Tanggal", nilai: tanggalTampil(tanggal) },
+      { label: "Ambil dari", nilai: jenis === "Masuk" ? null : labelAsal },
+      {
+        label: jenis === "Masuk" ? "Disimpan di" : "Pindah ke",
+        nilai: jenis === "Keluar" ? null : namaTujuan,
+      },
+      {
+        label: "Diberikan kepada",
+        nilai: !butuhPenerima
+          ? null
+          : penerimaTipe === "Personil"
+            ? penerima?.personil.find((orang) => orang.id === penerimaId)?.nama
+            : penerimaNama,
+      },
+      { label: "Keperluan", nilai: keperluan },
+      ...perubahan.map((item) => ({
+        label: item.label,
+        nilai: `${teksStok(item.sebelum)} menjadi ${teksStok(item.sesudah)}`,
+        peringatan: item.sesudah < 0,
+      })),
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
       const aset = barang.tipe === "Aset";
-      const jumlahCatat = pakaiUnit
-        ? unitDipilih.length
-        : bacaJumlah(jumlah, barang.desimal);
       await catatMutasiInventaris({
         id_barang: barang.id_barang,
         jenis,
@@ -1969,7 +2052,7 @@ function FormMutasi({
           <label htmlFor="inv-mutasi-barang" className={LABEL}>
             Barang
           </label>
-          <select
+          <PilihCari
             id="inv-mutasi-barang"
             required
             value={idBarang}
@@ -1982,7 +2065,7 @@ function FormMutasi({
                 {item.nama_barang} ({item.kode_barang})
               </option>
             ))}
-          </select>
+          </PilihCari>
           {jenis !== "Masuk" && pilihanBarang.length === 0 ? (
             <p className="mt-1 text-xs text-amber-300">
               Belum ada barang yang punya stok. Catat barang Masuk lebih dulu.
@@ -2099,7 +2182,7 @@ function FormMutasi({
               </p>
             ) : (
               <>
-                <select
+                <PilihCari
                   id="inv-asal-unit"
                   value={kelompokAsal}
                   onChange={(e) => {
@@ -2116,7 +2199,7 @@ function FormMutasi({
                       {grup.tempat} · {grup.kondisi} ({grup.unit.length} unit)
                     </option>
                   ))}
-                </select>
+                </PilihCari>
                 <fieldset className="max-h-60 overflow-y-auto rounded-lg border border-slate-800 divide-y divide-slate-800">
                   <legend className="sr-only">Unit yang dicatat</legend>
                   {(grupAsal?.unit ?? []).map((unit) => {
@@ -2170,7 +2253,7 @@ function FormMutasi({
                 Stok barang ini kosong di semua tempat.
               </p>
             ) : (
-              <select
+              <PilihCari
                 id="inv-asal"
                 required
                 value={posisiAsal}
@@ -2185,7 +2268,7 @@ function FormMutasi({
                     {labelPosisi(posisi, barang.satuan, barang.desimal)}
                   </option>
                 ))}
-              </select>
+              </PilihCari>
             )}
           </div>
         ) : null}
@@ -2230,6 +2313,42 @@ function FormMutasi({
               </div>
             ) : null}
           </>
+        ) : null}
+
+        {perubahan.length > 0 ? (
+          <div
+            id="inv-pratinjau-stok"
+            aria-live="polite"
+            className="sm:col-span-2 rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm"
+          >
+            <p className="mb-1 font-semibold text-slate-100">
+              Stok setelah disimpan
+            </p>
+            <ul className="space-y-1">
+              {perubahan.map((item) => (
+                <li
+                  key={item.label}
+                  className="flex flex-wrap justify-between gap-x-3"
+                >
+                  <span className="text-slate-300">{item.label}</span>
+                  <span
+                    className={
+                      item.sesudah < 0
+                        ? "font-semibold text-rose-300"
+                        : "font-semibold text-slate-100"
+                    }
+                  >
+                    {teksStok(item.sebelum)} menjadi {teksStok(item.sesudah)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {perubahan.some((item) => item.sesudah < 0) ? (
+              <p className="mt-1 text-xs text-rose-300">
+                Jumlahnya melebihi stok yang tercatat.
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {jenis === "Masuk" ? (
@@ -2311,47 +2430,31 @@ function FormMutasi({
               </select>
             </div>
             {penerimaTipe === "Personil" ? (
-              <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="inv-cari-penerima" className={LABEL}>
-                    Cari nama personil
-                  </label>
-                  <input
-                    id="inv-cari-penerima"
-                    type="search"
-                    value={cariPenerima}
-                    onChange={(e) => setCariPenerima(e.target.value)}
-                    className={INPUT}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="inv-penerima-personil" className={LABEL}>
-                    Personil
-                  </label>
-                  <select
-                    id="inv-penerima-personil"
-                    required
-                    value={penerimaId}
-                    onChange={(e) => setPenerimaId(e.target.value)}
-                    className={INPUT}
-                  >
-                    <option value="">
-                      {penerima
-                        ? "Pilih personil"
-                        : "Memuat daftar personil..."}
+              <div>
+                <label htmlFor="inv-penerima-personil" className={LABEL}>
+                  Personil
+                </label>
+                <PilihCari
+                  id="inv-penerima-personil"
+                  required
+                  value={penerimaId}
+                  onChange={(e) => setPenerimaId(e.target.value)}
+                  className={INPUT}
+                >
+                  <option value="">
+                    {penerima ? "Pilih personil" : "Memuat daftar personil..."}
+                  </option>
+                  {(penerima?.personil ?? []).map((orang) => (
+                    <option key={orang.id} value={orang.id}>
+                      {orang.nama}
+                      {orang.divisi
+                        ? ` · ${orang.divisi}`
+                        : orang.jenis
+                          ? ` · ${orang.jenis}`
+                          : ""}
                     </option>
-                    {personilTersaring.map((orang) => (
-                      <option key={orang.id} value={orang.id}>
-                        {orang.nama}
-                        {orang.divisi
-                          ? ` · ${orang.divisi}`
-                          : orang.jenis
-                            ? ` · ${orang.jenis}`
-                            : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  ))}
+                </PilihCari>
               </div>
             ) : null}
             {penerimaTipe === "Divisi" ? (
@@ -2359,7 +2462,7 @@ function FormMutasi({
                 <label htmlFor="inv-penerima-divisi" className={LABEL}>
                   Divisi
                 </label>
-                <select
+                <PilihCari
                   id="inv-penerima-divisi"
                   required
                   value={penerimaNama}
@@ -2374,7 +2477,7 @@ function FormMutasi({
                       {nama}
                     </option>
                   ))}
-                </select>
+                </PilihCari>
               </div>
             ) : null}
             {penerimaTipe === "Unit" ? (
@@ -2475,6 +2578,13 @@ function keterangan(baris: BarisKartuStok): string {
   return bagian.join(" · ");
 }
 
+type StatusKartu = "semua" | "berhasil" | "dibatalkan";
+
+/** Mutasi yang dibatalkan dan baris Pembatalan pembaliknya satu kelompok. */
+function barisDibatalkan(baris: BarisKartuStok): boolean {
+  return baris.dibatalkan || baris.alasan === "Pembatalan";
+}
+
 function PanelKartuStok({
   data,
   idBarangAwal,
@@ -2499,6 +2609,7 @@ function PanelKartuStok({
   const [dari, setDari] = useState(awalBulan(hariIni));
   const [sampai, setSampai] = useState(hariIni);
   const [kartu, setKartu] = useState<KartuStok | null>(null);
+  const [status, setStatus] = useState<StatusKartu>("semua");
   const [memuat, setMemuat] = useState(false);
   const [galat, setGalat] = useState<string | null>(null);
   const [target, setTarget] = useState<BarisKartuStok | null>(null);
@@ -2529,9 +2640,21 @@ function PanelKartuStok({
     void muatKartu();
   }, [muatKartu]);
 
+  const jumlahDibatalkan = (kartu?.baris ?? []).filter(barisDibatalkan).length;
+  const barisTampil = (kartu?.baris ?? []).filter(
+    (baris) =>
+      status === "semua" ||
+      barisDibatalkan(baris) === (status === "dibatalkan"),
+  );
+
   const batalkan = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmittingRef.current || !target) return;
+    const lanjut = await konfirmasiData([
+      { label: "Mutasi", nilai: keterangan(target) },
+      { label: "Alasan pembatalan", nilai: alasanBatal },
+    ]);
+    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMembatalkan(true);
     try {
@@ -2552,12 +2675,12 @@ function PanelKartuStok({
 
   return (
     <div className="space-y-3">
-      <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <div>
           <label htmlFor="inv-kartu-barang" className={LABEL}>
             Barang
           </label>
-          <select
+          <PilihCari
             id="inv-kartu-barang"
             value={idBarang}
             onChange={(e) => setIdBarang(e.target.value)}
@@ -2569,13 +2692,13 @@ function PanelKartuStok({
                 {item.nama_barang} ({item.kode_barang})
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div>
           <label htmlFor="inv-kartu-tempat" className={LABEL}>
             Tempat
           </label>
-          <select
+          <PilihCari
             id="inv-kartu-tempat"
             value={tempat}
             onChange={(e) => setTempat(e.target.value)}
@@ -2587,7 +2710,7 @@ function PanelKartuStok({
                 {nama}
               </option>
             ))}
-          </select>
+          </PilihCari>
         </div>
         <div>
           <label htmlFor="inv-kartu-dari" className={LABEL}>
@@ -2614,6 +2737,23 @@ function PanelKartuStok({
             onChange={(e) => setSampai(e.target.value)}
             className={INPUT}
           />
+        </div>
+        <div>
+          <label htmlFor="inv-kartu-status" className={LABEL}>
+            Status
+          </label>
+          <select
+            id="inv-kartu-status"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as StatusKartu)}
+            className={INPUT}
+          >
+            <option value="semua">Semua ({kartu?.baris.length ?? 0})</option>
+            <option value="berhasil">
+              Berhasil ({(kartu?.baris.length ?? 0) - jumlahDibatalkan})
+            </option>
+            <option value="dibatalkan">Dibatalkan ({jumlahDibatalkan})</option>
+          </select>
         </div>
       </div>
 
@@ -2650,7 +2790,7 @@ function PanelKartuStok({
                   try {
                     const hasil = await eksporKartuStok(
                       barang,
-                      kartu,
+                      { ...kartu, baris: barisTampil },
                       dari,
                       sampai,
                     );
@@ -2668,13 +2808,17 @@ function PanelKartuStok({
               </button>
             </span>
           </div>
-          {kartu.baris.length === 0 ? (
+          {barisTampil.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-slate-400">
-              Tidak ada mutasi pada rentang tanggal ini.
+              {kartu.baris.length === 0
+                ? "Tidak ada mutasi pada rentang tanggal ini."
+                : status === "dibatalkan"
+                  ? "Tidak ada mutasi yang dibatalkan pada rentang tanggal ini."
+                  : "Semua mutasi pada rentang tanggal ini sudah dibatalkan."}
             </p>
           ) : (
             <ul className="divide-y divide-slate-800">
-              {kartu.baris.map((baris) => (
+              {barisTampil.map((baris) => (
                 <li
                   key={baris.id_mutasi}
                   className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between"

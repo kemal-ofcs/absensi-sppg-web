@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import {
   type BarangInventaris,
@@ -95,6 +96,11 @@ export function DialogKolomTambahan({
 
   const tambah = async (event: FormEvent) => {
     event.preventDefault();
+    const lanjut = await konfirmasiData([
+      { label: "Nama kolom", nilai: nama },
+      { label: "Tipe", nilai: tipe },
+    ]);
+    if (!lanjut) return;
     const ok = await simpan(
       { nama, tipe, is_aktif: true },
       `Kolom ${nama.trim()} ditambahkan.`,
@@ -242,12 +248,17 @@ function BarisKolom({
         <button
           type="button"
           disabled={nama.trim() === kolom.nama}
-          onClick={() =>
-            void onSimpan(
+          onClick={async () => {
+            const lanjut = await konfirmasiData([
+              { label: "Nama lama", nilai: kolom.nama },
+              { label: "Nama baru", nilai: nama },
+            ]);
+            if (!lanjut) return;
+            await onSimpan(
               { ...draft, nama, is_aktif: kolom.is_aktif },
               `Kolom ${kolom.nama} diganti menjadi ${nama.trim()}.`,
-            )
-          }
+            );
+          }}
           className={TOMBOL_KEDUA}
         >
           Simpan nama

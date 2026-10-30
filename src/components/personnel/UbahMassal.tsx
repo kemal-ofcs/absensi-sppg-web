@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PilihCari } from "@/components/ui/PilihCari";
 import {
   type KolomMassal,
   kalimatKonfirmasiMassal,
@@ -130,7 +131,7 @@ export function UbahMassal({
             Nilai baru
           </label>
           {aktif.opsi ? (
-            <select
+            <PilihCari
               id={`${id}-nilai`}
               className={INPUT}
               value={nilai}
@@ -146,7 +147,7 @@ export function UbahMassal({
                   {opsi.label}
                 </option>
               ))}
-            </select>
+            </PilihCari>
           ) : (
             <input
               id={`${id}-nilai`}

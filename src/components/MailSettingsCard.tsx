@@ -3,6 +3,7 @@
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { BRANDING } from "@/lib/constants/branding";
 import {
@@ -71,6 +72,15 @@ export function MailSettingsCard() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
+    const lanjut = await konfirmasiData([
+      { label: "Penyedia", nilai: MAIL_PROVIDER_LABEL[provider] },
+      { label: "Email pengirim", nilai: senderEmail },
+      { label: "Nama pengirim", nilai: senderName },
+      { label: "Alamat reset", nilai: resetBaseUrl },
+      { label: "Status", nilai: isActive ? "Aktif" : "Nonaktif" },
+      { label: "API key", nilai: apiKey ? "Diubah" : null },
+    ]);
+    if (!lanjut) return;
     setBusy(true);
     setFeedback(null);
     try {
