@@ -143,6 +143,14 @@ function routeIsActive(pathname: string, href: string) {
     : pathname === href || pathname.startsWith(`${href}/`);
 }
 
+function activeGroupLabel(pathname: string) {
+  return (
+    NAVIGATION_GROUPS.find((group) =>
+      group.items.some((item) => routeIsActive(pathname, item.href)),
+    )?.label ?? null
+  );
+}
+
 function NavigationLink({
   item,
   pathname,
@@ -184,6 +192,14 @@ export function HeaderBar({
   const companyName = useCompanyName();
   const [sidebarOverlayOpen, setSidebarOverlayOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // Satu grup terbuka sekaligus; pindah halaman membuka grup halaman itu.
+  const [openGroup, setOpenGroup] = useState<string | null>(() =>
+    activeGroupLabel(pathname),
+  );
+
+  useEffect(() => {
+    setOpenGroup(activeGroupLabel(pathname));
+  }, [pathname]);
 
   useEffect(() => {
     if (!sidebarOverlayOpen && !mobileMenuOpen) return;
@@ -332,23 +348,39 @@ export function HeaderBar({
         } ${sidebarPinned ? "xl:flex" : "xl:hidden"}`}
       >
         <nav aria-label="Navigasi utama">
-          {visibleGroups.map((group) => (
-            <div key={group.label} className="pt-3">
-              <p className="px-3 pb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                {group.label}
-              </p>
-              <div className="grid gap-0.5">
-                {group.items.map((item) => (
-                  <NavigationLink
-                    key={item.href}
-                    item={item}
-                    pathname={pathname}
-                    onNavigate={() => setSidebarOverlayOpen(false)}
+          {visibleGroups.map((group) => {
+            const open = openGroup === group.label;
+            const panelId = `sidebar-group-${group.label.replace(/\W+/g, "-").toLowerCase()}`;
+            return (
+              <div key={group.label} className="pt-2">
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  aria-controls={panelId}
+                  onClick={() => setOpenGroup(open ? null : group.label)}
+                  className="flex min-h-9 w-full items-center justify-between gap-2 rounded-xl px-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400 transition hover:bg-white/[0.05] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                >
+                  <span className="truncate">{group.label}</span>
+                  <Icon
+                    name="chevron-right"
+                    className={`size-3.5 shrink-0 transition-transform motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
                   />
-                ))}
+                </button>
+                {open ? (
+                  <div id={panelId} className="grid gap-0.5 pt-1">
+                    {group.items.map((item) => (
+                      <NavigationLink
+                        key={item.href}
+                        item={item}
+                        pathname={pathname}
+                        onNavigate={() => setSidebarOverlayOpen(false)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
       </aside>
 

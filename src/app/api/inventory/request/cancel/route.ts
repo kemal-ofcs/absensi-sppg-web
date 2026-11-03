@@ -38,6 +38,7 @@ export async function POST(request: NextRequest) {
       await cancelPengajuan(
         getServerDatabase(),
         actor.username,
+        actor.isSuperadmin,
         parsed.data.idPengajuan,
         parsed.data.alasan,
       ),

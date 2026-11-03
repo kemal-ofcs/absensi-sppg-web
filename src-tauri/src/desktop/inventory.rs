@@ -1906,7 +1906,7 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
                     "status_aktif": row.get::<_, i64>(10)? == 1,
                     "atribut": baca_atribut(row.get::<_, Option<String>>(11)?),
                     "desimal": row.get::<_, i64>(12)? == 1,
-                    // Satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama.
+                    // Tipe, satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama.
                     "punya_mutasi": row.get::<_, i64>(13)? == 1,
                 }),
             ))
@@ -2063,13 +2063,13 @@ pub(crate) fn save_item_tx(
 ) -> Result<(String, String), CommandError> {
     let valid = validate_barang(draft).map_err(invalid)?;
     let requested_id = clean(&draft.id_barang);
-    let existing: Option<(String, i64, i64)> = match requested_id.as_deref() {
+    let existing: Option<(String, i64, i64, String)> = match requested_id.as_deref() {
         Some(id) => Some(
             transaction
                 .query_row(
-                    "SELECT satuan, bisa_expired, desimal FROM inventory_barang WHERE id_barang = ?;",
+                    "SELECT satuan, bisa_expired, desimal, tipe FROM inventory_barang WHERE id_barang = ?;",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
                 .map_err(|_| CommandError::internal())?
@@ -2081,9 +2081,12 @@ pub(crate) fn save_item_tx(
         .or_else(|| id_baru.map(str::to_owned))
         .unwrap_or_else(|| new_hex_id("brg-"));
 
-    if let Some((satuan_lama, expired_lama, desimal_lama)) = existing {
-        // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
-        let berubah = satuan_lama != valid.satuan
+    if let Some((satuan_lama, expired_lama, desimal_lama, tipe_lama)) = existing {
+        // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100), dan
+        // tipe menentukan kondisi serta unit: stok Rusak Ringan sebuah aset
+        // tidak bisa dikeluarkan lagi bila barangnya menjadi Habis Pakai.
+        let berubah = tipe_lama != valid.tipe
+            || satuan_lama != valid.satuan
             || (expired_lama == 1) != valid.bisa_expired
             || (desimal_lama == 1) != valid.desimal;
         if berubah {
@@ -2096,7 +2099,7 @@ pub(crate) fn save_item_tx(
                 .map_err(|_| CommandError::internal())?;
             if punya_mutasi {
                 return Err(invalid(
-                    "Satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
+                    "Tipe, satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
                 ));
             }
         }
@@ -2678,13 +2681,15 @@ fn record_satu(
         (Some("Personil"), Some(id)) => {
             let nama: Option<String> = transaction
                 .query_row(
-                    "SELECT nama FROM master_data WHERE id_unik = ?;",
+                    "SELECT nama FROM master_data WHERE id_unik = ? AND status_aktif = 'Aktif';",
                     params![id],
                     |row| row.get(0),
                 )
                 .optional()
                 .map_err(|_| CommandError::internal())?;
-            valid.penerima_nama = Some(nama.ok_or_else(|| invalid("Penerima tidak ditemukan."))?);
+            valid.penerima_nama = Some(
+                nama.ok_or_else(|| invalid("Penerima tidak ditemukan atau sudah nonaktif."))?,
+            );
         }
         _ => {}
     }
@@ -4602,6 +4607,11 @@ fn payload_atribut(row: &Value) -> (Option<String>, bool) {
     }
 }
 
+/// Tipe, satuan, kedaluwarsa, dan desimal hanya ditimpa selama cloud belum
+/// punya mutasi barang itu. Perangkat offline yang belum menarik mutasi dari
+/// perangkat lain menganggap barangnya masih kosong dan membuka kuncinya;
+/// tanpa syarat ini 10 pcs di cloud terbaca 0,10 kg di semua perangkat.
+/// Perubahan yang kalah dilewati, tidak ditolak, dan tertimpa saat pull.
 pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
         stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at, atribut,
@@ -4611,16 +4621,21 @@ pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         kode_barang = excluded.kode_barang,
         nama_barang = excluded.nama_barang,
         kategori = excluded.kategori,
-        tipe = excluded.tipe,
-        satuan = excluded.satuan,
-        bisa_expired = excluded.bisa_expired,
+        tipe = CASE WHEN EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang)
+            THEN inventory_barang.tipe ELSE excluded.tipe END,
+        satuan = CASE WHEN EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang)
+            THEN inventory_barang.satuan ELSE excluded.satuan END,
+        bisa_expired = CASE WHEN EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang)
+            THEN inventory_barang.bisa_expired ELSE excluded.bisa_expired END,
         stok_minimum = excluded.stok_minimum,
         tempat_utama = excluded.tempat_utama,
         catatan = excluded.catatan,
         status_aktif = excluded.status_aktif,
         updated_at = excluded.updated_at,
         atribut = CASE WHEN ? = 1 THEN excluded.atribut ELSE inventory_barang.atribut END,
-        desimal = CASE WHEN ? = 1 THEN excluded.desimal ELSE inventory_barang.desimal END;";
+        desimal = CASE WHEN ? = 1
+                AND NOT EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang)
+            THEN excluded.desimal ELSE inventory_barang.desimal END;";
 
 /// Nilai kolom `inventory_kolom` dari payload event. Tipe tidak ikut
 /// diperbarui: tipe terkunci sejak kolom dibuat.
@@ -5627,6 +5642,61 @@ mod tests {
         );
     }
 
+    // Perangkat offline yang belum menarik mutasi bisa membuka kunci barang di
+    // SQLite-nya sendiri; cloud yang sudah punya mutasi tetap memegang nilainya.
+    #[test]
+    fn cloud_upsert_keeps_locked_fields_once_cloud_has_mutations() {
+        let (_directory, state) = setup_state();
+        let baru = |nama: &str| {
+            save_item(
+                &state,
+                json!({"nama_barang": nama, "tipe": "Habis Pakai", "satuan": "pcs", "tempat_utama": "Gudang"}),
+            )
+            .unwrap()["id_barang"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let bermutasi = baru("Spidol");
+        let kosong = baru("Map");
+        record_mutation(
+            &state,
+            "admin",
+            json!({"id_barang": bermutasi, "jenis": "Masuk", "alasan": "Saldo Awal", "jumlah": 10, "tempat_tujuan": "Gudang"}),
+        )
+        .unwrap();
+        let connection = storage::database(&state.data_dir).unwrap();
+        let dorong = |id: &str| {
+            let mut payload = barang_json(&connection, id).unwrap().unwrap();
+            payload["satuan"] = json!("kg");
+            payload["desimal"] = json!(1);
+            payload["bisa_expired"] = json!(1);
+            payload["nama_barang"] = json!("Diubah");
+            let args: Vec<rusqlite::types::Value> = cloud_item_values(&payload, id)
+                .unwrap()
+                .into_iter()
+                .map(|v| match v {
+                    Value::Null => rusqlite::types::Value::Null,
+                    Value::Number(n) => rusqlite::types::Value::Integer(n.as_i64().unwrap()),
+                    Value::String(s) => rusqlite::types::Value::Text(s),
+                    other => rusqlite::types::Value::Text(other.to_string()),
+                })
+                .collect();
+            connection
+                .execute(CLOUD_UPSERT_ITEM_SQL, rusqlite::params_from_iter(args))
+                .unwrap();
+            connection
+                .query_row(
+                    "SELECT nama_barang, satuan, desimal, bisa_expired FROM inventory_barang WHERE id_barang = ?;",
+                    params![id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(dorong(&bermutasi), ("Diubah".into(), "pcs".into(), 0, 0));
+        assert_eq!(dorong(&kosong), ("Diubah".into(), "kg".into(), 1, 1));
+    }
+
     // Barang desimal: jumlah ×100 terkunci sejak mutasi pertama, nilai
     // pengadaan dibulatkan per baris. Kembar `services/inventory.test.ts`.
     #[test]
@@ -5668,7 +5738,11 @@ mod tests {
         assert!(simpan(json!({"id_barang": id_barang, "desimal": false}))
             .unwrap_err()
             .message
-            .starts_with("Satuan, desimal, dan pengaturan kedaluwarsa"));
+            .starts_with("Tipe, satuan, desimal, dan pengaturan kedaluwarsa"));
+        assert!(simpan(json!({"id_barang": id_barang, "tipe": "Aset", "desimal": false}))
+            .unwrap_err()
+            .message
+            .starts_with("Tipe, satuan, desimal, dan pengaturan kedaluwarsa"));
         assert_eq!(
             simpan(json!({"tipe": "Aset"})).unwrap_err().message,
             "Jumlah desimal hanya untuk barang Habis Pakai."
@@ -6581,7 +6655,7 @@ mod tests {
         .unwrap_err();
         assert!(error
             .message
-            .starts_with("Satuan, desimal, dan pengaturan kedaluwarsa"));
+            .starts_with("Tipe, satuan, desimal, dan pengaturan kedaluwarsa"));
     }
 
     #[test]

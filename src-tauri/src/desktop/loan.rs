@@ -205,6 +205,66 @@ pub fn validate_pelunasan(jumlah: i64, sisa: i64) -> Result<i64, String> {
     Ok(jumlah)
 }
 
+/// Cermin `PESAN_POTONGAN_TERTUNDA`.
+pub const PESAN_POTONGAN_TERTUNDA: &str =
+    "Kasbon ini masih dipotong di proses gaji yang belum dibayar. Tolak proses gaji itu dulu.";
+
+/// Cermin `KasbonTercatat`: kasbon menurut database saat proses gaji dibayar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KasbonTercatat {
+    pub status: String,
+    pub nama: String,
+    /// Pokok − angsuran dan pelunasan yang sudah tercatat.
+    pub sisa: i64,
+}
+
+/// Cermin `periksaPotonganPayroll`. Potongan kasbon di slip dibekukan saat
+/// proses gaji DIBUAT. Sebelum dibayar, kasbonnya bisa dibatalkan atau
+/// jatahnya diambil proses gaji lain (proses yang ditolak lalu dibuka lagi).
+/// Mencatat angsuran untuk kasbon seperti itu memotong gaji untuk utang yang
+/// tidak ada dan membuat Piutang Karyawan minus.
+pub fn periksa_potongan_payroll(
+    potongan: &[(String, i64)],
+    pinjaman: &HashMap<String, KasbonTercatat>,
+) -> Result<(), String> {
+    let mut total: HashMap<&str, i64> = HashMap::new();
+    for (id_pinjaman, jumlah) in potongan {
+        let Some(kasbon) = pinjaman
+            .get(id_pinjaman)
+            .filter(|kasbon| kasbon.status == "Disetujui")
+        else {
+            let nama = pinjaman
+                .get(id_pinjaman)
+                .map_or(id_pinjaman.as_str(), |kasbon| kasbon.nama.as_str());
+            return Err(format!(
+                "Kasbon {nama} sudah tidak aktif. Tolak proses gaji ini lalu buat ulang."
+            ));
+        };
+        let jalan = total.entry(id_pinjaman.as_str()).or_insert(0);
+        *jalan += jumlah;
+        if *jalan > kasbon.sisa {
+            return Err(format!(
+                "Potongan kasbon {} melebihi sisa pinjamannya {}. Tolak proses gaji ini lalu buat ulang.",
+                kasbon.nama,
+                accounting::format_rupiah(kasbon.sisa.max(0))
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Cermin `KASBON_TERCATAT_SQL`: status dan sisa kasbon tanpa angsuran milik
+/// proses gaji yang sedang dibayar. Parameter: id proses gaji, id pinjaman.
+const KASBON_TERCATAT_SQL: &str = "SELECT p.status, p.nama_karyawan,
+        p.pokok - COALESCE((
+          SELECT SUM(m.jumlah) FROM keu_pinjaman_mutasi m
+          WHERE m.id_pinjaman = p.id_pinjaman
+            AND m.jenis IN ('Angsuran Gaji', 'Pelunasan Tunai')
+            AND (m.id_ref IS NULL OR m.id_ref NOT IN
+                 (SELECT i.id FROM payroll_items i WHERE i.payroll_run_id = ?1))
+        ), 0) AS sisa
+     FROM keu_pinjaman p WHERE p.id_pinjaman = ?2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinjamanAktif {
     pub id_pinjaman: String,
@@ -756,6 +816,18 @@ pub fn decide_loan(
         )
         .map_err(db_error)?;
     let status_baru = aturan_keputusan(&status, aksi, ada_angsuran).map_err(invalid)?;
+    if aksi == "batalkan" {
+        let tertunda: i64 = transaction
+            .query_row(
+                &format!("SELECT {PENDING_SQL} FROM keu_pinjaman p WHERE p.id_pinjaman = ?;"),
+                params![id_pinjaman],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if tertunda > 0 {
+            return Err(invalid(PESAN_POTONGAN_TERTUNDA));
+        }
+    }
     let tanggal = hari_ini(&transaction)?;
 
     match aksi {
@@ -1088,6 +1160,7 @@ pub fn catat_pembayaran_payroll_tx(
     let tanggal = hari_ini(transaction)?;
     let id_jurnal = id_jurnal_payroll(run_id);
     let mut items = Vec::with_capacity(rows.len());
+    let mut per_item: Vec<(String, Vec<(String, i64)>)> = Vec::with_capacity(rows.len());
     for (id_item, gross, net, pph21, bpjs_k, bpjs_p, breakdown) in rows {
         let kasbon: Vec<(String, i64)> = serde_json::from_str::<Value>(&breakdown)
             .ok()
@@ -1101,20 +1174,6 @@ pub fn catat_pembayaran_payroll_tx(
                 ))
             })
             .collect();
-        for (id_pinjaman, jumlah) in &kasbon {
-            catat_mutasi_tx(
-                transaction,
-                client_id,
-                &id_angsuran_gaji(&id_item, id_pinjaman),
-                id_pinjaman,
-                "Angsuran Gaji",
-                *jumlah,
-                &tanggal,
-                Some(&id_item),
-                Some(&id_jurnal),
-                operator,
-            )?;
-        }
         items.push(ItemPayroll {
             gross,
             net,
@@ -1123,6 +1182,48 @@ pub fn catat_pembayaran_payroll_tx(
             bpjs_perusahaan: bpjs_p,
             kasbon: kasbon.iter().map(|(_, jumlah)| jumlah).sum(),
         });
+        per_item.push((id_item, kasbon));
+    }
+
+    let potongan: Vec<(String, i64)> = per_item
+        .iter()
+        .flat_map(|(_, kasbon)| kasbon.iter().cloned())
+        .collect();
+    let mut tercatat: HashMap<String, KasbonTercatat> = HashMap::new();
+    for (id_pinjaman, _) in &potongan {
+        if tercatat.contains_key(id_pinjaman) {
+            continue;
+        }
+        let kasbon = transaction
+            .query_row(KASBON_TERCATAT_SQL, params![run_id, id_pinjaman], |row| {
+                Ok(KasbonTercatat {
+                    status: row.get(0)?,
+                    nama: row.get(1)?,
+                    sisa: row.get(2)?,
+                })
+            })
+            .optional()
+            .map_err(db_error)?;
+        if let Some(kasbon) = kasbon {
+            tercatat.insert(id_pinjaman.clone(), kasbon);
+        }
+    }
+    periksa_potongan_payroll(&potongan, &tercatat).map_err(invalid)?;
+    for (id_item, kasbon) in &per_item {
+        for (id_pinjaman, jumlah) in kasbon {
+            catat_mutasi_tx(
+                transaction,
+                client_id,
+                &id_angsuran_gaji(id_item, id_pinjaman),
+                id_pinjaman,
+                "Angsuran Gaji",
+                *jumlah,
+                &tanggal,
+                Some(id_item.as_str()),
+                Some(&id_jurnal),
+                operator,
+            )?;
+        }
     }
 
     let baris: Vec<BarisTulis> = susun_jurnal_payroll(&items, id_akun_bayar)
@@ -1167,6 +1268,10 @@ fn payload_text(row: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Keputusan yang pertama sampai di cloud berlaku: Ditolak dan Dibatalkan
+/// final, Disetujui hanya bisa menjadi Dibatalkan. Tanpa `WHERE` ini suntingan
+/// pengajuan dari perangkat yang offline memundurkan kasbon yang sudah cair
+/// menjadi Diajukan, lalu bisa ditolak padahal uangnya sudah keluar.
 pub const CLOUD_UPSERT_LOAN_SQL: &str = "INSERT INTO keu_pinjaman (
         id_pinjaman, id_karyawan, nama_karyawan, pokok, cicilan, mulai_potong, keterangan,
         status, tanggal_pengajuan, diajukan_oleh, diputuskan_oleh, tanggal_cair, id_akun_kas,
@@ -1183,7 +1288,9 @@ pub const CLOUD_UPSERT_LOAN_SQL: &str = "INSERT INTO keu_pinjaman (
         diputuskan_oleh = excluded.diputuskan_oleh,
         tanggal_cair = excluded.tanggal_cair,
         id_akun_kas = excluded.id_akun_kas,
-        updated_at = excluded.updated_at;";
+        updated_at = excluded.updated_at
+    WHERE keu_pinjaman.status = 'Diajukan'
+       OR (keu_pinjaman.status = 'Disetujui' AND excluded.status = 'Dibatalkan');";
 
 /// Nilai `keu_pinjaman` dari payload `loan/save`. Bentuk cacat dilewati,
 /// tidak pernah ditolak: menolak mengunci outbox (prinsip 5.3).
@@ -1392,6 +1499,37 @@ mod tests {
             Err("Jumlah pelunasan melebihi sisa pinjaman Rp0.".into())
         );
         assert_eq!(validate_pelunasan(100, 100), Ok(100));
+    }
+
+    #[test]
+    fn potongan_payroll() {
+        let tercatat = HashMap::from([
+            (
+                "a".to_owned(),
+                KasbonTercatat { status: "Disetujui".into(), nama: "Budi".into(), sisa: 500 },
+            ),
+            (
+                "b".to_owned(),
+                KasbonTercatat { status: "Dibatalkan".into(), nama: "Sari".into(), sisa: 0 },
+            ),
+        ]);
+        let p = |items: &[(&str, i64)]| -> Vec<(String, i64)> {
+            items.iter().map(|(id, n)| ((*id).to_owned(), *n)).collect()
+        };
+        assert_eq!(periksa_potongan_payroll(&p(&[("a", 300), ("a", 200)]), &tercatat), Ok(()));
+        assert_eq!(
+            periksa_potongan_payroll(&p(&[("b", 1)]), &tercatat),
+            Err("Kasbon Sari sudah tidak aktif. Tolak proses gaji ini lalu buat ulang.".into())
+        );
+        assert_eq!(
+            periksa_potongan_payroll(&p(&[("x", 1)]), &tercatat),
+            Err("Kasbon x sudah tidak aktif. Tolak proses gaji ini lalu buat ulang.".into())
+        );
+        assert_eq!(
+            periksa_potongan_payroll(&p(&[("a", 300), ("a", 201)]), &tercatat),
+            Err("Potongan kasbon Budi melebihi sisa pinjamannya Rp500. Tolak proses gaji ini lalu buat ulang."
+                .into())
+        );
     }
 
     fn aktif() -> Vec<PinjamanAktif> {

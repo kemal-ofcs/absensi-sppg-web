@@ -502,6 +502,7 @@ export function InventarisWorkspace({
         ) : tab === "opname" ? (
           <PanelOpname
             data={data}
+            idPengguna={user?.id ?? 0}
             isSubmittingRef={isSubmittingRef}
             onSelesai={selesai}
             onGalat={galat}
@@ -1359,6 +1360,10 @@ function FormBarang({
               id="inv-tipe"
               value={tipe}
               onChange={(e) => setTipe(e.target.value)}
+              disabled={desimalTerkunci}
+              aria-describedby={
+                desimalTerkunci ? "inv-tipe-terkunci" : undefined
+              }
               className={INPUT}
             >
               {TIPE_BARANG.map((nilai) => (
@@ -1367,6 +1372,11 @@ function FormBarang({
                 </option>
               ))}
             </select>
+            {desimalTerkunci ? (
+              <p id="inv-tipe-terkunci" className="mt-1 text-xs text-slate-400">
+                Terkunci karena barang ini sudah punya riwayat mutasi.
+              </p>
+            ) : null}
           </div>
           <div>
             <label htmlFor="inv-satuan" className={LABEL}>

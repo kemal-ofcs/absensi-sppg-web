@@ -2635,6 +2635,7 @@ mod tests {
         let id = pgj::save_request(
             &state,
             "pengaju",
+            false,
             json!({"tanggal": hari, "keperluan": "Laptop staf", "cara_bayar": "Cicilan", "cicilan": syarat,
                 "baris": [{"nama_barang": "Laptop", "satuan": "unit", "jumlah": 1, "harga_satuan": 12_000_000}]}),
         )

@@ -2526,7 +2526,7 @@ pub fn desktop_inventory_request_save(
     draft: Value,
 ) -> Result<Value, CommandError> {
     let operator = require_permission(&state, "inventory.record")?;
-    inventory_pengajuan::save_request(&state, &operator.username, draft)
+    inventory_pengajuan::save_request(&state, &operator.username, operator.is_superadmin, draft)
 }
 
 /// Membatalkan pengajuan yang masih Menunggu.
@@ -2537,7 +2537,7 @@ pub fn desktop_inventory_request_cancel(
     alasan: String,
 ) -> Result<Value, CommandError> {
     let operator = require_permission(&state, "inventory.record")?;
-    inventory_pengajuan::cancel_request(&state, &operator.username, &id_pengajuan, &alasan)
+    inventory_pengajuan::cancel_request(&state, &operator.username, operator.is_superadmin, &id_pengajuan, &alasan)
 }
 
 /// Menutup pengajuan yang sisanya tidak akan datang.

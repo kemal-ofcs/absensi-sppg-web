@@ -6,9 +6,24 @@ import { Modal } from "@/components/ui/Modal";
 import { createQrPng } from "@/lib/client/qr-code";
 import { createQrReleaseGate } from "@/lib/client/qr-release-gate";
 import type { BarangInventaris } from "@/lib/gateways/inventory";
-import { isiLabelInventaris } from "@/lib/validations/inventory";
+import {
+  formatJumlah,
+  isiLabelDus,
+  isiLabelInventaris,
+  jumlahDariKetikan,
+  jumlahLabelDus,
+  rencanaLabelDus,
+} from "@/lib/validations/inventory";
 import { cetakLabelBarang, LABEL_PER_LEMBAR } from "./beritaAcara";
-import { INPUT, LABEL, pesanGalat, TOMBOL_KEDUA, TOMBOL_UTAMA } from "./gaya";
+import {
+  angka,
+  INPUT,
+  isianJumlah,
+  LABEL,
+  pesanGalat,
+  TOMBOL_KEDUA,
+  TOMBOL_UTAMA,
+} from "./gaya";
 
 /**
  * Label yang sama baru dihitung lagi setelah lepas dari kamera selama ini.
@@ -18,6 +33,17 @@ import { INPUT, LABEL, pesanGalat, TOMBOL_KEDUA, TOMBOL_UTAMA } from "./gaya";
 const JEDA_LABEL_MS = 800;
 export const MAKS_LABEL_PER_BARANG = 500;
 const MAKS_LABEL_TOTAL = 2000;
+const ID_KETIK_PINDAI = "inv-pindai-ketik";
+
+/**
+ * Pemindai USB mengetik ke elemen yang sedang fokus. Di perangkat sentuh fokus
+ * dilewati karena memunculkan papan ketik yang menutupi kamera.
+ */
+export function fokusKolomPindai() {
+  if (window.matchMedia("(pointer: fine)").matches) {
+    document.getElementById(ID_KETIK_PINDAI)?.focus();
+  }
+}
 
 /**
  * Kamera + kolom ketik. Kolom itu juga melayani pemindai QR USB, yang
@@ -77,6 +103,13 @@ export function PemindaiLabel({
     };
   }, []);
 
+  // Sesudah efek `useDialogFocus` milik Modal, supaya fokus tetap dipulangkan
+  // ke tombol pembuka saat dialog ditutup.
+  useEffect(() => {
+    const jeda = setTimeout(fokusKolomPindai, 0);
+    return () => clearTimeout(jeda);
+  }, []);
+
   const kirimKetikan = () => {
     if (!ketik.trim()) return;
     onPindaiRef.current(ketik);
@@ -100,12 +133,12 @@ export function PemindaiLabel({
         />
       )}
       <div>
-        <label htmlFor="inv-pindai-ketik" className={LABEL}>
+        <label htmlFor={ID_KETIK_PINDAI} className={LABEL}>
           Pindai dengan pemindai USB atau ketik kode barang
         </label>
         <div className="flex gap-2">
           <input
-            id="inv-pindai-ketik"
+            id={ID_KETIK_PINDAI}
             value={ketik}
             onChange={(e) => setKetik(e.target.value)}
             onKeyDown={(e) => {
@@ -153,6 +186,36 @@ function jumlahBawaan(
   return String(barang.tipe === "Aset" ? Math.max(barang.stok_total, 1) : 1);
 }
 
+/** Dus tidak menunjuk batch atau unit, jadi barang jenis itu tidak mendapatkannya. */
+function bisaPerDus(barang: BarangInventaris): boolean {
+  return !barang.dilacak_unit && !barang.bisa_expired;
+}
+
+/** Isian "Per dus" dibaca jadi jumlah tersimpan, atau pesan galatnya. */
+function bacaIsianDus(
+  barang: BarangInventaris,
+  isian: { jumlah: string; isi: string },
+): { jumlah: number; isi: number } | string {
+  const jumlah = jumlahDariKetikan(isian.jumlah, barang.desimal);
+  const isi = jumlahDariKetikan(isian.isi, barang.desimal);
+  if (!jumlah || !isi) {
+    return `Jumlah barang dan isi per label ${barang.nama_barang} harus angka lebih dari 0.`;
+  }
+  if (isi > jumlah) {
+    return `Isi per label ${barang.nama_barang} tidak boleh melebihi jumlah barangnya.`;
+  }
+  if (jumlahLabelDus(jumlah, isi) > MAKS_LABEL_PER_BARANG) {
+    return `${barang.nama_barang} membutuhkan lebih dari ${MAKS_LABEL_PER_BARANG} label. Besarkan isi per label.`;
+  }
+  return { jumlah, isi };
+}
+
+/** Kode sekali cetak. `getRandomValues` juga ada di Web lewat HTTP biasa. */
+function kodeCetakBaru(): string {
+  const [acak = 0] = crypto.getRandomValues(new Uint16Array(1));
+  return acak.toString(16).toUpperCase().padStart(4, "0");
+}
+
 /** Pilih barang dan jumlah label, lalu cetak A4 lewat dialog cetak. */
 export function DialogLabel({
   barang,
@@ -173,6 +236,10 @@ export function DialogLabel({
   const [pilihan, setPilihan] = useState<Record<string, string>>(
     () => awal ?? {},
   );
+  // Barang yang labelnya "Per dus" -> isiannya (teks berformat Indonesia).
+  const [perDus, setPerDus] = useState<
+    Record<string, { jumlah: string; isi: string }>
+  >({});
   const [galat, setGalat] = useState<string | null>(null);
   const [menyiapkan, setMenyiapkan] = useState(false);
 
@@ -180,11 +247,26 @@ export function DialogLabel({
     () => barang.filter((b) => pilihan[b.id_barang] !== undefined),
     [barang, pilihan],
   );
-  const total = terpilih.reduce(
-    (jumlah, b) => jumlah + (Number(pilihan[b.id_barang]) || 0),
-    0,
-  );
+  const labelBarang = (b: BarangInventaris): number => {
+    const isian = perDus[b.id_barang];
+    if (!isian) return Number(pilihan[b.id_barang]) || 0;
+    const dus = bacaIsianDus(b, isian);
+    return typeof dus === "string" ? 0 : jumlahLabelDus(dus.jumlah, dus.isi);
+  };
+  const total = terpilih.reduce((jumlah, b) => jumlah + labelBarang(b), 0);
   const semua = barang.length > 0 && terpilih.length === barang.length;
+
+  const gantiCara = (b: BarangInventaris, keDus: boolean) => {
+    const berikut = { ...perDus };
+    if (keDus) {
+      // Bawaan satu label untuk seluruh stok; isi per label diketik petugas.
+      const stok = b.stok_total > 0 ? angka(b.stok_total, b.desimal) : "";
+      berikut[b.id_barang] = { jumlah: stok, isi: stok };
+    } else {
+      delete berikut[b.id_barang];
+    }
+    setPerDus(berikut);
+  };
 
   const pilihSemua = (nilai: boolean) => {
     setPilihan(
@@ -197,8 +279,16 @@ export function DialogLabel({
   };
 
   const cetak = async () => {
+    for (const b of terpilih) {
+      const isian = perDus[b.id_barang];
+      const dus = isian ? bacaIsianDus(b, isian) : null;
+      if (typeof dus === "string") {
+        setGalat(dus);
+        return;
+      }
+    }
     const tidakSah = terpilih.find((b) => {
-      if (b.dilacak_unit) return false;
+      if (b.dilacak_unit || perDus[b.id_barang]) return false;
       const n = Number(pilihan[b.id_barang]);
       return !Number.isInteger(n) || n < 1 || n > MAKS_LABEL_PER_BARANG;
     });
@@ -217,9 +307,30 @@ export function DialogLabel({
     setMenyiapkan(true);
     setGalat(null);
     try {
+      const kodeCetak = kodeCetakBaru();
+      const labelDus = (
+        b: BarangInventaris,
+        isian: { jumlah: string; isi: string },
+      ) => {
+        const dus = bacaIsianDus(b, isian);
+        if (typeof dus === "string") throw new Error(dus);
+        return rencanaLabelDus(dus.jumlah, dus.isi).map(async (label) => ({
+          nama_barang: b.nama_barang,
+          kode_barang: b.kode_barang,
+          qr: await createQrPng(
+            isiLabelDus(b.id_barang, label.isi, kodeCetak, label.nomor),
+            256,
+          ),
+          jumlah: 1,
+          isi: `Isi ${formatJumlah(label.isi, b.desimal)} ${b.satuan}`,
+          dus: `Box ${label.nomor}/${label.total} · ${kodeCetak}`,
+        }));
+      };
       const daftar = await Promise.all(
-        terpilih.flatMap((b) =>
-          b.dilacak_unit
+        terpilih.flatMap((b) => {
+          const isian = perDus[b.id_barang];
+          if (isian) return labelDus(b, isian);
+          return b.dilacak_unit
             ? unitDicetak(b, unitTerpilih).map(async (unit) => ({
                 nama_barang: b.nama_barang,
                 kode_barang: unit.nomor_seri
@@ -238,8 +349,8 @@ export function DialogLabel({
                   qr: await createQrPng(isiLabelInventaris(b.id_barang), 256),
                   jumlah: Number(pilihan[b.id_barang]),
                 }))(),
-              ],
-        ),
+              ];
+        }),
       );
       cetakLabelBarang(daftar, namaPerusahaan);
     } catch (error) {
@@ -261,7 +372,8 @@ export function DialogLabel({
           Satu lembar A4 memuat {LABEL_PER_LEMBAR} label 64 × 33 mm. Saat
           mencetak, pilih skala 100% ("Ukuran sebenarnya") supaya QR tetap
           terbaca. Barang yang dicatat per unit mendapat satu label untuk setiap
-          unitnya; barang lain memakai satu QR untuk semua unitnya.
+          unitnya; barang lain memakai satu QR untuk semua unitnya, atau label
+          "Per box" yang langsung terhitung sesuai isinya saat opname.
         </p>
         {barang.length === 0 ? (
           <p className="text-sm text-slate-400">
@@ -281,6 +393,7 @@ export function DialogLabel({
             <ul className="max-h-[50vh] overflow-y-auto divide-y divide-slate-800 rounded-xl border border-slate-800">
               {barang.map((b) => {
                 const dipilih = pilihan[b.id_barang] !== undefined;
+                const isian = perDus[b.id_barang];
                 return (
                   <li
                     key={b.id_barang}
@@ -315,7 +428,7 @@ export function DialogLabel({
                       <span className="text-sm text-slate-400">
                         {pilihan[b.id_barang]} unit
                       </span>
-                    ) : dipilih ? (
+                    ) : dipilih && !isian ? (
                       <input
                         type="number"
                         min={1}
@@ -332,6 +445,78 @@ export function DialogLabel({
                         }
                         className={`${INPUT} w-24`}
                       />
+                    ) : null}
+                    {dipilih && bisaPerDus(b) ? (
+                      <div className="w-full space-y-2">
+                        <select
+                          aria-label={`Cara label ${b.nama_barang}`}
+                          value={isian ? "dus" : "satu"}
+                          onChange={(e) =>
+                            gantiCara(b, e.target.value === "dus")
+                          }
+                          className={INPUT}
+                        >
+                          <option value="satu">Satu QR untuk semua</option>
+                          <option value="dus">Per box</option>
+                        </select>
+                        {isian ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label
+                                htmlFor={`inv-dus-jumlah-${b.id_barang}`}
+                                className={LABEL}
+                              >
+                                Jumlah barang ({b.satuan})
+                              </label>
+                              <input
+                                id={`inv-dus-jumlah-${b.id_barang}`}
+                                {...isianJumlah(b.desimal)}
+                                value={isian.jumlah}
+                                onChange={(e) =>
+                                  setPerDus({
+                                    ...perDus,
+                                    [b.id_barang]: {
+                                      jumlah: e.target.value,
+                                      // Isi yang belum diubah mengikuti jumlahnya.
+                                      isi:
+                                        isian.isi === isian.jumlah
+                                          ? e.target.value
+                                          : isian.isi,
+                                    },
+                                  })
+                                }
+                                className={INPUT}
+                              />
+                            </div>
+                            <div>
+                              <label
+                                htmlFor={`inv-dus-isi-${b.id_barang}`}
+                                className={LABEL}
+                              >
+                                Isi per label ({b.satuan})
+                              </label>
+                              <input
+                                id={`inv-dus-isi-${b.id_barang}`}
+                                {...isianJumlah(b.desimal)}
+                                value={isian.isi}
+                                onChange={(e) =>
+                                  setPerDus({
+                                    ...perDus,
+                                    [b.id_barang]: {
+                                      ...isian,
+                                      isi: e.target.value,
+                                    },
+                                  })
+                                }
+                                className={INPUT}
+                              />
+                            </div>
+                            <p className="col-span-2 text-xs text-slate-400">
+                              {labelBarang(b)} label
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                   </li>
                 );

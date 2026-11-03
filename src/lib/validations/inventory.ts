@@ -839,7 +839,7 @@ export interface BarangInventaris {
   bisa_expired: boolean;
   /** Setiap jumlah barang ini (saldo, stok minimum, mutasi) bernilai ×100. */
   desimal: boolean;
-  /** Satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama. */
+  /** Tipe, satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama. */
   punya_mutasi: boolean;
   stok_minimum: number;
   tempat_utama: string | null;
@@ -1044,6 +1044,49 @@ export function isiLabelInventaris(idBarang: string): string {
 }
 
 /**
+ * Isi QR label dus: `INV:<id_barang>#<isi>#<kode cetak>-<nomor>`. Isi ikut di
+ * QR supaya tidak butuh tabel kemasan, dan tersimpan apa adanya (barang desimal
+ * ×100). Kode cetak acak per sekali cetak: tanpa itu "Dus 7" dari cetakan baru
+ * ditolak sebagai dus yang sudah terhitung.
+ */
+export function isiLabelDus(
+  idBarang: string,
+  isi: number,
+  kodeCetak: string,
+  nomor: number,
+): string {
+  return `${AWALAN_LABEL_INVENTARIS}${idBarang}#${isi}#${kodeCetak}-${nomor}`;
+}
+
+const POLA_LABEL_DUS =
+  /^(.+)#([1-9]\d{0,11})#([0-9A-Za-z]{1,8})-([1-9]\d{0,5})$/;
+
+export interface LabelDus {
+  isi: number;
+  kode: string;
+  nomor: number;
+  /** Penanda dus di satu opname. Isi tidak ikut: dusnya tetap dus yang sama. */
+  kunci: string;
+}
+
+export function jumlahLabelDus(jumlah: number, isi: number): number {
+  return Math.ceil(jumlah / isi);
+}
+
+/** 3050 isi 100 = 30 label isi 100 dan 1 label isi 50. */
+export function rencanaLabelDus(
+  jumlah: number,
+  isi: number,
+): { isi: number; nomor: number; total: number }[] {
+  const total = jumlahLabelDus(jumlah, isi);
+  return Array.from({ length: total }, (_, index) => ({
+    isi: index === total - 1 ? jumlah - isi * (total - 1) : isi,
+    nomor: index + 1,
+    total,
+  }));
+}
+
+/**
  * Baca hasil pindai label, atau kode barang/kode unit yang diketik sebagai
  * cadangan (pemindai USB pun mengetik isinya lalu Enter). Label unit berisi
  * `INV:<id_unit>`; unit dicari di posisi barang, jadi unit yang saldonya 0
@@ -1058,7 +1101,7 @@ export function bacaLabelInventaris<
 >(
   teks: string,
   barang: readonly B[],
-): Hasil<{ barang: B; id_unit: string | null }> {
+): Hasil<{ barang: B; id_unit: string | null; dus?: LabelDus }> {
   const bersih = teks.trim();
   if (!bersih) {
     return { ok: false, error: "Pindai label atau ketik kode barang." };
@@ -1081,6 +1124,25 @@ export function bacaLabelInventaris<
     const id = bersih.slice(AWALAN_LABEL_INVENTARIS.length).trim();
     const cocok = barang.find((b) => b.id_barang === id);
     if (cocok) return { ok: true, value: { barang: cocok, id_unit: null } };
+    const dus = POLA_LABEL_DUS.exec(id);
+    const milikDus = dus && barang.find((b) => b.id_barang === dus[1]);
+    if (dus && milikDus) {
+      const kode = dus[3] as string;
+      const nomor = Number(dus[4]);
+      return {
+        ok: true,
+        value: {
+          barang: milikDus,
+          id_unit: null,
+          dus: {
+            isi: Number(dus[2]),
+            kode,
+            nomor,
+            kunci: `${milikDus.id_barang}#${kode}-${nomor}`,
+          },
+        },
+      };
+    }
     const unit = unitDengan((p) => p.id_batch === id);
     return unit
       ? { ok: true, value: unit }
@@ -1120,6 +1182,10 @@ export function bacaLabelInventaris<
  *   lain tidak dipindahkan diam-diam; petugas mencatat Pindah dengan sadar.
  * - Label barang dari barang yang dicatat per unit: ditolak, karena tidak
  *   menunjuk unit mana.
+ * - Label dus: menambah sesuai isinya, pindaian pertama memulai dari isi itu,
+ *   dan dus yang sudah terhitung ditolak. Tidak ada barisnya di tempat ini:
+ *   tetap dihitung, karena layar cek ulang menandainya di luar catatan.
+ *   Barang berkedaluwarsa mengabaikan isi dus karena dus tidak menunjuk batch.
  * Baris yang tidak pernah dipindai tidak disentuh, jadi tetap sesuai sistem.
  */
 export type AksiPindaiOpname =
@@ -1128,7 +1194,9 @@ export type AksiPindaiOpname =
   | { jenis: "baru" }
   | { jenis: "unit"; kunci: string; sudah: boolean }
   | { jenis: "unit-lain" }
-  | { jenis: "pakai-label-unit" };
+  | { jenis: "pakai-label-unit" }
+  | { jenis: "dus-ganda" }
+  | { jenis: "dus-baru"; fisik: number };
 
 export function aksiPindaiOpname(
   baris: readonly {
@@ -1139,8 +1207,16 @@ export function aksiPindaiOpname(
     fisik: string;
     dipindai: boolean;
   }[],
-  barang: { id_barang: string; tipe: TipeBarang; dilacak_unit?: boolean },
+  barang: {
+    id_barang: string;
+    tipe: TipeBarang;
+    dilacak_unit?: boolean;
+    bisa_expired?: boolean;
+    desimal?: boolean;
+  },
   idUnit: string | null = null,
+  dus: { isi: number; kunci: string } | null = null,
+  dusTerhitung: ReadonlySet<string> = new Set(),
 ): AksiPindaiOpname {
   if (idUnit !== null) {
     const baris_unit = baris.find((b) => b.id_batch === idUnit);
@@ -1150,6 +1226,19 @@ export function aksiPindaiOpname(
   }
   if (barang.dilacak_unit) return { jenis: "pakai-label-unit" };
   const milik = baris.filter((b) => b.barang.id_barang === barang.id_barang);
+  if (dus && !barang.bisa_expired) {
+    if (dusTerhitung.has(dus.kunci)) return { jenis: "dus-ganda" };
+    const baik = milik.find((b) => b.kondisi === "Baik" && b.id_batch === null);
+    if (!baik) return { jenis: "dus-baru", fisik: dus.isi };
+    return {
+      jenis: "hitung",
+      kunci: baik.kunci,
+      fisik: baik.dipindai
+        ? (jumlahDariKetikan(baik.fisik, barang.desimal ?? false) ?? 0) +
+          dus.isi
+        : dus.isi,
+    };
+  }
   if (barang.tipe === "Aset") {
     const baik = milik.find((b) => b.kondisi === "Baik");
     if (!baik) return { jenis: "baru" };
@@ -1163,6 +1252,103 @@ export function aksiPindaiOpname(
   }
   const pertama = milik[0];
   return pertama ? { jenis: "fokus", kunci: pertama.kunci } : { jenis: "baru" };
+}
+
+// ── Draf opname ─────────────────────────────────────────────────────────────
+//
+// Hanya di perangkat (localStorage), tidak pernah ikut sinkronisasi dan tidak
+// menyentuh stok. Yang disimpan hanya baris yang sudah disentuh; baris lain
+// dibangun lagi dari saldo terbaru saat draf dilanjutkan.
+
+export interface EntriDrafOpname {
+  id_barang: string;
+  kondisi: string;
+  id_batch: string | null;
+  fisik: string;
+  dipindai: boolean;
+}
+
+export interface DrafOpname {
+  versi: 1;
+  tempat: string;
+  /** Tanggal hitungan dimulai, untuk memperingatkan draf dari hari sebelumnya. */
+  tanggal: string;
+  catatan: string;
+  dus: string[];
+  baris: EntriDrafOpname[];
+}
+
+export function kunciBarisOpname(
+  idBarang: string,
+  kondisi: string,
+  idBatch: string | null,
+): string {
+  return `${idBarang}|${kondisi}|${idBatch ?? ""}`;
+}
+
+function isEntriDraf(nilai: unknown): nilai is EntriDrafOpname {
+  if (typeof nilai !== "object" || nilai === null) return false;
+  const e = nilai as Record<string, unknown>;
+  return (
+    typeof e.id_barang === "string" &&
+    typeof e.kondisi === "string" &&
+    (e.id_batch === null || typeof e.id_batch === "string") &&
+    typeof e.fisik === "string" &&
+    typeof e.dipindai === "boolean"
+  );
+}
+
+/** Isi localStorage bisa rusak atau dari versi lain: null, bukan galat. */
+export function bacaDrafOpname(teks: string | null): DrafOpname | null {
+  if (!teks) return null;
+  try {
+    const d = JSON.parse(teks) as Record<string, unknown> | null;
+    if (
+      d?.versi === 1 &&
+      typeof d.tempat === "string" &&
+      typeof d.tanggal === "string" &&
+      typeof d.catatan === "string" &&
+      Array.isArray(d.dus) &&
+      d.dus.every((kunci) => typeof kunci === "string") &&
+      Array.isArray(d.baris) &&
+      d.baris.every(isEntriDraf)
+    ) {
+      return d as unknown as DrafOpname;
+    }
+  } catch {
+    // Teks rusak diperlakukan sama seperti tidak ada draf.
+  }
+  return null;
+}
+
+/**
+ * Timpakan draf ke baris dari saldo terbaru. Entri tanpa baris lewat
+ * `buatBaru`; null berarti barang atau unitnya sudah tidak ada, lalu dihitung
+ * di `dibuang` supaya petugas tahu.
+ */
+export function gabungDrafOpname<
+  T extends { kunci: string; fisik: string; dipindai: boolean },
+>(
+  dasar: readonly T[],
+  entri: readonly EntriDrafOpname[],
+  buatBaru: (entri: EntriDrafOpname) => T | null,
+): { baris: T[]; dibuang: number } {
+  const sisa = new Map(
+    entri.map((e) => [kunciBarisOpname(e.id_barang, e.kondisi, e.id_batch), e]),
+  );
+  const baris = dasar.map((b) => {
+    const e = sisa.get(b.kunci);
+    if (!e) return b;
+    sisa.delete(b.kunci);
+    return { ...b, fisik: e.fisik, dipindai: e.dipindai };
+  });
+  let dibuang = 0;
+  for (const e of sisa.values()) {
+    const baru = buatBaru(e);
+    if (baru) baris.push(baru);
+    else dibuang += 1;
+  }
+  return { baris, dibuang };
 }
 
 // ── Unit (registri aset per unit, v37) ──────────────────────────────────────

@@ -478,7 +478,7 @@ describe("alur kontrak cicilan (Web)", () => {
       tenor: 10,
       nominal: 1_150_000,
     };
-    const { id_pengajuan: id } = await savePengajuan(client, "pengaju", {
+    const { id_pengajuan: id } = await savePengajuan(client, "pengaju", false, {
       tanggal: hari,
       keperluan: "Laptop staf",
       cara_bayar: "Cicilan",

@@ -212,14 +212,18 @@ const GAYA_LABEL = `
   #${ROOT_ID} .label img { width: 27mm; height: 27mm; flex: none; }
   #${ROOT_ID} .teks { min-width: 0; display: flex; flex-direction: column; gap: 1mm; }
   #${ROOT_ID} .nama { font-size: 9pt; font-weight: bold; line-height: 1.15; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  #${ROOT_ID} .nama.ringkas { -webkit-line-clamp: 2; }
   #${ROOT_ID} .kode { font-size: 8pt; }
+  #${ROOT_ID} .isi { font-size: 9pt; font-weight: bold; }
+  #${ROOT_ID} .dus { font-size: 7.5pt; }
   #${ROOT_ID} .pemilik { font-size: 6.5pt; line-height: 1.15; }
 `;
 
 /**
- * `qr` sudah berupa data URL PNG per barang (dibuat sekali per barang, bukan
- * per label). Garis putus-putus adalah panduan potong: ukuran kertas stiker
- * di pasaran beragam, jadi tata letaknya tidak mengandalkan potongan pabrik.
+ * `qr` sudah berupa data URL PNG, jadi `jumlah` salinan memakai satu gambar.
+ * Label box membawa `isi` dan `dus`, dan setiap box punya QR sendiri.
+ * Garis putus-putus adalah panduan potong: ukuran kertas stiker di pasaran
+ * beragam, jadi tata letaknya tidak mengandalkan potongan pabrik.
  */
 export function cetakLabelBarang(
   daftar: {
@@ -227,6 +231,8 @@ export function cetakLabelBarang(
     kode_barang: string;
     qr: string;
     jumlah: number;
+    isi?: string;
+    dus?: string;
   }[],
   namaPerusahaan: string | null,
 ): void {
@@ -237,8 +243,10 @@ export function cetakLabelBarang(
       <div class="label">
         <img src="${esc(item.qr)}" alt="">
         <div class="teks">
-          <div class="nama">${esc(item.nama_barang)}</div>
+          <div class="nama${item.isi ? " ringkas" : ""}">${esc(item.nama_barang)}</div>
           <div class="kode">${esc(item.kode_barang)}</div>
+          ${item.isi ? `<div class="isi">${esc(item.isi)}</div>` : ""}
+          ${item.dus ? `<div class="dus">${esc(item.dus)}</div>` : ""}
           ${namaPerusahaan ? `<div class="pemilik">${esc(namaPerusahaan)}</div>` : ""}
         </div>
       </div>`,

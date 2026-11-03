@@ -317,7 +317,15 @@ describe("service inventaris Web", () => {
         tipe: "Habis Pakai",
         satuan: "rim",
       }),
-    ).rejects.toThrow("Satuan, desimal, dan pengaturan kedaluwarsa");
+    ).rejects.toThrow("Tipe, satuan, desimal, dan pengaturan kedaluwarsa");
+    await expect(
+      saveItem(client, {
+        id_barang: idBarang,
+        nama_barang: "Barang Uji",
+        tipe: "Aset",
+        satuan: "pcs",
+      }),
+    ).rejects.toThrow("Tipe, satuan, desimal, dan pengaturan kedaluwarsa");
   });
 
   // Skenario kembar dengan `automatic_codes_are_sequential_per_prefix`.
@@ -958,7 +966,7 @@ describe("barang desimal Web", () => {
     expect(barang?.punya_mutasi).toBe(true);
     await expect(
       simpan({ id_barang: idBarang, desimal: false }),
-    ).rejects.toThrow("Satuan, desimal, dan pengaturan kedaluwarsa");
+    ).rejects.toThrow("Tipe, satuan, desimal, dan pengaturan kedaluwarsa");
     await expect(simpan({ tipe: "Aset" })).rejects.toThrow(
       "Jumlah desimal hanya untuk barang Habis Pakai.",
     );

@@ -334,6 +334,28 @@ export function validatePemutus(
   return { ok: true, value: null };
 }
 
+/**
+ * Cermin `validate_pengubah`: hanya pengajunya (atau Superadmin) yang boleh
+ * mengubah atau membatalkan. Tanpa ini pemegang Keuangan bisa menulis ulang
+ * isi pengajuan orang lain lalu meng-ACC-nya.
+ */
+export function validatePengubah(
+  diajukanOleh: string,
+  operator: string,
+  superadmin: boolean,
+): Hasil<null> {
+  if (
+    !superadmin &&
+    diajukanOleh.trim().toLowerCase() !== operator.trim().toLowerCase()
+  ) {
+    return {
+      ok: false,
+      error: `Pengajuan ini diajukan ${diajukanOleh.trim()}. Hanya pengajunya yang bisa mengubah atau membatalkannya.`,
+    };
+  }
+  return { ok: true, value: null };
+}
+
 /** Cermin `validate_keputusan`. */
 export function validateKeputusan(
   draft: z.output<typeof keputusanDraftSchema>,

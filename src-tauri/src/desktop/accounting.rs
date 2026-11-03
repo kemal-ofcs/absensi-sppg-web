@@ -1558,14 +1558,20 @@ fn payload_text(row: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Kelompok dan saldo normal terkunci begitu cloud memegang jurnal akun itu
+/// (cermin `aturan_ubah_akun`). Perangkat hanya memeriksa jurnal yang sudah
+/// ia tarik, jadi suntingan offline bisa memindahkan akun yang di cloud sudah
+/// dipakai, dan seluruh laporan lamanya ikut berpindah kelompok.
 pub const CLOUD_UPSERT_ACCOUNT_SQL: &str = "INSERT INTO keu_akun (
         id_akun, kode, nama, kelompok, saldo_normal, is_aktif, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
     ON CONFLICT(id_akun) DO UPDATE SET
         kode = excluded.kode,
         nama = excluded.nama,
-        kelompok = excluded.kelompok,
-        saldo_normal = excluded.saldo_normal,
+        kelompok = CASE WHEN EXISTS (SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = keu_akun.id_akun)
+            THEN keu_akun.kelompok ELSE excluded.kelompok END,
+        saldo_normal = CASE WHEN EXISTS (SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = keu_akun.id_akun)
+            THEN keu_akun.saldo_normal ELSE excluded.saldo_normal END,
         is_aktif = excluded.is_aktif,
         updated_at = excluded.updated_at;";
 

@@ -26,13 +26,18 @@ import {
   type RiwayatOpname,
 } from "@/lib/gateways/inventory";
 import { isMobileRuntime } from "@/lib/runtime/app-runtime";
+import { audioSynth } from "@/lib/utils/audio";
 import {
   aksiPindaiOpname,
   asciiLower,
+  bacaDrafOpname,
   bacaLabelInventaris,
+  type DrafOpname,
+  gabungDrafOpname,
   HARI_SERVIS_LAMA,
   jumlahDariKetikan,
   KONDISI_BARANG,
+  kunciBarisOpname,
   perluDijurnal,
   type ServisInventaris,
 } from "@/lib/validations/inventory";
@@ -51,7 +56,7 @@ import {
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "./gaya";
-import { PemindaiLabel } from "./LabelQr";
+import { fokusKolomPindai, PemindaiLabel } from "./LabelQr";
 import { keteranganServis, servisPerUnit } from "./Servis";
 
 /**
@@ -925,10 +930,20 @@ interface BarisHitung {
   tanggal_expired: string | null;
   sistem: number;
   fisik: string;
-  /** Sudah dihitung dengan memindai label; pindaian berikutnya menambah 1. */
+  /** Isi awal `fisik`. Kosong = baris ini tidak tercatat di tempat tersebut. */
+  fisik_awal: string;
+  /** Sudah dihitung lewat pindaian; pindaian berikutnya menambah, bukan mulai lagi. */
   dipindai: boolean;
   /** Terisi bila baris ini satu unit aset. */
   kode_unit: string | null;
+}
+
+function barisDisentuh(b: BarisHitung): boolean {
+  return b.dipindai || b.fisik !== b.fisik_awal;
+}
+
+function diLuarCatatan(b: BarisHitung): boolean {
+  return b.fisik_awal === "";
 }
 
 /** Jumlah fisik ketikan; kosong = 0, ketikan yang bukan angka = null (selisih). */
@@ -938,12 +953,73 @@ function fisikDari(b: BarisHitung): number | null {
     : jumlahDariKetikan(b.fisik, b.barang.desimal);
 }
 
-function kunciHitung(
-  idBarang: string,
-  kondisi: string,
-  idBatch: string | null,
-) {
-  return `${idBarang}|${kondisi}|${idBatch ?? ""}`;
+const AWALAN_DRAF_OPNAME = "kos.inventaris.opname-draf:";
+
+function kunciDrafOpname(idPengguna: number, tempat: string): string {
+  return `${AWALAN_DRAF_OPNAME}${idPengguna}:${asciiLower(tempat)}`;
+}
+
+function bacaDrafTempat(idPengguna: number, tempat: string): DrafOpname | null {
+  try {
+    return bacaDrafOpname(
+      localStorage.getItem(kunciDrafOpname(idPengguna, tempat)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function semuaDrafOpname(idPengguna: number): DrafOpname[] {
+  const awalan = `${AWALAN_DRAF_OPNAME}${idPengguna}:`;
+  const hasil: DrafOpname[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const kunci = localStorage.key(i);
+      if (!kunci?.startsWith(awalan)) continue;
+      const draf = bacaDrafOpname(localStorage.getItem(kunci));
+      if (draf) hasil.push(draf);
+    }
+  } catch {
+    return [];
+  }
+  return hasil;
+}
+
+/** `false` = penyimpanan perangkat penuh atau diblokir; petugas diberi tahu. */
+function tulisDrafOpname(idPengguna: number, draf: DrafOpname): boolean {
+  try {
+    localStorage.setItem(
+      kunciDrafOpname(idPengguna, draf.tempat),
+      JSON.stringify(draf),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hapusDrafOpname(idPengguna: number, tempat: string) {
+  try {
+    localStorage.removeItem(kunciDrafOpname(idPengguna, tempat));
+  } catch {
+    // Draf yang tertinggal tetap ditawarkan dan bisa dibuang petugas.
+  }
+}
+
+let waktuBunyiPeringatan = 0;
+
+function bunyiPindai(hasil: "ok" | "awas" | "galat") {
+  if (hasil === "ok") {
+    navigator.vibrate?.(40);
+    audioSynth.playSuccessBeep();
+    return;
+  }
+  // Dua label yang sudah terhitung di satu bingkai terbaca bergantian tanpa henti.
+  const sekarang = Date.now();
+  if (sekarang - waktuBunyiPeringatan < 1000) return;
+  waktuBunyiPeringatan = sekarang;
+  if (hasil === "awas") audioSynth.playWarningBeep();
+  else audioSynth.playErrorBeep();
 }
 
 function barisDariTempat(
@@ -954,17 +1030,52 @@ function barisDariTempat(
   return data.barang.flatMap((barang) =>
     barang.posisi
       .filter((posisi) => asciiLower(posisi.tempat) === kunciTempat)
-      .map((posisi) => ({
-        kunci: kunciHitung(barang.id_barang, posisi.kondisi, posisi.id_batch),
+      .map((posisi) => {
+        const fisik = angka(Math.max(posisi.saldo, 0), barang.desimal);
+        return {
+          kunci: kunciBarisOpname(
+            barang.id_barang,
+            posisi.kondisi,
+            posisi.id_batch,
+          ),
+          barang,
+          kondisi: posisi.kondisi,
+          id_batch: posisi.id_batch,
+          tanggal_expired: posisi.tanggal_expired,
+          sistem: posisi.saldo,
+          fisik,
+          fisik_awal: fisik,
+          dipindai: false,
+          kode_unit: posisi.kode_unit,
+        };
+      }),
+  );
+}
+
+function barisDariDraf(data: DaftarInventaris, draf: DrafOpname) {
+  return gabungDrafOpname(
+    barisDariTempat(data, draf.tempat),
+    draf.baris,
+    (entri) => {
+      const barang = data.barang.find((b) => b.id_barang === entri.id_barang);
+      if (!barang || (barang.dilacak_unit && entri.id_batch !== null)) {
+        return null;
+      }
+      return {
+        kunci: kunciBarisOpname(entri.id_barang, entri.kondisi, entri.id_batch),
         barang,
-        kondisi: posisi.kondisi,
-        id_batch: posisi.id_batch,
-        tanggal_expired: posisi.tanggal_expired,
-        sistem: posisi.saldo,
-        fisik: angka(Math.max(posisi.saldo, 0), barang.desimal),
-        dipindai: false,
-        kode_unit: posisi.kode_unit,
-      })),
+        kondisi: entri.kondisi,
+        id_batch: entri.id_batch,
+        tanggal_expired:
+          batchBarang(barang).find((batch) => batch.id === entri.id_batch)
+            ?.tanggal ?? null,
+        sistem: 0,
+        fisik: entri.fisik,
+        fisik_awal: "",
+        dipindai: entri.dipindai,
+        kode_unit: null,
+      };
+    },
   );
 }
 
@@ -977,13 +1088,96 @@ function batchBarang(barang: BarangInventaris) {
   return [...terlihat.entries()].map(([id, tanggal]) => ({ id, tanggal }));
 }
 
+/**
+ * Isian jumlah di dalam dialog pindai, sehingga kamera tidak perlu ditutup.
+ * Barang berkedaluwarsa menampilkan satu isian per batch. Pemindai USB bisa
+ * mengetik ke kolom yang sedang fokus, jadi teks label tidak diterima sebagai
+ * jumlah.
+ */
+function IsianPindai({
+  baris,
+  onTerapkan,
+}: {
+  baris: BarisHitung[];
+  onTerapkan: (teks: Record<string, string>) => void;
+}) {
+  const [teks, setTeks] = useState<Record<string, string>>(() =>
+    Object.fromEntries(baris.map((b) => [b.kunci, b.fisik])),
+  );
+  const [galat, setGalat] = useState<string | null>(null);
+  const pertamaRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    pertamaRef.current?.focus();
+    pertamaRef.current?.select();
+  }, []);
+
+  const terapkan = () => {
+    for (const b of baris) {
+      const nilai = (teks[b.kunci] ?? "").trim();
+      if (!nilai || jumlahDariKetikan(nilai, b.barang.desimal) !== null) {
+        continue;
+      }
+      if (asciiLower(nilai).startsWith("inv:")) {
+        setTeks({ ...teks, [b.kunci]: b.fisik });
+        setGalat("Itu isi label. Ketik jumlahnya dulu, lalu pindai lagi.");
+      } else {
+        setGalat(`Jumlah ${b.barang.nama_barang} tidak bisa dibaca.`);
+      }
+      return;
+    }
+    onTerapkan(teks);
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-700 p-3">
+      <p className="text-sm font-semibold text-slate-100 wrap-break-word">
+        Jumlah fisik {baris[0]?.barang.nama_barang}
+      </p>
+      {baris.map((b, index) => (
+        <div key={b.kunci}>
+          <label htmlFor={`inv-isian-pindai-${index}`} className={LABEL}>
+            {b.kondisi}
+            {b.tanggal_expired ? ` · kedaluwarsa ${b.tanggal_expired}` : ""} ·
+            sistem {angka(b.sistem, b.barang.desimal)} {b.barang.satuan}
+          </label>
+          <input
+            id={`inv-isian-pindai-${index}`}
+            ref={index === 0 ? pertamaRef : undefined}
+            {...isianJumlah(b.barang.desimal)}
+            value={teks[b.kunci] ?? ""}
+            onChange={(e) => setTeks({ ...teks, [b.kunci]: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                terapkan();
+              }
+            }}
+            className={INPUT}
+          />
+        </div>
+      ))}
+      {galat ? (
+        <p role="alert" className="text-sm text-rose-200">
+          {galat}
+        </p>
+      ) : null}
+      <button type="button" onClick={terapkan} className={TOMBOL_UTAMA}>
+        Terapkan jumlah
+      </button>
+    </div>
+  );
+}
+
 export function PanelOpname({
   data,
+  idPengguna,
   isSubmittingRef,
   onSelesai,
   onGalat,
 }: {
   data: DaftarInventaris;
+  idPengguna: number;
   isSubmittingRef: SubmitRef;
   onSelesai: (message: string) => Promise<void>;
   onGalat: (message: string) => void;
@@ -1007,15 +1201,35 @@ export function PanelOpname({
   } | null>(null);
   // Barang yang ditawarkan ke "Tambah barang yang ditemukan" dari pindaian.
   const [tawaranPindai, setTawaranPindai] = useState<string | null>(null);
-  const [fokusKunci, setFokusKunci] = useState<string | null>(null);
+  const [fokusTambah, setFokusTambah] = useState(false);
+  // Barang yang isian jumlahnya sedang terbuka di dialog pindai.
+  const [isianPindai, setIsianPindai] = useState<string | null>(null);
+  const [cekUlang, setCekUlang] = useState(false);
+  const [drafTersedia, setDrafTersedia] = useState<DrafOpname[]>([]);
+  const [drafDilanjutkan, setDrafDilanjutkan] = useState<{
+    tanggal: string;
+    dibuang: number;
+  } | null>(null);
+  const [drafGagal, setDrafGagal] = useState(false);
+  const [yakinBuang, setYakinBuang] = useState(false);
   // Pindaian bisa datang lebih cepat dari render ulang, jadi daftar terbaru
   // dan riwayat batal dibaca dari ref, bukan dari closure.
   const barisRef = useRef(baris);
   barisRef.current = baris;
   const riwayatPindaiRef = useRef<
-    { kunci: string; fisik: string; dipindai: boolean }[]
+    {
+      kunci: string;
+      fisik: string;
+      dipindai: boolean;
+      dus?: string;
+      baru?: boolean;
+    }[]
   >([]);
   const [jumlahPindai, setJumlahPindai] = useState(0);
+  // Dus yang sudah terhitung di hitungan ini.
+  const dusRef = useRef<Set<string>>(new Set());
+  const [jumlahDus, setJumlahDus] = useState(0);
+  const tanggalDrafRef = useRef<string | null>(null);
 
   const muatRiwayat = useCallback(async () => {
     try {
@@ -1030,9 +1244,27 @@ export function PanelOpname({
     void muatRiwayat();
   }, [muatRiwayat]);
 
-  const pilihTempat = (nilai: string) => {
+  const gantiBaris = (berikut: BarisHitung[]) => {
+    barisRef.current = berikut;
+    setBaris(berikut);
+  };
+
+  const siapkanHitungan = (nilai: string, draf: DrafOpname | null) => {
+    const hasil = draf
+      ? barisDariDraf(data, draf)
+      : { baris: nilai ? barisDariTempat(data, nilai) : [], dibuang: 0 };
     setTempat(nilai);
-    setBaris(nilai ? barisDariTempat(data, nilai) : []);
+    gantiBaris(hasil.baris);
+    setCatatan(draf?.catatan ?? "");
+    dusRef.current = new Set(draf?.dus);
+    setJumlahDus(dusRef.current.size);
+    tanggalDrafRef.current = draf?.tanggal ?? null;
+    setDrafDilanjutkan(
+      draf ? { tanggal: draf.tanggal, dibuang: hasil.dibuang } : null,
+    );
+    setYakinBuang(false);
+    setIsianPindai(null);
+    setCekUlang(false);
     setTambahGalat(null);
     setPesanPindai(null);
     setTawaranPindai(null);
@@ -1040,33 +1272,152 @@ export function PanelOpname({
     setJumlahPindai(0);
   };
 
-  const gantiBaris = (berikut: BarisHitung[]) => {
-    barisRef.current = berikut;
-    setBaris(berikut);
+  const pilihTempat = (nilai: string) => {
+    siapkanHitungan(nilai, nilai ? bacaDrafTempat(idPengguna, nilai) : null);
   };
 
+  const buangDraf = () => {
+    hapusDrafOpname(idPengguna, tempat);
+    siapkanHitungan(tempat, null);
+  };
+
+  // Hitungan hidup di state layar, yang lenyap saat pindah tab atau aplikasi
+  // ditutup. Draf tidak pernah menyentuh stok atau outbox.
   useEffect(() => {
-    if (!fokusKunci) return;
-    const id =
-      fokusKunci === "tambah"
-        ? "inv-tambah-barang"
-        : `inv-fisik-${baris.findIndex((b) => b.kunci === fokusKunci)}`;
-    const elemen = document.getElementById(id);
+    if (!tempat) {
+      setDrafTersedia(semuaDrafOpname(idPengguna));
+      return;
+    }
+    const disentuh = baris.filter(barisDisentuh);
+    if (disentuh.length === 0 && jumlahDus === 0 && !catatan.trim()) {
+      hapusDrafOpname(idPengguna, tempat);
+      tanggalDrafRef.current = null;
+      setDrafGagal(false);
+      return;
+    }
+    tanggalDrafRef.current ??= hariIniWib();
+    setDrafGagal(
+      !tulisDrafOpname(idPengguna, {
+        versi: 1,
+        tempat,
+        tanggal: tanggalDrafRef.current,
+        catatan,
+        dus: [...dusRef.current],
+        baris: disentuh.map((b) => ({
+          id_barang: b.barang.id_barang,
+          kondisi: b.kondisi,
+          id_batch: b.id_batch,
+          fisik: b.fisik,
+          dipindai: b.dipindai,
+        })),
+      }),
+    );
+  }, [baris, catatan, idPengguna, jumlahDus, tempat]);
+
+  useEffect(() => {
+    if (!fokusTambah) return;
+    const elemen = document.getElementById("inv-tambah-barang");
     elemen?.scrollIntoView({ block: "center" });
     elemen?.focus();
-    setFokusKunci(null);
-  }, [fokusKunci, baris]);
+    setFokusTambah(false);
+  }, [fokusTambah]);
+
+  const catatPindaiDus = (kunci: string) => {
+    dusRef.current.add(kunci);
+    setJumlahDus(dusRef.current.size);
+  };
+
+  const terapkanIsian = (teks: Record<string, string>) => {
+    gantiBaris(
+      barisRef.current.map((b) => {
+        const nilai = teks[b.kunci];
+        return nilai === undefined || nilai === b.fisik
+          ? b
+          : { ...b, fisik: nilai, dipindai: true };
+      }),
+    );
+    setIsianPindai(null);
+    setPesanPindai({ teks: "Jumlah diterapkan.", galat: false });
+    bunyiPindai("ok");
+    fokusKolomPindai();
+  };
+
+  const tutupPindai = () => {
+    setIsianPindai(null);
+    setBukaPindai(false);
+  };
 
   const pindai = (teks: string) => {
+    // Pindaian lain tidak boleh membuang jumlah yang sedang diketik.
+    if (isianPindai) {
+      setPesanPindai({
+        teks: "Terapkan dulu jumlah yang sedang terbuka.",
+        galat: true,
+      });
+      bunyiPindai("awas");
+      return;
+    }
     const hasil = bacaLabelInventaris(teks, data.barang);
     if (!hasil.ok) {
       setPesanPindai({ teks: hasil.error, galat: true });
+      bunyiPindai("galat");
       return;
     }
-    const { barang, id_unit } = hasil.value;
+    const { barang, id_unit, dus } = hasil.value;
     const sekarang = barisRef.current;
-    const aksi = aksiPindaiOpname(sekarang, barang, id_unit);
+    // Jumlah yang sudah diketik (dus terbuka) ikut ditambah, tidak ditimpa.
+    const aksi = aksiPindaiOpname(
+      dus
+        ? sekarang.map((b) => ({ ...b, dipindai: barisDisentuh(b) }))
+        : sekarang,
+      barang,
+      id_unit,
+      dus ?? null,
+      dusRef.current,
+    );
+    if (aksi.jenis === "dus-ganda" && dus) {
+      setPesanPindai({
+        teks: `Box ${dus.nomor} (${dus.kode}) ${barang.nama_barang} sudah terhitung. Jumlahnya tidak berubah.`,
+        galat: true,
+      });
+      bunyiPindai("awas");
+      return;
+    }
+    if (aksi.jenis === "dus-baru" && dus) {
+      const kunci = kunciBarisOpname(barang.id_barang, "Baik", null);
+      riwayatPindaiRef.current.push({
+        kunci,
+        fisik: "",
+        dipindai: false,
+        dus: dus.kunci,
+        baru: true,
+      });
+      setJumlahPindai(riwayatPindaiRef.current.length);
+      catatPindaiDus(dus.kunci);
+      gantiBaris([
+        ...sekarang,
+        {
+          kunci,
+          barang,
+          kondisi: "Baik",
+          id_batch: null,
+          tanggal_expired: null,
+          sistem: 0,
+          fisik: angka(aksi.fisik, barang.desimal),
+          fisik_awal: "",
+          dipindai: true,
+          kode_unit: null,
+        },
+      ]);
+      setPesanPindai({
+        teks: `${barang.nama_barang} tidak tercatat di ${tempat}. Box ini tetap dihitung dan ditandai di luar catatan.`,
+        galat: true,
+      });
+      bunyiPindai("awas");
+      return;
+    }
     if (aksi.jenis === "pakai-label-unit") {
+      bunyiPindai("galat");
       setPesanPindai({
         teks: `${barang.nama_barang} dicatat per unit. Pindai label unitnya.`,
         galat: true,
@@ -1075,6 +1426,7 @@ export function PanelOpname({
     }
     if (aksi.jenis === "unit-lain") {
       const di = barang.posisi.find((p) => p.id_batch === id_unit);
+      bunyiPindai("galat");
       setPesanPindai({
         teks: `Unit ${di?.kode_unit ?? ""} tercatat di ${di?.tempat ?? "tempat lain"}. Bila unitnya memang ada di sini, catat Pindah lebih dulu.`,
         galat: true,
@@ -1084,6 +1436,7 @@ export function PanelOpname({
     if (aksi.jenis === "unit") {
       const lama = sekarang.find((b) => b.kunci === aksi.kunci);
       if (aksi.sudah || !lama) {
+        bunyiPindai("awas");
         setPesanPindai({
           teks: `Unit ${lama?.kode_unit ?? ""} sudah terhitung.`,
           galat: false,
@@ -1101,7 +1454,7 @@ export function PanelOpname({
           b.kunci === aksi.kunci ? { ...b, fisik: "1", dipindai: true } : b,
         ),
       );
-      navigator.vibrate?.(40);
+      bunyiPindai("ok");
       setPesanPindai({
         teks: `Unit ${lama.kode_unit} ditemukan.`,
         galat: false,
@@ -1115,32 +1468,42 @@ export function PanelOpname({
           kunci: lama.kunci,
           fisik: lama.fisik,
           dipindai: lama.dipindai,
+          dus: dus?.kunci,
         });
         setJumlahPindai(riwayatPindaiRef.current.length);
       }
+      if (dus) catatPindaiDus(dus.kunci);
       gantiBaris(
         sekarang.map((b) =>
           b.kunci === aksi.kunci
-            ? { ...b, fisik: String(aksi.fisik), dipindai: true }
+            ? {
+                ...b,
+                fisik: angka(aksi.fisik, barang.desimal),
+                dipindai: true,
+              }
             : b,
         ),
       );
-      navigator.vibrate?.(40);
+      bunyiPindai("ok");
+      const total = `${angka(aksi.fisik, barang.desimal)} ${barang.satuan}`;
       setPesanPindai({
-        teks: `${barang.nama_barang}: ${angka(aksi.fisik)} ${barang.satuan} terhitung.`,
+        teks: dus
+          ? `${barang.nama_barang}: box ${dus.nomor} (${dus.kode}) +${angka(dus.isi, barang.desimal)}, total ${total}.`
+          : `${barang.nama_barang}: ${total} terhitung.`,
         galat: false,
       });
       return;
     }
-    setBukaPindai(false);
     if (aksi.jenis === "fokus") {
+      bunyiPindai("ok");
       setPesanPindai({
         teks: `Isi jumlah fisik ${barang.nama_barang}.`,
         galat: false,
       });
-      setFokusKunci(aksi.kunci);
+      setIsianPindai(barang.id_barang);
       return;
     }
+    setBukaPindai(false);
     setTambahBarang(barang.id_barang);
     setTambahKondisi("Baik");
     setTambahBatch("");
@@ -1151,19 +1514,25 @@ export function PanelOpname({
       teks: `${barang.nama_barang} tidak tercatat di ${tempat}. Periksa isiannya, lalu tekan "Tambahkan ke daftar hitung".`,
       galat: false,
     });
-    setFokusKunci("tambah");
+    setFokusTambah(true);
   };
 
   const batalPindai = () => {
     const terakhir = riwayatPindaiRef.current.pop();
     setJumlahPindai(riwayatPindaiRef.current.length);
     if (!terakhir) return;
+    if (terakhir.dus) {
+      dusRef.current.delete(terakhir.dus);
+      setJumlahDus(dusRef.current.size);
+    }
     gantiBaris(
-      barisRef.current.map((b) =>
-        b.kunci === terakhir.kunci
-          ? { ...b, fisik: terakhir.fisik, dipindai: terakhir.dipindai }
-          : b,
-      ),
+      terakhir.baru
+        ? barisRef.current.filter((b) => b.kunci !== terakhir.kunci)
+        : barisRef.current.map((b) =>
+            b.kunci === terakhir.kunci
+              ? { ...b, fisik: terakhir.fisik, dipindai: terakhir.dipindai }
+              : b,
+          ),
     );
     setPesanPindai({ teks: "Pindaian terakhir dibatalkan.", galat: false });
   };
@@ -1208,7 +1577,22 @@ export function PanelOpname({
     () => (barangTambah ? batchBarang(barangTambah) : []),
     [barangTambah],
   );
-  const jumlahSelisih = baris.filter((b) => fisikDari(b) !== b.sistem).length;
+  const barisSelisih = baris.filter((b) => fisikDari(b) !== b.sistem);
+  const jumlahSelisih = barisSelisih.length;
+  const ketikanSalah = baris.filter((b) => fisikDari(b) === null);
+  const barisIsian = isianPindai
+    ? baris.filter((b) => b.barang.id_barang === isianPindai)
+    : [];
+  const adaDraf =
+    baris.some(barisDisentuh) || jumlahDus > 0 || catatan.trim() !== "";
+  const drafDitawarkan = tempat
+    ? []
+    : drafTersedia.flatMap((draf) => {
+        const ejaan = data.tempat.find(
+          (nilai) => asciiLower(nilai) === asciiLower(draf.tempat),
+        );
+        return ejaan ? [{ ...draf, tempat: ejaan }] : [];
+      });
 
   const tambah = () => {
     if (!barangTambah) {
@@ -1221,7 +1605,7 @@ export function PanelOpname({
       setTambahGalat("Pilih batch barang ini.");
       return;
     }
-    const kunci = kunciHitung(barangTambah.id_barang, kondisi, idBatch);
+    const kunci = kunciBarisOpname(barangTambah.id_barang, kondisi, idBatch);
     if (baris.some((b) => b.kunci === kunci)) {
       setTambahGalat("Barang ini sudah ada di daftar hitung.");
       return;
@@ -1237,6 +1621,7 @@ export function PanelOpname({
           pilihanBatch.find((batch) => batch.id === idBatch)?.tanggal ?? null,
         sistem: 0,
         fisik: tambahFisik || "0",
+        fisik_awal: "",
         // Ditemukan lewat pindaian: pindaian berikutnya langsung menambah.
         dipindai:
           tawaranPindai === barangTambah.id_barang &&
@@ -1252,15 +1637,13 @@ export function PanelOpname({
     setTambahGalat(null);
   };
 
-  const simpan = async (event: FormEvent) => {
+  const bukaCekUlang = (event: FormEvent) => {
     event.preventDefault();
+    if (baris.length > 0) setCekUlang(true);
+  };
+
+  const simpan = async () => {
     if (isSubmittingRef.current || baris.length === 0) return;
-    const lanjut = await konfirmasiData([
-      { label: "Tempat", nilai: tempat },
-      { label: "Barang dihitung", nilai: `${baris.length} baris` },
-      { label: "Catatan", nilai: catatan },
-    ]);
-    if (!lanjut) return;
     isSubmittingRef.current = true;
     setMenyimpan(true);
     try {
@@ -1278,9 +1661,9 @@ export function PanelOpname({
         })),
         catatan,
       });
-      setTempat("");
-      setBaris([]);
-      setCatatan("");
+      // Draf baru dibuang setelah tersimpan: gagal simpan tidak menghilangkan hitungan.
+      hapusDrafOpname(idPengguna, tempat);
+      siapkanHitungan("", null);
       void muatRiwayat();
       await onSelesai(
         hasil.jumlah_selisih === 0
@@ -1288,6 +1671,7 @@ export function PanelOpname({
           : `Opname ${hasil.nomor_dokumen} tersimpan dengan ${hasil.jumlah_selisih} selisih.`,
       );
     } catch (error) {
+      setCekUlang(false);
       onGalat(pesanGalat(error, "Opname tidak bisa disimpan."));
     } finally {
       isSubmittingRef.current = false;
@@ -1306,7 +1690,8 @@ export function PanelOpname({
 
   return (
     <>
-      <form onSubmit={simpan} className="space-y-3">
+      {/* Layar cek ulang menggantikan `konfirmasiData` untuk opname. */}
+      <form onSubmit={bukaCekUlang} className="space-y-3">
         <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 space-y-2 sm:max-w-md">
           <label htmlFor="inv-opname-tempat" className={LABEL}>
             Tempat yang dihitung
@@ -1342,6 +1727,95 @@ export function PanelOpname({
             </button>
           ) : null}
         </div>
+
+        {drafDitawarkan.length > 0 ? (
+          <section
+            aria-labelledby="inv-draf-opname-judul"
+            className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 space-y-2"
+          >
+            <h2
+              id="inv-draf-opname-judul"
+              className="text-sm font-semibold text-amber-100"
+            >
+              Draf opname yang belum disimpan
+            </h2>
+            <ul className="space-y-2">
+              {drafDitawarkan.map((draf) => (
+                <li
+                  key={draf.tempat}
+                  className="flex flex-wrap items-center justify-between gap-2 text-sm text-amber-100"
+                >
+                  <span className="min-w-0 wrap-break-word">
+                    {draf.tempat} · {tanggalTampil(draf.tanggal)} ·{" "}
+                    {draf.baris.length} baris dihitung
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => pilihTempat(draf.tempat)}
+                    className={TOMBOL_KEDUA}
+                  >
+                    Lanjutkan
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {tempat &&
+        drafDilanjutkan &&
+        drafDilanjutkan.tanggal !== hariIniWib() ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+            Hitungan ini dari tanggal {tanggalTampil(drafDilanjutkan.tanggal)}.
+            Cek lagi barang yang sudah keluar atau masuk sejak itu.
+          </p>
+        ) : null}
+        {tempat && drafDilanjutkan && drafDilanjutkan.dibuang > 0 ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+            {drafDilanjutkan.dibuang} baris draf tidak dipakai karena barang
+            atau unitnya sudah tidak ada.
+          </p>
+        ) : null}
+        {drafGagal ? (
+          <p role="alert" className="text-sm text-rose-200">
+            Draf tidak bisa disimpan di perangkat ini. Hitungan akan hilang
+            kalau halaman ditutup.
+          </p>
+        ) : null}
+        {tempat && adaDraf && !drafGagal ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+            <span>
+              Draf tersimpan di perangkat ini. Stok belum berubah sampai
+              hasilnya disimpan.
+            </span>
+            {yakinBuang ? (
+              <>
+                <button
+                  type="button"
+                  onClick={buangDraf}
+                  className={TOMBOL_BAHAYA}
+                >
+                  Ya, buang draf
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setYakinBuang(false)}
+                  className={TOMBOL_KEDUA}
+                >
+                  Batal
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setYakinBuang(true)}
+                className={TOMBOL_KEDUA}
+              >
+                Hitung dari awal
+              </button>
+            )}
+          </div>
+        ) : null}
 
         <p
           aria-live="polite"
@@ -1380,6 +1854,7 @@ export function PanelOpname({
                           {item.barang.satuan}
                           {item.kode_unit ? ` · unit ${item.kode_unit}` : ""}
                           {item.dipindai ? " · dihitung dengan pindai" : ""}
+                          {diLuarCatatan(item) ? " · di luar catatan" : ""}
                         </p>
                         {item.id_batch !== null &&
                         servisUnit.has(item.id_batch) ? (
@@ -1584,7 +2059,7 @@ export function PanelOpname({
                 disabled={menyimpan || baris.length === 0}
                 className={TOMBOL_UTAMA}
               >
-                {menyimpan ? "Menyimpan..." : "Simpan hasil opname"}
+                Periksa hasil
               </button>
             </div>
           </>
@@ -1650,17 +2125,25 @@ export function PanelOpname({
       {bukaPindai ? (
         <Modal
           isOpen={true}
-          onClose={() => setBukaPindai(false)}
+          onClose={tutupPindai}
           title={`Pindai label di ${tempat}`}
           titleId="inv-pindai-judul"
         >
           <div className="space-y-3">
             <p className="text-sm text-slate-400">
-              Aset dihitung satu per pindaian. Arahkan kamera ke label
-              berikutnya setelah yang sebelumnya lepas dari bingkai. Barang
-              habis pakai membuka isian jumlahnya untuk diketik.
+              Label box langsung menambah sesuai isinya, dan box yang sama tidak
+              terhitung dua kali. Aset dihitung satu per pindaian. Arahkan
+              kamera ke label berikutnya setelah yang sebelumnya lepas dari
+              bingkai. Label rak barang habis pakai membuka isian jumlahnya.
             </p>
             <PemindaiLabel onPindai={pindai} />
+            {barisIsian.length > 0 ? (
+              <IsianPindai
+                key={isianPindai}
+                baris={barisIsian}
+                onTerapkan={terapkanIsian}
+              />
+            ) : null}
             <p
               aria-live="polite"
               className={`min-h-5 text-sm ${pesanPindai?.galat ? "text-rose-200" : "text-emerald-200"}`}
@@ -1678,10 +2161,86 @@ export function PanelOpname({
               </button>
               <button
                 type="button"
-                onClick={() => setBukaPindai(false)}
+                onClick={tutupPindai}
                 className={TOMBOL_UTAMA}
               >
                 Selesai memindai
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+      {cekUlang ? (
+        <Modal
+          isOpen={true}
+          onClose={() => setCekUlang(false)}
+          title={`Cek ulang opname ${tempat}`}
+          titleId="inv-cek-ulang-judul"
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-slate-300">
+              {baris.length} baris dihitung · {jumlahDus} box dipindai ·{" "}
+              {jumlahSelisih === 0 ? "semua cocok" : `${jumlahSelisih} selisih`}
+              . Stok baru berubah setelah hasil ini disimpan.
+            </p>
+            {barisSelisih.length > 0 ? (
+              <ul className="max-h-[40vh] overflow-y-auto divide-y divide-slate-800 rounded-xl border border-slate-800">
+                {barisSelisih.map((b) => {
+                  const fisik = fisikDari(b);
+                  return (
+                    <li
+                      key={b.kunci}
+                      className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"
+                    >
+                      <span className="min-w-0 wrap-break-word text-slate-200">
+                        {b.barang.nama_barang}
+                        <span className="block text-xs text-slate-400">
+                          {b.kondisi}
+                          {b.kode_unit ? ` · unit ${b.kode_unit}` : ""} · sistem{" "}
+                          {angka(b.sistem, b.barang.desimal)} {b.barang.satuan}
+                          {diLuarCatatan(b) ? " · di luar catatan" : ""}
+                        </span>
+                      </span>
+                      <span className="font-semibold text-amber-300">
+                        {fisik === null
+                          ? "?"
+                          : `${fisik > b.sistem ? "+" : ""}${angka(
+                              fisik - b.sistem,
+                              b.barang.desimal,
+                            )}`}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+            {belumDipindai > 0 || unitBelumDipindai.length > 0 ? (
+              <p className="text-sm text-amber-300">
+                {belumDipindai + unitBelumDipindai.length} baris belum dipindai
+                dan dianggap sesuai sistem.
+              </p>
+            ) : null}
+            {ketikanSalah.length > 0 ? (
+              <p role="alert" className="text-sm text-rose-200">
+                Jumlah {ketikanSalah[0]?.barang.nama_barang} tidak bisa dibaca.
+                Perbaiki dulu sebelum menyimpan.
+              </p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCekUlang(false)}
+                className={TOMBOL_KEDUA}
+              >
+                Kembali
+              </button>
+              <button
+                type="button"
+                onClick={() => void simpan()}
+                disabled={menyimpan || ketikanSalah.length > 0}
+                className={TOMBOL_UTAMA}
+              >
+                {menyimpan ? "Menyimpan..." : "Simpan hasil opname"}
               </button>
             </div>
           </div>

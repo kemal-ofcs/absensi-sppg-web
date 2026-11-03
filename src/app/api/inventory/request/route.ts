@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
       await savePengajuan(
         getServerDatabase(),
         actor.username,
+        actor.isSuperadmin,
         parsed.data.draft,
       ),
     );

@@ -188,6 +188,50 @@ export function validatePelunasan(jumlah: number, sisa: number): Hasil<number> {
   return { ok: true, value: jumlah };
 }
 
+/** Pesan kembar `PESAN_POTONGAN_TERTUNDA` di `loan.rs`. */
+export const PESAN_POTONGAN_TERTUNDA =
+  "Kasbon ini masih dipotong di proses gaji yang belum dibayar. Tolak proses gaji itu dulu.";
+
+/** Kasbon menurut database saat proses gaji dibayar. */
+export interface KasbonTercatat {
+  status: string;
+  nama: string;
+  /** Pokok − angsuran dan pelunasan yang sudah tercatat. */
+  sisa: number;
+}
+
+/**
+ * Cermin `periksa_potongan_payroll`. Potongan kasbon di slip dibekukan saat
+ * proses gaji DIBUAT. Sebelum dibayar, kasbonnya bisa dibatalkan atau jatahnya
+ * diambil proses gaji lain (proses yang ditolak lalu dibuka lagi). Mencatat
+ * angsuran untuk kasbon seperti itu memotong gaji untuk utang yang tidak ada
+ * dan membuat Piutang Karyawan minus.
+ */
+export function periksaPotonganPayroll(
+  potongan: readonly { id_pinjaman: string; jumlah: number }[],
+  pinjaman: ReadonlyMap<string, KasbonTercatat>,
+): Hasil<null> {
+  const total = new Map<string, number>();
+  for (const item of potongan) {
+    const kasbon = pinjaman.get(item.id_pinjaman);
+    if (!kasbon || kasbon.status !== "Disetujui") {
+      return {
+        ok: false,
+        error: `Kasbon ${kasbon?.nama ?? item.id_pinjaman} sudah tidak aktif. Tolak proses gaji ini lalu buat ulang.`,
+      };
+    }
+    const jumlah = (total.get(item.id_pinjaman) ?? 0) + item.jumlah;
+    total.set(item.id_pinjaman, jumlah);
+    if (jumlah > kasbon.sisa) {
+      return {
+        ok: false,
+        error: `Potongan kasbon ${kasbon.nama} melebihi sisa pinjamannya ${formatRupiah(Math.max(0, kasbon.sisa))}. Tolak proses gaji ini lalu buat ulang.`,
+      };
+    }
+  }
+  return { ok: true, value: null };
+}
+
 // ── Potongan gaji ───────────────────────────────────────────────────────────
 
 export interface PinjamanAktif {

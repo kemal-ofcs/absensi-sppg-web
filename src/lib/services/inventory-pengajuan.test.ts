@@ -28,6 +28,7 @@ import {
   validatePemutus,
   validatePenerimaan,
   validatePengajuan,
+  validatePengubah,
 } from "@/lib/validations/inventory-pengajuan";
 
 mock.module("server-only", () => ({}));
@@ -254,6 +255,16 @@ describe("aturan murni pengajuan", () => {
     expect(validatePemutus("sarpras", "bendahara", false).ok).toBe(true);
   });
 
+  test("pengubah", () => {
+    expect(validatePengubah("Sarpras", " sarpras ", false).ok).toBe(true);
+    expect(validatePengubah("sarpras", "bendahara", true).ok).toBe(true);
+    expect(validatePengubah("sarpras", "bendahara", false)).toEqual({
+      ok: false,
+      error:
+        "Pengajuan ini diajukan sarpras. Hanya pengajunya yang bisa mengubah atau membatalkannya.",
+    });
+  });
+
   test("keputusan", () => {
     const k = (value: unknown) =>
       validateKeputusan(keputusanDraftSchema.parse(value));
@@ -376,7 +387,7 @@ describe("alur pengajuan di database", () => {
       satuan: "pcs",
       tempat_utama: "Gudang",
     });
-    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", {
+    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", false, {
       tanggal: hari,
       keperluan: "ATK semester ganjil",
       baris: [
@@ -403,7 +414,27 @@ describe("alur pengajuan di database", () => {
     expect(p.baris[2]?.id_baris).toBe(`${id}-3`);
     const sidikLama = p.sidik_baris;
 
-    await savePengajuan(client, "sarpras", {
+    // Pemegang Keuangan tidak bisa menulis ulang pengajuan orang lain.
+    await expect(
+      savePengajuan(client, "bendahara", false, {
+        id_pengajuan: id,
+        tanggal: hari,
+        keperluan: "ATK",
+        baris: [
+          {
+            nama_barang: "Laptop",
+            satuan: "unit",
+            jumlah: 10,
+            harga_satuan: 9_000_000,
+          },
+        ],
+      }),
+    ).rejects.toThrow("Hanya pengajunya");
+    await expect(
+      cancelPengajuan(client, "bendahara", false, id, "Iseng"),
+    ).rejects.toThrow("Hanya pengajunya");
+
+    await savePengajuan(client, "sarpras", false, {
       id_pengajuan: id,
       tanggal: hari,
       keperluan: "ATK",
@@ -441,7 +472,7 @@ describe("alur pengajuan di database", () => {
       sidik_baris: p.sidik_baris,
     });
     await expect(
-      savePengajuan(client, "sarpras", {
+      savePengajuan(client, "sarpras", false, {
         id_pengajuan: id,
         tanggal: hari,
         keperluan: "ATK",
@@ -451,7 +482,7 @@ describe("alur pengajuan di database", () => {
       }),
     ).rejects.toThrow("berstatus Disetujui");
     await expect(
-      cancelPengajuan(client, "sarpras", id, "Salah"),
+      cancelPengajuan(client, "sarpras", false, id, "Salah"),
     ).rejects.toThrow("berstatus Disetujui");
 
     await closePengajuan(client, "sarpras", id, "Toko tutup");
@@ -468,7 +499,7 @@ describe("alur pengajuan di database", () => {
       satuan: "pcs",
       tempat_utama: "Gudang",
     });
-    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", {
+    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", false, {
       tanggal: hari,
       keperluan: "ATK",
       baris: [{ id_barang, jumlah: 10, harga_satuan: 8500 }],
@@ -503,7 +534,7 @@ describe("alur pengajuan di database", () => {
 
   test("pengajuan yang ditolak tidak bisa di-ACC, dan selesai di luar rentang tidak tampil", async () => {
     const hari = await hariIni();
-    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", {
+    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", false, {
       tanggal: hari,
       keperluan: "ATK",
       baris: [
@@ -682,7 +713,7 @@ describe("penerimaan di database", () => {
       satuan: "pcs",
       tempat_utama: "Gudang",
     });
-    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", {
+    const { id_pengajuan: id } = await savePengajuan(client, "sarpras", false, {
       tanggal: hari,
       keperluan: "ATK",
       baris: [

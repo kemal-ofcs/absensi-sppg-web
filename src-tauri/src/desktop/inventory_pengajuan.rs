@@ -381,6 +381,24 @@ pub fn validate_pemutus(
     Ok(())
 }
 
+/// Cermin `validatePengubah`: hanya pengajunya (atau Superadmin) yang boleh
+/// mengubah atau membatalkan. Tanpa ini pemegang Keuangan bisa menulis ulang
+/// isi pengajuan orang lain lalu meng-ACC-nya, karena `diajukan_oleh` tetap
+/// nama pengaju asli dan `validate_pemutus` meloloskannya.
+pub fn validate_pengubah(
+    diajukan_oleh: &str,
+    operator: &str,
+    superadmin: bool,
+) -> Result<(), String> {
+    if !superadmin && !diajukan_oleh.trim().eq_ignore_ascii_case(operator.trim()) {
+        return Err(format!(
+            "Pengajuan ini diajukan {}. Hanya pengajunya yang bisa mengubah atau membatalkannya.",
+            diajukan_oleh.trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Cermin `validateKeputusan`. ACC wajib membawa sidik isi yang dilihat;
 /// penolakan wajib beralasan.
 pub fn validate_keputusan(draft: &KeputusanDraft) -> Result<KeputusanValid, String> {
@@ -783,14 +801,26 @@ fn status_lokal(
     }))
 }
 
-fn wajib_menunggu(transaction: &Transaction<'_>, id_pengajuan: &str) -> Result<(), CommandError> {
+fn wajib_menunggu(
+    transaction: &Transaction<'_>,
+    id_pengajuan: &str,
+    operator: &str,
+    superadmin: bool,
+) -> Result<(), CommandError> {
     let status = status_lokal(transaction, id_pengajuan)?;
     if status != "Menunggu" {
         return Err(invalid(format!(
             "Pengajuan ini berstatus {status} dan tidak bisa diubah lagi."
         )));
     }
-    Ok(())
+    let diajukan_oleh: String = transaction
+        .query_row(
+            "SELECT diajukan_oleh FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+            params![id_pengajuan],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())?;
+    validate_pengubah(&diajukan_oleh, operator, superadmin).map_err(invalid)
 }
 
 /// Nama, satuan, dan desimal barang terdaftar selalu dari data barangnya,
@@ -868,6 +898,7 @@ fn tulis_baris(
 pub fn save_request(
     state: &DesktopState,
     operator: &str,
+    superadmin: bool,
     draft: Value,
 ) -> Result<Value, CommandError> {
     let draft: PengajuanDraft =
@@ -901,7 +932,7 @@ pub fn save_request(
 
     let id_pengajuan = match clean(&draft.id_pengajuan) {
         Some(id) => {
-            wajib_menunggu(&transaction, &id)?;
+            wajib_menunggu(&transaction, &id, operator, superadmin)?;
             transaction
                 .execute(
                     "UPDATE inventory_pengajuan SET tanggal = ?, keperluan = ?, sumber_dana = ?,
@@ -981,6 +1012,7 @@ pub fn save_request(
 pub fn cancel_request(
     state: &DesktopState,
     operator: &str,
+    superadmin: bool,
     id_pengajuan: &str,
     alasan: &str,
 ) -> Result<Value, CommandError> {
@@ -991,7 +1023,7 @@ pub fn cancel_request(
     let transaction = connection
         .transaction()
         .map_err(|_| CommandError::internal())?;
-    wajib_menunggu(&transaction, id_pengajuan)?;
+    wajib_menunggu(&transaction, id_pengajuan, operator, superadmin)?;
     transaction
         .execute(
             "UPDATE inventory_pengajuan SET dibatalkan_pada = datetime('now', '+7 hours'),
@@ -2186,6 +2218,16 @@ mod tests {
     }
 
     #[test]
+    fn pengubah_vektor() {
+        assert_eq!(validate_pengubah("Sarpras", " sarpras ", false), Ok(()));
+        assert_eq!(validate_pengubah("sarpras", "bendahara", true), Ok(()));
+        assert_eq!(
+            validate_pengubah("sarpras", "bendahara", false),
+            Err("Pengajuan ini diajukan sarpras. Hanya pengajunya yang bisa mengubah atau membatalkannya.".to_owned())
+        );
+    }
+
+    #[test]
     fn keputusan_vektor() {
         let k = |value: Value| validate_keputusan(&serde_json::from_value(value).expect("draft"));
         let sidik = "a".repeat(64);
@@ -2255,6 +2297,7 @@ mod tests {
         let id = save_request(
             &state,
             "sarpras",
+            false,
             json!({"tanggal": hari, "keperluan": "ATK semester ganjil", "baris": [
                 {"id_barang": id_barang, "nama_barang": "Spidol palsu", "jumlah": 10, "harga_satuan": 8500},
                 {"nama_barang": "Kertas HVS", "satuan": "rim", "jumlah": 5, "harga_satuan": 55000},
@@ -2272,9 +2315,22 @@ mod tests {
         assert_eq!(p["baris"][2]["id_baris"], format!("{id}-3"));
         let sidik_lama = p["sidik_baris"].as_str().expect("sidik").to_owned();
 
+        // Pemegang Keuangan tidak bisa menulis ulang pengajuan orang lain.
+        let bukan_pengaju = save_request(
+            &state,
+            "bendahara",
+            false,
+            json!({"id_pengajuan": id, "tanggal": hari, "keperluan": "ATK", "baris": [
+                {"nama_barang": "Laptop", "satuan": "unit", "jumlah": 10, "harga_satuan": 9_000_000}]}),
+        )
+        .unwrap_err();
+        assert!(bukan_pengaju.message.contains("Hanya pengajunya"), "{}", bukan_pengaju.message);
+        assert!(cancel_request(&state, "bendahara", false, &id, "Iseng").is_err());
+
         save_request(
             &state,
             "sarpras",
+            false,
             json!({"id_pengajuan": id, "tanggal": hari, "keperluan": "ATK", "baris": [
                 {"nama_barang": "Kertas HVS", "satuan": "rim", "jumlah": 5, "harga_satuan": 60000}]}),
         )
@@ -2323,13 +2379,14 @@ mod tests {
         assert!(save_request(
             &state,
             "sarpras",
+            false,
             json!({"id_pengajuan": id, "tanggal": hari, "keperluan": "ATK", "baris": [
                 {"nama_barang": "Kertas HVS", "satuan": "rim", "jumlah": 1, "harga_satuan": 1}]}),
         )
         .unwrap_err()
         .message
         .contains("berstatus Disetujui"));
-        assert!(cancel_request(&state, "sarpras", &id, "Salah").is_err());
+        assert!(cancel_request(&state, "sarpras", false, &id, "Salah").is_err());
 
         close_request(&state, "sarpras", &id, "Toko tutup").expect("tutup");
         let daftar = list_requests(&state, &hari, &hari).expect("daftar");
@@ -2358,6 +2415,7 @@ mod tests {
         let id = save_request(
             &state,
             "sarpras",
+            false,
             json!({"tanggal": hari, "keperluan": "ATK", "baris": [
                 {"nama_barang": "Kertas HVS", "satuan": "rim", "jumlah": 5, "harga_satuan": 55000},
                 {"nama_barang": "Beras", "satuan": "kg", "desimal": true, "jumlah": 250, "harga_satuan": 12000}]}),
@@ -2518,6 +2576,7 @@ mod tests {
         let id = save_request(
             &state,
             "sarpras",
+            false,
             json!({"tanggal": hari, "keperluan": "ATK", "baris": [
                 {"id_barang": id_barang, "jumlah": 10, "harga_satuan": 8500},
                 {"nama_barang": "Kertas HVS", "satuan": "rim", "jumlah": 5, "harga_satuan": 55000},

@@ -52,6 +52,7 @@ import {
   nilaiBaris,
   STATUS_PENGAJUAN,
   validatePemutus,
+  validatePengubah,
 } from "@/lib/validations/inventory-pengajuan";
 import { tanggalTampil } from "@/lib/validations/tutup-buku";
 import {
@@ -1479,6 +1480,14 @@ export function PanelPengajuan({
   const [aksi, setAksi] = useState<Aksi | null>(null);
   const [label, setLabel] = useState<HasilPenerimaan["label"] | null>(null);
   const isSubmittingRef = useRef(false);
+  const { user } = useAuth();
+  // Backend tetap menolak bila layar ini dilewati.
+  const bisaUbah = (p: Pengajuan) =>
+    validatePengubah(
+      p.diajukan_oleh,
+      user?.username ?? "",
+      user?.isSuperadmin ?? false,
+    ).ok;
 
   const tampil = (daftar?.pengajuan ?? []).filter((p) =>
     saringan === "semua"
@@ -1635,7 +1644,7 @@ export function PanelPengajuan({
                     >
                       {terbuka.has(p.id_pengajuan) ? "Sembunyikan" : "Rincian"}
                     </button>
-                    {canRecord && p.status === "Menunggu" ? (
+                    {canRecord && p.status === "Menunggu" && bisaUbah(p) ? (
                       <>
                         <button
                           type="button"

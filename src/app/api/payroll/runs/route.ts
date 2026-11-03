@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { z } from "zod";
 import type { PermissionKey } from "@/lib/rbac/catalog";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import {
@@ -19,9 +20,51 @@ import {
   isValidPayrollStatus,
 } from "@/lib/services/payroll-calculator";
 import { computePayrollRecap } from "@/lib/services/payroll-recap";
+import { isValidDate } from "@/lib/validations/accounting";
 import { AKUN_KAS } from "@/lib/validations/loan";
 
 export const runtime = "nodejs";
+
+const idSchema = z.string().trim().min(1).max(160);
+const tanggalSchema = z.string().refine(isValidDate, "Tanggal tidak valid.");
+
+const querySchema = z
+  .object({
+    status: z.string().trim().max(20).optional(),
+    runId: idSchema.optional(),
+  })
+  .strict();
+
+const createSchema = z
+  .object({
+    idempotencyKey: idSchema,
+    periodStart: tanggalSchema,
+    periodEnd: tanggalSchema,
+  })
+  .strict()
+  .refine((body) => body.periodStart <= body.periodEnd, {
+    message: "Tanggal awal periode harus sebelum tanggal akhir.",
+  });
+
+const transitionSchema = z
+  .object({
+    runId: idSchema,
+    targetStatus: z.string().trim().max(20),
+    notes: z.string().max(1000).nullish(),
+    idAkunBayar: z.string().trim().max(160).nullish(),
+  })
+  .strict();
+
+function parseBody<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ApiRequestError(
+      parsed.error.issues[0]?.message ?? "Data tidak valid.",
+      400,
+    );
+  }
+  return parsed.data;
+}
 
 // List (no runId) or single-run detail with items + audit logs (runId set).
 // Kept on one static path (no [id] segment) so this route stays compatible
@@ -32,9 +75,7 @@ export async function POST(request: NextRequest) {
     await ensureServerDatabaseInitialized();
     const client = getServerDatabase();
 
-    const body = await readJsonBody<{ status?: string; runId?: string }>(
-      request,
-    );
+    const body = parseBody(querySchema, await readJsonBody(request));
 
     if (body.runId) {
       const runResult = await client.execute({
@@ -84,18 +125,7 @@ export async function PUT(request: NextRequest) {
     await ensureServerDatabaseInitialized();
     const client = getServerDatabase();
 
-    const body = await readJsonBody<{
-      idempotencyKey?: string;
-      periodStart?: string;
-      periodEnd?: string;
-    }>(request);
-
-    if (!body.idempotencyKey || !body.periodStart || !body.periodEnd) {
-      throw new ApiRequestError(
-        "idempotencyKey, periodStart, dan periodEnd wajib diisi.",
-        400,
-      );
-    }
+    const body = parseBody(createSchema, await readJsonBody(request));
 
     const existing = await client.execute({
       sql: "SELECT * FROM payroll_runs WHERE idempotency_key = ? LIMIT 1;",
@@ -215,17 +245,7 @@ export async function PUT(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     assertSameOriginMutation(request);
-    const body = await readJsonBody<{
-      runId?: string;
-      targetStatus?: string;
-      notes?: string;
-      idAkunBayar?: string | null;
-    }>(request);
-
-    if (!body.runId) {
-      throw new ApiRequestError("runId wajib diisi.", 400);
-    }
-    assertSameOriginMutation(request);
+    const body = parseBody(transitionSchema, await readJsonBody(request));
     const runId = body.runId;
     const target = (body.targetStatus || "").toUpperCase();
 
@@ -242,7 +262,9 @@ export async function PATCH(request: NextRequest) {
             ? "payroll.run.approve"
             : target === "PAID"
               ? "payroll.run.disburse"
-              : "payroll.run.review";
+              : target === "DRAFT"
+                ? "payroll.run.create"
+                : "payroll.run.review";
 
     const actor = await requireWebPermission(request, requiredPermission);
     await ensureServerDatabaseInitialized();

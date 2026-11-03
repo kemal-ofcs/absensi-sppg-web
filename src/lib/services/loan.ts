@@ -21,8 +21,11 @@ import {
   idPencairan,
   idTunda,
   isValidPeriode,
+  type KasbonTercatat,
   MAKS_KETERANGAN_PINJAMAN,
+  PESAN_POTONGAN_TERTUNDA,
   type PinjamanAktif,
+  periksaPotonganPayroll,
   pinjamanDraftSchema,
   type StatusPinjaman,
   susunJurnalPayroll,
@@ -99,6 +102,20 @@ const BAYAR_SQL = `COALESCE((
         WHERE m.id_pinjaman = p.id_pinjaman
           AND m.jenis IN ('Angsuran Gaji', 'Pelunasan Tunai')
     ), 0)`;
+
+/**
+ * Cermin `KASBON_TERCATAT_SQL`: status dan sisa kasbon tanpa angsuran milik
+ * proses gaji yang sedang dibayar. Parameter: id proses gaji, id pinjaman.
+ */
+const KASBON_TERCATAT_SQL = `SELECT p.status, p.nama_karyawan,
+        p.pokok - COALESCE((
+          SELECT SUM(m.jumlah) FROM keu_pinjaman_mutasi m
+          WHERE m.id_pinjaman = p.id_pinjaman
+            AND m.jenis IN ('Angsuran Gaji', 'Pelunasan Tunai')
+            AND (m.id_ref IS NULL OR m.id_ref NOT IN
+                 (SELECT i.id FROM payroll_items i WHERE i.payroll_run_id = ?1))
+        ), 0) AS sisa
+     FROM keu_pinjaman p WHERE p.id_pinjaman = ?2`;
 
 // ── Pembacaan ───────────────────────────────────────────────────────────────
 
@@ -378,6 +395,15 @@ export async function decideLoan(
       Number(angsuran.rows[0]?.ada) === 1,
     );
     if (!keputusan.ok) throw new Error(keputusan.error);
+    if (aksi === "batalkan") {
+      const tertunda = await tx.execute({
+        sql: `SELECT ${PENDING_SQL} AS n FROM keu_pinjaman p WHERE p.id_pinjaman = ?;`,
+        args: [idPinjaman],
+      });
+      if (Number(tertunda.rows[0]?.n ?? 0) > 0) {
+        throw new Error(PESAN_POTONGAN_TERTUNDA);
+      }
+    }
     const statusBaru = keputusan.value;
     const pokok = Number(row.pokok);
     const nama = String(row.nama_karyawan);
@@ -600,6 +626,10 @@ export async function catatPembayaranPayrollTx(
   const tanggal = await hariIni(tx);
   const idJurnal = idJurnalPayroll(runId);
   const items: ItemPayroll[] = [];
+  const perItem: Array<{
+    idItem: string;
+    kasbon: Array<{ id_pinjaman: string; jumlah: number }>;
+  }> = [];
   for (const row of rows.rows) {
     const idItem = String(row.id);
     let kasbon: Array<{ id_pinjaman: string; jumlah: number }> = [];
@@ -621,6 +651,38 @@ export async function catatPembayaranPayrollTx(
     } catch {
       kasbon = [];
     }
+    perItem.push({ idItem, kasbon });
+    items.push({
+      gross: Number(row.gross_salary),
+      net: Number(row.net_salary),
+      pph21: Number(row.pph21_amount),
+      bpjs_karyawan: Number(row.bpjs_employee_total),
+      bpjs_perusahaan: Number(row.bpjs_company_total),
+      kasbon: kasbon.reduce((sum, entri) => sum + entri.jumlah, 0),
+    });
+  }
+
+  const potongan = perItem.flatMap((item) => item.kasbon);
+  const tercatat = new Map<string, KasbonTercatat>();
+  for (const idPinjaman of new Set(
+    potongan.map((entri) => entri.id_pinjaman),
+  )) {
+    const kasbon = await tx.execute({
+      sql: `${KASBON_TERCATAT_SQL};`,
+      args: [runId, idPinjaman],
+    });
+    const row = kasbon.rows[0];
+    if (row) {
+      tercatat.set(idPinjaman, {
+        status: String(row.status),
+        nama: String(row.nama_karyawan),
+        sisa: Number(row.sisa),
+      });
+    }
+  }
+  const cek = periksaPotonganPayroll(potongan, tercatat);
+  if (!cek.ok) throw new Error(cek.error);
+  for (const { idItem, kasbon } of perItem) {
     for (const entri of kasbon) {
       await catatMutasiTx(tx, {
         id_mutasi: idAngsuranGaji(idItem, entri.id_pinjaman),
@@ -633,14 +695,6 @@ export async function catatPembayaranPayrollTx(
         dicatat_oleh: operator,
       });
     }
-    items.push({
-      gross: Number(row.gross_salary),
-      net: Number(row.net_salary),
-      pph21: Number(row.pph21_amount),
-      bpjs_karyawan: Number(row.bpjs_employee_total),
-      bpjs_perusahaan: Number(row.bpjs_company_total),
-      kasbon: kasbon.reduce((sum, entri) => sum + entri.jumlah, 0),
-    });
   }
 
   const baris = susunJurnalPayroll(items, idAkunBayar).map((item, indeks) => ({

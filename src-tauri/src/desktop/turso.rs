@@ -7932,15 +7932,31 @@ async fn apply_event_to_turso(
             let run_id = payload.get("id").and_then(Value::as_str).unwrap_or("");
             let status = payload.get("status").and_then(Value::as_str).unwrap_or("");
             let updated_at = payload.get("updated_at").and_then(Value::as_str).unwrap_or("");
+            let audit = payload.get("audit");
+            let old_status = audit
+                .and_then(|audit| audit.get("old_status"))
+                .and_then(Value::as_str);
             if !run_id.is_empty() && !status.is_empty() {
+                // Transisi hanya berlaku bila status cloud masih status asal di
+                // perangkat, dan PAID tidak pernah mundur. Tanpa ini perangkat
+                // yang offline sejak REVIEWED bisa menimpa PAID menjadi
+                // REJECTED: gaji sudah keluar, lalu bisa dibayar sekali lagi.
+                // Event yang kalah dilewati, tidak ditolak.
                 turso
                     .query_one(
-                        "UPDATE payroll_runs SET status = ?, updated_at = ? WHERE id = ?;",
-                        vec![json!(status), json!(updated_at), json!(run_id)],
+                        "UPDATE payroll_runs SET status = ?, updated_at = ?
+                         WHERE id = ? AND status <> 'PAID' AND (? IS NULL OR status = ?);",
+                        vec![
+                            json!(status),
+                            json!(updated_at),
+                            json!(run_id),
+                            json!(old_status),
+                            json!(old_status),
+                        ],
                     )
                     .await?;
             }
-            if let Some(audit) = payload.get("audit") {
+            if let Some(audit) = audit {
                 insert_payroll_audit_log(turso, audit).await?;
             }
         }

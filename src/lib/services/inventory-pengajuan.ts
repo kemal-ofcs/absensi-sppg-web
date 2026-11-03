@@ -53,6 +53,7 @@ import {
   validatePemutus,
   validatePenerimaan,
   validatePengajuan,
+  validatePengubah,
 } from "@/lib/validations/inventory-pengajuan";
 
 /**
@@ -133,13 +134,28 @@ async function statusPengajuanDb(
   });
 }
 
-async function wajibMenunggu(tx: Executor, idPengajuan: string) {
+async function wajibMenunggu(
+  tx: Executor,
+  idPengajuan: string,
+  operator: string,
+  superadmin: boolean,
+) {
   const status = await statusPengajuanDb(tx, idPengajuan);
   if (status !== "Menunggu") {
     throw new Error(
       `Pengajuan ini berstatus ${status} dan tidak bisa diubah lagi.`,
     );
   }
+  const pengaju = await tx.execute({
+    sql: "SELECT diajukan_oleh FROM inventory_pengajuan WHERE id_pengajuan = ?;",
+    args: [idPengajuan],
+  });
+  const pengubah = validatePengubah(
+    String(pengaju.rows[0]?.diajukan_oleh ?? ""),
+    operator,
+    superadmin,
+  );
+  if (!pengubah.ok) throw new Error(pengubah.error);
 }
 
 /** Cermin `isi_barang_terdaftar`. */
@@ -200,6 +216,7 @@ async function tulisBaris(
 export async function savePengajuan(
   client: Client,
   operator: string,
+  superadmin: boolean,
   raw: unknown,
 ): Promise<{ sukses: true; id_pengajuan: string }> {
   const parsed = pengajuanDraftSchema.safeParse(raw);
@@ -229,7 +246,7 @@ export async function savePengajuan(
 
     let idPengajuan = draft.id_pengajuan?.trim() || null;
     if (idPengajuan) {
-      await wajibMenunggu(tx, idPengajuan);
+      await wajibMenunggu(tx, idPengajuan, operator, superadmin);
       await tx.execute({
         sql: `UPDATE inventory_pengajuan SET tanggal = ?, keperluan = ?, sumber_dana = ?,
                      catatan = ?, sidik_baris = ?, cara_bayar = ?, updated_at = datetime('now')
@@ -286,6 +303,7 @@ export async function savePengajuan(
 export async function cancelPengajuan(
   client: Client,
   operator: string,
+  superadmin: boolean,
   idPengajuan: string,
   alasan: string,
 ): Promise<{ sukses: true }> {
@@ -293,7 +311,7 @@ export async function cancelPengajuan(
   if (!valid.ok) throw new Error(valid.error);
   const id = idPengajuan.trim();
   return withTransaction(client, async (tx) => {
-    await wajibMenunggu(tx, id);
+    await wajibMenunggu(tx, id, operator, superadmin);
     await tx.execute({
       sql: `UPDATE inventory_pengajuan SET dibatalkan_pada = datetime('now', '+7 hours'),
                    dibatalkan_oleh = ?, alasan_batal = ?, updated_at = datetime('now')

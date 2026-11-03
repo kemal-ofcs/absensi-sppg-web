@@ -5,17 +5,21 @@ import {
   angkaDariSelAngka,
   type BarangInfo,
   bacaAtribut,
+  bacaDrafOpname,
   bacaLabelInventaris,
   barangDraftSchema,
+  type DrafOpname,
   formatAngka,
   formatJumlah,
   formatKodeBarang,
   formatKodeUnit,
+  gabungDrafOpname,
   type IzinInventaris,
   idJurnalInventaris,
   idJurnalServis,
   idMutasiKondisiServis,
   isAngkaKanonik,
+  isiLabelDus,
   isiLabelInventaris,
   isMutasiServis,
   isValidDate,
@@ -24,6 +28,7 @@ import {
   jenisBeritaAcara,
   jumlahDariKetikan,
   jumlahDariSelAngka,
+  jumlahLabelDus,
   jurnalInventarisDraftSchema,
   keteranganJurnalInventaris,
   keteranganJurnalServis,
@@ -38,6 +43,7 @@ import {
   pasanganAkunJurnalInventaris,
   pasanganAkunJurnalServis,
   rekapSumberDana,
+  rencanaLabelDus,
   type StatusKedaluwarsa,
   servisDraftSchema,
   statusKedaluwarsa,
@@ -906,6 +912,158 @@ describe("label QR inventaris", () => {
     expect(
       aksiPindaiOpname(baris, { id_barang: "meja", tipe: "Aset" }),
     ).toEqual({ jenis: "baru" });
+  });
+
+  test("rencana label dus membawa sisa di label terakhir", () => {
+    expect(jumlahLabelDus(3050, 100)).toBe(31);
+    const rencana = rencanaLabelDus(3050, 100);
+    expect(rencana).toHaveLength(31);
+    expect(rencana[0]).toEqual({ isi: 100, nomor: 1, total: 31 });
+    expect(rencana[30]).toEqual({ isi: 50, nomor: 31, total: 31 });
+    expect(rencana.reduce((jumlah, label) => jumlah + label.isi, 0)).toBe(3050);
+    expect(rencanaLabelDus(3000, 3000)).toEqual([
+      { isi: 3000, nomor: 1, total: 1 },
+    ]);
+  });
+
+  test("label dus tanpa | dan label lama tetap terbaca", () => {
+    const isi = isiLabelDus("brg-a", 100, "A3F9", 7);
+    expect(isi).toBe("INV:brg-a#100#A3F9-7");
+    expect(isi).not.toContain("|");
+    expect(bacaLabelInventaris(isi, barang)).toEqual({
+      ok: true,
+      value: {
+        barang: barang[0],
+        id_unit: null,
+        dus: { isi: 100, kode: "A3F9", nomor: 7, kunci: "brg-a#A3F9-7" },
+      },
+    });
+    expect(bacaLabelInventaris("INV:brg-x#100#A3F9-7", barang).ok).toBe(false);
+    expect(bacaLabelInventaris("INV:brg-a#0#A3F9-7", barang).ok).toBe(false);
+    // Id yang kebetulan berisi # tetap menang sebagai label barang biasa.
+    const unik = { id_barang: "a#1#B-2", kode_barang: "X" };
+    expect(bacaLabelInventaris("INV:a#1#B-2", [unik])).toEqual({
+      ok: true,
+      value: { barang: unik, id_unit: null },
+    });
+  });
+
+  test("pindai dus menambah isi dan menolak dus yang sama", () => {
+    const pulpen = {
+      id_barang: "pulpen",
+      tipe: "Habis Pakai" as const,
+      desimal: false,
+    };
+    const baris = [
+      {
+        kunci: "p",
+        barang: pulpen,
+        kondisi: "Baik",
+        id_batch: null,
+        fisik: "3.000",
+        dipindai: false,
+      },
+    ];
+    const dus = { isi: 100, kunci: "pulpen#A3F9-1" };
+    // Pindaian pertama memulai dari isi dus, bukan dari saldo sistem.
+    expect(aksiPindaiOpname(baris, pulpen, null, dus)).toEqual({
+      jenis: "hitung",
+      kunci: "p",
+      fisik: 100,
+    });
+    const sudah = [{ ...baris[0], fisik: "1.900", dipindai: true }];
+    expect(aksiPindaiOpname(sudah, pulpen, null, dus)).toEqual({
+      jenis: "hitung",
+      kunci: "p",
+      fisik: 2000,
+    });
+    expect(
+      aksiPindaiOpname(sudah, pulpen, null, dus, new Set([dus.kunci])),
+    ).toEqual({ jenis: "dus-ganda" });
+    expect(aksiPindaiOpname([], pulpen, null, dus)).toEqual({
+      jenis: "dus-baru",
+      fisik: 100,
+    });
+    // Barang desimal: isi dan fisik sama-sama tersimpan ×100.
+    const beras = { ...pulpen, id_barang: "beras", desimal: true };
+    expect(
+      aksiPindaiOpname(
+        [{ ...baris[0], barang: beras, fisik: "2,5", dipindai: true }],
+        beras,
+        null,
+        { isi: 250, kunci: "beras#A-1" },
+      ),
+    ).toEqual({ jenis: "hitung", kunci: "p", fisik: 500 });
+    // Dus tidak menunjuk batch, jadi barang berkedaluwarsa tetap diketik.
+    const obat = { ...pulpen, id_barang: "obat", bisa_expired: true };
+    expect(
+      aksiPindaiOpname(
+        [{ ...baris[0], barang: obat, id_batch: "b1" }],
+        obat,
+        null,
+        dus,
+      ),
+    ).toEqual({ jenis: "fokus", kunci: "p" });
+    // Barang per unit tetap wajib label unit.
+    expect(
+      aksiPindaiOpname(baris, { ...pulpen, dilacak_unit: true }, null, dus),
+    ).toEqual({ jenis: "pakai-label-unit" });
+  });
+
+  test("draf opname yang rusak diabaikan", () => {
+    const draf = {
+      versi: 1,
+      tempat: "Gudang",
+      tanggal: "2026-10-31",
+      catatan: "",
+      dus: ["pulpen#A-1"],
+      baris: [
+        {
+          id_barang: "pulpen",
+          kondisi: "Baik",
+          id_batch: null,
+          fisik: "100",
+          dipindai: true,
+        },
+      ],
+    };
+    expect(bacaDrafOpname(JSON.stringify(draf))).toEqual(draf as DrafOpname);
+    expect(bacaDrafOpname(null)).toBeNull();
+    expect(bacaDrafOpname("{rusak")).toBeNull();
+    expect(bacaDrafOpname("null")).toBeNull();
+    expect(bacaDrafOpname(JSON.stringify({ ...draf, versi: 2 }))).toBeNull();
+    expect(bacaDrafOpname(JSON.stringify({ ...draf, dus: [1] }))).toBeNull();
+    expect(
+      bacaDrafOpname(JSON.stringify({ ...draf, baris: [{ fisik: "1" }] })),
+    ).toBeNull();
+  });
+
+  test("draf ditimpakan ke saldo terbaru tanpa menyentuh baris lain", () => {
+    const dasar = [
+      { kunci: "a|Baik|", fisik: "10", dipindai: false },
+      { kunci: "b|Baik|", fisik: "20", dipindai: false },
+    ];
+    const entri = (id_barang: string, fisik: string) => ({
+      id_barang,
+      kondisi: "Baik",
+      id_batch: null,
+      fisik,
+      dipindai: true,
+    });
+    const hasil = gabungDrafOpname(
+      dasar,
+      [entri("a", "7"), entri("c", "5"), entri("hilang", "1")],
+      (e) =>
+        e.id_barang === "hilang"
+          ? null
+          : { kunci: `${e.id_barang}|Baik|`, fisik: e.fisik, dipindai: true },
+    );
+    expect(hasil.dibuang).toBe(1);
+    expect(hasil.baris).toEqual([
+      { kunci: "a|Baik|", fisik: "7", dipindai: true },
+      { kunci: "b|Baik|", fisik: "20", dipindai: false },
+      { kunci: "c|Baik|", fisik: "5", dipindai: true },
+    ]);
   });
 });
 

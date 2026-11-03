@@ -557,13 +557,15 @@ export async function saveItemTx(
   let idBarang = requestedId ?? idBaru ?? newHexId("brg-");
   if (requestedId) {
     const existing = await tx.execute({
-      sql: "SELECT satuan, bisa_expired, desimal FROM inventory_barang WHERE id_barang = ?;",
+      sql: "SELECT satuan, bisa_expired, desimal, tipe FROM inventory_barang WHERE id_barang = ?;",
       args: [requestedId],
     });
     const row = existing.rows[0];
     if (!row) throw new Error("Barang tidak ditemukan.");
-    // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100).
+    // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100), dan
+    // tipe menentukan kondisi serta unit. Cermin `save_item_tx`.
     const berubah =
+      String(row.tipe) !== valid.tipe ||
       String(row.satuan) !== valid.satuan ||
       (Number(row.bisa_expired) === 1) !== valid.bisa_expired ||
       (Number(row.desimal) === 1) !== valid.desimal;
@@ -574,7 +576,7 @@ export async function saveItemTx(
       });
       if (Number(history.rows[0]?.ada) === 1) {
         throw new Error(
-          "Satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
+          "Tipe, satuan, desimal, dan pengaturan kedaluwarsa tidak bisa diubah setelah barang punya riwayat mutasi.",
         );
       }
     }
@@ -978,11 +980,12 @@ async function recordSatu(
 
     if (valid.penerima_tipe === "Personil" && valid.penerima_id) {
       const result = await tx.execute({
-        sql: "SELECT nama FROM master_data WHERE id_unik = ?;",
+        sql: "SELECT nama FROM master_data WHERE id_unik = ? AND status_aktif = 'Aktif';",
         args: [valid.penerima_id],
       });
       const nama = text(result.rows[0]?.nama);
-      if (nama === null) throw new Error("Penerima tidak ditemukan.");
+      if (nama === null)
+        throw new Error("Penerima tidak ditemukan atau sudah nonaktif.");
       valid.penerima_nama = nama;
     } else if (valid.penerima_tipe === "Divisi") {
       // Cermin Rust: ejaan divisi diambil dari data personil.

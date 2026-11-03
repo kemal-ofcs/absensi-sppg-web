@@ -6,6 +6,7 @@ import {
   isValidPeriode,
   komponenKasbon,
   type PinjamanDraft,
+  periksaPotonganPayroll,
   pinjamanDraftSchema,
   potongKasbon,
   susunJurnalPayroll,
@@ -115,6 +116,57 @@ describe("validatePelunasan", () => {
       "Jumlah pelunasan melebihi sisa pinjaman Rp0.",
     );
     expect(hasil(validatePelunasan(100, 100))).toBe(100);
+  });
+});
+
+describe("periksaPotonganPayroll", () => {
+  const tercatat = new Map([
+    ["a", { status: "Disetujui", nama: "Budi", sisa: 500 }],
+    ["b", { status: "Dibatalkan", nama: "Sari", sisa: 0 }],
+  ]);
+  test("kasbon aktif dan cukup sisa", () => {
+    expect(
+      hasil(
+        periksaPotonganPayroll(
+          [
+            { id_pinjaman: "a", jumlah: 300 },
+            { id_pinjaman: "a", jumlah: 200 },
+          ],
+          tercatat,
+        ),
+      ),
+    ).toBe(null);
+  });
+  test("kasbon dibatalkan atau tidak ada", () => {
+    expect(
+      hasil(
+        periksaPotonganPayroll([{ id_pinjaman: "b", jumlah: 1 }], tercatat),
+      ),
+    ).toBe(
+      "Kasbon Sari sudah tidak aktif. Tolak proses gaji ini lalu buat ulang.",
+    );
+    expect(
+      hasil(
+        periksaPotonganPayroll([{ id_pinjaman: "x", jumlah: 1 }], tercatat),
+      ),
+    ).toBe(
+      "Kasbon x sudah tidak aktif. Tolak proses gaji ini lalu buat ulang.",
+    );
+  });
+  test("total potongan melebihi sisa", () => {
+    expect(
+      hasil(
+        periksaPotonganPayroll(
+          [
+            { id_pinjaman: "a", jumlah: 300 },
+            { id_pinjaman: "a", jumlah: 201 },
+          ],
+          tercatat,
+        ),
+      ),
+    ).toBe(
+      "Potongan kasbon Budi melebihi sisa pinjamannya Rp500. Tolak proses gaji ini lalu buat ulang.",
+    );
   });
 });
 
