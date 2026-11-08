@@ -166,9 +166,9 @@ function NavigationLink({
       href={item.href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
-      className={`group flex min-h-10 items-center gap-2.5 rounded-xl px-3 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
+      className={`flex min-h-11 items-center gap-2.5 rounded-lg px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:min-h-9 ${
         active
-          ? "bg-sky-400 text-slate-950 shadow-lg shadow-sky-950/20"
+          ? "bg-sky-400/15 text-sky-200"
           : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
       }`}
     >
@@ -343,7 +343,7 @@ export function HeaderBar({
 
       <aside
         id="app-sidebar"
-        className={`fixed bottom-0 left-0 top-16 z-40 hidden w-64 flex-col overflow-y-auto overscroll-contain border-r border-white/10 bg-slate-950/90 px-3 pb-6 pt-2 shadow-xl shadow-slate-950/30 backdrop-blur-xl ${
+        className={`fixed bottom-0 left-0 top-16 z-40 hidden w-64 flex-col overflow-y-auto overscroll-contain border-r border-white/10 bg-slate-950 px-2 pb-4 pt-1 ${
           sidebarOverlayOpen ? "lg:flex" : ""
         } ${sidebarPinned ? "xl:flex" : "xl:hidden"}`}
       >
@@ -352,13 +352,16 @@ export function HeaderBar({
             const open = openGroup === group.label;
             const panelId = `sidebar-group-${group.label.replace(/\W+/g, "-").toLowerCase()}`;
             return (
-              <div key={group.label} className="pt-2">
+              <div
+                key={group.label}
+                className="border-t border-white/10 py-1 first:border-t-0"
+              >
                 <button
                   type="button"
                   aria-expanded={open}
                   aria-controls={panelId}
                   onClick={() => setOpenGroup(open ? null : group.label)}
-                  className="flex min-h-9 w-full items-center justify-between gap-2 rounded-xl px-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400 transition hover:bg-white/[0.05] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                  className="flex min-h-9 w-full items-center justify-between gap-2 rounded-lg px-3 text-xs font-bold text-slate-400 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
                 >
                   <span className="truncate">{group.label}</span>
                   <Icon
@@ -367,7 +370,7 @@ export function HeaderBar({
                   />
                 </button>
                 {open ? (
-                  <div id={panelId} className="grid gap-0.5 pt-1">
+                  <div id={panelId} className="space-y-0.5 pb-1">
                     {group.items.map((item) => (
                       <NavigationLink
                         key={item.href}
