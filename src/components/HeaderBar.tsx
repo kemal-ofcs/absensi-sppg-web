@@ -4,133 +4,18 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { BrandLogo } from "@/components/ui/BrandLogo";
-import { Icon, type IconName } from "@/components/ui/Icon";
+import { Icon } from "@/components/ui/Icon";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { type AppArea, canAccessArea } from "@/lib/auth/access";
 import { BRANDING } from "@/lib/constants/branding";
+import {
+  NAVIGATION_GROUPS,
+  type NavigationItem,
+} from "@/lib/constants/navigation";
 import { useAuth } from "@/lib/context/AuthContext";
 import { useAppName } from "@/lib/hooks/useAppName";
 import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
-
-interface NavigationItem {
-  area: AppArea;
-  href: string;
-  icon: IconName;
-  label: string;
-}
-
-interface NavigationGroup {
-  label: string;
-  items: NavigationItem[];
-}
-
-const NAVIGATION_GROUPS: NavigationGroup[] = [
-  {
-    label: "Absensi",
-    items: [
-      { area: "home", href: "/", icon: "home", label: "Home" },
-      {
-        area: "scanner",
-        href: "/scanner",
-        icon: "scanner",
-        label: "QR Scanner",
-      },
-      {
-        area: "dashboard",
-        href: "/dashboard",
-        icon: "dashboard",
-        label: "Dashboard",
-      },
-      { area: "history", href: "/history", icon: "clock", label: "Riwayat" },
-      {
-        area: "audit",
-        href: "/audit-absensi",
-        icon: "alert",
-        label: "Audit Absensi",
-      },
-      {
-        area: "attendance_photo",
-        href: "/foto-absensi",
-        icon: "eye",
-        label: "Foto Absensi",
-      },
-      {
-        area: "face_template",
-        href: "/wajah",
-        icon: "user",
-        label: "Pendaftaran Wajah",
-      },
-      {
-        area: "operational",
-        href: "/operational",
-        icon: "tools",
-        label: "Operasional",
-      },
-    ],
-  },
-  {
-    label: "SDM",
-    items: [
-      { area: "karyawan", href: "/karyawan", icon: "user", label: "Karyawan" },
-      { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
-      { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
-      {
-        area: "holidays",
-        href: "/holidays",
-        icon: "calendar",
-        label: "Hari Libur",
-      },
-      {
-        area: "payroll",
-        href: "/payroll",
-        icon: "document",
-        label: "Penggajian",
-      },
-      { area: "kasbon", href: "/kasbon", icon: "users", label: "Kasbon" },
-    ],
-  },
-  {
-    label: "Keuangan & Aset",
-    items: [
-      {
-        area: "keuangan",
-        href: "/keuangan",
-        icon: "document",
-        label: "Keuangan",
-      },
-      {
-        area: "inventaris",
-        href: "/inventaris",
-        icon: "box",
-        label: "Inventaris",
-      },
-    ],
-  },
-  {
-    label: "Sistem",
-    items: [
-      {
-        area: "operators",
-        href: "/operators",
-        icon: "users",
-        label: "Operator",
-      },
-      {
-        area: "password_reset",
-        href: "/riwayat-reset-password",
-        icon: "lock",
-        label: "Riwayat Reset",
-      },
-      {
-        area: "settings",
-        href: "/settings",
-        icon: "settings",
-        label: "Pengaturan",
-      },
-    ],
-  },
-];
 
 const MOBILE_FIXED_AREAS = new Set<AppArea>(["home", "scanner", "dashboard"]);
 
