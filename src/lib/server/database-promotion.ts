@@ -232,6 +232,11 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
   },
   // Tutup buku (v23): potret saldo per tanggal batas.
   { table: "keu_tutup_buku", uniqueColumns: [], dependsOn: ["keu_akun"] },
+  // Notifikasi Telegram (v33): pengaturan bot ikut pindah seperti
+  // `app_mail_config`; riwayat pesan ikut pindah supaya kejadian yang sudah
+  // terkirim tidak dicatat dan dikirim ulang dari database tujuan.
+  { table: "app_telegram_setting", uniqueColumns: [], dependsOn: [] },
+  { table: "notifikasi_telegram", uniqueColumns: [], dependsOn: [] },
 ];
 
 /**

@@ -897,6 +897,73 @@ pub async fn desktop_save_mail_config(
         .await
 }
 
+/// Konfigurasi notifikasi Telegram memegang token bot: hanya Superadmin.
+fn require_telegram_admin(state: &DesktopState) -> Result<(), CommandError> {
+    let operator = require_permission(state, "settings.manage")?;
+    if !operator.is_superadmin {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Pengaturan notifikasi Telegram hanya dapat diakses Superadmin.",
+        ));
+    }
+    Ok(())
+}
+
+/// Konfigurasi notifikasi Telegram (cloud-only); token tidak pernah dikembalikan.
+#[tauri::command]
+pub async fn desktop_get_telegram_config(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_telegram_admin(&state)?;
+    let turso = state.get_turso_client()?;
+    super::telegram::get_config(&turso).await
+}
+
+/// Simpan konfigurasi Telegram. Draft berbentuk `TelegramConfigDraft`.
+#[tauri::command]
+pub async fn desktop_save_telegram_config(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_telegram_admin(&state)?;
+    let turso = state.get_turso_client()?;
+    super::telegram::save_config(&turso, &draft).await
+}
+
+/// Grup yang terlihat bot dalam 24 jam terakhir. `botToken` kosong = token tersimpan.
+#[tauri::command]
+pub async fn desktop_find_telegram_groups(
+    state: State<'_, DesktopState>,
+    bot_token: String,
+) -> Result<Value, CommandError> {
+    require_telegram_admin(&state)?;
+    let turso = state.get_turso_client()?;
+    super::telegram::find_groups(&turso, &state.http, &bot_token).await
+}
+
+/// Kirim pesan uji ke satu grup. `input` = `{ bidang, chatId, botToken }`.
+#[tauri::command]
+pub async fn desktop_send_telegram_test(
+    state: State<'_, DesktopState>,
+    input: Value,
+) -> Result<Value, CommandError> {
+    require_telegram_admin(&state)?;
+    let turso = state.get_turso_client()?;
+    super::telegram::send_test(&turso, &state.http, &input).await
+}
+
+/// Satu siklus pengirim Telegram, dipanggil `AutoTelegramRunner` dari setiap
+/// sesi yang login: isi dan tujuan pesan sepenuhnya diatur Superadmin.
+#[tauri::command]
+pub async fn desktop_drain_telegram(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_session(&state)?;
+    let client_id = super::sync::ensure_client_id(&state)?;
+    let turso = state.get_turso_client()?;
+    super::telegram::drain(&turso, &state.http, &client_id).await
+}
+
 /// Pengelolaan verifikasi dua langkah.
 ///
 /// `status`, `begin`, `confirm`, dan `disable` selalu bekerja pada akun

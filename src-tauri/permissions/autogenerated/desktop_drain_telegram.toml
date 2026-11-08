@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-drain-telegram"
+description = "Enables the desktop_drain_telegram command without any pre-configured scope."
+commands.allow = ["desktop_drain_telegram"]
+
+[[permission]]
+identifier = "deny-desktop-drain-telegram"
+description = "Denies the desktop_drain_telegram command without any pre-configured scope."
+commands.deny = ["desktop_drain_telegram"]

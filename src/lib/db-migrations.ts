@@ -38,6 +38,7 @@ const INVENTORY_SERVICE_MIGRATION_VERSION = 29;
 const INVENTORY_REQUEST_MIGRATION_VERSION = 30;
 const INVENTORY_INSTALLMENT_MIGRATION_VERSION = 31;
 const INVENTORY_ITEM_DELETE_MIGRATION_VERSION = 32;
+const TELEGRAM_NOTIFICATION_MIGRATION_VERSION = 33;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -1654,6 +1655,39 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'inventory-item-delete', ?);`,
     args: [INVENTORY_ITEM_DELETE_MIGRATION_VERSION, now],
+  });
+
+  // v33: notifikasi grup Telegram, cloud-only seperti `app_mail_config`. DDL
+  // WAJIB identik dengan `turso.rs`. `kejadian` tanpa CHECK: barisnya hanya
+  // ditulis pengirim (`services/telegram.ts`).
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS app_telegram_setting (
+      kunci TEXT PRIMARY KEY,
+      nilai TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS notifikasi_telegram (
+      id_notifikasi TEXT PRIMARY KEY,
+      kejadian TEXT NOT NULL,
+      isi_pesan TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Menunggu' CHECK (status IN ('Menunggu', 'Terkirim', 'Gagal', 'Dibatalkan')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      klaim_oleh TEXT,
+      klaim_sampai TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      sent_at TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_notifikasi_telegram_status ON notifikasi_telegram(status, created_at);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'telegram-notification', ?);`,
+    args: [TELEGRAM_NOTIFICATION_MIGRATION_VERSION, now],
   });
 
   await client.execute(

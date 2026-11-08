@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { DatabaseBackupCard } from "@/components/DatabaseBackupCard";
 import { LicenseCard } from "@/components/license/LicenseCard";
 import { MailSettingsCard } from "@/components/MailSettingsCard";
+import { NotifikasiTelegramCard } from "@/components/NotifikasiTelegramCard";
 import { PasswordRecoveryCard } from "@/components/PasswordRecoveryCard";
 import { TwoFactorCard } from "@/components/TwoFactorCard";
 import { BrandLogo } from "@/components/ui/BrandLogo";
@@ -140,6 +141,7 @@ const SETTINGS_TABS = [
   { id: "akun", icon: "lock", label: "Akun & Keamanan" },
   { id: "absensi", icon: "scanner", label: "Absensi" },
   { id: "data", icon: "database", label: "Data & Sinkronisasi" },
+  { id: "notifikasi", icon: "share", label: "Notifikasi" },
   { id: "lisensi", icon: "document", label: "Lisensi" },
 ] as const;
 
@@ -1177,6 +1179,8 @@ export default function SettingsPage() {
         (isDesktopSyncAvailable() && hasPermission(user, "sync.view"))
       );
     }
+    // Konfigurasi Telegram memegang token bot: hanya Superadmin.
+    if (id === "notifikasi") return isSuperadmin;
     // LicenseCard tidak merender apa pun pada build Web tanpa penegakan lisensi.
     if (id === "lisensi") return isSuperadmin && Boolean(licenseStatus);
     return true;
@@ -1391,6 +1395,12 @@ export default function SettingsPage() {
           <div hidden={activeTab !== "lisensi"}>
             <LicenseCard />
           </div>
+
+          {isSuperadmin ? (
+            <div hidden={activeTab !== "notifikasi"}>
+              <NotifikasiTelegramCard />
+            </div>
+          ) : null}
 
           {hasPermission(user, "settings.manage") ? (
             <section

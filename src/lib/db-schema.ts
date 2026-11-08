@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 32;
-export const REQUIRED_TABLE_COUNT = 57;
+export const CURRENT_SCHEMA_VERSION = 33;
+export const REQUIRED_TABLE_COUNT = 59;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -30,6 +30,7 @@ export async function isDatabaseSchemaReady(client: Client) {
             'keu_cicilan', 'keu_cicilan_jadwal', 'keu_cicilan_bayar', 'keu_cicilan_bayar_batal',
             'keu_akun', 'keu_jurnal', 'keu_jurnal_baris',
             'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
+            'app_telegram_setting', 'notifikasi_telegram',
             'keu_tutup_buku'
           )
         ) AS table_count;

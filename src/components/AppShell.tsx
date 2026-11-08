@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { useAuth } from "@/lib/context/AuthContext";
 import { AutoAlfaRunner } from "./AutoAlfaRunner";
 import { AutoSyncRunner } from "./AutoSyncRunner";
+import { AutoTelegramRunner } from "./AutoTelegramRunner";
 import { HeaderBar } from "./HeaderBar";
 import { LicenseNotice } from "./license/LicenseNotice";
 import { AuroraBackground } from "./visual/AuroraBackground";
@@ -45,6 +46,7 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
       <AuroraBackground />
       <AutoAlfaRunner />
       <AutoSyncRunner />
+      <AutoTelegramRunner />
       <a
         href="#main-content"
         className="fixed left-4 top-3 z-[100] -translate-y-20 rounded-lg bg-white px-3 py-2 text-sm font-bold text-slate-950 shadow-xl transition-transform focus:translate-y-0"

@@ -1519,6 +1519,37 @@ impl TursoClient {
                 "INSERT OR IGNORE INTO app_mail_config (id, provider, is_active, updated_at, updated_by) VALUES ('default', 'resend', 0, datetime('now'), 'rust-bootstrap');",
                 vec![],
             ),
+            // Notifikasi grup Telegram (v33, cloud-only, `telegram.rs`). Token
+            // bot hanya di sini, tidak pernah ke SQLite perangkat. `kejadian`
+            // tanpa CHECK: barisnya hanya ditulis pengirim, dan kejadian baru
+            // tidak perlu membangun ulang tabel.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS app_telegram_setting (
+                    kunci TEXT PRIMARY KEY,
+                    nilai TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS notifikasi_telegram (
+                    id_notifikasi TEXT PRIMARY KEY,
+                    kejadian TEXT NOT NULL,
+                    isi_pesan TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Menunggu' CHECK (status IN ('Menunggu', 'Terkirim', 'Gagal', 'Dibatalkan')),
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    klaim_oleh TEXT,
+                    klaim_sampai TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sent_at TEXT
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_notifikasi_telegram_status ON notifikasi_telegram(status, created_at);",
+                vec![],
+            ),
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS master_data (
                     id_unik TEXT PRIMARY KEY,
@@ -3108,6 +3139,17 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // Notifikasi grup Telegram (v33).
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (33, 'telegram-notification', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2029, 'telegram-notification-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -3304,7 +3346,7 @@ impl TursoClient {
         Ok(())
     }
 
-    async fn ensure_schema_current(&self) -> Result<(), CommandError> {
+    pub(crate) async fn ensure_schema_current(&self) -> Result<(), CommandError> {
         let cache_key = self.base_url.as_str().to_owned();
         if schema_verified_cache()
             .lock()
@@ -3322,7 +3364,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2028;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2029;",
                 vec![],
             )
             .await
@@ -10740,7 +10782,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
@@ -10780,7 +10822,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
@@ -10819,7 +10861,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
@@ -10859,7 +10901,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
@@ -10896,7 +10938,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
@@ -10934,7 +10976,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
                 )
                 .expect("siapkan database lama");
 
