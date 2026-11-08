@@ -3255,6 +3255,25 @@ fn current_iso(connection: &rusqlite::Connection) -> String {
 
 const DEFAULT_CARD_TERMS: &str = "1. This card is the official identification of your company's employees/personnel.\n2. Must be carried and scanned (QR scan) every time you arrive and leave work.\n3. It is prohibited to transfer or lend this card to other parties.\n4. If the card is lost or found, please report it immediately to the HR/Operations Department.";
 
+/// Nama dan logo saja, untuk layar login. Tidak menyeed baris (aturan 29).
+pub fn get_company_branding(state: &DesktopState) -> Result<Value, CommandError> {
+    let connection = storage::database(&state.data_dir)?;
+    let row: Option<(Option<String>, Option<String>)> = connection
+        .query_row(
+            "SELECT company_name, logo_url FROM company_profile WHERE id = 'default_company' LIMIT 1;",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?;
+    let (company_name, logo_url) = row.unwrap_or((None, None));
+    let non_empty = |value: Option<String>| value.filter(|text| !text.trim().is_empty());
+    Ok(json!({
+        "company_name": non_empty(company_name),
+        "logo_url": non_empty(logo_url),
+    }))
+}
+
 pub fn get_company_profile(state: &DesktopState) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let result = connection

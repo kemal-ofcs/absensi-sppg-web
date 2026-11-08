@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { BRANDING } from "@/lib/constants/branding";
-import { getCompanyProfile } from "@/lib/gateways/company-profile";
+import { getCompanyBranding } from "@/lib/gateways/company-profile";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 
 /**
@@ -60,7 +60,7 @@ function setSnapshot(name: string) {
 function refreshFromProfile() {
   if (refreshInFlight) return;
   refreshInFlight = true;
-  getCompanyProfile()
+  getCompanyBranding()
     .then((profile) => {
       const next = profile.company_name?.trim() || BRANDING.defaultCompanyName;
       writeCache(next);

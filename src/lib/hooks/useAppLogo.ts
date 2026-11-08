@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { getCompanyProfile } from "@/lib/gateways/company-profile";
+import { getCompanyBranding } from "@/lib/gateways/company-profile";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 
 /**
@@ -55,7 +55,7 @@ function setSnapshot(logo: string | null) {
 function refreshFromProfile() {
   if (refreshInFlight) return;
   refreshInFlight = true;
-  getCompanyProfile()
+  getCompanyBranding()
     .then((profile) => {
       const next = profile.logo_url?.trim() ? profile.logo_url : null;
       writeCache(next);

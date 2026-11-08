@@ -3,9 +3,23 @@ import "server-only";
 import { BRANDING } from "@/lib/constants/branding";
 import { db, ensureDbInitialized } from "@/lib/db";
 import type {
+  CompanyBranding,
   CompanyProfile,
   CompanyProfileInput,
 } from "@/types/company-profile";
+
+/** Tidak menyeed baris: lihat aturan 29 (`company_profile` dibuat saat disunting). */
+export async function getCompanyBranding(): Promise<CompanyBranding> {
+  await ensureDbInitialized();
+  const res = await db.execute(
+    "SELECT company_name, logo_url FROM company_profile WHERE id = 'default_company' LIMIT 1;",
+  );
+  const row = res.rows[0];
+  return {
+    company_name: row?.company_name ? String(row.company_name) : null,
+    logo_url: row?.logo_url ? String(row.logo_url) : null,
+  };
+}
 
 export async function getCompanyProfile(): Promise<CompanyProfile> {
   await ensureDbInitialized();

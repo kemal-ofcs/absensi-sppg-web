@@ -2057,6 +2057,13 @@ pub fn desktop_get_attendance_audit(
     operational::get_attendance_audit(&state, tanggal)
 }
 
+/// Sengaja tanpa `require_permission`: nama dan logo tampil di layar login,
+/// sebelum ada sesi. Jangan tambahkan kolom profil lain ke sini.
+#[tauri::command]
+pub fn desktop_get_company_branding(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    operational::get_company_branding(&state)
+}
+
 #[tauri::command]
 pub fn desktop_get_company_profile(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
     require_permission(&state, "settings.manage")?;

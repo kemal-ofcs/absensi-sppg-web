@@ -25,10 +25,11 @@ async function prepare(request: NextRequest) {
   return actor;
 }
 
+// Baca sengaja tanpa sesi, sama dengan `desktop_get_app_display_name`: nama
+// aplikasi tampil di layar login. Mengubahnya (PUT) tetap butuh izin.
 export async function POST(request: NextRequest) {
   try {
     assertSameOriginMutation(request);
-    await requireWebPermission(request, "settings.manage", false);
     await ensureServerDatabaseInitialized();
     const data = await getAppDisplayName();
     return noStoreJson({ data });

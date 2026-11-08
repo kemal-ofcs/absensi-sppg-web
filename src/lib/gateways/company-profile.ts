@@ -4,14 +4,29 @@ import { requestWebApi } from "@/lib/client/api-client";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 import type {
+  CompanyBranding,
   CompanyProfile,
   CompanyProfileInput,
 } from "@/types/company-profile";
 
 export type {
+  CompanyBranding,
   CompanyProfile,
   CompanyProfileInput,
 } from "@/types/company-profile";
+
+/** Nama dan logo perusahaan, bisa dibaca sebelum login. */
+export async function getCompanyBranding(): Promise<CompanyBranding> {
+  if (isDesktopRuntime()) {
+    return invokeDesktop<CompanyBranding>("desktop_get_company_branding");
+  }
+  const response = await requestWebApi<{ data: CompanyBranding }>(
+    "/api/settings/company-branding/query",
+    "POST",
+    {},
+  );
+  return response.data;
+}
 
 export async function getCompanyProfile(): Promise<CompanyProfile> {
   if (isDesktopRuntime()) {

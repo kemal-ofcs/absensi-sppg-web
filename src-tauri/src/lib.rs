@@ -198,6 +198,7 @@ pub fn run() {
             desktop::commands::desktop_save_alfa_settings,
             desktop::commands::desktop_trigger_generate_alfa,
             desktop::commands::desktop_get_attendance_audit,
+            desktop::commands::desktop_get_company_branding,
             desktop::commands::desktop_get_company_profile,
             desktop::commands::desktop_update_company_profile,
             desktop::commands::desktop_get_id_card_template,

@@ -177,6 +177,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_save_alfa_settings",
     "desktop_trigger_generate_alfa",
     "desktop_get_attendance_audit",
+    "desktop_get_company_branding",
     "desktop_get_company_profile",
     "desktop_update_company_profile",
     "desktop_get_id_card_template",

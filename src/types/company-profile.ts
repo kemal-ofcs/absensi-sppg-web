@@ -1,3 +1,12 @@
+/**
+ * Bagian profil yang dibaca TANPA sesi, untuk layar login. Hanya dua kolom
+ * ini: tanda tangan dan isian lain tetap di balik `settings.manage`.
+ */
+export interface CompanyBranding {
+  company_name: string | null;
+  logo_url: string | null;
+}
+
 export interface CompanyProfile {
   id: string;
   company_name: string;
