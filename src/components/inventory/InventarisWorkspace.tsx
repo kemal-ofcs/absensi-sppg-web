@@ -14,6 +14,7 @@ import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
+  type BarangDraft,
   type BarangInventaris,
   type BarisKartuStok,
   batalkanMutasiInventaris,
@@ -24,6 +25,7 @@ import {
   getKartuStok,
   getPenerimaInventaris,
   getPinjamanInventaris,
+  hapusBarangInventaris,
   type KartuStok,
   type PenerimaInventaris,
   type PosisiStok,
@@ -43,6 +45,7 @@ import {
   jenisBeritaAcara,
   jumlahDariKetikan,
   KONDISI_BARANG,
+  KONFIRMASI_HAPUS_PERMANEN,
   MAKS_KODE_PREFIX,
   normalizeKodePrefix,
   PENERIMA_TIPE,
@@ -141,6 +144,28 @@ const ALASAN_BAWAAN: Record<JenisMutasi, string> = {
   Pindah: "Distribusi",
 };
 
+/** Draft simpan yang membawa semua isi barang apa adanya, kecuali statusnya. */
+function draftDenganStatus(
+  barang: BarangInventaris,
+  statusAktif: boolean,
+): BarangDraft {
+  return {
+    id_barang: barang.id_barang,
+    kode_barang: barang.kode_barang,
+    nama_barang: barang.nama_barang,
+    kategori: barang.kategori,
+    tipe: barang.tipe,
+    satuan: barang.satuan,
+    bisa_expired: barang.bisa_expired,
+    desimal: barang.desimal,
+    stok_minimum: barang.stok_minimum,
+    tempat_utama: barang.tempat_utama,
+    catatan: barang.catatan,
+    status_aktif: statusAktif,
+    atribut: barang.atribut,
+  };
+}
+
 function awalBulan(tanggal: string): string {
   return `${tanggal.slice(0, 8)}01`;
 }
@@ -169,6 +194,7 @@ export function InventarisWorkspace({
   const canManage = hasPermission(user, "inventory.manage");
   const canRecord = hasPermission(user, "inventory.record");
   const canAdjust = hasPermission(user, "inventory.adjust");
+  const canDelete = hasPermission(user, "inventory.item.delete");
 
   const [data, setData] = useState<DaftarInventaris | null>(null);
   const [loading, setLoading] = useState(true);
@@ -238,6 +264,22 @@ export function InventarisWorkspace({
   };
   const galat = (message: string) => setFeedback({ tone: "error", message });
   const info = (message: string) => setFeedback({ tone: "success", message });
+  const jalankan = async (
+    kerja: () => Promise<unknown>,
+    berhasil: string,
+    gagal: string,
+  ) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    try {
+      await kerja();
+      await selesai(berhasil);
+    } catch (error) {
+      galat(pesanGalat(error, gagal));
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  };
 
   const unduhTemplate = async () => {
     if (!data) return;
@@ -514,6 +556,7 @@ export function InventarisWorkspace({
             data={data}
             canManage={canManage}
             canRecord={canRecord}
+            canDelete={canDelete}
             onTambah={() => setFormBarang("baru")}
             onAturAwalan={() => setAturAwalan(true)}
             onAturKolom={() => setAturKolom(true)}
@@ -537,6 +580,25 @@ export function InventarisWorkspace({
               setUnitAksi({ jenis: "ubah", barang, posisi })
             }
             onServis={setAksiServis}
+            onUbahStatus={(barang) =>
+              void jalankan(
+                () =>
+                  simpanBarangInventaris(
+                    draftDenganStatus(barang, !barang.status_aktif),
+                  ),
+                barang.status_aktif
+                  ? `${barang.nama_barang} dinonaktifkan. Riwayatnya tetap tersimpan.`
+                  : `${barang.nama_barang} aktif lagi.`,
+                "Status barang tidak bisa diubah.",
+              )
+            }
+            onHapus={(barang) =>
+              void jalankan(
+                () => hapusBarangInventaris(barang.id_barang),
+                `${barang.nama_barang} dihapus.`,
+                "Barang tidak bisa dihapus.",
+              )
+            }
           />
         ) : tab === "catat" ? (
           <FormMutasi
@@ -656,6 +718,7 @@ function DaftarBarang({
   data,
   canManage,
   canRecord,
+  canDelete,
   onTambah,
   onAturAwalan,
   onAturKolom,
@@ -669,11 +732,14 @@ function DaftarBarang({
   onDaftarkanUnit,
   onUbahUnit,
   onServis,
+  onUbahStatus,
+  onHapus,
 }: {
   filterAwal: FilterBarang;
   data: DaftarInventaris;
   canManage: boolean;
   canRecord: boolean;
+  canDelete: boolean;
   onTambah: () => void;
   onAturAwalan: () => void;
   onAturKolom: () => void;
@@ -688,6 +754,8 @@ function DaftarBarang({
   onDaftarkanUnit: (barang: BarangInventaris) => void;
   onUbahUnit: (barang: BarangInventaris, posisi: PosisiStok) => void;
   onServis: (aksi: AksiServis) => void;
+  onUbahStatus: (barang: BarangInventaris) => void;
+  onHapus: (barang: BarangInventaris) => void;
 }) {
   const [cari, setCari] = useState("");
   const [kategori, setKategori] = useState("");
@@ -1160,6 +1228,14 @@ function DaftarBarang({
                     onAksi={onServis}
                   />
                 ) : null}
+                {buka && canManage ? (
+                  <AksiBarang
+                    barang={barang}
+                    canDelete={canDelete}
+                    onUbahStatus={() => onUbahStatus(barang)}
+                    onHapus={() => onHapus(barang)}
+                  />
+                ) : null}
               </li>
             );
           })}
@@ -1171,6 +1247,102 @@ function DaftarBarang({
           namaPerusahaan={data.nama_perusahaan}
           onClose={() => setCetakLabel(false)}
         />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Nonaktifkan untuk barang yang sudah tidak dipakai (riwayatnya tetap ada);
+ * hapus untuk barang salah input atau barang nonaktif yang habis dipakai,
+ * diperiksa lagi oleh backend.
+ */
+function AksiBarang({
+  barang,
+  canDelete,
+  onUbahStatus,
+  onHapus,
+}: {
+  barang: BarangInventaris;
+  canDelete: boolean;
+  onUbahStatus: () => void;
+  onHapus: () => void;
+}) {
+  const [konfirmasi, setKonfirmasi] = useState(false);
+  const [ketikan, setKetikan] = useState("");
+  const idKetik = `inv-hapus-${barang.id_barang}`;
+
+  return (
+    <div className="space-y-2 border-t border-slate-800 pt-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-slate-400">
+          {barang.status_aktif
+            ? "Barang yang sudah tidak dipakai bisa dinonaktifkan. Riwayat dan kartu stoknya tetap tersimpan."
+            : "Barang ini nonaktif: tersembunyi dari daftar dan tidak bisa menerima barang masuk."}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={onUbahStatus} className={TOMBOL_KEDUA}>
+            {barang.status_aktif ? "Nonaktifkan" : "Aktifkan"}
+          </button>
+          {canDelete && barang.bisa_dihapus && !konfirmasi ? (
+            <button
+              type="button"
+              onClick={() => setKonfirmasi(true)}
+              className={TOMBOL_BAHAYA}
+            >
+              Hapus
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {canDelete && !barang.bisa_dihapus ? (
+        <p className="text-xs text-slate-400">
+          {barang.status_aktif
+            ? "Untuk menghapus barang yang sudah pernah dipakai, nonaktifkan dulu dan pastikan stoknya 0."
+            : "Barang ini bisa dihapus setelah stoknya 0 dan semua pinjaman serta servisnya selesai."}
+        </p>
+      ) : null}
+      {konfirmasi ? (
+        <div className="space-y-2 rounded-lg border border-rose-500/30 bg-rose-500/20 p-3 text-rose-100">
+          <p className="font-semibold">Hapus {barang.nama_barang} permanen?</p>
+          <p>
+            Barang ini hilang dari daftar, label, dan impor di semua perangkat.
+            Riwayat mutasinya tetap ada di laporan. Kalau masih ragu, biarkan
+            nonaktif.
+          </p>
+          <div>
+            <label htmlFor={idKetik} className={LABEL}>
+              Ketik {KONFIRMASI_HAPUS_PERMANEN} untuk melanjutkan
+            </label>
+            <input
+              id={idKetik}
+              value={ketikan}
+              autoComplete="off"
+              onChange={(e) => setKetikan(e.target.value)}
+              className={INPUT}
+            />
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setKonfirmasi(false);
+                setKetikan("");
+              }}
+              className={TOMBOL_KEDUA}
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              disabled={ketikan.trim() !== KONFIRMASI_HAPUS_PERMANEN}
+              onClick={onHapus}
+              className={TOMBOL_BAHAYA}
+            >
+              Hapus permanen
+            </button>
+          </div>
+        </div>
       ) : null}
     </div>
   );

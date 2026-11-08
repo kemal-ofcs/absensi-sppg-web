@@ -2428,6 +2428,16 @@ pub fn desktop_inventory_delete_column(
     inventory::delete_column(&state, &id_kolom)
 }
 
+/// Hapus barang salah input: hanya bila tanpa unit dan setiap mutasinya dibatalkan.
+#[tauri::command]
+pub fn desktop_inventory_delete_item(
+    state: State<'_, DesktopState>,
+    id_barang: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "inventory.item.delete")?;
+    inventory::delete_item(&state, &id_barang)
+}
+
 #[tauri::command]
 pub fn desktop_inventory_record_mutation(
     state: State<'_, DesktopState>,

@@ -53,6 +53,7 @@ pub fn run() {
             desktop::commands::desktop_inventory_save_code_prefixes,
             desktop::commands::desktop_inventory_save_column,
             desktop::commands::desktop_inventory_delete_column,
+            desktop::commands::desktop_inventory_delete_item,
             desktop::commands::desktop_inventory_record_mutation,
             desktop::commands::desktop_inventory_loans,
             desktop::commands::desktop_inventory_document,

@@ -1694,6 +1694,94 @@ pub fn delete_column(state: &DesktopState, id_kolom: &str) -> Result<Value, Comm
     Ok(json!({ "sukses": true, "barang_dibersihkan": barang.len() }))
 }
 
+/// Barang salah input (`b` = `inventory_barang`): tanpa unit, dan setiap
+/// mutasinya sudah dibatalkan, sehingga barang itu tidak pernah meninggalkan
+/// stok maupun laporan. Hanya kode barang seperti ini yang bebas dipakai lagi
+/// setelah dihapus. Cermin `BARANG_SALAH_INPUT_SQL` di `services/inventory.ts`.
+macro_rules! barang_salah_input_sql {
+    () => {
+        "(NOT EXISTS (SELECT 1 FROM inventory_unit u WHERE u.id_barang = b.id_barang)
+    AND NOT EXISTS (SELECT 1 FROM inventory_mutasi m
+        WHERE m.id_barang = b.id_barang AND m.alasan <> 'Pembatalan'
+          AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)))"
+    };
+}
+const BARANG_SALAH_INPUT_SQL: &str = barang_salah_input_sql!();
+
+/// Barang yang boleh dihapus: salah input, atau barang nonaktif yang sudah
+/// selesai dipakai (setiap saldonya 0, tanpa pinjaman yang belum kembali, tanpa
+/// servis terbuka). Peminjaman mengurangi stok, jadi stok 0 saja tidak cukup.
+/// Riwayatnya tetap terbaca karena barisnya hanya ditandai `dihapus_pada`.
+/// Cermin `BARANG_BISA_DIHAPUS_SQL` di `services/inventory.ts`.
+pub const BARANG_BISA_DIHAPUS_SQL: &str = concat!(
+    "(",
+    barang_salah_input_sql!(),
+    "
+    OR (b.status_aktif = 0
+      AND NOT EXISTS (SELECT 1 FROM inventory_saldo s WHERE s.id_barang = b.id_barang AND s.saldo <> 0)
+      AND NOT EXISTS (SELECT 1 FROM inventory_mutasi p
+          WHERE p.id_barang = b.id_barang AND p.alasan = 'Peminjaman'
+            AND NOT EXISTS (SELECT 1 FROM inventory_mutasi pb WHERE pb.id_mutasi = 'batal-' || p.id_mutasi)
+            AND p.jumlah > COALESCE((SELECT SUM(r.jumlah) FROM inventory_mutasi r
+                WHERE r.id_ref = p.id_mutasi AND r.alasan = 'Pengembalian'
+                  AND NOT EXISTS (SELECT 1 FROM inventory_mutasi rb WHERE rb.id_mutasi = 'batal-' || r.id_mutasi)), 0))
+      AND NOT EXISTS (SELECT 1 FROM inventory_servis v
+          WHERE v.id_barang = b.id_barang AND v.tanggal_selesai IS NULL AND v.dibatalkan_pada IS NULL)))"
+);
+
+/// Hapus barang. Barisnya tetap ada bertanda `dihapus_pada`, sama dengan
+/// kolom tambahan: snapshot barang `delete_missing: false`, jadi baris yang
+/// dibuang akan hidup lagi dari perangkat lain.
+pub fn delete_item(state: &DesktopState, id_barang: &str) -> Result<Value, CommandError> {
+    let id_barang = id_barang.trim();
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+
+    let (dihapus, bisa): (bool, bool) = transaction
+        .query_row(
+            &format!(
+                "SELECT b.dihapus_pada IS NOT NULL, {BARANG_BISA_DIHAPUS_SQL}
+                 FROM inventory_barang b WHERE b.id_barang = ?;"
+            ),
+            params![id_barang],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| CommandError::internal())?
+        .ok_or_else(|| invalid("Barang tidak ditemukan."))?;
+    if dihapus {
+        return Err(invalid("Barang ini sudah dihapus."));
+    }
+    if !bisa {
+        return Err(invalid(
+            "Barang ini belum bisa dihapus: nonaktifkan dulu, habiskan stoknya, dan selesaikan pinjaman serta servisnya.",
+        ));
+    }
+    transaction
+        .execute(
+            "UPDATE inventory_barang
+             SET dihapus_pada = datetime('now'), status_aktif = 0, updated_at = datetime('now')
+             WHERE id_barang = ?;",
+            params![id_barang],
+        )
+        .map_err(|_| CommandError::internal())?;
+    let payload = barang_json(&transaction, id_barang)?.ok_or_else(CommandError::internal)?;
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "inventory-item",
+        "save",
+        id_barang,
+        &payload,
+        None,
+    )?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(json!({ "sukses": true }))
+}
+
 pub(crate) fn wib_today(connection: &Connection) -> String {
     connection
         .query_row("SELECT date('now', '+7 hours');", [], |row| row.get(0))
@@ -1732,7 +1820,7 @@ fn barang_json(connection: &Connection, id_barang: &str) -> Result<Option<Value>
         .query_row(
             "SELECT id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
                     stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at,
-                    atribut, desimal
+                    atribut, desimal, dihapus_pada
              FROM inventory_barang WHERE id_barang = ?;",
             params![id_barang],
             |row| {
@@ -1752,6 +1840,7 @@ fn barang_json(connection: &Connection, id_barang: &str) -> Result<Option<Value>
                     "updated_at": row.get::<_, String>(12)?,
                     "atribut": row.get::<_, Option<String>>(13)?,
                     "desimal": row.get::<_, i64>(14)?,
+                    "dihapus_pada": row.get::<_, Option<String>>(15)?,
                 }))
             },
         )
@@ -1876,16 +1965,22 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
         })
         .map_err(|_| CommandError::internal())?;
 
+    // Barang terhapus yang ternyata masih bermutasi (dicatat perangkat lain
+    // yang offline saat barangnya dihapus) tetap tampil, supaya stoknya tidak
+    // hilang dari layar.
     let mut barang_statement = connection
-        .prepare(
-            "SELECT id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-                    stok_minimum, tempat_utama, catatan, status_aktif, atribut, desimal,
-                    EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang) AS punya_mutasi
-             FROM inventory_barang
-             ORDER BY status_aktif DESC, nama_barang COLLATE NOCASE
+        .prepare(&format!(
+            "SELECT b.id_barang, b.kode_barang, b.nama_barang, b.kategori, b.tipe, b.satuan,
+                    b.bisa_expired, b.stok_minimum, b.tempat_utama, b.catatan, b.status_aktif,
+                    b.atribut, b.desimal,
+                    EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = b.id_barang) AS punya_mutasi,
+                    {BARANG_BISA_DIHAPUS_SQL} AS bisa_dihapus
+             FROM inventory_barang b
+             WHERE b.dihapus_pada IS NULL OR NOT {BARANG_BISA_DIHAPUS_SQL}
+             ORDER BY b.status_aktif DESC, b.nama_barang COLLATE NOCASE
              -- batas: satu baris per barang; EXISTS hanya memeriksa ada tidaknya mutasi
-             ;",
-        )
+             ;"
+        ))
         .map_err(|_| CommandError::internal())?;
     let barang: Vec<Value> = barang_statement
         .query_map([], |row| {
@@ -1908,6 +2003,7 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
                     "desimal": row.get::<_, i64>(12)? == 1,
                     // Tipe, satuan, desimal, dan kedaluwarsa terkunci sejak mutasi pertama.
                     "punya_mutasi": row.get::<_, i64>(13)? == 1,
+                    "bisa_dihapus": row.get::<_, i64>(14)? == 1,
                 }),
             ))
         })
@@ -1959,7 +2055,8 @@ pub fn list_inventory(state: &DesktopState) -> Result<Value, CommandError> {
     let mut kategori_statement = connection
         .prepare(
             "SELECT DISTINCT kategori FROM inventory_barang
-             WHERE kategori IS NOT NULL ORDER BY kategori COLLATE NOCASE;",
+             WHERE kategori IS NOT NULL AND dihapus_pada IS NULL
+             ORDER BY kategori COLLATE NOCASE;",
         )
         .map_err(|_| CommandError::internal())?;
     let kategori: Vec<String> = kategori_statement
@@ -2063,13 +2160,14 @@ pub(crate) fn save_item_tx(
 ) -> Result<(String, String), CommandError> {
     let valid = validate_barang(draft).map_err(invalid)?;
     let requested_id = clean(&draft.id_barang);
-    let existing: Option<(String, i64, i64, String)> = match requested_id.as_deref() {
+    let existing: Option<(String, i64, i64, String, bool)> = match requested_id.as_deref() {
         Some(id) => Some(
             transaction
                 .query_row(
-                    "SELECT satuan, bisa_expired, desimal, tipe FROM inventory_barang WHERE id_barang = ?;",
+                    "SELECT satuan, bisa_expired, desimal, tipe, dihapus_pada IS NOT NULL
+                     FROM inventory_barang WHERE id_barang = ?;",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
                 )
                 .optional()
                 .map_err(|_| CommandError::internal())?
@@ -2081,7 +2179,10 @@ pub(crate) fn save_item_tx(
         .or_else(|| id_baru.map(str::to_owned))
         .unwrap_or_else(|| new_hex_id("brg-"));
 
-    if let Some((satuan_lama, expired_lama, desimal_lama, tipe_lama)) = existing {
+    if let Some((satuan_lama, expired_lama, desimal_lama, tipe_lama, dihapus)) = existing {
+        if dihapus {
+            return Err(invalid("Barang ini sudah dihapus."));
+        }
         // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100), dan
         // tipe menentukan kondisi serta unit: stok Rusak Ringan sebuah aset
         // tidak bisa dikeluarkan lagi bila barangnya menjadi Habis Pakai.
@@ -2108,7 +2209,9 @@ pub(crate) fn save_item_tx(
     let kode_barang = match valid.kode_barang.clone() {
         Some(kode) => {
             if kode_dipakai(&transaction, &kode, &id_barang)? {
-                return Err(invalid("Kode barang sudah dipakai barang lain."));
+                return Err(invalid(
+                    "Kode barang sudah dipakai barang lain, termasuk barang yang sudah dihapus.",
+                ));
             }
             kode
         }
@@ -2184,6 +2287,8 @@ pub(crate) fn save_item_tx(
     Ok((id_barang, kode_barang))
 }
 
+/// Kode barang terhapus yang punya riwayat tetap dicadangkan, supaya laporan
+/// lama dan barang baru tidak berbagi satu kode. Cermin `kodeDipakai`.
 fn kode_dipakai(
     transaction: &Transaction<'_>,
     kode: &str,
@@ -2191,8 +2296,11 @@ fn kode_dipakai(
 ) -> Result<bool, CommandError> {
     transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM inventory_barang
-                           WHERE LOWER(kode_barang) = LOWER(?) AND id_barang <> ?);",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM inventory_barang b
+                               WHERE LOWER(b.kode_barang) = LOWER(?) AND b.id_barang <> ?
+                                 AND (b.dihapus_pada IS NULL OR NOT {BARANG_SALAH_INPUT_SQL}));"
+            ),
             params![kode, id_barang],
             |row| row.get(0),
         )
@@ -4580,6 +4688,7 @@ pub fn cloud_item_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
         json!(payload_text(row, "updated_at")),
         json!(atribut),
         json!(desimal.unwrap_or(0)),
+        json!(payload_text(row, "dihapus_pada")),
         json!(bawa_atribut as i64),
         json!(desimal.is_some() as i64),
     ])
@@ -4612,11 +4721,13 @@ fn payload_atribut(row: &Value) -> (Option<String>, bool) {
 /// perangkat lain menganggap barangnya masih kosong dan membuka kuncinya;
 /// tanpa syarat ini 10 pcs di cloud terbaca 0,10 kg di semua perangkat.
 /// Perubahan yang kalah dilewati, tidak ditolak, dan tertimpa saat pull.
+/// Sekali dihapus tetap dihapus, seperti `CLOUD_UPSERT_COLUMN_SQL`: simpanan
+/// dari perangkat yang belum menarik penghapusannya tidak menghidupkannya lagi.
 pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
         stok_minimum, tempat_utama, catatan, status_aktif, created_at, updated_at, atribut,
-        desimal
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?, ?)
+        desimal, dihapus_pada
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?, ?, ?)
     ON CONFLICT(id_barang) DO UPDATE SET
         kode_barang = excluded.kode_barang,
         nama_barang = excluded.nama_barang,
@@ -4630,7 +4741,10 @@ pub const CLOUD_UPSERT_ITEM_SQL: &str = "INSERT INTO inventory_barang (
         stok_minimum = excluded.stok_minimum,
         tempat_utama = excluded.tempat_utama,
         catatan = excluded.catatan,
-        status_aktif = excluded.status_aktif,
+        status_aktif = CASE
+            WHEN COALESCE(inventory_barang.dihapus_pada, excluded.dihapus_pada) IS NULL
+            THEN excluded.status_aktif ELSE 0 END,
+        dihapus_pada = COALESCE(inventory_barang.dihapus_pada, excluded.dihapus_pada),
         updated_at = excluded.updated_at,
         atribut = CASE WHEN ? = 1 THEN excluded.atribut ELSE inventory_barang.atribut END,
         desimal = CASE WHEN ? = 1
@@ -5754,15 +5868,15 @@ mod tests {
         let lama = json!({"id_barang": "b1", "kode_barang": "K", "nama_barang": "Beras",
                           "tipe": "Habis Pakai", "satuan": "kg"});
         let values = cloud_item_values(&lama, "b1").unwrap();
-        // desimal, bawa_atribut, bawa_desimal
-        assert_eq!(&values[14..], &[json!(0), json!(0), json!(0)]);
+        // desimal, dihapus_pada, bawa_atribut, bawa_desimal
+        assert_eq!(&values[14..], &[json!(0), Value::Null, json!(0), json!(0)]);
         let mut baru = lama.clone();
         baru["desimal"] = json!(1);
         let values = cloud_item_values(&baru, "b1").unwrap();
-        assert_eq!(&values[14..], &[json!(1), json!(0), json!(1)]);
+        assert_eq!(&values[14..], &[json!(1), Value::Null, json!(0), json!(1)]);
         baru["desimal"] = json!(7);
         let values = cloud_item_values(&baru, "b1").unwrap();
-        assert_eq!(values[16], json!(0), "nilai asing tidak pernah ditulis");
+        assert_eq!(values[17], json!(0), "nilai asing tidak pernah ditulis");
     }
 
     #[test]
@@ -6508,6 +6622,180 @@ mod tests {
         // Namanya boleh dipakai lagi oleh kolom baru.
         save_column(&state, json!({"nama": "Merek", "tipe": "Teks"})).unwrap();
         assert!(delete_column(&state, &id_kolom).is_err());
+    }
+
+    #[test]
+    fn delete_item_only_when_every_mutation_is_cancelled() {
+        let (_directory, state) = setup_state();
+        let id_barang = insert_item(&state, "Habis Pakai", false);
+        let masuk = record_mutation(
+            &state,
+            "admin",
+            json!({"id_barang": id_barang, "jenis": "Masuk", "alasan": "Saldo Awal", "jumlah": 3, "tempat_tujuan": "Gudang"}),
+        )
+        .unwrap();
+        assert!(delete_item(&state, &id_barang)
+            .unwrap_err()
+            .message
+            .starts_with("Barang ini belum bisa dihapus"));
+        cancel_mutation(&state, "admin", masuk["id_mutasi"].as_str().unwrap(), "Salah input").unwrap();
+        delete_item(&state, &id_barang).unwrap();
+
+        assert!(list_inventory(&state).unwrap()["barang"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            delete_item(&state, &id_barang).unwrap_err().message,
+            "Barang ini sudah dihapus."
+        );
+        let draft = json!({"id_barang": id_barang, "nama_barang": "Ganti", "tipe": "Habis Pakai", "satuan": "pcs"});
+        assert_eq!(save_item(&state, draft).unwrap_err().message, "Barang ini sudah dihapus.");
+        // Kodenya boleh dipakai lagi oleh barang baru.
+        save_item(
+            &state,
+            json!({"kode_barang": "BRG-0001", "nama_barang": "Pengganti", "tipe": "Habis Pakai", "satuan": "pcs"}),
+        )
+        .unwrap();
+
+        // Mutasi dari perangkat yang offline saat barangnya dihapus membuatnya
+        // tampil lagi, supaya stoknya tidak hilang dari layar.
+        insert_raw_mutation(&state, "mts-telat", &id_barang, "Masuk", 2);
+        let list = list_inventory(&state).unwrap();
+        let barang = list["barang"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id_barang"] == json!(id_barang))
+            .expect("barang terhapus bermutasi tetap tampil");
+        assert_eq!(barang["bisa_dihapus"], false);
+        assert_eq!(barang["status_aktif"], false);
+    }
+
+    #[test]
+    fn delete_item_refuses_items_with_units() {
+        let (_directory, state) = setup_state();
+        let id_barang = insert_item(&state, "Aset", false);
+        let connection = storage::database(&state.data_dir).unwrap();
+        connection
+            .execute(
+                "INSERT INTO inventory_unit (id_unit, id_barang, kode_unit) VALUES ('unit-1', ?, 'BRG-0001-001');",
+                params![id_barang],
+            )
+            .unwrap();
+        assert!(delete_item(&state, &id_barang).is_err());
+    }
+
+    /// Kembar tes "barang nonaktif yang habis dipakai bisa dihapus, kodenya
+    /// tetap dicadangkan" di `services/inventory.test.ts`.
+    #[test]
+    fn delete_inactive_item_once_used_up_keeps_its_code() {
+        let (_directory, state) = setup_state();
+        let id_barang = insert_item(&state, "Habis Pakai", false);
+        let connection = storage::database(&state.data_dir).unwrap();
+        let set_aktif = |aktif: i64| {
+            connection
+                .execute(
+                    "UPDATE inventory_barang SET status_aktif = ? WHERE id_barang = ?;",
+                    params![aktif, id_barang],
+                )
+                .unwrap();
+        };
+        let ditolak = || {
+            assert!(delete_item(&state, &id_barang)
+                .unwrap_err()
+                .message
+                .starts_with("Barang ini belum bisa dihapus"));
+        };
+        insert_raw_mutation(&state, "mts-awal", &id_barang, "Masuk", 10);
+        let id_pinjam = pinjamkan(&state, &id_barang, 4);
+        insert_raw_mutation(&state, "mts-pakai", &id_barang, "Keluar", 6);
+        set_aktif(0);
+        // Stok 0, tetapi 4 masih dipinjam.
+        ditolak();
+
+        // Barang nonaktif tidak menerima barang masuk, termasuk pengembalian.
+        set_aktif(1);
+        kembalikan(&state, &id_barang, &id_pinjam, 4).unwrap();
+        set_aktif(0);
+        ditolak();
+
+        insert_raw_mutation(&state, "mts-habis", &id_barang, "Keluar", 4);
+        connection
+            .execute(
+                "INSERT INTO inventory_servis (id_servis, id_barang, jumlah, tempat, kondisi_awal,
+                   tanggal_mulai, keluhan, dibuka_oleh)
+                 VALUES ('srv-1', ?, 1, 'Gudang', 'Rusak Ringan', '2026-10-01', 'Retak', 'uji');",
+                params![id_barang],
+            )
+            .unwrap();
+        ditolak();
+        connection
+            .execute(
+                "UPDATE inventory_servis SET dibatalkan_pada = datetime('now') WHERE id_servis = 'srv-1';",
+                [],
+            )
+            .unwrap();
+
+        set_aktif(1);
+        ditolak();
+        set_aktif(0);
+        delete_item(&state, &id_barang).unwrap();
+
+        assert!(list_inventory(&state).unwrap()["barang"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let galat = save_item(
+            &state,
+            json!({"kode_barang": "BRG-0001", "nama_barang": "Pengganti", "tipe": "Habis Pakai", "satuan": "pcs"}),
+        )
+        .unwrap_err();
+        assert!(galat.message.starts_with("Kode barang sudah dipakai barang lain"));
+        // Nomor otomatis melompati kode yang dicadangkan.
+        let baru = save_item(
+            &state,
+            json!({"nama_barang": "Pengganti", "tipe": "Habis Pakai", "satuan": "pcs"}),
+        )
+        .unwrap();
+        assert_ne!(baru["kode_barang"], "BRG-0001");
+    }
+
+    #[test]
+    fn cloud_keeps_item_deleted_against_stale_save() {
+        let (_directory, state) = setup_state();
+        let connection = storage::database(&state.data_dir).unwrap();
+        let upsert = |payload: Value| {
+            let args: Vec<rusqlite::types::Value> = cloud_item_values(&payload, "b1")
+                .unwrap()
+                .into_iter()
+                .map(|v| match v {
+                    Value::Null => rusqlite::types::Value::Null,
+                    Value::Number(n) => rusqlite::types::Value::Integer(n.as_i64().unwrap()),
+                    Value::String(s) => rusqlite::types::Value::Text(s),
+                    other => rusqlite::types::Value::Text(other.to_string()),
+                })
+                .collect();
+            connection
+                .execute(CLOUD_UPSERT_ITEM_SQL, rusqlite::params_from_iter(args))
+                .unwrap();
+        };
+        let mut payload = json!({"id_barang": "b1", "kode_barang": "K", "nama_barang": "Spidol",
+                                 "tipe": "Habis Pakai", "satuan": "pcs", "status_aktif": 0,
+                                 "dihapus_pada": "2026-10-24 01:00:00"});
+        upsert(payload.clone());
+        payload["dihapus_pada"] = Value::Null;
+        payload["status_aktif"] = json!(1);
+        upsert(payload);
+        let (dihapus, aktif): (Option<String>, i64) = connection
+            .query_row(
+                "SELECT dihapus_pada, status_aktif FROM inventory_barang WHERE id_barang = 'b1';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(dihapus.as_deref(), Some("2026-10-24 01:00:00"));
+        assert_eq!(aktif, 0);
     }
 
     #[test]

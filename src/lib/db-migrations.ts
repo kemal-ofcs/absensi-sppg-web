@@ -37,6 +37,7 @@ const JOURNAL_SOURCE_INVENTORY_MIGRATION_VERSION = 28;
 const INVENTORY_SERVICE_MIGRATION_VERSION = 29;
 const INVENTORY_REQUEST_MIGRATION_VERSION = 30;
 const INVENTORY_INSTALLMENT_MIGRATION_VERSION = 31;
+const INVENTORY_ITEM_DELETE_MIGRATION_VERSION = 32;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -1107,7 +1108,8 @@ export async function runDatabaseMigrations(client: Client) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       atribut TEXT,
-      desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1))
+      desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1)),
+      dihapus_pada TEXT
     );
   `);
   await client.execute(`
@@ -1639,6 +1641,19 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'inventory-installment', ?);`,
     args: [INVENTORY_INSTALLMENT_MIGRATION_VERSION, now],
+  });
+
+  // v32: hapus barang. NULL = belum dihapus. Cermin `ensure_column` di
+  // `storage.rs`/`turso.rs`.
+  if (!(await hasColumn(client, "inventory_barang", "dihapus_pada"))) {
+    await client.execute(
+      "ALTER TABLE inventory_barang ADD COLUMN dihapus_pada TEXT;",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'inventory-item-delete', ?);`,
+    args: [INVENTORY_ITEM_DELETE_MIGRATION_VERSION, now],
   });
 
   await client.execute(

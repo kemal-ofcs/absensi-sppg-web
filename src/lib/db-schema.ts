@@ -2,7 +2,7 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 31;
+export const CURRENT_SCHEMA_VERSION = 32;
 export const REQUIRED_TABLE_COUNT = 57;
 
 export async function isDatabaseSchemaReady(client: Client) {

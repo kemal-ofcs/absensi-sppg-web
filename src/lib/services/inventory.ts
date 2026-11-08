@@ -310,6 +310,64 @@ export async function deleteColumn(
   });
 }
 
+/**
+ * Barang salah input (`b` = `inventory_barang`): tanpa unit, dan setiap
+ * mutasinya sudah dibatalkan. Hanya kode barang seperti ini yang bebas dipakai
+ * lagi setelah dihapus. Cermin `BARANG_SALAH_INPUT_SQL` di `inventory.rs`.
+ */
+const BARANG_SALAH_INPUT_SQL = `(NOT EXISTS (SELECT 1 FROM inventory_unit u WHERE u.id_barang = b.id_barang)
+    AND NOT EXISTS (SELECT 1 FROM inventory_mutasi m
+        WHERE m.id_barang = b.id_barang AND m.alasan <> 'Pembatalan'
+          AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)))`;
+
+/**
+ * Barang yang boleh dihapus: salah input, atau barang nonaktif yang sudah
+ * selesai dipakai (setiap saldonya 0, tanpa pinjaman yang belum kembali, tanpa
+ * servis terbuka). Peminjaman mengurangi stok, jadi stok 0 saja tidak cukup.
+ * Cermin `BARANG_BISA_DIHAPUS_SQL` di `inventory.rs`.
+ */
+const BARANG_BISA_DIHAPUS_SQL = `(${BARANG_SALAH_INPUT_SQL}
+    OR (b.status_aktif = 0
+      AND NOT EXISTS (SELECT 1 FROM inventory_saldo s WHERE s.id_barang = b.id_barang AND s.saldo <> 0)
+      AND NOT EXISTS (SELECT 1 FROM inventory_mutasi p
+          WHERE p.id_barang = b.id_barang AND p.alasan = 'Peminjaman'
+            AND NOT EXISTS (SELECT 1 FROM inventory_mutasi pb WHERE pb.id_mutasi = 'batal-' || p.id_mutasi)
+            AND p.jumlah > COALESCE((SELECT SUM(r.jumlah) FROM inventory_mutasi r
+                WHERE r.id_ref = p.id_mutasi AND r.alasan = 'Pengembalian'
+                  AND NOT EXISTS (SELECT 1 FROM inventory_mutasi rb WHERE rb.id_mutasi = 'batal-' || r.id_mutasi)), 0))
+      AND NOT EXISTS (SELECT 1 FROM inventory_servis v
+          WHERE v.id_barang = b.id_barang AND v.tanggal_selesai IS NULL AND v.dibatalkan_pada IS NULL)))`;
+
+/** Cermin `delete_item`: tandai `dihapus_pada`, barisnya tidak dibuang. */
+export async function deleteItem(
+  client: Client,
+  rawId: string,
+): Promise<{ sukses: true }> {
+  const idBarang = rawId.trim();
+  return withTransaction(client, async (tx) => {
+    const existing = await tx.execute({
+      sql: `SELECT b.dihapus_pada, ${BARANG_BISA_DIHAPUS_SQL} AS bisa
+            FROM inventory_barang b WHERE b.id_barang = ?;`,
+      args: [idBarang],
+    });
+    const row = existing.rows[0];
+    if (!row) throw new Error("Barang tidak ditemukan.");
+    if (row.dihapus_pada !== null) throw new Error("Barang ini sudah dihapus.");
+    if (Number(row.bisa) !== 1) {
+      throw new Error(
+        "Barang ini belum bisa dihapus: nonaktifkan dulu, habiskan stoknya, dan selesaikan pinjaman serta servisnya.",
+      );
+    }
+    await tx.execute({
+      sql: `UPDATE inventory_barang
+            SET dihapus_pada = datetime('now'), status_aktif = 0, updated_at = datetime('now')
+            WHERE id_barang = ?;`,
+      args: [idBarang],
+    });
+    return { sukses: true as const };
+  });
+}
+
 export async function wibToday(client: Executor): Promise<string> {
   const result = await client.execute(
     "SELECT date('now', '+7 hours') AS hari;",
@@ -407,12 +465,16 @@ export async function listInventory(client: Client): Promise<DaftarInventaris> {
     ).rows.map((row) => String(row.id_barang)),
   );
 
+  // Cermin `list_inventory`: barang terhapus yang masih bermutasi tetap tampil.
   const barangResult = await client.execute(
-    `SELECT id_barang, kode_barang, nama_barang, kategori, tipe, satuan, bisa_expired,
-            stok_minimum, tempat_utama, catatan, status_aktif, atribut, desimal,
-            EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = inventory_barang.id_barang) AS punya_mutasi
-     FROM inventory_barang
-     ORDER BY status_aktif DESC, nama_barang COLLATE NOCASE
+    `SELECT b.id_barang, b.kode_barang, b.nama_barang, b.kategori, b.tipe, b.satuan,
+            b.bisa_expired, b.stok_minimum, b.tempat_utama, b.catatan, b.status_aktif,
+            b.atribut, b.desimal,
+            EXISTS(SELECT 1 FROM inventory_mutasi m WHERE m.id_barang = b.id_barang) AS punya_mutasi,
+            ${BARANG_BISA_DIHAPUS_SQL} AS bisa_dihapus
+     FROM inventory_barang b
+     WHERE b.dihapus_pada IS NULL OR NOT ${BARANG_BISA_DIHAPUS_SQL}
+     ORDER BY b.status_aktif DESC, b.nama_barang COLLATE NOCASE
      -- batas: satu baris per barang; EXISTS hanya memeriksa ada tidaknya mutasi
      ;`,
   );
@@ -431,6 +493,7 @@ export async function listInventory(client: Client): Promise<DaftarInventaris> {
       bisa_expired: Number(row.bisa_expired) === 1,
       desimal: Number(row.desimal) === 1,
       punya_mutasi: Number(row.punya_mutasi) === 1,
+      bisa_dihapus: Number(row.bisa_dihapus) === 1,
       stok_minimum: Number(row.stok_minimum),
       tempat_utama: text(row.tempat_utama),
       catatan: text(row.catatan),
@@ -462,7 +525,8 @@ export async function listInventory(client: Client): Promise<DaftarInventaris> {
 
   const kategoriResult = await client.execute(
     `SELECT DISTINCT kategori FROM inventory_barang
-     WHERE kategori IS NOT NULL ORDER BY kategori COLLATE NOCASE;`,
+     WHERE kategori IS NOT NULL AND dihapus_pada IS NULL
+     ORDER BY kategori COLLATE NOCASE;`,
   );
   const kategori = kategoriResult.rows.map((row) => String(row.kategori));
 
@@ -517,10 +581,15 @@ export async function listRecipients(
   };
 }
 
+/**
+ * Kode barang terhapus yang punya riwayat tetap dicadangkan, supaya laporan
+ * lama dan barang baru tidak berbagi satu kode. Cermin `kode_dipakai`.
+ */
 async function kodeDipakai(tx: Transaction, kode: string, idBarang: string) {
   const result = await tx.execute({
-    sql: `SELECT EXISTS(SELECT 1 FROM inventory_barang
-                        WHERE LOWER(kode_barang) = LOWER(?) AND id_barang <> ?) AS ada;`,
+    sql: `SELECT EXISTS(SELECT 1 FROM inventory_barang b
+                        WHERE LOWER(b.kode_barang) = LOWER(?) AND b.id_barang <> ?
+                          AND (b.dihapus_pada IS NULL OR NOT ${BARANG_SALAH_INPUT_SQL})) AS ada;`,
     args: [kode, idBarang],
   });
   return Number(result.rows[0]?.ada) === 1;
@@ -557,11 +626,12 @@ export async function saveItemTx(
   let idBarang = requestedId ?? idBaru ?? newHexId("brg-");
   if (requestedId) {
     const existing = await tx.execute({
-      sql: "SELECT satuan, bisa_expired, desimal, tipe FROM inventory_barang WHERE id_barang = ?;",
+      sql: "SELECT satuan, bisa_expired, desimal, tipe, dihapus_pada FROM inventory_barang WHERE id_barang = ?;",
       args: [requestedId],
     });
     const row = existing.rows[0];
     if (!row) throw new Error("Barang tidak ditemukan.");
+    if (row.dihapus_pada !== null) throw new Error("Barang ini sudah dihapus.");
     // Desimal mengubah arti setiap jumlah yang sudah tercatat (×100), dan
     // tipe menentukan kondisi serta unit. Cermin `save_item_tx`.
     const berubah =
@@ -586,7 +656,9 @@ export async function saveItemTx(
   let kode = valid.kode_barang;
   if (kode !== null) {
     if (await kodeDipakai(tx, kode, idBarang)) {
-      throw new Error("Kode barang sudah dipakai barang lain.");
+      throw new Error(
+        "Kode barang sudah dipakai barang lain, termasuk barang yang sudah dihapus.",
+      );
     }
   } else {
     const prefixes = await readKodePrefixes(tx);

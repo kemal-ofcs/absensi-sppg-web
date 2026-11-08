@@ -33,6 +33,7 @@ function barang(isi: Partial<BarangInventaris>): BarangInventaris {
     bisa_expired: false,
     desimal: false,
     punya_mutasi: true,
+    bisa_dihapus: false,
     stok_minimum: 0,
     tempat_utama: null,
     catatan: null,

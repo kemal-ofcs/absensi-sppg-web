@@ -10,7 +10,7 @@ import {
   simpanKolomInventaris,
 } from "@/lib/gateways/inventory";
 import {
-  KONFIRMASI_HAPUS_KOLOM,
+  KONFIRMASI_HAPUS_PERMANEN,
   MAKS_KOLOM_AKTIF,
   TIPE_KOLOM,
 } from "@/lib/validations/inventory";
@@ -299,7 +299,7 @@ function BarisKolom({
           </p>
           <div>
             <label htmlFor={idKetik} className={LABEL}>
-              Ketik {KONFIRMASI_HAPUS_KOLOM} untuk melanjutkan
+              Ketik {KONFIRMASI_HAPUS_PERMANEN} untuk melanjutkan
             </label>
             <input
               id={idKetik}
@@ -322,7 +322,7 @@ function BarisKolom({
             </button>
             <button
               type="button"
-              disabled={ketikan.trim() !== KONFIRMASI_HAPUS_KOLOM}
+              disabled={ketikan.trim() !== KONFIRMASI_HAPUS_PERMANEN}
               onClick={() => void onHapus()}
               className={TOMBOL_BAHAYA}
             >

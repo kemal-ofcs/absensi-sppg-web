@@ -124,6 +124,21 @@ export async function hapusKolomInventaris(
   return requestWebApi("/api/inventory/column/delete", "POST", { idKolom });
 }
 
+/** Hapus barang salah input; ditolak bila barangnya punya riwayat stok atau unit. */
+export async function hapusBarangInventaris(
+  idBarang: string,
+): Promise<{ sukses: boolean }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean }>(
+      "desktop_inventory_delete_item",
+      { idBarang },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/inventory/item/delete", "POST", { idBarang });
+}
+
 export async function catatMutasiInventaris(
   draft: MutasiDraft,
 ): Promise<{ sukses: boolean; id_mutasi: string }> {

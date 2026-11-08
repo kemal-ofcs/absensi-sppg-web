@@ -195,6 +195,11 @@ export const PERMISSION_CATALOG = [
     name: "Hapus Permanen Kolom Tambahan",
     group: "Inventaris",
   },
+  {
+    key: "inventory.item.delete",
+    name: "Hapus Barang Inventaris",
+    group: "Inventaris",
+  },
   { key: "accounting.view", name: "Lihat Pembukuan", group: "Keuangan" },
   {
     key: "accounting.manage",
@@ -260,6 +265,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Menghapus kolom tambahan memusnahkan isinya di SEMUA barang sekaligus, dan
   // tidak ada jalan mengembalikannya.
   "inventory.column.delete",
+  // Menghapus barang mengeluarkannya dari daftar, label, dan impor di semua
+  // perangkat, dan tidak bisa dikembalikan dari aplikasi.
+  "inventory.item.delete",
   // Jurnal pembalik menghapus efek sebuah transaksi dari seluruh laporan
   // tanpa jejak uang yang benar-benar kembali.
   "accounting.reverse",

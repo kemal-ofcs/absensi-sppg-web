@@ -713,7 +713,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         atribut TEXT,
-        desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1))
+        desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1)),
+        dihapus_pada TEXT
       );
       -- Append-only. Pembatalan adalah baris kebalikan berid 'batal-' || id_ref.
       CREATE TABLE IF NOT EXISTS inventory_mutasi (
@@ -1187,6 +1188,13 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "inventory_barang",
         "desimal",
         "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
+    )?;
+    // Hapus barang (v32). NULL = belum dihapus.
+    ensure_column(
+        &connection,
+        "inventory_barang",
+        "dihapus_pada",
+        "ALTER TABLE inventory_barang ADD COLUMN dihapus_pada TEXT;",
     )?;
     // Sumber jurnal `Inventaris` (v28).
     // Cara bayar pengajuan (v31). Baris lama otomatis Tunai.

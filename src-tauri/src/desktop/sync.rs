@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 31;
+pub const CLIENT_SCHEMA_VERSION: i64 = 32;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -563,9 +563,9 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
     },
     // ── v20: Inventaris ──
     //
-    // Keduanya `delete_missing: false`: barang hanya dinonaktifkan dan mutasi
-    // tidak pernah dihapus, jadi ketiadaan baris di snapshot tidak pernah
-    // berarti "dihapus".
+    // Keduanya `delete_missing: false`: barang yang dihapus tetap ada barisnya
+    // bertanda `dihapus_pada` (v32) dan mutasi tidak pernah dihapus, jadi
+    // ketiadaan baris di snapshot tidak pernah berarti "dihapus".
     SnapshotTable {
         payload_key: "inventoryItems",
         domain: "inventory-item",
@@ -586,6 +586,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "updated_at",
             "atribut",
             "desimal",
+            "dihapus_pada",
         ],
         conflict_column: "id_barang",
         entity_column: "id_barang",
