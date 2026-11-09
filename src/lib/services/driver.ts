@@ -11,33 +11,51 @@ import {
 import { SERI_WEB } from "@/lib/validations/accounting";
 import {
   AKURASI_PERINGATAN_M,
+  type BarisBayar,
+  batalBayarDraftSchema,
+  bayarAktif,
+  bayarUpahDraftSchema,
   daftarTarifDraftSchema,
   FOTO_SEGERA_DIHAPUS_SQL,
   type FotoSegeraDihapus,
   formatNomorSuratJalan,
   gantiMenunggu,
   HAPUS_FOTO_LAMA_SQL,
+  idBarisBayar,
+  idBatalBayar,
   idMuatan,
   kendaraanDraftSchema,
   type Laporan,
   type LaporanBaris,
   laporanDraftSchema,
   lokasiDraftSchema,
+  MAKS_DAFTAR_BAYAR,
   MAKS_DAFTAR_PERJALANAN,
+  MAKS_REKAP_UPAH,
+  MAKS_SURAT_JALAN_PER_BAYAR,
   type MasterPerjalanan,
   type MuatanBaris,
   normalisasiPrefix,
+  PESAN_SUDAH_DIBAYAR,
+  type Pembayaran,
+  type PembayaranUpahItem,
   type PerjalananItem,
   penerimaUpah,
   penugasan,
+  periksaBatalBayar,
+  periksaBayarUpah,
   periksaUrutan,
   perjalananDraftSchema,
   prefixTersimpan,
   type RincianPerjalanan,
+  type SuratJalanUpah,
   statusPerjalanan,
   tandaTinjau,
+  tandaUpah,
   upahSuratJalan,
   urutkan,
+  validateBatalBayar,
+  validateBayarUpah,
   validateDaftarTarif,
   validateKendaraan,
   validateKeputusan,
@@ -287,6 +305,7 @@ function laporanDariBaris(l: Record<string, unknown>): Laporan {
     lng: angkaAtauNull(l.lng),
     akurasi_m: angkaAtauNull(l.akurasi_m),
     foto_sha256: text(l.foto_sha256),
+    lokasi_palsu: Number(l.lokasi_palsu) === 1,
   };
 }
 
@@ -304,7 +323,7 @@ async function bacaKeadaan(
   const laporan = await tx.execute({
     sql: `SELECT id_laporan, jenis, mode_ganti, id_ref, waktu_perangkat, diterima_cloud,
                  id_karyawan, id_karyawan_baru, id_kendaraan_baru, id_lokasi, lat, lng,
-                 akurasi_m, foto_sha256
+                 akurasi_m, foto_sha256, lokasi_palsu
           FROM drv_laporan WHERE id_perjalanan = ?
           -- batas: laporan satu surat jalan, belasan baris
           ;`,
@@ -481,6 +500,7 @@ export async function aturPenerimaUpah(
   const penerima = idKaryawan?.trim() || null;
   return withTransaction(client, async (tx) => {
     const keadaan = await bacaKeadaan(tx, id);
+    await tolakBilaDibayar(tx, id);
     if (statusPerjalanan(keadaan.laporan) !== "Selesai") {
       throw new Error("Upah hanya untuk surat jalan yang Selesai.");
     }
@@ -531,6 +551,8 @@ export async function catatLaporanDispatcher(
     const keadaan = await bacaKeadaan(tx, v.id_perjalanan);
     const urutan = periksaUrutan(keadaan.laporan, v.jenis);
     if (!urutan.ok) throw new Error(urutan.error);
+    // Cermin Rust: menyetujui ganti driver bisa menggeser penerima upah.
+    if (v.jenis === "Disetujui") await tolakBilaDibayar(tx, v.id_perjalanan);
     const bertugas = penugasan(
       keadaan.id_karyawan,
       keadaan.id_kendaraan,
@@ -667,11 +689,58 @@ function kelompok<T extends { id: string }>(rows: T[]): Map<string, T[]> {
   return peta;
 }
 
+/** Cermin `baca_bayar`: pembayaran dan baris untuk surat jalan `dalam`. */
+async function bacaBayar(
+  client: Executor,
+  dalam: string,
+  args: string[],
+): Promise<{ pembayaran: Pembayaran[]; baris: BarisBayar[] }> {
+  const [baris, pembayaran] = await Promise.all([
+    client.execute({
+      sql: `SELECT id_bayar, id_perjalanan, upah FROM drv_upah_bayar_baris WHERE ${dalam};`,
+      args,
+    }),
+    client.execute({
+      sql: `SELECT id_bayar, jenis, id_ref, id_karyawan FROM drv_upah_bayar
+            WHERE id_bayar IN (SELECT id_bayar FROM drv_upah_bayar_baris WHERE ${dalam})
+               OR id_ref IN (SELECT id_bayar FROM drv_upah_bayar_baris WHERE ${dalam});`,
+      args,
+    }),
+  ]);
+  return {
+    pembayaran: pembayaran.rows.map((r) => ({
+      id_bayar: String(r.id_bayar),
+      jenis: String(r.jenis),
+      id_ref: text(r.id_ref),
+      id_karyawan: String(r.id_karyawan),
+    })),
+    baris: baris.rows.map((r) => ({
+      id_bayar: String(r.id_bayar),
+      id_perjalanan: String(r.id_perjalanan),
+      upah: Number(r.upah),
+    })),
+  };
+}
+
+/** Cermin `tolak_bila_dibayar`. */
+async function tolakBilaDibayar(
+  tx: Executor,
+  idPerjalanan: string,
+): Promise<void> {
+  const { pembayaran, baris } = await bacaBayar(tx, "id_perjalanan = ?1", [
+    idPerjalanan,
+  ]);
+  if (bayarAktif(idPerjalanan, pembayaran, baris).length > 0) {
+    throw new Error(PESAN_SUDAH_DIBAYAR);
+  }
+}
+
 /** Cermin `kumpulkan`. `syarat` = saringan atas `drv_perjalanan p`. */
 async function kumpulkanPerjalanan(
   client: Executor,
   syarat: string,
   args: string[],
+  batas: number = MAKS_DAFTAR_PERJALANAN,
 ): Promise<PerjalananItem[]> {
   const dalam = `id_perjalanan IN (SELECT p.id_perjalanan FROM drv_perjalanan p WHERE ${syarat})`;
   const [
@@ -683,17 +752,18 @@ async function kumpulkanPerjalanan(
     namaPersonil,
     identitas,
     namaKategori,
+    dataBayar,
   ] = await Promise.all([
     client.execute({
       sql: `SELECT p.* FROM drv_perjalanan p WHERE ${syarat}
             ORDER BY p.tanggal DESC, p.nomor DESC
-            LIMIT ${MAKS_DAFTAR_PERJALANAN};`,
+            LIMIT ${batas};`,
       args,
     }),
     client.execute({
       sql: `SELECT id_laporan, jenis, mode_ganti, id_ref, waktu_perangkat, diterima_cloud,
                    id_karyawan, id_karyawan_baru, id_kendaraan_baru, id_lokasi, lat, lng,
-                   akurasi_m, foto_sha256, id_perjalanan
+                   akurasi_m, foto_sha256, id_perjalanan, lokasi_palsu
             FROM drv_laporan WHERE ${dalam}
             -- batas: laporan surat jalan yang dibaca saja, belasan per surat jalan
             ;`,
@@ -713,7 +783,11 @@ async function kumpulkanPerjalanan(
     petaNama(client, "SELECT id_unik, nama FROM master_data;"),
     petaNama(client, "SELECT id_kendaraan, identitas FROM drv_kendaraan;"),
     petaNama(client, "SELECT id_kategori, nama FROM drv_kategori_tujuan;"),
+    bacaBayar(client, dalam, args),
   ]);
+  const bayarPerSj = kelompok(
+    dataBayar.baris.map((b) => ({ id: b.id_perjalanan, ...b })),
+  );
   const laporan = kelompok(
     laporanRows.rows.map((r) => ({
       id: String(r.id_perjalanan),
@@ -754,9 +828,18 @@ async function kumpulkanPerjalanan(
     const rencanaTrip = rencana.get(id) ?? [];
     const tarifKendaraan = Number(h.tarif_kendaraan);
     const tarifTujuan = Number(h.tarif_tujuan);
+    const upah = upahSuratJalan(tarifKendaraan, tarifTujuan);
     const idUpah = text(h.id_karyawan_upah);
     const penerima = penerimaUpah(status, idUpah, refs, tugas.id_karyawan);
     const terakhir = urutkan(refs).at(-1);
+    const barisSj = bayarPerSj.get(id) ?? [];
+    const sj: SuratJalanUpah = {
+      id_perjalanan: id,
+      nomor: String(h.nomor),
+      status,
+      penerima,
+      upah,
+    };
     return {
       id_perjalanan: id,
       tanggal: String(h.tanggal),
@@ -767,6 +850,7 @@ async function kumpulkanPerjalanan(
       dibuat_oleh: String(h.dibuat_oleh),
       id_karyawan_awal: awalKaryawan,
       id_kendaraan_awal: awalKendaraan,
+      identitas_kendaraan_awal: nama(identitas, awalKendaraan),
       id_karyawan: tugas.id_karyawan,
       nama_karyawan: nama(namaPersonil, tugas.id_karyawan),
       id_kendaraan: tugas.id_kendaraan,
@@ -776,7 +860,8 @@ async function kumpulkanPerjalanan(
       nama_kategori: nama(namaKategori, String(h.id_kategori)),
       tarif_kendaraan: tarifKendaraan,
       tarif_tujuan: tarifTujuan,
-      upah: upahSuratJalan(tarifKendaraan, tarifTujuan),
+      upah,
+      bayar: bayarAktif(id, dataBayar.pembayaran, barisSj),
       id_karyawan_upah: idUpah,
       penerima_upah: penerima,
       nama_penerima_upah: nama(namaPersonil, penerima),
@@ -785,13 +870,16 @@ async function kumpulkanPerjalanan(
         ? { jenis: terakhir.jenis, waktu_perangkat: terakhir.waktu_perangkat }
         : null,
       menunggu_persetujuan: gantiMenunggu(refs),
-      tanda: tandaTinjau(
-        refs,
-        lokasi,
-        rencanaTrip,
-        dilapor.get(id) ?? [],
-        AKURASI_PERINGATAN_M,
-      ),
+      tanda: [
+        ...tandaTinjau(
+          refs,
+          lokasi,
+          rencanaTrip,
+          dilapor.get(id) ?? [],
+          AKURASI_PERINGATAN_M,
+        ),
+        ...tandaUpah([sj], dataBayar.pembayaran, barisSj),
+      ],
     };
   });
 }
@@ -811,6 +899,180 @@ export async function daftarPerjalanan(
       a,
       b,
     ]),
+  };
+}
+
+// ── Pembayaran upah (v35, cermin Rust) ─────────────────────────────────────
+
+/** Cermin `catat_bayar_upah`. Total = jumlah upah surat jalannya saat ini. */
+export async function catatBayarUpah(
+  client: Client,
+  operator: string,
+  raw: unknown,
+): Promise<{ sukses: true; id_bayar: string; total: number }> {
+  const parsed = bayarUpahDraftSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Data pembayaran tidak valid.");
+  const valid = validateBayarUpah(parsed.data);
+  if (!valid.ok) throw new Error(valid.error);
+  const v = valid.value;
+  const pilihan = JSON.stringify(v.id_perjalanan);
+  return withTransaction(client, async (tx) => {
+    const items = await kumpulkanPerjalanan(
+      tx,
+      "p.id_perjalanan IN (SELECT value FROM json_each(?1))",
+      [pilihan],
+      MAKS_SURAT_JALAN_PER_BAYAR,
+    );
+    const { pembayaran, baris } = await bacaBayar(
+      tx,
+      "id_perjalanan IN (SELECT value FROM json_each(?1))",
+      [pilihan],
+    );
+    const upah = periksaBayarUpah(
+      v,
+      items.map((i) => ({
+        id_perjalanan: i.id_perjalanan,
+        nomor: i.nomor,
+        status: i.status,
+        penerima: i.penerima_upah,
+        upah: i.upah,
+      })),
+      pembayaran,
+      baris,
+    );
+    if (!upah.ok) throw new Error(upah.error);
+    const total = upah.value.reduce((s, n) => s + n, 0);
+    const idBayar = newHexId("upb-");
+    await tx.execute({
+      sql: `INSERT INTO drv_upah_bayar
+              (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh)
+            VALUES (?, 'Bayar', NULL, ?, ?, ?, ?, ?);`,
+      args: [idBayar, v.id_karyawan, v.tanggal, total, v.keterangan, operator],
+    });
+    for (const [i, idPerjalanan] of v.id_perjalanan.entries()) {
+      await tx.execute({
+        sql: `INSERT INTO drv_upah_bayar_baris (id_baris, id_bayar, id_perjalanan, upah)
+              VALUES (?, ?, ?, ?);`,
+        args: [
+          idBarisBayar(idBayar, idPerjalanan),
+          idBayar,
+          idPerjalanan,
+          upah.value[i],
+        ],
+      });
+    }
+    return { sukses: true as const, id_bayar: idBayar, total };
+  });
+}
+
+/** Cermin `batal_bayar_upah`. */
+export async function batalBayarUpah(
+  client: Client,
+  operator: string,
+  raw: unknown,
+): Promise<{ sukses: true; id_bayar: string }> {
+  const parsed = batalBayarDraftSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Data pembatalan tidak valid.");
+  const valid = validateBatalBayar(parsed.data);
+  if (!valid.ok) throw new Error(valid.error);
+  const { id_bayar: idBayar, alasan } = valid.value;
+  return withTransaction(client, async (tx) => {
+    const rows = await tx.execute({
+      sql: `SELECT id_bayar, jenis, id_ref, id_karyawan FROM drv_upah_bayar
+            WHERE id_bayar = ?1 OR id_ref = ?1;`,
+      args: [idBayar],
+    });
+    const cek = periksaBatalBayar(
+      rows.rows.map((r) => ({
+        id_bayar: String(r.id_bayar),
+        jenis: String(r.jenis),
+        id_ref: text(r.id_ref),
+        id_karyawan: String(r.id_karyawan),
+      })),
+      idBayar,
+    );
+    if (!cek.ok) throw new Error(cek.error);
+    const id = idBatalBayar(idBayar);
+    await tx.execute({
+      sql: `INSERT INTO drv_upah_bayar
+              (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh)
+            SELECT ?1, 'Pembatalan', id_bayar, id_karyawan, date('now', '+7 hours'), total, ?2, ?3
+            FROM drv_upah_bayar WHERE id_bayar = ?4;`,
+      args: [id, alasan, operator, idBayar],
+    });
+    return { sukses: true as const, id_bayar: id };
+  });
+}
+
+function rentangSah(dari: string, sampai: string): [string, string] {
+  const [a, b] = [dari.trim(), sampai.trim()];
+  if (!isValidDate(a) || !isValidDate(b) || a > b) {
+    throw new Error("Rentang tanggal tidak valid.");
+  }
+  return [a, b];
+}
+
+/** Cermin `rekap_upah`. Pengelompokan dilakukan di layar. */
+export async function rekapUpah(
+  client: Client,
+  dari: string,
+  sampai: string,
+): Promise<{ items: PerjalananItem[] }> {
+  return {
+    items: await kumpulkanPerjalanan(
+      client,
+      "p.tanggal BETWEEN ?1 AND ?2",
+      rentangSah(dari, sampai),
+      MAKS_REKAP_UPAH,
+    ),
+  };
+}
+
+/** Cermin `daftar_bayar_upah`. */
+export async function daftarBayarUpah(
+  client: Client,
+  dari: string,
+  sampai: string,
+): Promise<{ items: PembayaranUpahItem[] }> {
+  const args = rentangSah(dari, sampai);
+  const [items, barisRows] = await Promise.all([
+    client.execute({
+      sql: `SELECT b.id_bayar, b.id_karyawan, m.nama AS nama_karyawan, b.tanggal, b.total,
+                   b.keterangan, b.dicatat_oleh, b.created_at,
+                   x.tanggal AS tanggal_batal, x.keterangan AS alasan_batal,
+                   x.dicatat_oleh AS dibatalkan_oleh
+            FROM drv_upah_bayar b
+            LEFT JOIN master_data m ON m.id_unik = b.id_karyawan
+            LEFT JOIN drv_upah_bayar x ON x.jenis = 'Pembatalan' AND x.id_ref = b.id_bayar
+            WHERE b.jenis = 'Bayar' AND b.tanggal BETWEEN ?1 AND ?2
+            GROUP BY b.id_bayar
+            ORDER BY b.tanggal DESC, b.created_at DESC
+            LIMIT ${MAKS_DAFTAR_BAYAR};`,
+      args,
+    }),
+    client.execute({
+      sql: `SELECT r.id_bayar, r.id_perjalanan, r.upah, p.nomor, p.tanggal
+            FROM drv_upah_bayar_baris r
+            JOIN drv_upah_bayar b ON b.id_bayar = r.id_bayar
+            LEFT JOIN drv_perjalanan p ON p.id_perjalanan = r.id_perjalanan
+            WHERE b.jenis = 'Bayar' AND b.tanggal BETWEEN ?1 AND ?2
+            ORDER BY p.tanggal, p.nomor;`,
+      args,
+    }),
+  ]);
+  const suratJalan = baris<PembayaranUpahItem["surat_jalan"][number]>(
+    barisRows.rows,
+  );
+  return {
+    items: baris<Omit<PembayaranUpahItem, "surat_jalan">>(items.rows).map(
+      (item) => ({
+        ...item,
+        total: Number(item.total),
+        surat_jalan: suratJalan
+          .filter((s) => s.id_bayar === item.id_bayar)
+          .map((s) => ({ ...s, upah: Number(s.upah) })),
+      }),
+    ),
   };
 }
 

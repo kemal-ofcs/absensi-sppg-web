@@ -17,6 +17,9 @@ export const LABEL_TANDA: Record<KodeTanda, string> = {
   menunggu_persetujuan: "Ganti darurat atau minta izin belum diputuskan",
   muat_beda: "Jumlah dimuat berbeda dari surat jalan",
   sisa_muatan: "Ada muatan yang belum tercatat dibongkar",
+  lokasi_palsu: "HP mendeteksi lokasi palsu (aplikasi pemalsu GPS)",
+  dibayar_ganda: "Upah surat jalan tercatat di lebih dari satu pembayaran",
+  upah_berubah: "Status, penerima, atau upah berubah setelah dibayar",
 };
 
 export const WARNA_STATUS: Record<StatusPerjalanan, string> = {

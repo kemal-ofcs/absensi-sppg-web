@@ -1139,7 +1139,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         keterangan TEXT,
         foto_sha256 TEXT,
         dilaporkan_oleh TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1))
       );
       CREATE INDEX IF NOT EXISTS idx_drv_laporan_perjalanan ON drv_laporan(id_perjalanan, waktu_perangkat);
       CREATE INDEX IF NOT EXISTS idx_drv_laporan_karyawan ON drv_laporan(id_karyawan, waktu_perangkat);
@@ -1157,6 +1158,28 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         data_base64 TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      -- Pembayaran upah surat jalan (v35), append-only. Pembatalan = baris
+      -- `Pembatalan` berid `batal-<id_bayar>`. Baris menyalin upah saat dibayar.
+      CREATE TABLE IF NOT EXISTS drv_upah_bayar (
+        id_bayar TEXT PRIMARY KEY,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Pembatalan')),
+        id_ref TEXT,
+        id_karyawan TEXT NOT NULL,
+        tanggal TEXT NOT NULL,
+        total INTEGER NOT NULL CHECK (total >= 0),
+        keterangan TEXT,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_karyawan ON drv_upah_bayar(id_karyawan, tanggal);
+      CREATE TABLE IF NOT EXISTS drv_upah_bayar_baris (
+        id_baris TEXT PRIMARY KEY,
+        id_bayar TEXT NOT NULL,
+        id_perjalanan TEXT NOT NULL,
+        upah INTEGER NOT NULL CHECK (upah >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_bayar ON drv_upah_bayar_baris(id_bayar);
+      CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_perjalanan ON drv_upah_bayar_baris(id_perjalanan);
       -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
       -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
       -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
@@ -1303,6 +1326,13 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "inventory_barang",
         "desimal",
         "ALTER TABLE inventory_barang ADD COLUMN desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1));",
+    )?;
+    // Lokasi palsu laporan driver (v35). NULL = tidak diperiksa.
+    ensure_column(
+        &connection,
+        "drv_laporan",
+        "lokasi_palsu",
+        "ALTER TABLE drv_laporan ADD COLUMN lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1));",
     )?;
     // Hapus barang (v32). NULL = belum dihapus.
     ensure_column(
@@ -1533,6 +1563,8 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "drv_laporan",
     "drv_laporan_muatan",
     "drv_laporan_foto",
+    "drv_upah_bayar",
+    "drv_upah_bayar_baris",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke

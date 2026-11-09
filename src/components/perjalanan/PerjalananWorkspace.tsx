@@ -25,6 +25,7 @@ import { FormSuratJalan } from "./FormSuratJalan";
 import { RincianSuratJalan } from "./RincianSuratJalan";
 import { LABEL_TANDA, rentangBawaan, WARNA_STATUS, waktuWib } from "./tampilan";
 import { UnduhFotoPanel } from "./UnduhFotoPanel";
+import { UpahPanel } from "./UpahPanel";
 
 /**
  * Layar dispatcher (Web/Desktop): surat jalan, Perlu ditinjau, armada, dan
@@ -32,7 +33,7 @@ import { UnduhFotoPanel } from "./UnduhFotoPanel";
  * backend, yang menurunkannya dari laporan (tidak pernah dihitung di sini).
  */
 
-type Tab = "surat" | "tinjau" | "armada" | "foto";
+type Tab = "surat" | "tinjau" | "upah" | "armada" | "foto";
 
 const GALAT_KOTAK =
   "p-3 rounded-lg border border-rose-500/30 bg-rose-500/20 text-sm text-rose-100";
@@ -108,6 +109,7 @@ export function PerjalananWorkspace() {
       label: `Perlu ditinjau${perluDitinjau.length ? ` (${perluDitinjau.length})` : ""}`,
       tampil: true,
     },
+    { id: "upah", label: "Upah", tampil: true },
     { id: "armada", label: "Armada & lokasi", tampil: bolehArmada },
     { id: "foto", label: "Unduh foto", tampil: true },
   ];
@@ -305,6 +307,8 @@ export function PerjalananWorkspace() {
           </ul>
         </div>
       ) : null}
+
+      {tab === "upah" ? <UpahPanel /> : null}
 
       {tab === "armada" && master ? (
         <ArmadaPanel master={master} onBerubah={muatMaster} />

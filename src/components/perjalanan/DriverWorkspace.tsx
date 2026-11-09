@@ -24,6 +24,7 @@ import {
   catatLaporanDriver,
   daftarPerjalananSaya,
   type PerjalananSaya,
+  periksaLokasiPalsu,
   type RincianPerjalanan,
   rincianPerjalananSaya,
 } from "@/lib/gateways/driver";
@@ -515,6 +516,8 @@ function DialogLapor({
   const idLaporan = useMemo(() => `lap-${crypto.randomUUID()}`, []);
 
   const [posisi, setPosisi] = useState<PosisiLaporan | null>(null);
+  // Hasil `Location.isMock()` atas fix yang sama; null = tidak diperiksa.
+  const [lokasiPalsu, setLokasiPalsu] = useState<boolean | null>(null);
   const [galatGps, setGalatGps] = useState<string | null>(null);
   const [mencariGps, setMencariGps] = useState(false);
   const [namaTempat, setNamaTempat] = useState("");
@@ -539,9 +542,12 @@ function DialogLapor({
   const cariGps = useCallback(async () => {
     setMencariGps(true);
     setGalatGps(null);
+    setLokasiPalsu(null);
     try {
       const hasil = await ambilPosisi();
       setPosisi(hasil);
+      // Dibaca tepat setelah fix didapat, selagi fix itu masih yang terakhir.
+      setLokasiPalsu(await periksaLokasiPalsu());
       const dekat = lokasiTerdekat(hasil, data.lokasi);
       setIdLokasi(dekat?.id_lokasi ?? null);
       if (dekat) setNamaTempat((lama) => lama || dekat.nama);
@@ -644,6 +650,7 @@ function DialogLapor({
       id_karyawan_baru: jenis === "Ganti Driver" ? pengganti || null : null,
       id_kendaraan_baru: jenis === "Ganti Kendaraan" ? pengganti || null : null,
       keterangan: keterangan || null,
+      lokasi_palsu: lokasiPalsu,
       muatan: baris
         .filter((b) => b.ikut)
         .map((b) => ({
@@ -709,6 +716,13 @@ function DialogLapor({
             <p className="text-amber-100">
               Akurasi GPS kurang baik. Bila bisa, pindah ke tempat terbuka lalu
               cari ulang.
+            </p>
+          ) : null}
+          {lokasiPalsu ? (
+            <p className="text-rose-100" role="alert">
+              Lokasi palsu terdeteksi. Matikan aplikasi pemalsu GPS lalu cari
+              ulang lokasi. Laporan tetap bisa dikirim, tetapi ditandai untuk
+              ditinjau kantor.
             </p>
           ) : null}
           {galatGps ? <p className="text-rose-100">{galatGps}</p> : null}

@@ -213,6 +213,8 @@ pub struct Laporan<'a> {
     pub lng: Option<f64>,
     pub akurasi_m: Option<f64>,
     pub foto_sha256: Option<&'a str>,
+    /// `drv_laporan.lokasi_palsu = 1` (v35). Kosong/0 = tidak terdeteksi.
+    pub lokasi_palsu: bool,
 }
 
 /// Cermin `urutkan`: urutan kejadian = jam perangkat, id sebagai penentu seri.
@@ -528,6 +530,9 @@ pub fn tanda_tinjau(
                 }
             }
         }
+        if l.lokasi_palsu {
+            hasil.push(tanda("lokasi_palsu", l.id_laporan));
+        }
     }
 
     // Kecepatan antara dua laporan berkoordinat berurutan. Akurasi keduanya
@@ -572,6 +577,235 @@ pub fn tanda_tinjau(
         }
         if selesai && dimuat != jumlah("Selesai Bongkar", m.id_muatan).1 {
             hasil.push(tanda("sisa_muatan", m.id_muatan));
+        }
+    }
+    hasil
+}
+
+// ── Pembayaran upah (v35, PRD §4.1c dan §14) ───────────────────────────────
+//
+// Append-only: `Bayar` dan `Pembatalan` berid `batal-<id_bayar>` di tabel yang
+// sama. "Satu surat jalan satu pembayaran" hanya ditegakkan di perangkat
+// (`periksa_bayar_upah`); cloud tidak pernah menolak, dan bayar ganda dari
+// perangkat offline muncul sebagai tanda `dibayar_ganda`.
+
+pub const MAKS_SURAT_JALAN_PER_BAYAR: usize = 500;
+
+/// Cermin `idBatalBayar`: dua perangkat yang membatalkan pembayaran yang sama
+/// menghasilkan PK yang sama.
+pub fn id_batal_bayar(id_bayar: &str) -> String {
+    format!("batal-{id_bayar}")
+}
+
+/// Cermin `idBarisBayar`.
+pub fn id_baris_bayar(id_bayar: &str, id_perjalanan: &str) -> String {
+    format!("{id_bayar}:{id_perjalanan}")
+}
+
+/// Cermin `bayarUpahDraftSchema`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BayarUpahDraft {
+    #[serde(default)]
+    pub id_karyawan: Option<String>,
+    #[serde(default)]
+    pub tanggal: String,
+    #[serde(default)]
+    pub id_perjalanan: Vec<String>,
+    #[serde(default)]
+    pub keterangan: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BayarUpahValid {
+    pub id_karyawan: String,
+    pub tanggal: String,
+    pub id_perjalanan: Vec<String>,
+    pub keterangan: Option<String>,
+}
+
+/// Cermin `validateBayarUpah`: bentuk isian saja, tanpa membaca database.
+pub fn validate_bayar_upah(draft: &BayarUpahDraft) -> Result<BayarUpahValid, String> {
+    let id_karyawan = clean(&draft.id_karyawan).ok_or("Driver wajib dipilih.")?;
+    let tanggal = draft.tanggal.trim().to_owned();
+    if !is_valid_date(&tanggal) {
+        return Err("Tanggal bayar tidak valid.".into());
+    }
+    let mut id_perjalanan: Vec<String> = Vec::new();
+    for id in draft.id_perjalanan.iter().map(|id| id.trim()).filter(|id| !id.is_empty()) {
+        if id_perjalanan.iter().any(|ada| ada == id) {
+            return Err("Surat jalan yang sama dipilih dua kali.".into());
+        }
+        id_perjalanan.push(id.to_owned());
+    }
+    if id_perjalanan.is_empty() {
+        return Err("Pilih minimal satu surat jalan.".into());
+    }
+    if id_perjalanan.len() > MAKS_SURAT_JALAN_PER_BAYAR {
+        return Err(format!(
+            "Maksimal {MAKS_SURAT_JALAN_PER_BAYAR} surat jalan per pembayaran."
+        ));
+    }
+    let keterangan = teks(
+        &draft.keterangan,
+        MAKS_KETERANGAN,
+        &format!("Keterangan maksimal {MAKS_KETERANGAN} karakter."),
+    )?;
+    Ok(BayarUpahValid {
+        id_karyawan,
+        tanggal,
+        id_perjalanan,
+        keterangan,
+    })
+}
+
+/// Cermin `batalBayarDraftSchema`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatalBayarDraft {
+    #[serde(default)]
+    pub id_bayar: Option<String>,
+    #[serde(default)]
+    pub alasan: Option<String>,
+}
+
+/// Cermin `validateBatalBayar`: `(id_bayar, alasan)`.
+pub fn validate_batal_bayar(draft: &BatalBayarDraft) -> Result<(String, String), String> {
+    let id_bayar = clean(&draft.id_bayar).ok_or("Pembayaran tidak ditemukan.")?;
+    let alasan = wajib(
+        &draft.alasan,
+        MAKS_KETERANGAN,
+        "Alasan pembatalan wajib diisi.",
+        &format!("Alasan maksimal {MAKS_KETERANGAN} karakter."),
+    )?;
+    Ok((id_bayar, alasan))
+}
+
+/// Satu baris `drv_upah_bayar` sebanyak yang dibutuhkan aturan turunan.
+#[derive(Debug, Clone, Default)]
+pub struct Pembayaran<'a> {
+    pub id_bayar: &'a str,
+    pub jenis: &'a str,
+    pub id_ref: Option<&'a str>,
+    pub id_karyawan: &'a str,
+}
+
+/// Satu baris `drv_upah_bayar_baris`.
+#[derive(Debug, Clone)]
+pub struct BarisBayar<'a> {
+    pub id_bayar: &'a str,
+    pub id_perjalanan: &'a str,
+    pub upah: i64,
+}
+
+/// Keadaan upah satu surat jalan saat ini (status, penerima, dan upah turunan).
+#[derive(Debug, Clone)]
+pub struct SuratJalanUpah<'a> {
+    pub id_perjalanan: &'a str,
+    pub nomor: &'a str,
+    pub status: &'a str,
+    pub penerima: Option<&'a str>,
+    pub upah: i64,
+}
+
+/// Cermin `bayarDibatalkan`.
+pub fn bayar_dibatalkan(pembayaran: &[Pembayaran<'_>], id_bayar: &str) -> bool {
+    pembayaran
+        .iter()
+        .any(|p| p.jenis == "Pembatalan" && p.id_ref == Some(id_bayar))
+}
+
+/// Cermin `bayarAktif`: id pembayaran `Bayar` yang memuat surat jalan ini dan
+/// belum dibatalkan, terurut. Lebih dari satu = dibayar ganda.
+pub fn bayar_aktif<'a>(
+    id_perjalanan: &str,
+    pembayaran: &[Pembayaran<'a>],
+    baris: &[BarisBayar<'a>],
+) -> Vec<&'a str> {
+    let mut aktif: Vec<&'a str> = baris
+        .iter()
+        .filter(|b| b.id_perjalanan == id_perjalanan)
+        .map(|b| b.id_bayar)
+        .filter(|id| pembayaran.iter().any(|p| p.id_bayar == *id && p.jenis == "Bayar"))
+        .filter(|id| !bayar_dibatalkan(pembayaran, id))
+        .collect();
+    aktif.sort_unstable();
+    aktif.dedup();
+    aktif
+}
+
+/// Cermin `periksaBayarUpah`. Hanya di perangkat; mengembalikan upah setiap
+/// surat jalan sesuai urutan isian (totalnya = jumlah upah ini).
+pub fn periksa_bayar_upah(
+    valid: &BayarUpahValid,
+    surat_jalan: &[SuratJalanUpah<'_>],
+    pembayaran: &[Pembayaran<'_>],
+    baris: &[BarisBayar<'_>],
+) -> Result<Vec<i64>, String> {
+    let mut upah = Vec::with_capacity(valid.id_perjalanan.len());
+    for id in &valid.id_perjalanan {
+        let sj = surat_jalan
+            .iter()
+            .find(|s| s.id_perjalanan == id)
+            .ok_or("Surat jalan tidak ditemukan.")?;
+        if sj.status != "Selesai" {
+            return Err(format!(
+                "Surat jalan {} berstatus {}; hanya surat jalan Selesai yang dibayar.",
+                sj.nomor, sj.status
+            ));
+        }
+        if sj.penerima != Some(valid.id_karyawan.as_str()) {
+            return Err(format!("Upah surat jalan {} bukan milik driver ini.", sj.nomor));
+        }
+        if !bayar_aktif(id, pembayaran, baris).is_empty() {
+            return Err(format!("Surat jalan {} sudah dibayar.", sj.nomor));
+        }
+        upah.push(sj.upah);
+    }
+    Ok(upah)
+}
+
+/// Cermin `periksaBatalBayar`. Hanya di perangkat.
+pub fn periksa_batal_bayar(pembayaran: &[Pembayaran<'_>], id_bayar: &str) -> Result<(), String> {
+    if !pembayaran
+        .iter()
+        .any(|p| p.id_bayar == id_bayar && p.jenis == "Bayar")
+    {
+        return Err("Pembayaran tidak ditemukan.".into());
+    }
+    if bayar_dibatalkan(pembayaran, id_bayar) {
+        return Err("Pembayaran ini sudah dibatalkan.".into());
+    }
+    Ok(())
+}
+
+/// Cermin `tandaUpah`, `id` = id surat jalan. `upah_berubah`: status, penerima,
+/// atau upah saat ini berbeda dari yang tercatat di pembayaran aktifnya
+/// (perubahan dari perangkat yang offline saat pembayaran dicatat).
+pub fn tanda_upah(
+    surat_jalan: &[SuratJalanUpah<'_>],
+    pembayaran: &[Pembayaran<'_>],
+    baris: &[BarisBayar<'_>],
+) -> Vec<Tanda> {
+    let mut hasil = Vec::new();
+    for sj in surat_jalan {
+        let aktif = bayar_aktif(sj.id_perjalanan, pembayaran, baris);
+        if aktif.len() > 1 {
+            hasil.push(tanda("dibayar_ganda", sj.id_perjalanan));
+        }
+        let berubah = aktif.iter().any(|id| {
+            let driver = pembayaran
+                .iter()
+                .find(|p| p.id_bayar == *id && p.jenis == "Bayar")
+                .map(|p| p.id_karyawan);
+            let dibayar = baris
+                .iter()
+                .find(|b| b.id_bayar == *id && b.id_perjalanan == sj.id_perjalanan)
+                .map(|b| b.upah);
+            sj.status != "Selesai" || sj.penerima != driver || dibayar != Some(sj.upah)
+        });
+        if berubah {
+            hasil.push(tanda("upah_berubah", sj.id_perjalanan));
         }
     }
     hasil
@@ -952,6 +1186,9 @@ pub struct LaporanDraft {
     pub id_kendaraan_baru: Option<String>,
     #[serde(default)]
     pub keterangan: Option<String>,
+    /// Hasil `mobile_location_is_mock` (v35). Kosong = tidak diperiksa.
+    #[serde(default)]
+    pub lokasi_palsu: Option<bool>,
     #[serde(default)]
     pub muatan: Vec<LaporanMuatanDraft>,
 }
@@ -981,6 +1218,7 @@ pub struct LaporanValid {
     pub id_karyawan_baru: Option<String>,
     pub id_kendaraan_baru: Option<String>,
     pub keterangan: Option<String>,
+    pub lokasi_palsu: Option<bool>,
     pub muatan: Vec<LaporanMuatanValid>,
 }
 
@@ -1154,6 +1392,8 @@ pub fn validate_laporan(
         id_karyawan_baru,
         id_kendaraan_baru,
         keterangan,
+        // Hanya HP driver yang memeriksa; dispatcher tidak membawa lokasi.
+        lokasi_palsu: if oleh_driver { draft.lokasi_palsu } else { None },
         muatan,
     })
 }
@@ -1513,6 +1753,7 @@ struct LaporanMilik {
     lng: Option<f64>,
     akurasi_m: Option<f64>,
     foto_sha256: Option<String>,
+    lokasi_palsu: Option<i64>,
 }
 
 impl LaporanMilik {
@@ -1532,6 +1773,7 @@ impl LaporanMilik {
             lng: self.lng,
             akurasi_m: self.akurasi_m,
             foto_sha256: self.foto_sha256.as_deref(),
+            lokasi_palsu: self.lokasi_palsu == Some(1),
         }
     }
 }
@@ -1556,7 +1798,7 @@ fn baca_laporan_where(
         .prepare(&format!(
             "SELECT id_laporan, jenis, mode_ganti, id_ref, waktu_perangkat, diterima_cloud,
                     id_karyawan, id_karyawan_baru, id_kendaraan_baru, id_lokasi, lat, lng,
-                    akurasi_m, foto_sha256, id_perjalanan
+                    akurasi_m, foto_sha256, id_perjalanan, lokasi_palsu
              FROM drv_laporan WHERE {syarat}
              -- batas: laporan surat jalan yang dibaca saja, belasan per surat jalan
              ;"
@@ -1581,11 +1823,28 @@ fn baca_laporan_where(
                     lng: row.get(11)?,
                     akurasi_m: row.get(12)?,
                     foto_sha256: row.get(13)?,
+                    lokasi_palsu: row.get(15)?,
                 },
             ))
         })
         .map_err(internal)?;
     baris.collect::<Result<_, _>>().map_err(internal)
+}
+
+/// Cermin `PESAN_SUDAH_DIBAYAR`.
+pub const PESAN_SUDAH_DIBAYAR: &str =
+    "Upah surat jalan ini sudah dibayar. Batalkan pembayarannya dulu.";
+
+/// Surat jalan yang masuk pembayaran aktif terkunci dari perubahan yang bisa
+/// menggeser penerima atau upahnya (pindah upah, menyetujui ganti driver).
+fn tolak_bila_dibayar(tx: &rusqlite::Connection, id_perjalanan: &str) -> Result<(), CommandError> {
+    let (pembayaran, baris) = baca_bayar(tx, "id_perjalanan = ?1", &[&id_perjalanan])?;
+    let baris: Vec<BarisBayar<'_>> = baris.iter().map(baris_bayar_dari).collect();
+    if bayar_aktif(id_perjalanan, &pembayaran_dari(&pembayaran), &baris).is_empty() {
+        Ok(())
+    } else {
+        Err(invalid(PESAN_SUDAH_DIBAYAR))
+    }
 }
 
 fn enqueue_perjalanan(tx: &Transaction<'_>, client_id: &str, id: &str) -> Result<(), CommandError> {
@@ -1811,6 +2070,7 @@ pub fn atur_penerima_upah(
     let penerima = id_karyawan.map(str::trim).filter(|s| !s.is_empty());
     dalam_transaksi(state, |tx, client_id| {
         let keadaan = KeadaanPerjalanan::baca(tx, id)?;
+        tolak_bila_dibayar(tx, id)?;
         if status_perjalanan(&keadaan.laporan()) != "Selesai" {
             return Err(invalid("Upah hanya untuk surat jalan yang Selesai."));
         }
@@ -1883,6 +2143,11 @@ pub fn catat_laporan(
         let keadaan = KeadaanPerjalanan::baca(tx, &valid.id_perjalanan)?;
         let laporan = keadaan.laporan();
         periksa_urutan(&laporan, &valid.jenis).map_err(invalid)?;
+        // Menyetujui ganti driver pada surat jalan Selesai bisa menggeser
+        // penerima upahnya. Ditolak tidak mengubah penugasan.
+        if valid.jenis == "Disetujui" {
+            tolak_bila_dibayar(tx, &valid.id_perjalanan)?;
+        }
         let bertugas = penugasan(&keadaan.id_karyawan, &keadaan.id_kendaraan, &laporan);
         if let Some(sesi) = id_karyawan_sesi {
             // Personil yang dinonaktifkan setelah login (sesi offline) ikut ditolak.
@@ -1962,8 +2227,8 @@ pub fn catat_laporan(
             "INSERT INTO drv_laporan (id_laporan, id_perjalanan, jenis, mode_ganti, id_ref,
                 jenis_kendala, terlambat_menit, id_lokasi, nama_lokasi, lat, lng, akurasi_m,
                 waktu_perangkat, waktu_gps, id_karyawan, id_karyawan_baru, id_kendaraan_baru,
-                keterangan, foto_sha256, dilaporkan_oleh, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));",
+                keterangan, foto_sha256, dilaporkan_oleh, created_at, lokasi_palsu)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?);",
             params![
                 id_laporan,
                 valid.id_perjalanan,
@@ -1984,7 +2249,8 @@ pub fn catat_laporan(
                 valid.id_kendaraan_baru,
                 valid.keterangan,
                 foto_sha256,
-                operator
+                operator,
+                valid.lokasi_palsu.map(i64::from)
             ],
         )
         .map_err(internal)?;
@@ -2124,10 +2390,54 @@ fn peta_nama(
 
 /// Satu item surat jalan + turunannya, untuk daftar dan rincian. `syarat` =
 /// saringan atas `drv_perjalanan p`. Cermin `kumpulkanPerjalanan`.
+/// Baris pembayaran upah (`Bayar` dan pembatalannya) dan baris surat jalannya
+/// untuk surat jalan yang memenuhi `dalam` (saringan atas `id_perjalanan`).
+fn baca_bayar(
+    c: &rusqlite::Connection,
+    dalam: &str,
+    args: &[&dyn ToSql],
+) -> Result<(Vec<Value>, Vec<Value>), CommandError> {
+    let baris = kueri_json(
+        c,
+        &format!("SELECT id_bayar, id_perjalanan, upah FROM drv_upah_bayar_baris WHERE {dalam};"),
+        args,
+    )?;
+    let pembayaran = kueri_json(
+        c,
+        &format!(
+            "SELECT id_bayar, jenis, id_ref, id_karyawan FROM drv_upah_bayar
+             WHERE id_bayar IN (SELECT id_bayar FROM drv_upah_bayar_baris WHERE {dalam})
+                OR id_ref IN (SELECT id_bayar FROM drv_upah_bayar_baris WHERE {dalam});"
+        ),
+        args,
+    )?;
+    Ok((pembayaran, baris))
+}
+
+fn pembayaran_dari(rows: &[Value]) -> Vec<Pembayaran<'_>> {
+    rows.iter()
+        .map(|r| Pembayaran {
+            id_bayar: r["id_bayar"].as_str().unwrap_or_default(),
+            jenis: r["jenis"].as_str().unwrap_or_default(),
+            id_ref: r["id_ref"].as_str(),
+            id_karyawan: r["id_karyawan"].as_str().unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn baris_bayar_dari(row: &Value) -> BarisBayar<'_> {
+    BarisBayar {
+        id_bayar: row["id_bayar"].as_str().unwrap_or_default(),
+        id_perjalanan: row["id_perjalanan"].as_str().unwrap_or_default(),
+        upah: row["upah"].as_i64().unwrap_or(0),
+    }
+}
+
 fn kumpulkan(
     c: &rusqlite::Connection,
     syarat: &str,
     args: &[&dyn ToSql],
+    batas: usize,
 ) -> Result<Vec<Value>, CommandError> {
     use std::collections::HashMap;
     let headers = kueri_json(
@@ -2135,11 +2445,18 @@ fn kumpulkan(
         &format!(
             "SELECT p.* FROM drv_perjalanan p WHERE {syarat}
              ORDER BY p.tanggal DESC, p.nomor DESC
-             LIMIT {MAKS_DAFTAR_PERJALANAN};"
+             LIMIT {batas};"
         ),
         args,
     )?;
     let dalam = format!("id_perjalanan IN (SELECT p.id_perjalanan FROM drv_perjalanan p WHERE {syarat})");
+    let (pembayaran_rows, baris_bayar_rows) = baca_bayar(c, &dalam, args)?;
+    let pembayaran = pembayaran_dari(&pembayaran_rows);
+    let mut baris_bayar: HashMap<&str, Vec<BarisBayar<'_>>> = HashMap::new();
+    for row in &baris_bayar_rows {
+        let b = baris_bayar_dari(row);
+        baris_bayar.entry(b.id_perjalanan).or_default().push(b);
+    }
     let mut laporan: HashMap<String, Vec<LaporanMilik>> = HashMap::new();
     for (id, l) in baca_laporan_where(c, &dalam, args)? {
         laporan.entry(id).or_default().push(l);
@@ -2220,14 +2537,26 @@ fn kumpulkan(
             .iter()
             .map(|(id_laporan, id_muatan, qty)| MuatanLapor { id_laporan, id_muatan, qty: *qty })
             .collect();
-        let tanda: Vec<Value> = tanda_tinjau(&refs, &lokasi, &rencana_trip, &dilapor_trip, AKURASI_PERINGATAN_M)
-            .into_iter()
-            .map(|t| json!({ "kode": t.kode, "id": t.id }))
-            .collect();
         let tarif_kendaraan = h["tarif_kendaraan"].as_i64().unwrap_or(0);
         let tarif_tujuan = h["tarif_tujuan"].as_i64().unwrap_or(0);
+        let upah = upah_surat_jalan(tarif_kendaraan, tarif_tujuan);
         let id_upah = teks_json(&h, "id_karyawan_upah");
         let penerima = penerima_upah(status, id_upah.as_deref(), &refs, &tugas.id_karyawan);
+        let nomor = teks_json(&h, "nomor").unwrap_or_default();
+        let baris_sj = baris_bayar.get(id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+        let sj = SuratJalanUpah {
+            id_perjalanan: &id,
+            nomor: &nomor,
+            status,
+            penerima: penerima.as_deref(),
+            upah,
+        };
+        let bayar = bayar_aktif(&id, &pembayaran, baris_sj);
+        let tanda: Vec<Value> = tanda_tinjau(&refs, &lokasi, &rencana_trip, &dilapor_trip, AKURASI_PERINGATAN_M)
+            .into_iter()
+            .chain(tanda_upah(std::slice::from_ref(&sj), &pembayaran, baris_sj))
+            .map(|t| json!({ "kode": t.kode, "id": t.id }))
+            .collect();
         let terakhir = urutkan(&refs)
             .last()
             .map(|l| json!({ "jenis": l.jenis, "waktu_perangkat": l.waktu_perangkat }))
@@ -2242,6 +2571,7 @@ fn kumpulkan(
             "dibuat_oleh": h["dibuat_oleh"],
             "id_karyawan_awal": awal_karyawan,
             "id_kendaraan_awal": awal_kendaraan,
+            "identitas_kendaraan_awal": nama_dari(&identitas, Some(&awal_kendaraan)),
             "id_karyawan": tugas.id_karyawan,
             "nama_karyawan": nama_dari(&nama_personil, Some(&tugas.id_karyawan)),
             "id_kendaraan": tugas.id_kendaraan,
@@ -2251,7 +2581,8 @@ fn kumpulkan(
             "nama_kategori": nama_dari(&nama_kategori, h["id_kategori"].as_str()),
             "tarif_kendaraan": tarif_kendaraan,
             "tarif_tujuan": tarif_tujuan,
-            "upah": upah_surat_jalan(tarif_kendaraan, tarif_tujuan),
+            "upah": upah,
+            "bayar": bayar,
             "id_karyawan_upah": id_upah,
             "penerima_upah": penerima,
             "nama_penerima_upah": nama_dari(&nama_personil, penerima.as_deref()),
@@ -2271,7 +2602,172 @@ pub fn daftar_perjalanan(state: &DesktopState, dari: &str, sampai: &str) -> Resu
         return Err(invalid("Rentang tanggal tidak valid."));
     }
     let c = storage::database(&state.data_dir)?;
-    Ok(json!({ "items": kumpulkan(&c, "p.tanggal BETWEEN ?1 AND ?2", &[&dari, &sampai])? }))
+    Ok(json!({ "items": kumpulkan(&c, "p.tanggal BETWEEN ?1 AND ?2", &[&dari, &sampai], MAKS_DAFTAR_PERJALANAN)? }))
+}
+
+// ── Pembayaran upah: penulisan lokal dan pembacaan (v35) ───────────────────
+
+/// Cermin `MAKS_REKAP_UPAH`: rekap upah sebulan bisa melewati batas daftar.
+pub const MAKS_REKAP_UPAH: usize = 5000;
+/// Cermin `MAKS_DAFTAR_BAYAR`.
+pub const MAKS_DAFTAR_BAYAR: usize = 1000;
+const DALAM_PILIHAN: &str = "id_perjalanan IN (SELECT value FROM json_each(?1))";
+
+fn enqueue_bayar(tx: &Transaction<'_>, client_id: &str, id: &str) -> Result<(), CommandError> {
+    let payload = json!({
+        "bayar": satu_json(tx, "SELECT * FROM drv_upah_bayar WHERE id_bayar = ?;", &[&id])?,
+        "baris": kueri_json(
+            tx,
+            "SELECT * FROM drv_upah_bayar_baris WHERE id_bayar = ? ORDER BY id_baris;",
+            &[&id],
+        )?,
+    });
+    sync::enqueue(tx, client_id, "trip-payment", "create", id, &payload, None)?;
+    Ok(())
+}
+
+/// Cermin `catatBayarUpah`: satu pembayaran per driver (`trip-payment/create`).
+/// Total = jumlah upah surat jalannya saat ini; isian tidak membawa total.
+pub fn catat_bayar_upah(
+    state: &DesktopState,
+    operator: &str,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let draft: BayarUpahDraft =
+        serde_json::from_value(draft).map_err(|_| invalid("Data pembayaran tidak valid."))?;
+    let valid = validate_bayar_upah(&draft).map_err(invalid)?;
+    let pilihan = serde_json::to_string(&valid.id_perjalanan).map_err(internal)?;
+    dalam_transaksi(state, |tx, client_id| {
+        let items = kumpulkan(
+            tx,
+            "p.id_perjalanan IN (SELECT value FROM json_each(?1))",
+            &[&pilihan],
+            MAKS_SURAT_JALAN_PER_BAYAR,
+        )?;
+        let surat_jalan: Vec<SuratJalanUpah<'_>> = items
+            .iter()
+            .map(|i| SuratJalanUpah {
+                id_perjalanan: i["id_perjalanan"].as_str().unwrap_or_default(),
+                nomor: i["nomor"].as_str().unwrap_or_default(),
+                status: i["status"].as_str().unwrap_or_default(),
+                penerima: i["penerima_upah"].as_str(),
+                upah: i["upah"].as_i64().unwrap_or(0),
+            })
+            .collect();
+        let (pembayaran, baris) = baca_bayar(tx, DALAM_PILIHAN, &[&pilihan])?;
+        let baris: Vec<BarisBayar<'_>> = baris.iter().map(baris_bayar_dari).collect();
+        let upah = periksa_bayar_upah(&valid, &surat_jalan, &pembayaran_dari(&pembayaran), &baris)
+            .map_err(invalid)?;
+        let total: i64 = upah.iter().sum();
+        let id_bayar = new_hex_id("upb-");
+        tx.execute(
+            "INSERT INTO drv_upah_bayar
+                (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh)
+             VALUES (?1, 'Bayar', NULL, ?2, ?3, ?4, ?5, ?6);",
+            params![id_bayar, valid.id_karyawan, valid.tanggal, total, valid.keterangan, operator],
+        )
+        .map_err(internal)?;
+        for (id_perjalanan, upah) in valid.id_perjalanan.iter().zip(&upah) {
+            tx.execute(
+                "INSERT INTO drv_upah_bayar_baris (id_baris, id_bayar, id_perjalanan, upah)
+                 VALUES (?1, ?2, ?3, ?4);",
+                params![id_baris_bayar(&id_bayar, id_perjalanan), id_bayar, id_perjalanan, upah],
+            )
+            .map_err(internal)?;
+        }
+        enqueue_bayar(tx, client_id, &id_bayar)?;
+        Ok(json!({ "sukses": true, "id_bayar": id_bayar, "total": total }))
+    })
+}
+
+/// Cermin `batalBayarUpah`: baris `Pembatalan` berid `batal-<id_bayar>` yang
+/// menyalin driver dan total pembayarannya. Tanggalnya tanggal WIB saat ini.
+pub fn batal_bayar_upah(
+    state: &DesktopState,
+    operator: &str,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let draft: BatalBayarDraft =
+        serde_json::from_value(draft).map_err(|_| invalid("Data pembatalan tidak valid."))?;
+    let (id_bayar, alasan) = validate_batal_bayar(&draft).map_err(invalid)?;
+    dalam_transaksi(state, |tx, client_id| {
+        let pembayaran = kueri_json(
+            tx,
+            "SELECT id_bayar, jenis, id_ref, id_karyawan FROM drv_upah_bayar
+             WHERE id_bayar = ?1 OR id_ref = ?1;",
+            &[&id_bayar],
+        )?;
+        periksa_batal_bayar(&pembayaran_dari(&pembayaran), &id_bayar).map_err(invalid)?;
+        let id = id_batal_bayar(&id_bayar);
+        tx.execute(
+            "INSERT INTO drv_upah_bayar
+                (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh)
+             SELECT ?1, 'Pembatalan', id_bayar, id_karyawan, date('now', '+7 hours'), total, ?2, ?3
+             FROM drv_upah_bayar WHERE id_bayar = ?4;",
+            params![id, alasan, operator, id_bayar],
+        )
+        .map_err(internal)?;
+        enqueue_bayar(tx, client_id, &id)?;
+        Ok(json!({ "sukses": true, "id_bayar": id }))
+    })
+}
+
+/// Cermin `rekapUpah`: surat jalan bertanggal `dari`..`sampai` beserta upah,
+/// penerima, dan pembayaran aktifnya (`bayar`). Pengelompokan per driver,
+/// kendaraan awal, dan tanggal dilakukan di layar (Q-31, Q-32).
+pub fn rekap_upah(state: &DesktopState, dari: &str, sampai: &str) -> Result<Value, CommandError> {
+    let (dari, sampai) = (dari.trim(), sampai.trim());
+    if !is_valid_date(dari) || !is_valid_date(sampai) || dari > sampai {
+        return Err(invalid("Rentang tanggal tidak valid."));
+    }
+    let c = storage::database(&state.data_dir)?;
+    Ok(json!({ "items": kumpulkan(&c, "p.tanggal BETWEEN ?1 AND ?2", &[&dari, &sampai], MAKS_REKAP_UPAH)? }))
+}
+
+/// Cermin `daftarBayarUpah`: pembayaran bertanggal bayar `dari`..`sampai`,
+/// beserta pembatalan dan surat jalannya (untuk riwayat dan tanda terima).
+pub fn daftar_bayar_upah(state: &DesktopState, dari: &str, sampai: &str) -> Result<Value, CommandError> {
+    let (dari, sampai) = (dari.trim(), sampai.trim());
+    if !is_valid_date(dari) || !is_valid_date(sampai) || dari > sampai {
+        return Err(invalid("Rentang tanggal tidak valid."));
+    }
+    let c = storage::database(&state.data_dir)?;
+    let mut items = kueri_json(
+        &c,
+        &format!(
+            "SELECT b.id_bayar, b.id_karyawan, m.nama AS nama_karyawan, b.tanggal, b.total,
+                    b.keterangan, b.dicatat_oleh, b.created_at,
+                    x.tanggal AS tanggal_batal, x.keterangan AS alasan_batal,
+                    x.dicatat_oleh AS dibatalkan_oleh
+             FROM drv_upah_bayar b
+             LEFT JOIN master_data m ON m.id_unik = b.id_karyawan
+             LEFT JOIN drv_upah_bayar x ON x.jenis = 'Pembatalan' AND x.id_ref = b.id_bayar
+             WHERE b.jenis = 'Bayar' AND b.tanggal BETWEEN ?1 AND ?2
+             GROUP BY b.id_bayar
+             ORDER BY b.tanggal DESC, b.created_at DESC
+             LIMIT {MAKS_DAFTAR_BAYAR};"
+        ),
+        &[&dari, &sampai],
+    )?;
+    let baris = kueri_json(
+        &c,
+        "SELECT r.id_bayar, r.id_perjalanan, r.upah, p.nomor, p.tanggal
+         FROM drv_upah_bayar_baris r
+         JOIN drv_upah_bayar b ON b.id_bayar = r.id_bayar
+         LEFT JOIN drv_perjalanan p ON p.id_perjalanan = r.id_perjalanan
+         WHERE b.jenis = 'Bayar' AND b.tanggal BETWEEN ?1 AND ?2
+         ORDER BY p.tanggal, p.nomor;",
+        &[&dari, &sampai],
+    )?;
+    for item in &mut items {
+        let milik: Vec<Value> = baris
+            .iter()
+            .filter(|r| r["id_bayar"] == item["id_bayar"])
+            .cloned()
+            .collect();
+        item["surat_jalan"] = json!(milik);
+    }
+    Ok(json!({ "items": items }))
 }
 
 /// Cermin `rincianPerjalanan`: item + muatan + linimasa laporan beserta
@@ -2279,7 +2775,7 @@ pub fn daftar_perjalanan(state: &DesktopState, dari: &str, sampai: &str) -> Resu
 pub fn rincian_perjalanan(state: &DesktopState, id_perjalanan: &str) -> Result<Value, CommandError> {
     let id = id_perjalanan.trim();
     let c = storage::database(&state.data_dir)?;
-    let item = kumpulkan(&c, "p.id_perjalanan = ?1", &[&id])?
+    let item = kumpulkan(&c, "p.id_perjalanan = ?1", &[&id], 1)?
         .into_iter()
         .next()
         .ok_or_else(|| invalid("Surat jalan tidak ditemukan."))?;
@@ -2360,7 +2856,7 @@ pub fn perjalanan_saya(
     }
     let c = storage::database(&state.data_dir)?;
     let (saya, lain): (Vec<Value>, Vec<Value>) =
-        kumpulkan(&c, "p.tanggal BETWEEN ?1 AND ?2", &[&dari, &sampai])?
+        kumpulkan(&c, "p.tanggal BETWEEN ?1 AND ?2", &[&dari, &sampai], MAKS_DAFTAR_PERJALANAN)?
             .into_iter()
             .partition(|item| item["id_karyawan"] == id_karyawan);
     let lain: Vec<Value> = lain
@@ -2498,9 +2994,9 @@ pub const CLOUD_INSERT_LAPORAN_SQL: &str = "INSERT INTO drv_laporan (
         id_laporan, id_perjalanan, jenis, mode_ganti, id_ref, jenis_kendala, terlambat_menit,
         id_lokasi, nama_lokasi, lat, lng, akurasi_m, waktu_perangkat, waktu_gps, diterima_cloud,
         id_karyawan, id_karyawan_baru, id_kendaraan_baru, keterangan, foto_sha256,
-        dilaporkan_oleh, created_at
+        dilaporkan_oleh, created_at, lokasi_palsu
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?,
-        COALESCE(?, datetime('now')))
+        COALESCE(?, datetime('now')), ?)
     ON CONFLICT(id_laporan) DO NOTHING;";
 
 pub const CLOUD_INSERT_LAPORAN_MUATAN_SQL: &str = "INSERT INTO drv_laporan_muatan (
@@ -2737,6 +3233,12 @@ pub fn cloud_laporan_statements(
             json!(payload_text(row, "foto_sha256")),
             json!(payload_text(row, "dilaporkan_oleh")?),
             json!(payload_text(row, "created_at")),
+            // Selain 0/1 (termasuk perangkat lama tanpa kolomnya) = tidak
+            // diperiksa, bukan ditolak.
+            json!(row
+                .get("lokasi_palsu")
+                .and_then(Value::as_i64)
+                .filter(|n| matches!(n, 0 | 1))),
         ],
     )];
     let muatan = match payload.get("muatan") {
@@ -2772,6 +3274,69 @@ pub fn cloud_foto_laporan_values(payload: &Value, entity_key: &str) -> Option<Ve
     let data = payload.get("data_base64")?.as_str()?;
     validate_foto_laporan(&mime_type, data).ok()?;
     Some(vec![json!(id), json!(mime_type), json!(data)])
+}
+
+pub const CLOUD_INSERT_BAYAR_SQL: &str = "INSERT INTO drv_upah_bayar (
+        id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+    ON CONFLICT(id_bayar) DO NOTHING;";
+
+pub const CLOUD_INSERT_BARIS_BAYAR_SQL: &str = "INSERT INTO drv_upah_bayar_baris (
+        id_baris, id_bayar, id_perjalanan, upah
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(id_baris) DO NOTHING;";
+
+/// `trip-payment/create`: append-only, kiriman ulang berhenti di PK. Hanya
+/// CHECK cloud yang diperiksa; bayar ganda dari perangkat yang offline TIDAK
+/// ditolak (outbox macet), melainkan muncul sebagai tanda `dibayar_ganda`.
+pub fn cloud_bayar_statements(
+    payload: &Value,
+    entity_key: &str,
+) -> Option<Vec<(&'static str, Vec<Value>)>> {
+    let row = payload.get("bayar")?;
+    let id = id_payload(row, "id_bayar", entity_key)?;
+    let jenis = payload_text(row, "jenis").filter(|j| matches!(j.as_str(), "Bayar" | "Pembatalan"))?;
+    let id_ref = payload_text(row, "id_ref");
+    let tanggal = payload_text(row, "tanggal").filter(|t| is_valid_date(t))?;
+    let total = row.get("total")?.as_i64().filter(|n| *n >= 0)?;
+    let baris = match payload.get("baris") {
+        None | Some(Value::Null) => &[][..],
+        Some(nilai) => nilai.as_array()?.as_slice(),
+    };
+    let bentuk_sah = if jenis == "Bayar" {
+        !baris.is_empty() && baris.len() <= MAKS_SURAT_JALAN_PER_BAYAR
+    } else {
+        id_ref.is_some() && baris.is_empty()
+    };
+    if !bentuk_sah {
+        return None;
+    }
+    let mut statements = vec![(
+        CLOUD_INSERT_BAYAR_SQL,
+        vec![
+            json!(id),
+            json!(jenis),
+            json!(id_ref),
+            json!(payload_text(row, "id_karyawan")?),
+            json!(tanggal),
+            json!(total),
+            json!(payload_text(row, "keterangan")),
+            json!(payload_text(row, "dicatat_oleh")?),
+            json!(payload_text(row, "created_at")),
+        ],
+    )];
+    for b in baris {
+        statements.push((
+            CLOUD_INSERT_BARIS_BAYAR_SQL,
+            vec![
+                json!(payload_text(b, "id_baris")?),
+                json!(id),
+                json!(payload_text(b, "id_perjalanan")?),
+                json!(b.get("upah")?.as_i64().filter(|n| *n >= 0)?),
+            ],
+        ));
+    }
+    Some(statements)
 }
 
 #[cfg(test)]
@@ -3015,14 +3580,17 @@ mod tests {
                 lng: None,
                 ..titik("e", "Selesai Bongkar", "2026-11-09 02:30:00", 0.0, 0.0, 5.0)
             },
-            titik(
-                "f",
-                "Selesai",
-                "2026-11-09 03:00:00",
-                -6.219596,
-                106.795897,
-                5.0,
-            ),
+            Laporan {
+                lokasi_palsu: true,
+                ..titik(
+                    "f",
+                    "Selesai",
+                    "2026-11-09 03:00:00",
+                    -6.219596,
+                    106.795897,
+                    5.0,
+                )
+            },
         ];
         let lokasi = [LokasiTerdaftar {
             id_lokasi: "gudang",
@@ -3078,11 +3646,153 @@ mod tests {
                 "jam_maju:e",
                 "tanpa_gps:e",
                 "tanpa_foto:e",
+                "lokasi_palsu:f",
                 "kecepatan_mustahil:d",
                 "muat_beda:m2",
                 "sisa_muatan:m2",
             ]
         );
+    }
+
+    #[test]
+    fn pembayaran_upah() {
+        assert_eq!(id_batal_bayar("b1"), "batal-b1");
+        assert_eq!(id_baris_bayar("b1", "t1"), "b1:t1");
+
+        let bayar = |v: serde_json::Value| -> Result<BayarUpahValid, String> {
+            validate_bayar_upah(&serde_json::from_value(v).expect("draft bayar"))
+        };
+        assert_eq!(
+            bayar(json!({
+                "id_karyawan": " d1 ", "tanggal": "2026-11-30",
+                "id_perjalanan": [" t1 ", "t2", ""], "keterangan": " Transfer "
+            })),
+            Ok(BayarUpahValid {
+                id_karyawan: "d1".into(),
+                tanggal: "2026-11-30".into(),
+                id_perjalanan: vec!["t1".into(), "t2".into()],
+                keterangan: Some("Transfer".into()),
+            })
+        );
+        let galat = |v: serde_json::Value| bayar(v).expect_err("harus ditolak");
+        assert_eq!(
+            galat(json!({ "tanggal": "2026-11-30", "id_perjalanan": ["t1"] })),
+            "Driver wajib dipilih."
+        );
+        assert_eq!(
+            galat(json!({ "id_karyawan": "d1", "tanggal": "2026-13-01", "id_perjalanan": ["t1"] })),
+            "Tanggal bayar tidak valid."
+        );
+        assert_eq!(
+            galat(json!({ "id_karyawan": "d1", "tanggal": "2026-11-30", "id_perjalanan": ["t1", "t1 "] })),
+            "Surat jalan yang sama dipilih dua kali."
+        );
+        assert_eq!(
+            galat(json!({ "id_karyawan": "d1", "tanggal": "2026-11-30", "id_perjalanan": [] })),
+            "Pilih minimal satu surat jalan."
+        );
+        let banyak: Vec<String> = (0..=MAKS_SURAT_JALAN_PER_BAYAR).map(|i| format!("t{i}")).collect();
+        assert_eq!(
+            galat(json!({ "id_karyawan": "d1", "tanggal": "2026-11-30", "id_perjalanan": banyak })),
+            "Maksimal 500 surat jalan per pembayaran."
+        );
+        assert!(serde_json::from_value::<BayarUpahDraft>(json!({ "total": 1 })).is_err());
+
+        let batal = |v: serde_json::Value| {
+            validate_batal_bayar(&serde_json::from_value(v).expect("draft batal"))
+        };
+        assert_eq!(
+            batal(json!({ "id_bayar": " b1 ", "alasan": " Salah driver " })),
+            Ok(("b1".into(), "Salah driver".into()))
+        );
+        assert_eq!(
+            batal(json!({ "id_bayar": "b1", "alasan": "  " })),
+            Err("Alasan pembatalan wajib diisi.".into())
+        );
+
+        let sj = |id, nomor, status, penerima, upah| SuratJalanUpah {
+            id_perjalanan: id,
+            nomor,
+            status,
+            penerima,
+            upah,
+        };
+        let surat_jalan = [
+            sj("t1", "KRS-1", "Selesai", Some("d1"), 350_000),
+            sj("t2", "KRS-2", "Selesai", Some("d1"), 200_000),
+            sj("t3", "KRS-3", "Dibatalkan", None, 100_000),
+            sj("t4", "KRS-4", "Selesai", Some("d2"), 150_000),
+        ];
+        let p = |id, jenis, id_ref, id_karyawan| Pembayaran {
+            id_bayar: id,
+            jenis,
+            id_ref,
+            id_karyawan,
+        };
+        let b = |id_bayar, id_perjalanan, upah| BarisBayar {
+            id_bayar,
+            id_perjalanan,
+            upah,
+        };
+        let pembayaran = [
+            p("b1", "Bayar", None, "d1"),
+            p("b2", "Bayar", None, "d1"),
+            p("batal-b2", "Pembatalan", Some("b2"), "d1"),
+        ];
+        let baris = [b("b1", "t1", 350_000), b("b2", "t2", 200_000)];
+        assert_eq!(bayar_aktif("t1", &pembayaran, &baris), ["b1"]);
+        assert!(bayar_aktif("t2", &pembayaran, &baris).is_empty());
+
+        let periksa = |ids: &[&str], driver: &str| {
+            let valid = BayarUpahValid {
+                id_karyawan: driver.into(),
+                tanggal: "2026-11-30".into(),
+                id_perjalanan: ids.iter().map(|s| s.to_string()).collect(),
+                keterangan: None,
+            };
+            periksa_bayar_upah(&valid, &surat_jalan, &pembayaran, &baris)
+        };
+        assert_eq!(periksa(&["t2"], "d1"), Ok(vec![200_000]));
+        assert_eq!(periksa(&["t1"], "d1"), Err("Surat jalan KRS-1 sudah dibayar.".into()));
+        assert_eq!(
+            periksa(&["t3"], "d1"),
+            Err("Surat jalan KRS-3 berstatus Dibatalkan; hanya surat jalan Selesai yang dibayar.".into())
+        );
+        assert_eq!(
+            periksa(&["t4"], "d1"),
+            Err("Upah surat jalan KRS-4 bukan milik driver ini.".into())
+        );
+        assert_eq!(periksa(&["tx"], "d1"), Err("Surat jalan tidak ditemukan.".into()));
+
+        assert_eq!(periksa_batal_bayar(&pembayaran, "b1"), Ok(()));
+        assert_eq!(
+            periksa_batal_bayar(&pembayaran, "b2"),
+            Err("Pembayaran ini sudah dibatalkan.".into())
+        );
+        assert_eq!(
+            periksa_batal_bayar(&pembayaran, "batal-b2"),
+            Err("Pembayaran tidak ditemukan.".into())
+        );
+
+        // Dari perangkat offline: t1 dibayar dua kali (driver dan upah sama),
+        // t4 dibayar dengan upah lama, t3 dibayar lalu dibatalkan surat jalannya.
+        let pembayaran = [
+            p("b1", "Bayar", None, "d1"),
+            p("b3", "Bayar", None, "d1"),
+            p("b4", "Bayar", None, "d2"),
+            p("b5", "Bayar", None, "d1"),
+        ];
+        let baris = [
+            b("b1", "t1", 350_000),
+            b("b3", "t1", 350_000),
+            b("b4", "t4", 100_000),
+            b("b5", "t3", 100_000),
+        ];
+        let hasil: Vec<String> = tanda_upah(&surat_jalan, &pembayaran, &baris)
+            .iter()
+            .map(|t| format!("{}:{}", t.kode, t.id))
+            .collect();
+        assert_eq!(hasil, ["dibayar_ganda:t1", "upah_berubah:t3", "upah_berubah:t4"]);
     }
 
     fn laporan_draft(v: serde_json::Value) -> LaporanDraft {
@@ -3098,6 +3808,22 @@ mod tests {
         let ok = validate_laporan(&laporan_draft(dasar.clone()), true, true).unwrap();
         assert_eq!(ok.nama_lokasi.as_deref(), Some("Gudang A"));
         assert_eq!(ok.mode_ganti, None);
+        assert_eq!(ok.lokasi_palsu, None);
+        let mut palsu = dasar.clone();
+        palsu["lokasi_palsu"] = json!(true);
+        assert_eq!(
+            validate_laporan(&laporan_draft(palsu), true, true).unwrap().lokasi_palsu,
+            Some(true)
+        );
+        let selesai = json!({
+            "id_perjalanan": "trp-1", "jenis": "Tidak Jalan", "keterangan": "Hujan",
+            "waktu_perangkat": "2026-11-09 01:00:00", "lokasi_palsu": true,
+        });
+        assert_eq!(
+            validate_laporan(&laporan_draft(selesai), false, false).unwrap().lokasi_palsu,
+            None,
+            "dispatcher tidak membawa hasil pemeriksaan lokasi"
+        );
 
         let galat = |patch: serde_json::Value, driver: bool, foto: bool| {
             let mut v = dasar.clone();
@@ -3410,6 +4136,169 @@ mod tests_lokal {
             "id_perjalanan": id_perjalanan, "jenis": jenis, "nama_lokasi": "Gudang A",
             "lat": -6.2, "lng": 106.8, "akurasi_m": 8.0, "waktu_perangkat": waktu,
         })
+    }
+
+    fn outbox_bayar(state: &DesktopState) -> Vec<(String, Value)> {
+        let c = storage::database(&state.data_dir).unwrap();
+        let mut statement = c
+            .prepare(
+                "SELECT entity_key, payload_json FROM desktop_sync_outbox
+                 WHERE domain = 'trip-payment' AND operation = 'create' ORDER BY rowid;",
+            )
+            .unwrap();
+        let rows: Vec<(String, String)> = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        rows.into_iter()
+            .map(|(k, p)| (k, serde_json::from_str(&p).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn bayar_upah_lokal_outbox_dan_cloud() {
+        let (_dir, state) = siapkan();
+        storage::database(&state.data_dir)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO drv_perjalanan (id_perjalanan, tanggal, seri, nomor_urut, nomor,
+                    id_karyawan, id_kendaraan, id_jenis, id_kategori, tarif_kendaraan, tarif_tujuan, dibuat_oleh)
+                 VALUES ('t1', '2026-11-09', 'WEB', 1, 'KRS-1', 'd1', 'k1', 'j1', 'c1', 150000, 200000, 'admin'),
+                        ('t2', '2026-11-09', 'WEB', 2, 'KRS-2', 'd1', 'k1', 'j1', 'c1', 100000, 50000, 'admin'),
+                        ('t3', '2026-11-10', 'WEB', 3, 'KRS-3', 'd1', 'k1', 'j1', 'c1', 100000, 0, 'admin');
+                 INSERT INTO drv_laporan (id_laporan, id_perjalanan, jenis, waktu_perangkat, id_karyawan, dilaporkan_oleh)
+                 VALUES ('s1', 't1', 'Selesai', '2026-11-09 10:00:00', 'd1', 'd1'),
+                        ('s2', 't2', 'Selesai', '2026-11-09 12:00:00', 'd1', 'd1');",
+            )
+            .unwrap();
+        let bayar = |driver: &str, ids: &[&str]| {
+            catat_bayar_upah(
+                &state,
+                "kasir",
+                json!({ "id_karyawan": driver, "tanggal": "2026-11-30", "id_perjalanan": ids }),
+            )
+        };
+
+        assert_eq!(
+            galat(bayar("d1", &["t1", "t3"])),
+            "Surat jalan KRS-3 berstatus Direncanakan; hanya surat jalan Selesai yang dibayar."
+        );
+        assert_eq!(
+            galat(bayar("d2", &["t1"])),
+            "Upah surat jalan KRS-1 bukan milik driver ini."
+        );
+        assert_eq!(
+            galat(catat_bayar_upah(&state, "kasir", json!({ "total": 1 }))),
+            "Data pembayaran tidak valid."
+        );
+        assert!(outbox_bayar(&state).is_empty(), "yang ditolak tidak boleh masuk outbox");
+
+        let hasil = bayar("d1", &["t1", "t2"]).expect("bayar");
+        assert_eq!(hasil["total"], 500_000);
+        let id_bayar = hasil["id_bayar"].as_str().unwrap().to_owned();
+        assert_eq!(galat(bayar("d1", &["t1"])), "Surat jalan KRS-1 sudah dibayar.");
+        assert_eq!(galat(atur_penerima_upah(&state, "t1", Some("d2"))), PESAN_SUDAH_DIBAYAR);
+
+        let items = daftar_perjalanan(&state, "2026-11-01", "2026-11-30").unwrap()["items"].clone();
+        let t1 = items.as_array().unwrap().iter().find(|i| i["id_perjalanan"] == "t1").unwrap();
+        assert_eq!(t1["bayar"], json!([id_bayar]));
+        assert_eq!(t1["identitas_kendaraan_awal"], Value::Null);
+        assert_eq!(
+            rekap_upah(&state, "2026-11-01", "2026-11-30").unwrap()["items"].as_array().unwrap().len(),
+            3
+        );
+        let riwayat = daftar_bayar_upah(&state, "2026-11-30", "2026-11-30").unwrap()["items"].clone();
+        assert_eq!(riwayat[0]["total"], 500_000);
+        assert_eq!(riwayat[0]["nama_karyawan"], "Budi");
+        assert_eq!(riwayat[0]["dicatat_oleh"], "kasir");
+        assert_eq!(riwayat[0]["surat_jalan"].as_array().unwrap().len(), 2);
+        assert_eq!(riwayat[0]["alasan_batal"], Value::Null);
+
+        let outbox = outbox_bayar(&state);
+        assert_eq!(outbox.len(), 1);
+        let (key, payload) = &outbox[0];
+        assert_eq!(key, &id_bayar);
+        assert_eq!(cloud_bayar_statements(payload, key).unwrap().len(), 3);
+
+        // Pembatalan: id tetap, alasan wajib, tidak bisa dua kali.
+        let batal = |alasan: &str| {
+            batal_bayar_upah(&state, "kasir", json!({ "id_bayar": id_bayar, "alasan": alasan }))
+        };
+        assert_eq!(galat(batal(" ")), "Alasan pembatalan wajib diisi.");
+        assert_eq!(id_dari(batal("Salah driver"), "id_bayar"), format!("batal-{id_bayar}"));
+        assert_eq!(galat(batal("Lagi")), "Pembayaran ini sudah dibatalkan.");
+        atur_penerima_upah(&state, "t1", None).expect("terbuka setelah dibatalkan");
+        let riwayat = daftar_bayar_upah(&state, "2026-11-30", "2026-11-30").unwrap()["items"].clone();
+        assert_eq!(riwayat[0]["alasan_batal"], "Salah driver");
+        let outbox = outbox_bayar(&state);
+        assert_eq!(outbox.len(), 2);
+        let (key, payload) = &outbox[1];
+        assert_eq!(payload["bayar"]["total"], 500_000);
+        assert_eq!(cloud_bayar_statements(payload, key).unwrap().len(), 1);
+
+        // Setelah dibatalkan, surat jalannya bisa dibayar lagi.
+        let ulang = bayar("d1", &["t1"]).expect("bayar ulang");
+        // Pembayaran dari perangkat lain yang offline: t1 dibayar dua kali,
+        // t2 dibayar ke driver lain.
+        storage::database(&state.data_dir)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO drv_upah_bayar (id_bayar, jenis, id_karyawan, tanggal, total, dicatat_oleh)
+                 VALUES ('bx', 'Bayar', 'd1', '2026-11-30', 350000, 'lain'),
+                        ('by', 'Bayar', 'd2', '2026-11-30', 150000, 'lain');
+                 INSERT INTO drv_upah_bayar_baris (id_baris, id_bayar, id_perjalanan, upah)
+                 VALUES ('bx:t1', 'bx', 't1', 350000), ('by:t2', 'by', 't2', 150000);",
+            )
+            .unwrap();
+        let items = daftar_perjalanan(&state, "2026-11-01", "2026-11-30").unwrap()["items"].clone();
+        let kode = |id: &str| -> Vec<String> {
+            items.as_array().unwrap().iter().find(|i| i["id_perjalanan"] == id).unwrap()["tanda"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["kode"].as_str().unwrap().to_owned())
+                // Data uji tanpa GPS dan Berangkat juga memicu tanda laporan.
+                .filter(|k| matches!(k.as_str(), "dibayar_ganda" | "upah_berubah"))
+                .collect()
+        };
+        assert_eq!(kode("t1"), ["dibayar_ganda"]);
+        assert_eq!(kode("t2"), ["upah_berubah"]);
+        assert!(ulang["id_bayar"].as_str().unwrap().starts_with("upb-"));
+
+        // Handler cloud: hanya bentuk dan CHECK, bukan urutan atau bayar ganda.
+        let bentuk = |bayar: Value, baris: Value| {
+            cloud_bayar_statements(&json!({ "bayar": bayar, "baris": baris }), "x")
+        };
+        let kepala = json!({ "id_bayar": "x", "jenis": "Bayar", "id_karyawan": "d1",
+            "tanggal": "2026-11-30", "total": 1, "dicatat_oleh": "k" });
+        let baris = json!([{ "id_baris": "x:t1", "id_perjalanan": "t1", "upah": 1 }]);
+        assert!(bentuk(kepala.clone(), baris.clone()).is_some());
+        assert!(bentuk(kepala.clone(), json!([])).is_none(), "Bayar tanpa surat jalan");
+        let mut cacat = kepala.clone();
+        cacat["jenis"] = json!("Lunas");
+        assert!(bentuk(cacat, baris.clone()).is_none());
+        let mut cacat = kepala.clone();
+        cacat["total"] = json!(-1);
+        assert!(bentuk(cacat, baris.clone()).is_none());
+        let mut batal_tanpa_ref = kepala.clone();
+        batal_tanpa_ref["jenis"] = json!("Pembatalan");
+        assert!(bentuk(batal_tanpa_ref, json!([])).is_none());
+        assert!(bentuk(kepala, json!([{ "id_baris": "x:t1", "id_perjalanan": "t1", "upah": -5 }])).is_none());
+
+        // Lokasi palsu: 0/1 diteruskan, nilai lain jadi "tidak diperiksa".
+        let lapor = |nilai: Value| {
+            let payload = json!({ "laporan": {
+                "id_laporan": "x", "id_perjalanan": "t1", "jenis": "Selesai",
+                "waktu_perangkat": "2026-11-09 10:00:00", "dilaporkan_oleh": "d1",
+                "lokasi_palsu": nilai,
+            }});
+            cloud_laporan_statements(&payload, "x").unwrap()[0].1.last().cloned().unwrap()
+        };
+        assert_eq!(lapor(json!(1)), json!(1));
+        assert_eq!(lapor(json!(0)), json!(0));
+        assert_eq!(lapor(json!(7)), Value::Null);
+        assert_eq!(lapor(Value::Null), Value::Null);
     }
 
     #[test]

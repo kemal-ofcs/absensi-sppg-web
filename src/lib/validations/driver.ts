@@ -256,6 +256,8 @@ export interface Laporan {
   lng?: number | null;
   akurasi_m?: number | null;
   foto_sha256?: string | null;
+  /** `drv_laporan.lokasi_palsu = 1` (v35). Kosong/0 = tidak terdeteksi. */
+  lokasi_palsu?: boolean | null;
 }
 
 function banding(a: string, b: string): number {
@@ -493,10 +495,16 @@ export const KODE_TANDA = [
   "menunggu_persetujuan",
   "muat_beda",
   "sisa_muatan",
+  "lokasi_palsu",
+  "dibayar_ganda",
+  "upah_berubah",
 ] as const;
 export type KodeTanda = (typeof KODE_TANDA)[number];
 
-/** `id` = id laporan, atau id muatan untuk `muat_beda` dan `sisa_muatan`. */
+/**
+ * `id` = id laporan, id muatan untuk `muat_beda` dan `sisa_muatan`, atau id
+ * surat jalan untuk `dibayar_ganda` dan `upah_berubah`.
+ */
 export interface Tanda {
   kode: KodeTanda;
   id: string;
@@ -578,6 +586,9 @@ export function tandaTinjau(
         }
       }
     }
+    if (l.lokasi_palsu === true) {
+      hasil.push({ kode: "lokasi_palsu", id: l.id_laporan });
+    }
   }
 
   const berkoordinat = urut.flatMap((l) => {
@@ -622,6 +633,227 @@ export function tandaTinjau(
     ) {
       hasil.push({ kode: "sisa_muatan", id: m.id_muatan });
     }
+  }
+  return hasil;
+}
+
+// ── Pembayaran upah (v35, PRD §4.1c dan §14) ───────────────────────────────
+// Append-only: `Bayar` dan `Pembatalan` berid `batal-<id_bayar>`. "Satu surat
+// jalan satu pembayaran" hanya ditegakkan di perangkat; cloud tidak pernah
+// menolak. Penjelasan lengkap di `desktop/driver.rs`.
+
+export const MAKS_SURAT_JALAN_PER_BAYAR = 500;
+
+/** Cermin `id_batal_bayar`. */
+export function idBatalBayar(idBayar: string): string {
+  return `batal-${idBayar}`;
+}
+
+/** Cermin `id_baris_bayar`. */
+export function idBarisBayar(idBayar: string, idPerjalanan: string): string {
+  return `${idBayar}:${idPerjalanan}`;
+}
+
+/** Cermin `BayarUpahDraft` (`deny_unknown_fields`). */
+export const bayarUpahDraftSchema = z
+  .object({
+    id_karyawan: z.string().max(160).nullable().optional(),
+    tanggal: z.string().max(10).default(""),
+    // Batas longgar penahan beban; pesan batas sebenarnya dari validateBayarUpah.
+    id_perjalanan: z.array(z.string().max(160)).max(1000).default([]),
+    keterangan: z.string().max(4000).nullable().optional(),
+  })
+  .strict();
+export type BayarUpahDraft = z.output<typeof bayarUpahDraftSchema>;
+
+export interface BayarUpahValid {
+  id_karyawan: string;
+  tanggal: string;
+  id_perjalanan: string[];
+  keterangan: string | null;
+}
+
+/** Cermin `validate_bayar_upah`: bentuk isian saja, tanpa membaca database. */
+export function validateBayarUpah(
+  draft: BayarUpahDraft,
+): Hasil<BayarUpahValid> {
+  const idKaryawan = bersih(draft.id_karyawan);
+  if (idKaryawan === null) return gagal("Driver wajib dipilih.");
+  const tanggal = draft.tanggal.trim();
+  if (!isValidDate(tanggal)) return gagal("Tanggal bayar tidak valid.");
+  const idPerjalanan: string[] = [];
+  for (const id of draft.id_perjalanan.map((s) => s.trim())) {
+    if (!id) continue;
+    if (idPerjalanan.includes(id)) {
+      return gagal("Surat jalan yang sama dipilih dua kali.");
+    }
+    idPerjalanan.push(id);
+  }
+  if (idPerjalanan.length === 0)
+    return gagal("Pilih minimal satu surat jalan.");
+  if (idPerjalanan.length > MAKS_SURAT_JALAN_PER_BAYAR) {
+    return gagal(
+      `Maksimal ${MAKS_SURAT_JALAN_PER_BAYAR} surat jalan per pembayaran.`,
+    );
+  }
+  const keterangan = teks(
+    draft.keterangan,
+    MAKS_KETERANGAN,
+    `Keterangan maksimal ${MAKS_KETERANGAN} karakter.`,
+  );
+  if (!keterangan.ok) return keterangan;
+  return {
+    ok: true,
+    value: {
+      id_karyawan: idKaryawan,
+      tanggal,
+      id_perjalanan: idPerjalanan,
+      keterangan: keterangan.value,
+    },
+  };
+}
+
+/** Cermin `BatalBayarDraft` (`deny_unknown_fields`). */
+export const batalBayarDraftSchema = z
+  .object({
+    id_bayar: z.string().max(160).nullable().optional(),
+    alasan: z.string().max(4000).nullable().optional(),
+  })
+  .strict();
+export type BatalBayarDraft = z.output<typeof batalBayarDraftSchema>;
+
+/** Cermin `validate_batal_bayar`. */
+export function validateBatalBayar(
+  draft: BatalBayarDraft,
+): Hasil<{ id_bayar: string; alasan: string }> {
+  const idBayar = bersih(draft.id_bayar);
+  if (idBayar === null) return gagal("Pembayaran tidak ditemukan.");
+  const alasan = wajib(
+    draft.alasan,
+    MAKS_KETERANGAN,
+    "Alasan pembatalan wajib diisi.",
+    `Alasan maksimal ${MAKS_KETERANGAN} karakter.`,
+  );
+  if (!alasan.ok) return alasan;
+  return { ok: true, value: { id_bayar: idBayar, alasan: alasan.value } };
+}
+
+/** Cermin `Pembayaran`: satu baris `drv_upah_bayar`. */
+export interface Pembayaran {
+  id_bayar: string;
+  jenis: string;
+  id_ref?: string | null;
+  id_karyawan: string;
+}
+
+/** Cermin `BarisBayar`: satu baris `drv_upah_bayar_baris`. */
+export interface BarisBayar {
+  id_bayar: string;
+  id_perjalanan: string;
+  upah: number;
+}
+
+/** Cermin `SuratJalanUpah`: keadaan upah surat jalan saat ini. */
+export interface SuratJalanUpah {
+  id_perjalanan: string;
+  nomor: string;
+  status: string;
+  penerima: string | null;
+  upah: number;
+}
+
+/** Cermin `bayar_dibatalkan`. */
+export function bayarDibatalkan(
+  pembayaran: readonly Pembayaran[],
+  idBayar: string,
+): boolean {
+  return pembayaran.some(
+    (p) => p.jenis === "Pembatalan" && p.id_ref === idBayar,
+  );
+}
+
+/** Cermin `bayar_aktif`: lebih dari satu = dibayar ganda. */
+export function bayarAktif(
+  idPerjalanan: string,
+  pembayaran: readonly Pembayaran[],
+  baris: readonly BarisBayar[],
+): string[] {
+  const aktif = baris
+    .filter((b) => b.id_perjalanan === idPerjalanan)
+    .map((b) => b.id_bayar)
+    .filter((id) =>
+      pembayaran.some((p) => p.id_bayar === id && p.jenis === "Bayar"),
+    )
+    .filter((id) => !bayarDibatalkan(pembayaran, id));
+  return [...new Set(aktif)].sort(banding);
+}
+
+/** Cermin `periksa_bayar_upah`: upah setiap surat jalan sesuai urutan isian. */
+export function periksaBayarUpah(
+  valid: BayarUpahValid,
+  suratJalan: readonly SuratJalanUpah[],
+  pembayaran: readonly Pembayaran[],
+  baris: readonly BarisBayar[],
+): Hasil<number[]> {
+  const upah: number[] = [];
+  for (const id of valid.id_perjalanan) {
+    const sj = suratJalan.find((s) => s.id_perjalanan === id);
+    if (!sj) return gagal("Surat jalan tidak ditemukan.");
+    if (sj.status !== "Selesai") {
+      return gagal(
+        `Surat jalan ${sj.nomor} berstatus ${sj.status}; hanya surat jalan Selesai yang dibayar.`,
+      );
+    }
+    if (sj.penerima !== valid.id_karyawan) {
+      return gagal(`Upah surat jalan ${sj.nomor} bukan milik driver ini.`);
+    }
+    if (bayarAktif(id, pembayaran, baris).length > 0) {
+      return gagal(`Surat jalan ${sj.nomor} sudah dibayar.`);
+    }
+    upah.push(sj.upah);
+  }
+  return { ok: true, value: upah };
+}
+
+/** Cermin `periksa_batal_bayar`. */
+export function periksaBatalBayar(
+  pembayaran: readonly Pembayaran[],
+  idBayar: string,
+): Hasil<null> {
+  if (!pembayaran.some((p) => p.id_bayar === idBayar && p.jenis === "Bayar")) {
+    return gagal("Pembayaran tidak ditemukan.");
+  }
+  if (bayarDibatalkan(pembayaran, idBayar)) {
+    return gagal("Pembayaran ini sudah dibatalkan.");
+  }
+  return { ok: true, value: null };
+}
+
+/** Cermin `tanda_upah`, `id` = id surat jalan. */
+export function tandaUpah(
+  suratJalan: readonly SuratJalanUpah[],
+  pembayaran: readonly Pembayaran[],
+  baris: readonly BarisBayar[],
+): Tanda[] {
+  const hasil: Tanda[] = [];
+  for (const sj of suratJalan) {
+    const aktif = bayarAktif(sj.id_perjalanan, pembayaran, baris);
+    if (aktif.length > 1) {
+      hasil.push({ kode: "dibayar_ganda", id: sj.id_perjalanan });
+    }
+    const berubah = aktif.some((id) => {
+      const driver =
+        pembayaran.find((p) => p.id_bayar === id && p.jenis === "Bayar")
+          ?.id_karyawan ?? null;
+      const dibayar =
+        baris.find(
+          (b) => b.id_bayar === id && b.id_perjalanan === sj.id_perjalanan,
+        )?.upah ?? null;
+      return (
+        sj.status !== "Selesai" || sj.penerima !== driver || dibayar !== sj.upah
+      );
+    });
+    if (berubah) hasil.push({ kode: "upah_berubah", id: sj.id_perjalanan });
   }
   return hasil;
 }
@@ -969,6 +1201,8 @@ export const laporanDraftSchema = z
     id_karyawan_baru: z.string().max(160).nullable().optional(),
     id_kendaraan_baru: z.string().max(160).nullable().optional(),
     keterangan: z.string().max(4000).nullable().optional(),
+    /** Hasil `mobile_location_is_mock` (v35). Kosong = tidak diperiksa. */
+    lokasi_palsu: z.boolean().nullable().optional(),
     muatan: z.array(laporanMuatanDraftSchema).max(1000).default([]),
   })
   .strict();
@@ -997,6 +1231,7 @@ export interface LaporanValid {
   id_karyawan_baru: string | null;
   id_kendaraan_baru: string | null;
   keterangan: string | null;
+  lokasi_palsu: boolean | null;
   muatan: LaporanMuatanValid[];
 }
 
@@ -1177,6 +1412,8 @@ export function validateLaporan(
       id_karyawan_baru,
       id_kendaraan_baru,
       keterangan,
+      // Hanya HP driver yang memeriksa; dispatcher tidak membawa lokasi.
+      lokasi_palsu: olehDriver ? (draft.lokasi_palsu ?? null) : null,
       muatan,
     },
   };
@@ -1199,6 +1436,35 @@ export function validateFotoLaporan(
 
 /** Cermin `MAKS_DAFTAR_PERJALANAN`. */
 export const MAKS_DAFTAR_PERJALANAN = 500;
+/** Cermin `MAKS_REKAP_UPAH`: rekap upah sebulan bisa melewati batas daftar. */
+export const MAKS_REKAP_UPAH = 5000;
+/** Cermin `MAKS_DAFTAR_BAYAR`. */
+export const MAKS_DAFTAR_BAYAR = 1000;
+/** Cermin `PESAN_SUDAH_DIBAYAR`. */
+export const PESAN_SUDAH_DIBAYAR =
+  "Upah surat jalan ini sudah dibayar. Batalkan pembayarannya dulu.";
+
+/** Satu pembayaran `Bayar` dari `daftar_bayar_upah`, beserta pembatalannya. */
+export interface PembayaranUpahItem {
+  id_bayar: string;
+  id_karyawan: string;
+  nama_karyawan: string | null;
+  tanggal: string;
+  total: number;
+  keterangan: string | null;
+  dicatat_oleh: string;
+  created_at: string;
+  tanggal_batal: string | null;
+  alasan_batal: string | null;
+  dibatalkan_oleh: string | null;
+  surat_jalan: {
+    id_bayar: string;
+    id_perjalanan: string;
+    upah: number;
+    nomor: string | null;
+    tanggal: string | null;
+  }[];
+}
 
 export interface DaftarTarifBaris {
   nama: string;
@@ -1240,6 +1506,8 @@ export interface PerjalananItem {
   dibuat_oleh: string;
   id_karyawan_awal: string;
   id_kendaraan_awal: string;
+  /** Kendaraan saat surat jalan dibuat: dasar tarif dan rekap per kendaraan. */
+  identitas_kendaraan_awal: string | null;
   /** Driver dan kendaraan yang sedang bertugas (ganti berlaku terakhir). */
   id_karyawan: string;
   nama_karyawan: string | null;
@@ -1251,6 +1519,8 @@ export interface PerjalananItem {
   tarif_kendaraan: number;
   tarif_tujuan: number;
   upah: number;
+  /** Id pembayaran aktif yang memuat surat jalan ini; lebih dari satu = ganda. */
+  bayar: string[];
   id_karyawan_upah: string | null;
   penerima_upah: string | null;
   nama_penerima_upah: string | null;

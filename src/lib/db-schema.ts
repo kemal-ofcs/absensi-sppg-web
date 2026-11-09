@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 34;
-export const REQUIRED_TABLE_COUNT = 68;
+export const CURRENT_SCHEMA_VERSION = 35;
+export const REQUIRED_TABLE_COUNT = 70;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -32,7 +32,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
             'app_telegram_setting', 'notifikasi_telegram',
             'keu_tutup_buku',
-            'drv_jenis_kendaraan', 'drv_kategori_tujuan', 'drv_kendaraan', 'drv_lokasi', 'drv_perjalanan', 'drv_muatan', 'drv_laporan', 'drv_laporan_muatan', 'drv_laporan_foto'
+            'drv_jenis_kendaraan', 'drv_kategori_tujuan', 'drv_kendaraan', 'drv_lokasi', 'drv_perjalanan', 'drv_muatan', 'drv_laporan', 'drv_laporan_muatan', 'drv_laporan_foto',
+            'drv_upah_bayar', 'drv_upah_bayar_baris'
           )
         ) AS table_count;
     `);

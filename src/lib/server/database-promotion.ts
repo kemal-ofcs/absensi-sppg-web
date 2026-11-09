@@ -271,6 +271,13 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     uniqueColumns: [],
     dependsOn: ["drv_laporan"],
   },
+  // v35 — pembayaran upah surat jalan, append-only.
+  { table: "drv_upah_bayar", uniqueColumns: [], dependsOn: ["master_data"] },
+  {
+    table: "drv_upah_bayar_baris",
+    uniqueColumns: [],
+    dependsOn: ["drv_upah_bayar", "drv_perjalanan"],
+  },
 ];
 
 /**

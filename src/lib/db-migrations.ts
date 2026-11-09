@@ -40,6 +40,7 @@ const INVENTORY_INSTALLMENT_MIGRATION_VERSION = 31;
 const INVENTORY_ITEM_DELETE_MIGRATION_VERSION = 32;
 const TELEGRAM_NOTIFICATION_MIGRATION_VERSION = 33;
 const DRIVER_TRIP_MIGRATION_VERSION = 34;
+const DRIVER_WAGE_MIGRATION_VERSION = 35;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -1809,7 +1810,8 @@ export async function runDatabaseMigrations(client: Client) {
       keterangan TEXT,
       foto_sha256 TEXT,
       dilaporkan_oleh TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1))
     );
   `);
   await client.execute(
@@ -1848,6 +1850,51 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'driver-trip', ?);`,
     args: [DRIVER_TRIP_MIGRATION_VERSION, now],
+  });
+
+  // v35: pembayaran upah surat jalan (append-only, pembatalan = baris
+  // `Pembatalan` berid `batal-<id_bayar>`) dan lokasi palsu laporan driver.
+  // DDL WAJIB identik dengan `storage.rs` dan `turso.rs`.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_upah_bayar (
+      id_bayar TEXT PRIMARY KEY,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Pembatalan')),
+      id_ref TEXT,
+      id_karyawan TEXT NOT NULL,
+      tanggal TEXT NOT NULL,
+      total INTEGER NOT NULL CHECK (total >= 0),
+      keterangan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_karyawan ON drv_upah_bayar(id_karyawan, tanggal);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_upah_bayar_baris (
+      id_baris TEXT PRIMARY KEY,
+      id_bayar TEXT NOT NULL,
+      id_perjalanan TEXT NOT NULL,
+      upah INTEGER NOT NULL CHECK (upah >= 0)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_bayar ON drv_upah_bayar_baris(id_bayar);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_perjalanan ON drv_upah_bayar_baris(id_perjalanan);",
+  );
+  // Cermin `ensure_column` di `turso.rs`. NULL = tidak diperiksa.
+  if (!(await hasColumn(client, "drv_laporan", "lokasi_palsu"))) {
+    await client.execute(
+      "ALTER TABLE drv_laporan ADD COLUMN lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1));",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'driver-trip-wage', ?);`,
+    args: [DRIVER_WAGE_MIGRATION_VERSION, now],
   });
 
   await client.execute(

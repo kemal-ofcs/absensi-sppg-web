@@ -12,7 +12,11 @@ const {
   DAFTAR_JENIS_KENDARAAN,
   DAFTAR_KATEGORI_TUJUAN,
   aturPenerimaUpah,
+  batalBayarUpah,
+  catatBayarUpah,
   catatLaporanDispatcher,
+  daftarBayarUpah,
+  rekapUpah,
   simpanDaftarTarif,
   simpanKendaraan,
   simpanLokasi,
@@ -343,5 +347,97 @@ describe("penulisan Web perjalanan driver", () => {
       "SELECT COUNT(*) AS n FROM drv_laporan WHERE id_laporan = 'lap-ganti';",
     );
     expect(Number(laporan.rows[0]?.n)).toBe(1);
+  });
+
+  test("pembayaran upah (cermin tes Rust)", async () => {
+    await client.batch(
+      [
+        `INSERT INTO drv_perjalanan (id_perjalanan, tanggal, seri, nomor_urut, nomor,
+           id_karyawan, id_kendaraan, id_jenis, id_kategori, tarif_kendaraan, tarif_tujuan, dibuat_oleh)
+         VALUES ('u1', '2027-01-09', 'WEB', 1, 'KRS-1', 'd1', 'k1', 'j1', 'c1', 150000, 200000, 'admin'),
+                ('u2', '2027-01-09', 'WEB', 2, 'KRS-2', 'd1', 'k1', 'j1', 'c1', 100000, 50000, 'admin'),
+                ('u3', '2027-01-10', 'WEB', 3, 'KRS-3', 'd1', 'k1', 'j1', 'c1', 100000, 0, 'admin');`,
+        `INSERT INTO drv_laporan (id_laporan, id_perjalanan, jenis, waktu_perangkat, id_karyawan, dilaporkan_oleh)
+         VALUES ('us1', 'u1', 'Selesai', '2027-01-09 10:00:00', 'd1', 'd1'),
+                ('us2', 'u2', 'Selesai', '2027-01-09 12:00:00', 'd1', 'd1');`,
+      ],
+      "write",
+    );
+    const bayar = (driver: string, ids: string[]) =>
+      catatBayarUpah(client, "kasir", {
+        id_karyawan: driver,
+        tanggal: "2027-01-31",
+        id_perjalanan: ids,
+      });
+
+    expect(await galat(bayar("d1", ["u1", "u3"]))).toBe(
+      "Surat jalan KRS-3 berstatus Direncanakan; hanya surat jalan Selesai yang dibayar.",
+    );
+    expect(await galat(bayar("d2", ["u1"]))).toBe(
+      "Upah surat jalan KRS-1 bukan milik driver ini.",
+    );
+    expect(await galat(catatBayarUpah(client, "kasir", { total: 1 }))).toBe(
+      "Data pembayaran tidak valid.",
+    );
+
+    const hasil = await bayar("d1", ["u1", "u2"]);
+    expect(hasil.total).toBe(500_000);
+    expect(await galat(bayar("d1", ["u1"]))).toBe(
+      "Surat jalan KRS-1 sudah dibayar.",
+    );
+    expect(await galat(aturPenerimaUpah(client, "u1", "d2"))).toBe(
+      "Upah surat jalan ini sudah dibayar. Batalkan pembayarannya dulu.",
+    );
+
+    const { items } = await daftarPerjalanan(
+      client,
+      "2027-01-01",
+      "2027-01-31",
+    );
+    const u1 = items.find((i) => i.id_perjalanan === "u1");
+    expect(u1?.bayar).toEqual([hasil.id_bayar]);
+    expect(u1?.identitas_kendaraan_awal).toBeNull();
+    expect(
+      (await rekapUpah(client, "2027-01-01", "2027-01-31")).items,
+    ).toHaveLength(3);
+    let riwayat = (await daftarBayarUpah(client, "2027-01-31", "2027-01-31"))
+      .items;
+    expect(riwayat[0]?.total).toBe(500_000);
+    expect(riwayat[0]?.nama_karyawan).toBe("Budi");
+    expect(riwayat[0]?.dicatat_oleh).toBe("kasir");
+    expect(riwayat[0]?.surat_jalan).toHaveLength(2);
+    expect(riwayat[0]?.alasan_batal).toBeNull();
+
+    const batal = (alasan: string) =>
+      batalBayarUpah(client, "kasir", { id_bayar: hasil.id_bayar, alasan });
+    expect(await galat(batal(" "))).toBe("Alasan pembatalan wajib diisi.");
+    expect((await batal("Salah driver")).id_bayar).toBe(
+      `batal-${hasil.id_bayar}`,
+    );
+    expect(await galat(batal("Lagi"))).toBe("Pembayaran ini sudah dibatalkan.");
+    riwayat = (await daftarBayarUpah(client, "2027-01-31", "2027-01-31")).items;
+    expect(riwayat[0]?.alasan_batal).toBe("Salah driver");
+    await aturPenerimaUpah(client, "u1", null);
+
+    // Pembayaran dari perangkat lain yang offline.
+    await bayar("d1", ["u1"]);
+    await client.batch(
+      [
+        `INSERT INTO drv_upah_bayar (id_bayar, jenis, id_karyawan, tanggal, total, dicatat_oleh)
+         VALUES ('ux', 'Bayar', 'd1', '2027-01-31', 350000, 'lain'),
+                ('uy', 'Bayar', 'd2', '2027-01-31', 150000, 'lain');`,
+        `INSERT INTO drv_upah_bayar_baris (id_baris, id_bayar, id_perjalanan, upah)
+         VALUES ('ux:u1', 'ux', 'u1', 350000), ('uy:u2', 'uy', 'u2', 150000);`,
+      ],
+      "write",
+    );
+    const sesudah = (await daftarPerjalanan(client, "2027-01-01", "2027-01-31"))
+      .items;
+    const kode = (id: string) =>
+      (sesudah.find((i) => i.id_perjalanan === id)?.tanda ?? [])
+        .map((t) => t.kode)
+        .filter((k) => k === "dibayar_ganda" || k === "upah_berubah");
+    expect(kode("u1")).toEqual(["dibayar_ganda"]);
+    expect(kode("u2")).toEqual(["upah_berubah"]);
   });
 });

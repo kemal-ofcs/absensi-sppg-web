@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trip-pay"
+description = "Enables the desktop_trip_pay command without any pre-configured scope."
+commands.allow = ["desktop_trip_pay"]
+
+[[permission]]
+identifier = "deny-desktop-trip-pay"
+description = "Denies the desktop_trip_pay command without any pre-configured scope."
+commands.deny = ["desktop_trip_pay"]

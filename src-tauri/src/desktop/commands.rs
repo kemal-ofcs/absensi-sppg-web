@@ -2722,6 +2722,48 @@ pub fn desktop_trip_wage_recipient(
     driver::atur_penerima_upah(&state, &id_perjalanan, id_karyawan.as_deref())
 }
 
+/// Catat satu pembayaran upah surat jalan per driver (`trip.pay`).
+#[tauri::command]
+pub fn desktop_trip_pay(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.pay")?;
+    driver::catat_bayar_upah(&state, &operator.username, draft)
+}
+
+/// Batalkan pembayaran upah (`batal-<id_bayar>`); alasan wajib.
+#[tauri::command]
+pub fn desktop_trip_pay_cancel(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.pay")?;
+    driver::batal_bayar_upah(&state, &operator.username, draft)
+}
+
+/// Surat jalan dalam rentang tanggal untuk rekap upah (batas lebih besar dari daftar).
+#[tauri::command]
+pub fn desktop_trip_wage_recap(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["trip.view", "trip.pay"])?;
+    driver::rekap_upah(&state, &dari, &sampai)
+}
+
+/// Riwayat pembayaran upah menurut tanggal bayar, untuk riwayat dan tanda terima.
+#[tauri::command]
+pub fn desktop_trip_payments(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["trip.view", "trip.pay"])?;
+    driver::daftar_bayar_upah(&state, &dari, &sampai)
+}
+
 /// Laporan dari HP driver. Cakupannya personil milik akun yang login, bukan
 /// payload: hanya surat jalan yang sedang ditugaskan kepadanya (aturan 44).
 #[tauri::command]

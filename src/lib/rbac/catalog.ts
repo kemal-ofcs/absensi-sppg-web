@@ -247,6 +247,11 @@ export const PERMISSION_CATALOG = [
     name: "Ubah Tarif & Penerima Upah Surat Jalan",
     group: "Perjalanan",
   },
+  {
+    key: "trip.pay",
+    name: "Catat & Batalkan Pembayaran Upah Surat Jalan",
+    group: "Perjalanan",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -311,6 +316,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   "trip.cancel",
   // Tarif dan penerima upah menentukan uang yang dibayarkan per surat jalan.
   "trip.tariff",
+  // Menandai upah dibayar mengunci surat jalannya dari pembayaran lain, dan
+  // membatalkannya membuka jalan membayar surat jalan yang sama dua kali.
+  "trip.pay",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [

@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 34;
+pub const CLIENT_SCHEMA_VERSION: i64 = 35;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -1168,6 +1168,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "foto_sha256",
             "dilaporkan_oleh",
             "created_at",
+            "lokasi_palsu",
         ],
         conflict_column: "id_laporan",
         entity_column: "id_laporan",
@@ -1185,6 +1186,37 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "qty",
             "berat_kg_x100",
         ],
+        conflict_column: "id_baris",
+        entity_column: "id_baris",
+        delete_missing: false,
+    },
+    // Pembayaran upah surat jalan (v35), append-only. Pembatalan = baris
+    // `Pembatalan` berid `batal-<id_bayar>` di tabel yang sama.
+    SnapshotTable {
+        payload_key: "tripPayments",
+        domain: "trip-payment",
+        table: "drv_upah_bayar",
+        columns: &[
+            "id_bayar",
+            "jenis",
+            "id_ref",
+            "id_karyawan",
+            "tanggal",
+            "total",
+            "keterangan",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_bayar",
+        entity_column: "id_bayar",
+        delete_missing: false,
+    },
+    // Append-only; menumpang event `trip-payment`.
+    SnapshotTable {
+        payload_key: "tripPaymentLines",
+        domain: "trip-payment-line",
+        table: "drv_upah_bayar_baris",
+        columns: &["id_baris", "id_bayar", "id_perjalanan", "upah"],
         conflict_column: "id_baris",
         entity_column: "id_baris",
         delete_missing: false,
@@ -1245,6 +1277,7 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("trip", "save"),
     ("trip-report", "create"),
     ("trip-report-photo", "save"),
+    ("trip-payment", "create"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),

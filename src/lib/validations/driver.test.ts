@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
   AKURASI_PERINGATAN_M,
+  type BarisBayar,
+  batalBayarDraftSchema,
+  bayarAktif,
+  bayarUpahDraftSchema,
   daftarTarifDraftSchema,
   detikUtc,
   formatNomorSuratJalan,
   gantiMenunggu,
+  idBarisBayar,
+  idBatalBayar,
   idMuatan,
   jarakMeter,
   kendaraanDraftSchema,
@@ -12,17 +18,25 @@ import {
   laporanDraftSchema,
   lokasiDraftSchema,
   MAKS_FOTO_BASE64,
+  MAKS_SURAT_JALAN_PER_BAYAR,
   normalisasiIdentitas,
   normalisasiPrefix,
+  type Pembayaran,
   penerimaUpah,
   penugasan,
+  periksaBatalBayar,
+  periksaBayarUpah,
   periksaUrutan,
   perjalananDraftSchema,
   prefixTersimpan,
+  type SuratJalanUpah,
   statusPerjalanan,
   tandaTinjau,
+  tandaUpah,
   titikTerbuka,
   upahSuratJalan,
+  validateBatalBayar,
+  validateBayarUpah,
   validateDaftarTarif,
   validateFotoLaporan,
   validateKendaraan,
@@ -244,7 +258,17 @@ describe("driver", () => {
         lat: null,
         lng: null,
       },
-      titik("f", "Selesai", "2026-11-09 03:00:00", -6.219596, 106.795897, 5),
+      {
+        ...titik(
+          "f",
+          "Selesai",
+          "2026-11-09 03:00:00",
+          -6.219596,
+          106.795897,
+          5,
+        ),
+        lokasi_palsu: true,
+      },
     ];
     const hasil = tandaTinjau(
       laporan,
@@ -270,9 +294,172 @@ describe("driver", () => {
       "jam_maju:e",
       "tanpa_gps:e",
       "tanpa_foto:e",
+      "lokasi_palsu:f",
       "kecepatan_mustahil:d",
       "muat_beda:m2",
       "sisa_muatan:m2",
+    ]);
+  });
+
+  test("pembayaran upah", () => {
+    expect(idBatalBayar("b1")).toBe("batal-b1");
+    expect(idBarisBayar("b1", "t1")).toBe("b1:t1");
+
+    const bayar = (v: unknown) =>
+      validateBayarUpah(bayarUpahDraftSchema.parse(v));
+    expect(
+      nilainya(
+        bayar({
+          id_karyawan: " d1 ",
+          tanggal: "2026-11-30",
+          id_perjalanan: [" t1 ", "t2", ""],
+          keterangan: " Transfer ",
+        }),
+      ),
+    ).toEqual({
+      id_karyawan: "d1",
+      tanggal: "2026-11-30",
+      id_perjalanan: ["t1", "t2"],
+      keterangan: "Transfer",
+    });
+    expect(
+      galatnya(bayar({ tanggal: "2026-11-30", id_perjalanan: ["t1"] })),
+    ).toBe("Driver wajib dipilih.");
+    expect(
+      galatnya(
+        bayar({
+          id_karyawan: "d1",
+          tanggal: "2026-13-01",
+          id_perjalanan: ["t1"],
+        }),
+      ),
+    ).toBe("Tanggal bayar tidak valid.");
+    expect(
+      galatnya(
+        bayar({
+          id_karyawan: "d1",
+          tanggal: "2026-11-30",
+          id_perjalanan: ["t1", "t1 "],
+        }),
+      ),
+    ).toBe("Surat jalan yang sama dipilih dua kali.");
+    expect(
+      galatnya(
+        bayar({ id_karyawan: "d1", tanggal: "2026-11-30", id_perjalanan: [] }),
+      ),
+    ).toBe("Pilih minimal satu surat jalan.");
+    const banyak = Array.from(
+      { length: MAKS_SURAT_JALAN_PER_BAYAR + 1 },
+      (_, i) => `t${i}`,
+    );
+    expect(
+      galatnya(
+        bayar({
+          id_karyawan: "d1",
+          tanggal: "2026-11-30",
+          id_perjalanan: banyak,
+        }),
+      ),
+    ).toBe("Maksimal 500 surat jalan per pembayaran.");
+    expect(bayarUpahDraftSchema.safeParse({ total: 1 }).success).toBe(false);
+
+    const batal = (v: unknown) =>
+      validateBatalBayar(batalBayarDraftSchema.parse(v));
+    expect(
+      nilainya(batal({ id_bayar: " b1 ", alasan: " Salah driver " })),
+    ).toEqual({ id_bayar: "b1", alasan: "Salah driver" });
+    expect(galatnya(batal({ id_bayar: "b1", alasan: "  " }))).toBe(
+      "Alasan pembatalan wajib diisi.",
+    );
+
+    const sj = (
+      id_perjalanan: string,
+      nomor: string,
+      status: string,
+      penerima: string | null,
+      upah: number,
+    ): SuratJalanUpah => ({ id_perjalanan, nomor, status, penerima, upah });
+    const suratJalan = [
+      sj("t1", "KRS-1", "Selesai", "d1", 350_000),
+      sj("t2", "KRS-2", "Selesai", "d1", 200_000),
+      sj("t3", "KRS-3", "Dibatalkan", null, 100_000),
+      sj("t4", "KRS-4", "Selesai", "d2", 150_000),
+    ];
+    const p = (
+      id_bayar: string,
+      jenis: string,
+      id_ref: string | null,
+      id_karyawan: string,
+    ): Pembayaran => ({ id_bayar, jenis, id_ref, id_karyawan });
+    const b = (
+      id_bayar: string,
+      id_perjalanan: string,
+      upah: number,
+    ): BarisBayar => ({ id_bayar, id_perjalanan, upah });
+    const pembayaran = [
+      p("b1", "Bayar", null, "d1"),
+      p("b2", "Bayar", null, "d1"),
+      p("batal-b2", "Pembatalan", "b2", "d1"),
+    ];
+    const baris = [b("b1", "t1", 350_000), b("b2", "t2", 200_000)];
+    expect(bayarAktif("t1", pembayaran, baris)).toEqual(["b1"]);
+    expect(bayarAktif("t2", pembayaran, baris)).toEqual([]);
+
+    const periksa = (ids: string[], driver: string) =>
+      periksaBayarUpah(
+        {
+          id_karyawan: driver,
+          tanggal: "2026-11-30",
+          id_perjalanan: ids,
+          keterangan: null,
+        },
+        suratJalan,
+        pembayaran,
+        baris,
+      );
+    expect(nilainya(periksa(["t2"], "d1"))).toEqual([200_000]);
+    expect(galatnya(periksa(["t1"], "d1"))).toBe(
+      "Surat jalan KRS-1 sudah dibayar.",
+    );
+    expect(galatnya(periksa(["t3"], "d1"))).toBe(
+      "Surat jalan KRS-3 berstatus Dibatalkan; hanya surat jalan Selesai yang dibayar.",
+    );
+    expect(galatnya(periksa(["t4"], "d1"))).toBe(
+      "Upah surat jalan KRS-4 bukan milik driver ini.",
+    );
+    expect(galatnya(periksa(["tx"], "d1"))).toBe(
+      "Surat jalan tidak ditemukan.",
+    );
+
+    expect(periksaBatalBayar(pembayaran, "b1").ok).toBe(true);
+    expect(galatnya(periksaBatalBayar(pembayaran, "b2"))).toBe(
+      "Pembayaran ini sudah dibatalkan.",
+    );
+    expect(galatnya(periksaBatalBayar(pembayaran, "batal-b2"))).toBe(
+      "Pembayaran tidak ditemukan.",
+    );
+
+    // Dari perangkat offline: t1 dibayar dua kali (driver dan upah sama),
+    // t4 dibayar dengan upah lama, t3 dibayar lalu dibatalkan surat jalannya.
+    const hasil = tandaUpah(
+      suratJalan,
+      [
+        p("b1", "Bayar", null, "d1"),
+        p("b3", "Bayar", null, "d1"),
+        p("b4", "Bayar", null, "d2"),
+        p("b5", "Bayar", null, "d1"),
+      ],
+      [
+        b("b1", "t1", 350_000),
+        b("b3", "t1", 350_000),
+        b("b4", "t4", 100_000),
+        b("b5", "t3", 100_000),
+      ],
+    ).map((t) => `${t.kode}:${t.id}`);
+    expect(hasil).toEqual([
+      "dibayar_ganda:t1",
+      "upah_berubah:t3",
+      "upah_berubah:t4",
     ]);
   });
 
@@ -291,6 +478,32 @@ describe("driver", () => {
     );
     expect(ok.nama_lokasi).toBe("Gudang A");
     expect(ok.mode_ganti).toBeNull();
+    expect(ok.lokasi_palsu).toBeNull();
+    expect(
+      nilainya(
+        validateLaporan(
+          laporanDraftSchema.parse({ ...dasar, lokasi_palsu: true }),
+          true,
+          true,
+        ),
+      ).lokasi_palsu,
+    ).toBe(true);
+    // Dispatcher tidak membawa hasil pemeriksaan lokasi.
+    expect(
+      nilainya(
+        validateLaporan(
+          laporanDraftSchema.parse({
+            id_perjalanan: "trp-1",
+            jenis: "Tidak Jalan",
+            keterangan: "Hujan",
+            waktu_perangkat: "2026-11-09 01:00:00",
+            lokasi_palsu: true,
+          }),
+          false,
+          false,
+        ),
+      ).lokasi_palsu,
+    ).toBeNull();
 
     const galat = (
       patch: Record<string, unknown>,
