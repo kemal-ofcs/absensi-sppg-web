@@ -2,6 +2,12 @@ import "server-only";
 
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import {
+  type OrgKaryawan,
+  orgDariDraft,
+  orgStatements,
+  tulisOrg,
+} from "@/lib/services/hris";
 
 export interface KaryawanInput {
   id_unik: string;
@@ -18,6 +24,11 @@ export interface KaryawanInput {
   jenis_personil?: string;
   tanggal_mulai_aktif?: string;
   tanggal_selesai_aktif?: string;
+  // Organisasi HRIS (v36). `""` = dikosongkan, absen = tidak diubah.
+  id_cabang?: string;
+  id_divisi?: string;
+  id_jabatan?: string;
+  id_atasan?: string;
 }
 
 export function generateRandomToken(length = 8): string {
@@ -47,11 +58,26 @@ export async function importKaryawanMassal(drafts: KaryawanInput[]) {
   const existingCodes = new Set(
     existing.rows.map((row) => String(row.kode_karyawan)),
   );
-  const accepted = drafts.filter(
+  const belumAda = drafts.filter(
     (draft) =>
       !existingIds.has(draft.id_unik) &&
       !existingCodes.has(draft.kode_karyawan),
   );
+  // Teks divisi/jabatan wajib dikenal master HRIS (Q-44), cermin Rust.
+  const galat: string[] = [];
+  const accepted: Array<KaryawanInput & { org: OrgKaryawan }> = [];
+  for (const draft of belumAda) {
+    try {
+      accepted.push({
+        ...draft,
+        org: await orgDariDraft(db, "", { ...draft }),
+      });
+    } catch (error) {
+      galat.push(
+        `${draft.kode_karyawan}: ${error instanceof Error ? error.message : "Data tidak valid."}`,
+      );
+    }
+  }
   const requestedShiftIds = [
     ...new Set(accepted.map((draft) => draft.id_shift)),
   ];
@@ -88,8 +114,8 @@ export async function importKaryawanMassal(drafts: KaryawanInput[]) {
             data.id_unik,
             data.kode_karyawan,
             data.nama,
-            data.divisi,
-            data.jabatan_status || "-",
+            data.org.divisi,
+            data.org.jabatan_status || data.jabatan_status || "-",
             data.no_hp || "",
             data.lp,
             data.id_shift,
@@ -107,8 +133,9 @@ export async function importKaryawanMassal(drafts: KaryawanInput[]) {
           sql: `INSERT INTO id_card
             (id_unik, nama, divisi, idcard_status, tanggal_generate)
             VALUES (?, ?, ?, 'Belum', ?);`,
-          args: [data.id_unik, data.nama, data.divisi, today],
+          args: [data.id_unik, data.nama, data.org.divisi, today],
         },
+        ...orgStatements(data.id_unik, data.org),
       ];
     });
     await db.batch(statements, "write");
@@ -118,6 +145,7 @@ export async function importKaryawanMassal(drafts: KaryawanInput[]) {
     sukses: true,
     berhasil: accepted.length,
     dilewati: drafts.length - accepted.length,
+    galat,
   };
 }
 
@@ -134,6 +162,8 @@ export async function getDaftarKaryawan(filter?: {
       m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
       m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
       m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
+      m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan,
+      EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan') AS punya_kontrak,
       c.idcard_status, c.idcard_pdf_url, c.link_qr_png
     FROM master_data m
     LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
@@ -175,6 +205,8 @@ export async function getKaryawanById(id_unik: string) {
         m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
         m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
         m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
+        m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan,
+        EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan') AS punya_kontrak,
         c.idcard_status, c.idcard_pdf_url, c.link_qr_png,
         c.idcard_last_generate
       FROM master_data m
@@ -196,6 +228,8 @@ export async function tambahKaryawan(data: KaryawanInput) {
   const tokenAbsensi = generateRandomToken(10);
   const qrCodePayload = `${data.id_unik}|${tokenAbsensi}`;
   const today = data.tanggal_daftar || formatTanggalOperasional(new Date());
+  // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
+  const org = await orgDariDraft(db, "", { ...data });
 
   // 1. Insert ke master_data
   await db.execute({
@@ -210,8 +244,8 @@ export async function tambahKaryawan(data: KaryawanInput) {
       data.id_unik,
       data.kode_karyawan,
       data.nama,
-      data.divisi,
-      data.jabatan_status || "-",
+      org.divisi,
+      org.jabatan_status || data.jabatan_status || "-",
       data.no_hp || "",
       data.lp,
       data.id_shift,
@@ -233,8 +267,9 @@ export async function tambahKaryawan(data: KaryawanInput) {
       SELECT ?, ?, ?, 'Belum', ?
       WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);
     `,
-    args: [data.id_unik, data.nama, data.divisi, today, data.id_unik],
+    args: [data.id_unik, data.nama, org.divisi, today, data.id_unik],
   });
+  await tulisOrg(db, data.id_unik, org);
 
   return { sukses: true, id_unik: data.id_unik, token_absensi: tokenAbsensi };
 }
@@ -244,6 +279,11 @@ export async function updateKaryawan(
   data: Partial<KaryawanInput>,
 ) {
   await ensureDbInitialized();
+  // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36); teks
+  // divisi/jabatan selalu nama master sekarang.
+  const org = await orgDariDraft(db, id_unik, { ...data });
+  data = { ...data, divisi: org.divisi };
+  if (org.jabatan_status) data.jabatan_status = org.jabatan_status;
 
   const updates: string[] = [];
   const args: (string | number | boolean | null)[] = [];
@@ -309,6 +349,7 @@ export async function updateKaryawan(
       sql: `UPDATE master_data SET ${updates.join(", ")} WHERE id_unik = ?;`,
       args,
     });
+    await tulisOrg(db, id_unik, org);
 
     // Update nama & divisi di id_card, absensi_harian, log_scan, dan backup_karyawan
     if (data.nama || data.divisi) {

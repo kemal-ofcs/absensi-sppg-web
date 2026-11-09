@@ -37,6 +37,8 @@ use super::{
     tutup_buku,
     // Perjalanan driver: CHECK cloud dicek dengan validator yang sama.
     driver,
+    // HRIS (v36): handler organisasi, kontrak, dan kolom organisasi karyawan.
+    hris,
 };
 
 /// Provider database cloud yang dipakai perangkat.
@@ -935,6 +937,31 @@ const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
         table: "drv_upah_bayar_baris",
         sql: "SELECT * FROM drv_upah_bayar_baris ORDER BY id_bayar, id_baris;",
     },
+    SnapshotSource {
+        payload_key: "hrBranches",
+        table: "hr_cabang",
+        sql: "SELECT * FROM hr_cabang ORDER BY nama, id_cabang;",
+    },
+    SnapshotSource {
+        payload_key: "hrDivisions",
+        table: "hr_divisi",
+        sql: "SELECT * FROM hr_divisi ORDER BY nama, id_divisi;",
+    },
+    SnapshotSource {
+        payload_key: "hrDivisionNames",
+        table: "hr_divisi_nama",
+        sql: "SELECT * FROM hr_divisi_nama ORDER BY id_divisi, created_at, id_nama;",
+    },
+    SnapshotSource {
+        payload_key: "hrPositions",
+        table: "hr_jabatan",
+        sql: "SELECT * FROM hr_jabatan ORDER BY nama, id_jabatan;",
+    },
+    SnapshotSource {
+        payload_key: "hrContracts",
+        table: "hr_kontrak",
+        sql: "SELECT * FROM hr_kontrak ORDER BY id_karyawan, tanggal_mulai, id_kontrak;",
+    },
 ];
 
 pub struct TursoClient {
@@ -1798,6 +1825,156 @@ impl TursoClient {
                 "CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_perjalanan ON drv_upah_bayar_baris(id_perjalanan);",
                 vec![],
             ),
+            // HRIS fase 1 (v36): organisasi dan kontrak, tersinkron. Tidak ada
+            // baris yang dihapus. WAJIB identik dengan `storage.rs` dan
+            // `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_cabang (
+                  id_cabang TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  alamat TEXT,
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_divisi (
+                  id_divisi TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_divisi_nama (
+                  id_nama TEXT PRIMARY KEY,
+                  id_divisi TEXT NOT NULL,
+                  nama TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_divisi_nama_divisi ON hr_divisi_nama(id_divisi);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_jabatan (
+                  id_jabatan TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_kontrak (
+                  id_kontrak TEXT PRIMARY KEY,
+                  id_karyawan TEXT NOT NULL,
+                  jenis TEXT NOT NULL CHECK (jenis IN ('PKWTT', 'PKWT', 'Harian Lepas', 'Magang', 'Pembatalan')),
+                  id_ref TEXT,
+                  nomor TEXT,
+                  tanggal_mulai TEXT NOT NULL,
+                  tanggal_selesai TEXT,
+                  percobaan_selesai TEXT,
+                  catatan TEXT,
+                  dicatat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_kontrak_karyawan ON hr_kontrak(id_karyawan, tanggal_mulai);",
+                vec![],
+            ),
+            // HRIS fase 1 (v36), KHUSUS CLOUD (Q-30, Q-45): data pribadi,
+            // keuangan, dan dokumen karyawan tidak pernah ada di SQLite
+            // perangkat, tidak lewat outbox, dan tidak ikut snapshot.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_profil (
+                  id_karyawan TEXT PRIMARY KEY,
+                  nik TEXT,
+                  no_kk TEXT,
+                  tempat_lahir TEXT,
+                  tanggal_lahir TEXT,
+                  agama TEXT CHECK (agama IS NULL OR agama IN ('Islam', 'Kristen', 'Katolik', 'Hindu', 'Buddha', 'Konghucu', 'Lainnya')),
+                  status_nikah TEXT CHECK (status_nikah IS NULL OR status_nikah IN ('Belum Kawin', 'Kawin', 'Cerai Hidup', 'Cerai Mati')),
+                  alamat_ktp TEXT,
+                  alamat_domisili TEXT,
+                  pendidikan TEXT CHECK (pendidikan IS NULL OR pendidikan IN ('SD', 'SMP', 'SMA/SMK', 'D1', 'D2', 'D3', 'D4', 'S1', 'S2', 'S3', 'Lainnya')),
+                  darurat_nama TEXT,
+                  darurat_hubungan TEXT,
+                  darurat_hp TEXT,
+                  bank TEXT,
+                  no_rekening TEXT,
+                  nama_rekening TEXT,
+                  npwp TEXT,
+                  bpjs_kesehatan TEXT,
+                  bpjs_ketenagakerjaan TEXT,
+                  pribadi_diubah_oleh TEXT,
+                  pribadi_diubah_pada TEXT,
+                  keuangan_diubah_oleh TEXT,
+                  keuangan_diubah_pada TEXT
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_dokumen_jenis (
+                  id_jenis TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_dokumen (
+                  id_dokumen TEXT PRIMARY KEY,
+                  id_karyawan TEXT NOT NULL,
+                  id_jenis TEXT NOT NULL,
+                  nomor TEXT,
+                  tanggal_terbit TEXT,
+                  tanggal_kedaluwarsa TEXT,
+                  catatan TEXT,
+                  dicatat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_dokumen_karyawan ON hr_dokumen(id_karyawan);",
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_dokumen_kedaluwarsa ON hr_dokumen(tanggal_kedaluwarsa);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_dokumen_berkas (
+                  id_berkas TEXT PRIMARY KEY,
+                  id_dokumen TEXT NOT NULL,
+                  urutan INTEGER NOT NULL CHECK (urutan BETWEEN 1 AND 5),
+                  nama_berkas TEXT,
+                  mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
+                  data_base64 TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_dokumen_berkas_dokumen ON hr_dokumen_berkas(id_dokumen);",
+                vec![],
+            ),
+            // Jenis dokumen bawaan. Aman di-seed: tabel khusus cloud, tidak
+            // pernah lewat outbox, dan nama yang sudah diganti tidak ditimpa.
+            Statement::new(super::hris::SEED_JENIS_DOKUMEN_SQL, vec![]),
             Statement::new(
                 r#"CREATE TABLE IF NOT EXISTS master_data (
                     id_unik TEXT PRIMARY KEY,
@@ -1817,7 +1994,11 @@ impl TursoClient {
                     jenis_personil TEXT,
                     tanggal_mulai_aktif TEXT,
                     tanggal_selesai_aktif TEXT,
-                    status_backup TEXT DEFAULT 'NORMAL'
+                    status_backup TEXT DEFAULT 'NORMAL',
+                    id_cabang TEXT,
+                    id_divisi TEXT,
+                    id_jabatan TEXT,
+                    id_atasan TEXT
                 );"#,
                 vec![],
             ),
@@ -2754,7 +2935,15 @@ impl TursoClient {
                 ('trip.cancel', 'Batalkan Perjalanan yang Berjalan', 'Perjalanan', 'Membatalkan perjalanan yang sudah berangkat; surat jalan batal tidak dibayar.', 1, 1503),
                 ('fleet.manage', 'Kelola Kendaraan, Kategori Tujuan & Lokasi', 'Perjalanan', 'Mengelola kendaraan, jenis kendaraan, kategori tujuan, dan lokasi terdaftar.', 1, 1504),
                 ('trip.tariff', 'Ubah Tarif & Penerima Upah Surat Jalan', 'Perjalanan', 'Mengubah tarif jenis kendaraan dan kategori tujuan, serta memindahkan upah ke driver lain.', 1, 1505),
-                ('trip.pay', 'Catat & Batalkan Pembayaran Upah Surat Jalan', 'Perjalanan', 'Menandai upah surat jalan Selesai dibayar per driver, dan membatalkan pembayarannya.', 1, 1506);"#,
+                ('trip.pay', 'Catat & Batalkan Pembayaran Upah Surat Jalan', 'Perjalanan', 'Menandai upah surat jalan Selesai dibayar per driver, dan membatalkan pembayarannya.', 1, 1506),
+                ('hr.org.manage', 'Kelola Organisasi', 'Kepegawaian', 'Mengelola cabang, divisi, jabatan, jenis dokumen, dan angka bawaan kontrak.', 1, 1600),
+                ('hr.personal.view', 'Lihat Data Pribadi Karyawan', 'Kepegawaian', 'Melihat NIK, KK, tanggal lahir, alamat, dan kontak darurat karyawan.', 1, 1601),
+                ('hr.personal.manage', 'Ubah Data Pribadi Karyawan', 'Kepegawaian', 'Mengubah data pribadi karyawan.', 1, 1602),
+                ('hr.finance.view', 'Lihat Data Keuangan Karyawan', 'Kepegawaian', 'Melihat rekening bank, NPWP, dan nomor BPJS karyawan.', 1, 1603),
+                ('hr.finance.manage', 'Ubah Data Keuangan Karyawan', 'Kepegawaian', 'Mengubah rekening bank, NPWP, dan nomor BPJS karyawan.', 1, 1604),
+                ('hr.contract.manage', 'Kelola Kontrak Kerja', 'Kepegawaian', 'Mencatat dan membatalkan kontrak kerja karyawan.', 1, 1605),
+                ('hr.document.view', 'Lihat Dokumen Karyawan', 'Kepegawaian', 'Melihat data dan berkas dokumen karyawan (KTP, KK, ijazah, dan lainnya).', 1, 1606),
+                ('hr.document.manage', 'Kelola Dokumen Karyawan', 'Kepegawaian', 'Menambah, mengubah, dan menghapus dokumen karyawan beserta berkasnya.', 1, 1607);"#,
                 vec![],
             ),
             // Seed Default Role Permissions untuk Role Superadmin (Role 1)
@@ -2767,7 +2956,7 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
-                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'inventory.item.delete', 'accounting.reverse', 'loan.approve', 'accounting.close', 'installment.cancel', 'trip.cancel', 'trip.tariff', 'trip.pay');"#,
+                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'inventory.item.delete', 'accounting.reverse', 'loan.approve', 'accounting.close', 'installment.cancel', 'trip.cancel', 'trip.tariff', 'trip.pay', 'hr.personal.view', 'hr.personal.manage', 'hr.finance.view', 'hr.finance.manage', 'hr.document.view', 'hr.document.manage');"#,
                 vec![],
             ),
             // Role bawaan Driver (v34). Tanpa id eksplisit: database Web bisa
@@ -2781,6 +2970,26 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT id, 'trip.report', 1, datetime('now'), 'system' FROM app_role WHERE role_key = 'driver';"#,
+                vec![],
+            ),
+            // Role bawaan HRD dan Atasan (v36), pola Driver: lewat role_key.
+            // Izin pengajuan Atasan ditambahkan di fase 2.
+            Statement::new(
+                r#"INSERT OR IGNORE INTO app_role (role_key, nama_role, deskripsi, is_system, is_superadmin, status, created_at, updated_at) VALUES
+                ('hrd', 'HRD', 'Kepegawaian: organisasi, data karyawan, kontrak, dan dokumen.', 1, 0, 'Aktif', datetime('now'), datetime('now')),
+                ('atasan', 'Atasan', 'Atasan karyawan: melihat data kerja karyawan.', 1, 0, 'Aktif', datetime('now'), datetime('now'));"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
+                SELECT r.id, p.permission_key, 1, datetime('now'), 'system' FROM app_role r JOIN app_permission p
+                WHERE r.role_key = 'hrd' AND p.permission_key IN ('home.view', 'employees.view', 'employees.manage', 'hr.org.manage', 'hr.personal.view', 'hr.personal.manage', 'hr.finance.view', 'hr.finance.manage', 'hr.contract.manage', 'hr.document.view', 'hr.document.manage');"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
+                SELECT r.id, p.permission_key, 1, datetime('now'), 'system' FROM app_role r JOIN app_permission p
+                WHERE r.role_key = 'atasan' AND p.permission_key IN ('home.view', 'employees.view');"#,
                 vec![],
             ),
             // Seed Settings
@@ -3093,6 +3302,11 @@ impl TursoClient {
             ("master_operator", "id_karyawan", "ALTER TABLE master_operator ADD COLUMN id_karyawan TEXT;"),
             // Lokasi palsu laporan driver (v35). NULL = tidak diperiksa.
             ("drv_laporan", "lokasi_palsu", "ALTER TABLE drv_laporan ADD COLUMN lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1));"),
+            // Organisasi karyawan (v36). Kosong = belum dipetakan ke master.
+            ("master_data", "id_cabang", "ALTER TABLE master_data ADD COLUMN id_cabang TEXT;"),
+            ("master_data", "id_divisi", "ALTER TABLE master_data ADD COLUMN id_divisi TEXT;"),
+            ("master_data", "id_jabatan", "ALTER TABLE master_data ADD COLUMN id_jabatan TEXT;"),
+            ("master_data", "id_atasan", "ALTER TABLE master_data ADD COLUMN id_atasan TEXT;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
@@ -3444,6 +3658,22 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // HRIS fase 1 (v36): teks divisi/jabatan menjadi master. Sesudah
+        // `ensure_column` (kolom `id_*`) dan `ensure_sync_pulse` (perangkat ikut
+        // menarik hasilnya). Idempoten; teks SQL kembar `db-migrations.ts`.
+        for sql in super::hris::MIGRASI_ORGANISASI_SQL {
+            self.query_one(*sql, vec![]).await?;
+        }
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (36, 'hris-org', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2032, 'hris-org-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -3658,7 +3888,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2031;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2032;",
                 vec![],
             )
             .await
@@ -6192,6 +6422,10 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("trip-report", "create") => ("trip-report", "create"),
         ("trip-report-photo", "save") => ("trip-report-photo", "save"),
         ("trip-payment", "create") => ("trip-payment", "create"),
+        ("hr-branch", "save") => ("hr-branch", "save"),
+        ("hr-division", "save") => ("hr-division", "save"),
+        ("hr-position", "save") => ("hr-position", "save"),
+        ("hr-contract", "create") => ("hr-contract", "create"),
         ("installment", "activate") => ("installment", "activate"),
         ("installment", "reapprove") => ("installment", "reapprove"),
         ("installment", "close") => ("installment", "close"),
@@ -6564,6 +6798,24 @@ async fn apply_event_to_turso(
                 ] {
                     turso.query_one(sql, args).await?;
                 }
+                // Koreksi Tanggal Masuk (Q-41). Dulu tidak pernah ditulis, jadi
+                // koreksi dari Desktop/Mobile tertimpa tarikan berikutnya.
+                if let Some(tanggal) = row
+                    .get("tanggal_daftar")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
+                    turso
+                        .query_one(
+                            "UPDATE master_data SET tanggal_daftar = ?1 WHERE id_unik = ?2;",
+                            vec![json!(tanggal), json!(id_unik)],
+                        )
+                        .await?;
+                }
+                for (sql, args) in hris::cloud_org_karyawan_statements(row, id_unik) {
+                    turso.query_one(sql, args).await?;
+                }
                 return Ok(());
             }
             let token_opt = row.get("token_absensi").and_then(Value::as_str);
@@ -6641,6 +6893,9 @@ async fn apply_event_to_turso(
                         vec![json!(id_unik), json!(nama), json!(divisi), json!(id_unik)],
                     )
                     .await?;
+                for (sql, args) in hris::cloud_org_karyawan_statements(row, id_unik) {
+                    turso.query_one(sql, args).await?;
+                }
             }
         }
         ("employee", "status") => {
@@ -7160,6 +7415,23 @@ async fn apply_event_to_turso(
         // perangkat offline tidak ditolak (tanda `dibayar_ganda`).
         ("trip-payment", "create") => {
             if let Some(statements) = driver::cloud_bayar_statements(payload, entity_key) {
+                for (sql, values) in statements {
+                    turso.query_one(sql, values).await?;
+                }
+            }
+        }
+        // HRIS fase 1 (v36). Master organisasi: siapa terakhir menang, nama
+        // divisi lama dicatat dan teks data kini diselaraskan. Kontrak
+        // append-only. Tidak pernah ditolak karena master (outbox macet).
+        ("hr-branch" | "hr-division" | "hr-position", "save") => {
+            if let Some(statements) = hris::cloud_master_statements(domain, payload, entity_key) {
+                for (sql, values) in statements {
+                    turso.query_one(sql, values).await?;
+                }
+            }
+        }
+        ("hr-contract", "create") => {
+            if let Some(statements) = hris::cloud_kontrak_statements(payload, entity_key) {
                 for (sql, values) in statements {
                     turso.query_one(sql, values).await?;
                 }
@@ -11297,7 +11569,7 @@ mod tests {
                     "DROP TABLE drv_upah_bayar;
                      DROP TABLE drv_upah_bayar_baris;
                      ALTER TABLE drv_laporan DROP COLUMN lokasi_palsu;
-                     DELETE FROM schema_migration WHERE version IN (35, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (35, 36, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11311,6 +11583,86 @@ mod tests {
                 )
                 .expect("cek skema");
             assert_eq!((tabel, kolom), (2, 1), "database bersentinel -2030 tidak diperbarui");
+        });
+    }
+
+    /// Database bersentinel `-2031` (v35) menerima tabel HRIS, kolom
+    /// organisasi `master_data`, dan migrasi teks divisi/jabatan → master.
+    /// Ganti nama divisi lewat handler cloud memperbarui data kini, bukan
+    /// riwayat, dan payload lama yang membawa nama lama dinormalkan.
+    #[test]
+    fn sentinel_2031_memicu_skema_dan_migrasi_hris() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2031.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+            connection
+                .execute_batch(
+                    "DROP TABLE hr_cabang; DROP TABLE hr_divisi; DROP TABLE hr_divisi_nama;
+                     DROP TABLE hr_jabatan; DROP TABLE hr_kontrak; DROP TABLE hr_profil;
+                     DROP TABLE hr_dokumen_jenis; DROP TABLE hr_dokumen; DROP TABLE hr_dokumen_berkas;
+                     ALTER TABLE master_data DROP COLUMN id_cabang;
+                     ALTER TABLE master_data DROP COLUMN id_divisi;
+                     ALTER TABLE master_data DROP COLUMN id_jabatan;
+                     ALTER TABLE master_data DROP COLUMN id_atasan;
+                     DELETE FROM schema_migration WHERE version IN (36, -2032);
+                     INSERT INTO master_data (id_unik, kode_karyawan, nama, divisi, jabatan_status, id_shift) VALUES
+                       ('K1', 'K1', 'Ana', 'Gudang', 'Staff', 1),
+                       ('K2', 'K2', 'Budi', ' gudang ', '-', 1);
+                     INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi, status_kehadiran, status_absen, sumber, update_terakhir, id_shift, bulan, tahun, id_sesi)
+                       VALUES ('2026-01-05', 'K1', 'Ana', 'Gudang', 'Hadir', 'Valid', 'Scanner', '2026-01-05 08:00:00', 1, 'Januari', 2026, 'S1');",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+            let id_divisi = format!(
+                "div-{}",
+                "gudang".bytes().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+            let baca = |sql: &str| -> String {
+                connection.query_row(sql, [], |row| row.get(0)).expect(sql)
+            };
+            assert_eq!(baca("SELECT COUNT(*) || '' FROM hr_divisi;"), "1");
+            assert_eq!(baca("SELECT group_concat(id_divisi) FROM master_data;"), format!("{id_divisi},{id_divisi}"));
+            assert_eq!(baca("SELECT id_cabang FROM master_data WHERE id_unik = 'K1';"), "cab-pusat");
+            assert_eq!(baca("SELECT COALESCE(id_jabatan, 'kosong') FROM master_data WHERE id_unik = 'K2';"), "kosong");
+            assert_eq!(baca("SELECT COUNT(*) || '' FROM hr_dokumen_jenis;"), "9");
+
+            // Ganti nama "Gudang" → "Logistik" dari perangkat lain.
+            let payload = json!({
+                "divisi": { "id_divisi": id_divisi, "nama": "Logistik", "is_aktif": 1 },
+                "nama": { "id_nama": "dn-1", "nama": "Logistik" }
+            });
+            for (sql, args) in hris::cloud_master_statements("hr-division", &payload, &id_divisi).expect("statement") {
+                client.query_one(sql, args).await.expect("ganti nama");
+            }
+            assert_eq!(baca("SELECT group_concat(DISTINCT divisi) FROM master_data;"), "Logistik");
+            assert_eq!(baca("SELECT kelas_divisi FROM absensi_harian;"), "Gudang");
+            assert_eq!(
+                baca(&format!("SELECT {} FROM absensi_harian a;", hris::divisi_kini("a.kelas_divisi"))),
+                "Logistik"
+            );
+            // Event lama tanpa id_divisi masih membawa nama lama (upsert
+            // handler sudah menulis teksnya; id-nya ikut hilang).
+            connection
+                .execute("UPDATE master_data SET divisi = 'Gudang', id_divisi = NULL WHERE id_unik = 'K1';", [])
+                .expect("event lama");
+            for (sql, args) in hris::cloud_org_karyawan_statements(
+                &json!({ "id_unik": "K1", "divisi": "Gudang" }),
+                "K1",
+            ) {
+                client.query_one(sql, args).await.expect("org karyawan");
+            }
+            assert_eq!(baca("SELECT divisi || '|' || id_divisi FROM master_data WHERE id_unik = 'K1';"), format!("Logistik|{id_divisi}"));
         });
     }
 
@@ -11335,7 +11687,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11375,7 +11727,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11414,7 +11766,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11454,7 +11806,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11491,7 +11843,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 
@@ -11529,7 +11881,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032);",
                 )
                 .expect("siapkan database lama");
 

@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 35;
-export const REQUIRED_TABLE_COUNT = 70;
+export const CURRENT_SCHEMA_VERSION = 36;
+export const REQUIRED_TABLE_COUNT = 79;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -33,7 +33,9 @@ export async function isDatabaseSchemaReady(client: Client) {
             'app_telegram_setting', 'notifikasi_telegram',
             'keu_tutup_buku',
             'drv_jenis_kendaraan', 'drv_kategori_tujuan', 'drv_kendaraan', 'drv_lokasi', 'drv_perjalanan', 'drv_muatan', 'drv_laporan', 'drv_laporan_muatan', 'drv_laporan_foto',
-            'drv_upah_bayar', 'drv_upah_bayar_baris'
+            'drv_upah_bayar', 'drv_upah_bayar_baris',
+            'hr_cabang', 'hr_divisi', 'hr_divisi_nama', 'hr_jabatan', 'hr_kontrak',
+            'hr_profil', 'hr_dokumen_jenis', 'hr_dokumen', 'hr_dokumen_berkas'
           )
         ) AS table_count;
     `);
@@ -70,7 +72,11 @@ export async function initDatabaseSchema(client: Client) {
         jenis_personil TEXT,
         tanggal_mulai_aktif DATE,
         tanggal_selesai_aktif DATE,
-        status_backup TEXT DEFAULT 'NORMAL'
+        status_backup TEXT DEFAULT 'NORMAL',
+        id_cabang TEXT,
+        id_divisi TEXT,
+        id_jabatan TEXT,
+        id_atasan TEXT
       );
     `);
 

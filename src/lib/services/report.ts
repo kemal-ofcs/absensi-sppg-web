@@ -156,7 +156,7 @@ export async function getRekapHarian(filter?: {
   await ensureDbInitialized();
 
   let query = `
-    SELECT a.*, m.kode_karyawan, s.nama_shift, s.kode_shift
+    SELECT a.*, COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(a.kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), a.kelas_divisi) AS kelas_divisi, m.kode_karyawan, s.nama_shift, s.kode_shift
     FROM absensi_harian a
     LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
     LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift
@@ -173,7 +173,8 @@ export async function getRekapHarian(filter?: {
   }
 
   if (filter?.divisi) {
-    query += " AND a.kelas_divisi = ?";
+    query +=
+      " AND COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(a.kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), a.kelas_divisi) = ?";
     params.push(filter.divisi);
   }
 
@@ -222,7 +223,7 @@ export async function getRiwayatScan(filter?: {
   const result = await db.execute({
     sql: `
       SELECT id_log, timestamp_scan, tanggal_kerja, jam_scan, id_karyawan,
-        nama, divisi, jenis_scan, status_proses, sumber_data,
+        nama, COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), divisi) AS divisi, jenis_scan, status_proses, sumber_data,
         catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
         id_referensi, kode_operator
       FROM log_scan
@@ -257,7 +258,7 @@ export const REKAP_BULANAN_SQL = `
     ROUND(SUM(jam_kerja) / 60.0, 1) AS totalJamKerja,
     ROUND(SUM(lembur) / 60.0, 1) AS totalLembur
   FROM (
-    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(kelas_divisi) AS divisi,
+    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi)) AS divisi,
       MAX(CASE
         WHEN (COALESCE(TRIM(jam_masuk), '') <> ''
               AND COALESCE(status_kehadiran, '') <> 'Alfa')
@@ -273,7 +274,7 @@ export const REKAP_BULANAN_SQL = `
       SUM(COALESCE(jam_kerja, 0)) AS jam_kerja,
       SUM(COALESCE(lembur, 0)) AS lembur
     FROM absensi_harian
-    WHERE bulan = ?1 AND tahun = ?2 AND (?3 = '' OR kelas_divisi = ?3)
+    WHERE bulan = ?1 AND tahun = ?2 AND (?3 = '' OR COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi) = ?3)
     GROUP BY id_karyawan, tanggal
   )
   GROUP BY id_karyawan
@@ -433,7 +434,7 @@ export const TOP_KARYAWAN_SQL = `
   SELECT h.id_karyawan, MAX(h.nama) AS nama, MAX(h.divisi) AS divisi,
     COUNT(*) AS total_kehadiran, SUM(h.menit) AS total_telat
   FROM (
-    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(kelas_divisi) AS divisi,
+    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi)) AS divisi,
       MAX(CASE
         WHEN (COALESCE(TRIM(jam_masuk), '') <> ''
               AND COALESCE(status_kehadiran, '') <> 'Alfa')

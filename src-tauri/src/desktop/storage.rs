@@ -262,7 +262,11 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         jenis_personil TEXT,
         tanggal_mulai_aktif TEXT,
         tanggal_selesai_aktif TEXT,
-        status_backup TEXT DEFAULT 'NORMAL'
+        status_backup TEXT DEFAULT 'NORMAL',
+        id_cabang TEXT,
+        id_divisi TEXT,
+        id_jabatan TEXT,
+        id_atasan TEXT
       );
       CREATE TABLE IF NOT EXISTS id_card (
         id_card_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1180,6 +1184,54 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       );
       CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_bayar ON drv_upah_bayar_baris(id_bayar);
       CREATE INDEX IF NOT EXISTS idx_drv_upah_bayar_baris_perjalanan ON drv_upah_bayar_baris(id_perjalanan);
+      -- HRIS fase 1 (v36): organisasi dan kontrak. Tidak ada baris yang
+      -- dihapus (nonaktif = hapus). Nama divisi lama tercatat di
+      -- `hr_divisi_nama` dan dicadangkan. DDL WAJIB identik dengan `turso.rs`
+      -- dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS hr_cabang (
+        id_cabang TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        alamat TEXT,
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS hr_divisi (
+        id_divisi TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS hr_divisi_nama (
+        id_nama TEXT PRIMARY KEY,
+        id_divisi TEXT NOT NULL,
+        nama TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_divisi_nama_divisi ON hr_divisi_nama(id_divisi);
+      CREATE TABLE IF NOT EXISTS hr_jabatan (
+        id_jabatan TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      -- Append-only. Pembatalan = baris `Pembatalan` berid `batal-<id_kontrak>`.
+      CREATE TABLE IF NOT EXISTS hr_kontrak (
+        id_kontrak TEXT PRIMARY KEY,
+        id_karyawan TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('PKWTT', 'PKWT', 'Harian Lepas', 'Magang', 'Pembatalan')),
+        id_ref TEXT,
+        nomor TEXT,
+        tanggal_mulai TEXT NOT NULL,
+        tanggal_selesai TEXT,
+        percobaan_selesai TEXT,
+        catatan TEXT,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_kontrak_karyawan ON hr_kontrak(id_karyawan, tanggal_mulai);
       -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
       -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
       -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
@@ -1334,6 +1386,15 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "lokasi_palsu",
         "ALTER TABLE drv_laporan ADD COLUMN lokasi_palsu INTEGER CHECK (lokasi_palsu IS NULL OR lokasi_palsu IN (0, 1));",
     )?;
+    // Organisasi karyawan (v36). Kosong = belum dipetakan ke master.
+    for (column, alter_sql) in [
+        ("id_cabang", "ALTER TABLE master_data ADD COLUMN id_cabang TEXT;"),
+        ("id_divisi", "ALTER TABLE master_data ADD COLUMN id_divisi TEXT;"),
+        ("id_jabatan", "ALTER TABLE master_data ADD COLUMN id_jabatan TEXT;"),
+        ("id_atasan", "ALTER TABLE master_data ADD COLUMN id_atasan TEXT;"),
+    ] {
+        ensure_column(&connection, "master_data", column, alter_sql)?;
+    }
     // Hapus barang (v32). NULL = belum dihapus.
     ensure_column(
         &connection,
@@ -1565,6 +1626,13 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "drv_laporan_foto",
     "drv_upah_bayar",
     "drv_upah_bayar_baris",
+    // v36: organisasi dan kontrak HRIS. Profil dan dokumen khusus cloud, tidak
+    // pernah ada di SQLite perangkat.
+    "hr_cabang",
+    "hr_divisi",
+    "hr_divisi_nama",
+    "hr_jabatan",
+    "hr_kontrak",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke

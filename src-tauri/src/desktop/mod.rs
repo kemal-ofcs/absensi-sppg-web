@@ -10,6 +10,7 @@ mod accounting;
 mod loan;
 mod tutup_buku;
 mod driver;
+mod hris;
 pub mod telegram;
 pub mod license;
 pub mod models;

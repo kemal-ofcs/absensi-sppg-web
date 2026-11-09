@@ -252,6 +252,43 @@ export const PERMISSION_CATALOG = [
     name: "Catat & Batalkan Pembayaran Upah Surat Jalan",
     group: "Perjalanan",
   },
+  // HRIS fase 1 (v36). Sort order cermin seed `app_permission` Rust 1600+.
+  { key: "hr.org.manage", name: "Kelola Organisasi", group: "Kepegawaian" },
+  {
+    key: "hr.personal.view",
+    name: "Lihat Data Pribadi Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.personal.manage",
+    name: "Ubah Data Pribadi Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.finance.view",
+    name: "Lihat Data Keuangan Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.finance.manage",
+    name: "Ubah Data Keuangan Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.contract.manage",
+    name: "Kelola Kontrak Kerja",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.document.view",
+    name: "Lihat Dokumen Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.document.manage",
+    name: "Kelola Dokumen Karyawan",
+    group: "Kepegawaian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -319,6 +356,22 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Menandai upah dibayar mengunci surat jalannya dari pembayaran lain, dan
   // membatalkannya membuka jalan membayar surat jalan yang sama dua kali.
   "trip.pay",
+  // Rekening bank menentukan ke mana gaji dikirim.
+  "hr.finance.manage",
+]);
+
+/**
+ * Data rahasia karyawan (Q-23, Q-42): NIK, KK, rekening, NPWP, dan pindaian
+ * dokumen. Tidak sensitif sebagai mutasi, tetapi TIDAK ikut paket Admin
+ * bawaan (cermin `NOT IN` seed Admin Rust); hanya HRD dan Superadmin.
+ */
+export const CONFIDENTIAL_PERMISSIONS = new Set<PermissionKey>([
+  "hr.personal.view",
+  "hr.personal.manage",
+  "hr.finance.view",
+  "hr.finance.manage",
+  "hr.document.view",
+  "hr.document.manage",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
@@ -327,6 +380,8 @@ export const SYSTEM_ROLE_KEYS = [
   "operator",
   "scanner",
   "driver",
+  "hrd",
+  "atasan",
 ] as const;
 
 export type SystemRoleKey = (typeof SYSTEM_ROLE_KEYS)[number];
@@ -339,7 +394,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     ({ key }) =>
       !SUPERADMIN_ONLY_PERMISSIONS.has(key) &&
       key !== "diagnostics.view" &&
-      !SENSITIVE_MUTATION_PERMISSIONS.has(key),
+      !SENSITIVE_MUTATION_PERMISSIONS.has(key) &&
+      !CONFIDENTIAL_PERMISSIONS.has(key),
   ).map(({ key }) => key),
   operator: [
     "home.view",
@@ -353,6 +409,22 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   // Hanya melapor perjalanan yang sedang ditugaskan kepadanya (cakupan
   // diperiksa backend terhadap `master_operator.id_karyawan`).
   driver: ["trip.report"],
+  // Cermin seed role HRD dan Atasan Rust (v36). Izin pengajuan Atasan
+  // ditambahkan di fase 2.
+  hrd: [
+    "home.view",
+    "employees.view",
+    "employees.manage",
+    "hr.org.manage",
+    "hr.personal.view",
+    "hr.personal.manage",
+    "hr.finance.view",
+    "hr.finance.manage",
+    "hr.contract.manage",
+    "hr.document.view",
+    "hr.document.manage",
+  ],
+  atasan: ["home.view", "employees.view"],
 };
 
 export function normalizeRoleKey(value: string) {

@@ -26,6 +26,8 @@ export interface NavigationItem {
   href: string;
   icon: NavigationIcon;
   label: string;
+  /** Halaman hanya ada di Web/Desktop; Menu Mobile menyembunyikannya. */
+  desktopSaja?: boolean;
 }
 
 export interface NavigationGroup {
@@ -81,6 +83,13 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     label: "SDM",
     items: [
       { area: "karyawan", href: "/karyawan", icon: "user", label: "Karyawan" },
+      {
+        area: "hris",
+        href: "/hris",
+        icon: "users",
+        label: "HRIS",
+        desktopSaja: true,
+      },
       { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
       { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
       {

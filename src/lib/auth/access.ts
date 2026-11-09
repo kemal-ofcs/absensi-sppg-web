@@ -22,6 +22,7 @@ export type AppArea =
   | "kasbon"
   | "perjalanan"
   | "driver"
+  | "hris"
   | "diagnostics";
 
 export interface AccessSubject {
@@ -53,6 +54,8 @@ const AREA_PERMISSION: Record<
   kasbon: "loan.view",
   perjalanan: "trip.view",
   driver: "trip.report",
+  // Tiap tab `/hris` memeriksa izinnya sendiri; backend memeriksa ulang.
+  hris: "employees.view",
   diagnostics: "diagnostics.view",
 };
 

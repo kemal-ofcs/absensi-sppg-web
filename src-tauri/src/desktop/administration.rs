@@ -261,6 +261,7 @@ pub fn list_corrections(state: &DesktopState, filter: &Value) -> Result<Value, C
     let connection = storage::database(&state.data_dir)?;
     let date = text(filter, "tanggal").replace("'", "''");
     let employee = text(filter, "id_karyawan").replace("'", "''");
+    let kini_koreksi = super::hris::divisi_kini("divisi");
     rows_as_json(
         &connection,
         &format!(
@@ -268,7 +269,7 @@ pub fn list_corrections(state: &DesktopState, filter: &Value) -> Result<Value, C
       SELECT json_object(
         'id_koreksi', id_koreksi, 'id_referensi', id_referensi,
         'tanggal', tanggal, 'id_karyawan', id_karyawan, 'nama', nama,
-        'divisi', divisi, 'jenis_koreksi', jenis_koreksi,
+        'divisi', {kini_koreksi}, 'jenis_koreksi', jenis_koreksi,
         'jam_koreksi', COALESCE(jam_koreksi, ''),
         'keterangan_admin', COALESCE(keterangan_admin, ''),
         'status_proses', status_proses, 'timestamp', timestamp,
@@ -1030,6 +1031,8 @@ pub fn list_backups(state: &DesktopState, filter: &Value) -> Result<Value, Comma
     let connection = storage::database(&state.data_dir)?;
     let date = text(filter, "tanggal").replace("'", "''");
     let status = text(filter, "status_tugas").replace("'", "''");
+    let kini_asal = super::hris::divisi_kini("divisi_asal");
+    let kini_pengganti = super::hris::divisi_kini("divisi_pengganti");
     rows_as_json(
         &connection,
         &format!(
@@ -1037,10 +1040,10 @@ pub fn list_backups(state: &DesktopState, filter: &Value) -> Result<Value, Comma
       SELECT json_object(
         'id_backup', id_backup, 'tanggal_tugas', tanggal_tugas,
         'id_karyawan_asal', id_karyawan_asal, 'nama_karyawan_asal', nama_karyawan_asal,
-        'divisi_asal', divisi_asal, 'id_shift_asal', id_shift_asal,
+        'divisi_asal', {kini_asal}, 'id_shift_asal', id_shift_asal,
         'id_karyawan_pengganti', id_karyawan_pengganti,
         'nama_karyawan_pengganti', nama_karyawan_pengganti,
-        'divisi_pengganti', divisi_pengganti,
+        'divisi_pengganti', {kini_pengganti},
         'id_shift_normal_pengganti', id_shift_normal_pengganti,
         'id_shift_backup', id_shift_backup, 'alasan_backup', COALESCE(alasan_backup, ''),
         'status_tugas', status_tugas, 'kode_operator', kode_operator,
@@ -2006,7 +2009,7 @@ const REKAP_BULANAN_SQL: &str = r#"
     ROUND(SUM(jam_kerja) / 60.0, 1) AS totalJamKerja,
     ROUND(SUM(lembur) / 60.0, 1) AS totalLembur
   FROM (
-    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(kelas_divisi) AS divisi,
+    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi)) AS divisi,
       MAX(CASE
         WHEN (COALESCE(TRIM(jam_masuk), '') <> ''
               AND COALESCE(status_kehadiran, '') <> 'Alfa')
@@ -2022,7 +2025,7 @@ const REKAP_BULANAN_SQL: &str = r#"
       SUM(COALESCE(jam_kerja, 0)) AS jam_kerja,
       SUM(COALESCE(lembur, 0)) AS lembur
     FROM absensi_harian
-    WHERE bulan = ?1 AND tahun = ?2 AND (?3 = '' OR kelas_divisi = ?3)
+    WHERE bulan = ?1 AND tahun = ?2 AND (?3 = '' OR COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi) = ?3)
     GROUP BY id_karyawan, tanggal
   )
   GROUP BY id_karyawan
@@ -2066,7 +2069,7 @@ const TOP_KARYAWAN_SQL: &str = r#"
   SELECT h.id_karyawan, MAX(h.nama) AS nama, MAX(h.divisi) AS divisi,
     COUNT(*) AS total_kehadiran, SUM(h.menit) AS total_telat
   FROM (
-    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(kelas_divisi) AS divisi,
+    SELECT id_karyawan, tanggal, MAX(nama) AS nama, MAX(COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(kelas_divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), kelas_divisi)) AS divisi,
       MAX(CASE
         WHEN (COALESCE(TRIM(jam_masuk), '') <> ''
               AND COALESCE(status_kehadiran, '') <> 'Alfa')
@@ -2237,6 +2240,9 @@ pub fn dashboard_data(
         return tren_mingguan(&connection);
     }
     let division = text(filter, "divisi").replace("'", "''");
+    // Riwayat tampil dengan nama divisi SEKARANG (HRIS v36, Q-12).
+    let kini_log = super::hris::divisi_kini("divisi");
+    let kini_harian = super::hris::divisi_kini("a.kelas_divisi");
     if kind == "scan-history" {
         let date_clause = if !text(filter, "tanggal_mulai").is_empty()
             && !text(filter, "tanggal_selesai").is_empty()
@@ -2278,7 +2284,7 @@ pub fn dashboard_data(
             'jam_scan', jam_scan,
             'id_karyawan', id_karyawan,
             'nama', nama,
-            'divisi', divisi,
+            'divisi', {kini_log},
             'jenis_scan', jenis_scan,
             'status_proses', status_proses,
             'sumber_data', sumber_data,
@@ -2325,7 +2331,7 @@ pub fn dashboard_data(
             'tanggal', a.tanggal,
             'id_karyawan', a.id_karyawan,
             'nama', a.nama,
-            'kelas_divisi', a.kelas_divisi,
+            'kelas_divisi', {kini_harian},
             'jam_masuk', COALESCE(a.jam_masuk,''),
             'jam_pulang', COALESCE(a.jam_pulang,''),
             'status_kehadiran', a.status_kehadiran,
@@ -2352,7 +2358,7 @@ pub fn dashboard_data(
           )
           FROM absensi_harian a LEFT JOIN master_data m ON a.id_karyawan = m.id_unik
           LEFT JOIN tbl_shift s ON a.id_shift = s.id_shift WHERE {date_clause}
-          AND ('{division}' = '' OR a.kelas_divisi = '{division}') ORDER BY a.update_terakhir DESC, a.tanggal DESC, a.nama;
+          AND ('{division}' = '' OR {kini_harian} = '{division}') ORDER BY a.update_terakhir DESC, a.tanggal DESC, a.nama;
         "#
             ),
         );
@@ -4101,6 +4107,14 @@ INSERT INTO absensi_harian (
     #[test]
     fn test_scanner_holiday_rejection() {
         let (_directory, state) = fixture();
+
+        // Divisi wajib terdaftar di master HRIS (v36).
+        super::super::hris::simpan_master(
+            &state,
+            &super::super::hris::MASTER_DIVISI,
+            &json!({ "nama": "Produksi" }),
+        )
+        .expect("divisi");
 
         // Add employee
         let emp_res = super::super::operational::create_employee(

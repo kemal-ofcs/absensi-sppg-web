@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 35;
+pub const CLIENT_SCHEMA_VERSION: i64 = 36;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -102,6 +102,10 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "tanggal_mulai_aktif",
             "tanggal_selesai_aktif",
             "status_backup",
+            "id_cabang",
+            "id_divisi",
+            "id_jabatan",
+            "id_atasan",
         ],
         conflict_column: "id_unik",
         entity_column: "id_unik",
@@ -1221,6 +1225,66 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_baris",
         delete_missing: false,
     },
+    // HRIS fase 1 (v36): organisasi dan kontrak. Tidak ada baris yang
+    // dihapus (nonaktif = hapus, kontrak dibatalkan lewat `batal-<id>`).
+    SnapshotTable {
+        payload_key: "hrBranches",
+        domain: "hr-branch",
+        table: "hr_cabang",
+        columns: &["id_cabang", "nama", "alamat", "is_aktif", "created_at", "updated_at"],
+        conflict_column: "id_cabang",
+        entity_column: "id_cabang",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrDivisions",
+        domain: "hr-division",
+        table: "hr_divisi",
+        columns: &["id_divisi", "nama", "is_aktif", "created_at", "updated_at"],
+        conflict_column: "id_divisi",
+        entity_column: "id_divisi",
+        delete_missing: false,
+    },
+    // Append-only; menumpang event `hr-division`.
+    SnapshotTable {
+        payload_key: "hrDivisionNames",
+        domain: "hr-division-name",
+        table: "hr_divisi_nama",
+        columns: &["id_nama", "id_divisi", "nama", "created_at"],
+        conflict_column: "id_nama",
+        entity_column: "id_nama",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrPositions",
+        domain: "hr-position",
+        table: "hr_jabatan",
+        columns: &["id_jabatan", "nama", "is_aktif", "created_at", "updated_at"],
+        conflict_column: "id_jabatan",
+        entity_column: "id_jabatan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrContracts",
+        domain: "hr-contract",
+        table: "hr_kontrak",
+        columns: &[
+            "id_kontrak",
+            "id_karyawan",
+            "jenis",
+            "id_ref",
+            "nomor",
+            "tanggal_mulai",
+            "tanggal_selesai",
+            "percobaan_selesai",
+            "catatan",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_kontrak",
+        entity_column: "id_kontrak",
+        delete_missing: false,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
@@ -1278,6 +1342,10 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("trip-report", "create"),
     ("trip-report-photo", "save"),
     ("trip-payment", "create"),
+    ("hr-branch", "save"),
+    ("hr-division", "save"),
+    ("hr-position", "save"),
+    ("hr-contract", "create"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),
@@ -1840,7 +1908,9 @@ pub fn enqueue_employee_snapshot(
           'status_qr', COALESCE(status_qr, ''), 'jenis_personil', COALESCE(jenis_personil, ''),
           'tanggal_mulai_aktif', COALESCE(tanggal_mulai_aktif, ''),
           'tanggal_selesai_aktif', COALESCE(tanggal_selesai_aktif, ''),
-          'status_backup', COALESCE(status_backup, 'NORMAL')
+          'status_backup', COALESCE(status_backup, 'NORMAL'),
+          'id_cabang', NULLIF(id_cabang, ''), 'id_divisi', NULLIF(id_divisi, ''),
+          'id_jabatan', NULLIF(id_jabatan, ''), 'id_atasan', NULLIF(id_atasan, '')
         ) FROM master_data WHERE id_unik = ?;
         "#,
             params![employee_id],

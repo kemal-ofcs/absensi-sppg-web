@@ -751,7 +751,8 @@ export async function getDaftarKoreksi(filter?: {
 }) {
   await ensureDbInitialized();
 
-  let query = "SELECT * FROM koreksi_admin WHERE 1=1";
+  let query =
+    "SELECT *, COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1), divisi) AS divisi FROM koreksi_admin WHERE 1=1";
   const params: (string | number | boolean | null)[] = [];
 
   if (filter?.tanggal) {

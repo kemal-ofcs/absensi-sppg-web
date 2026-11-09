@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-settings-save"
+description = "Enables the desktop_hr_settings_save command without any pre-configured scope."
+commands.allow = ["desktop_hr_settings_save"]
+
+[[permission]]
+identifier = "deny-desktop-hr-settings-save"
+description = "Denies the desktop_hr_settings_save command without any pre-configured scope."
+commands.deny = ["desktop_hr_settings_save"]

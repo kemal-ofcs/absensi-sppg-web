@@ -60,6 +60,12 @@ export function draftKaryawanDariBaris(
     jenis_personil: String(row.jenis_personil || "Pegawai"),
     tanggal_mulai_aktif: String(row.tanggal_mulai_aktif || ""),
     tanggal_selesai_aktif: String(row.tanggal_selesai_aktif || ""),
+    // Organisasi HRIS (v36): hanya dibawa bila terisi. Kunci kosong berarti
+    // "dikosongkan", jadi tidak boleh lahir dari baris yang belum dipetakan.
+    ...(row.id_cabang ? { id_cabang: String(row.id_cabang) } : {}),
+    ...(row.id_divisi ? { id_divisi: String(row.id_divisi) } : {}),
+    ...(row.id_jabatan ? { id_jabatan: String(row.id_jabatan) } : {}),
+    ...(row.id_atasan ? { id_atasan: String(row.id_atasan) } : {}),
   };
 }
 

@@ -278,6 +278,21 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     uniqueColumns: [],
     dependsOn: ["drv_upah_bayar", "drv_perjalanan"],
   },
+  // v36 — HRIS fase 1. Organisasi dan kontrak tersinkron; profil dan dokumen
+  // khusus cloud, jadi promosi adalah satu-satunya jalan mereka pindah.
+  { table: "hr_cabang", uniqueColumns: [], dependsOn: [] },
+  { table: "hr_divisi", uniqueColumns: [], dependsOn: [] },
+  { table: "hr_divisi_nama", uniqueColumns: [], dependsOn: ["hr_divisi"] },
+  { table: "hr_jabatan", uniqueColumns: [], dependsOn: [] },
+  { table: "hr_kontrak", uniqueColumns: [], dependsOn: ["master_data"] },
+  { table: "hr_profil", uniqueColumns: [], dependsOn: ["master_data"] },
+  { table: "hr_dokumen_jenis", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "hr_dokumen",
+    uniqueColumns: [],
+    dependsOn: ["master_data", "hr_dokumen_jenis"],
+  },
+  { table: "hr_dokumen_berkas", uniqueColumns: [], dependsOn: ["hr_dokumen"] },
 ];
 
 /**

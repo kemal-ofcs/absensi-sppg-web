@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::{
+    hris,
     config::DesktopState, face_match, models::CommandError, scanner, storage, sync,
 };
 
@@ -53,7 +54,9 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
         m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
         m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
         c.idcard_status, c.idcard_pdf_url, c.link_qr_png,
-        m.token_absensi, m.qr_code
+        m.token_absensi, m.qr_code,
+        m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan,
+        EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan')
       FROM master_data m
       LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
       LEFT JOIN id_card c ON m.id_unik = c.id_unik
@@ -89,6 +92,12 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
                 "link_qr_png": row.get::<_, Option<String>>(19)?,
                 "token_absensi": row.get::<_, Option<String>>(20)?,
                 "qr_code": row.get::<_, Option<String>>(21)?,
+                "id_cabang": row.get::<_, Option<String>>(22)?,
+                "id_divisi": row.get::<_, Option<String>>(23)?,
+                "id_jabatan": row.get::<_, Option<String>>(24)?,
+                "id_atasan": row.get::<_, Option<String>>(25)?,
+                // Berkontrak: `jenis_personil` mengikuti kontrak (Q-40).
+                "punya_kontrak": row.get::<_, bool>(26)?,
             }))
         })
         .map_err(|_| CommandError::internal())?;
@@ -112,9 +121,8 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
     let id = text(draft, "id_unik");
     let code = text(draft, "kode_karyawan");
     let name = text(draft, "nama");
-    let division = text(draft, "divisi");
     let shift_id = integer(draft, "id_shift", 0);
-    if id.is_empty() || code.is_empty() || name.len() < 2 || division.is_empty() || shift_id == 0 {
+    if id.is_empty() || code.is_empty() || name.len() < 2 || shift_id == 0 {
         return Err(CommandError::new(
             "OPERATIONAL_VALIDATION_FAILED",
             "Data karyawan belum lengkap atau tidak valid.",
@@ -133,16 +141,25 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
     } else {
         today.to_owned()
     };
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
+    let org = hris::org_dari_draft(&transaction, "", draft)?;
+    let division = org.divisi.as_str();
+    let jabatan = org
+        .jabatan_status
+        .clone()
+        .unwrap_or_else(|| text(draft, "jabatan_status").to_owned());
+
     let mut payload = draft.as_object().cloned().unwrap_or_else(Map::new);
     payload.insert("id_unik".into(), Value::String(id.to_string()));
     payload.insert("token_absensi".into(), Value::String(token.clone()));
     payload.insert("qr_code".into(), Value::String(qr_code.clone()));
     payload.insert("status_qr".into(), Value::String("Generated".into()));
-    let payload = Value::Object(payload);
+    let mut payload = Value::Object(payload);
+    hris::isi_payload_org(&mut payload, draft, &org);
 
-    let transaction = connection
-        .transaction()
-        .map_err(|_| CommandError::internal())?;
     transaction
         .execute(
             r#"
@@ -158,7 +175,7 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
                 code,
                 name,
                 division,
-                text(draft, "jabatan_status"),
+                jabatan,
                 text(draft, "no_hp"),
                 text(draft, "lp"),
                 shift_id,
@@ -200,6 +217,7 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
             params![id, name, division, today, id],
         )
         .map_err(|_| CommandError::internal())?;
+    hris::tulis_org(&transaction, id, &org)?;
     let now = storage::now_epoch_seconds();
     transaction
         .execute(
@@ -239,24 +257,29 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
 
     let mut berhasil = 0_i64;
     let mut dilewati = 0_i64;
+    let mut galat: Vec<String> = Vec::new();
     let now = storage::now_epoch_seconds();
 
     for draft in drafts {
         let id = text(draft, "id_unik");
         let code = text(draft, "kode_karyawan");
         let name = text(draft, "nama");
-        let division = text(draft, "divisi");
         let shift_id = integer(draft, "id_shift", 1);
 
-        if id.is_empty()
-            || code.is_empty()
-            || name.len() < 2
-            || division.is_empty()
-            || shift_id == 0
-        {
+        if id.is_empty() || code.is_empty() || name.len() < 2 || shift_id == 0 {
             dilewati += 1;
             continue;
         }
+        // Teks divisi/jabatan wajib dikenal master HRIS (Q-44).
+        let org = match hris::org_dari_draft(&transaction, "", draft) {
+            Ok(org) => org,
+            Err(error) => {
+                dilewati += 1;
+                galat.push(format!("{code}: {}", error.message));
+                continue;
+            }
+        };
+        let division = org.divisi.as_str();
 
         let exists: bool = transaction
             .query_row(
@@ -292,7 +315,8 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
         let mut payload = draft.as_object().cloned().unwrap_or_else(Map::new);
         payload.insert("token_absensi".into(), Value::String(token.clone()));
         payload.insert("qr_code".into(), Value::String(qr_code.clone()));
-        let payload = Value::Object(payload);
+        let mut payload = Value::Object(payload);
+        hris::isi_payload_org(&mut payload, draft, &org);
 
         let insert_res = transaction.execute(
             r#"
@@ -308,11 +332,13 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
                 code,
                 name,
                 division,
-                if text(draft, "jabatan_status").is_empty() {
-                    "Staff"
-                } else {
-                    text(draft, "jabatan_status")
-                },
+                org.jabatan_status.as_deref().unwrap_or(
+                    if text(draft, "jabatan_status").is_empty() {
+                        "Staff"
+                    } else {
+                        text(draft, "jabatan_status")
+                    }
+                ),
                 text(draft, "no_hp"),
                 if text(draft, "lp").to_uppercase() == "P" {
                     "P"
@@ -348,6 +374,7 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
             "INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate) SELECT ?, ?, ?, 'Belum', ? WHERE NOT EXISTS (SELECT 1 FROM id_card WHERE id_unik = ?);",
             params![id, name, division, reg_date, id],
         );
+        hris::tulis_org(&transaction, id, &org)?;
 
         let _ = transaction.execute(
             r#"
@@ -368,6 +395,7 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
         "sukses": true,
         "berhasil": berhasil,
         "dilewati": dilewati,
+        "galat": galat,
     }))
 }
 
@@ -388,6 +416,8 @@ pub fn update_employee(
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let revision = base_revision(&transaction, "employee", id);
+    // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
+    let org = hris::org_dari_draft(&transaction, id, draft)?;
 
     let jenis_personil = if text(draft, "jenis_personil").is_empty() {
         "Pegawai"
@@ -423,8 +453,8 @@ pub fn update_employee(
             params![
                 text(draft, "kode_karyawan"),
                 text(draft, "nama"),
-                text(draft, "divisi"),
-                text(draft, "jabatan_status"),
+                org.divisi,
+                org.jabatan_status.as_deref().unwrap_or(""),
                 text(draft, "no_hp"),
                 text(draft, "lp"),
                 integer(draft, "id_shift", 0),
@@ -439,8 +469,9 @@ pub fn update_employee(
             ],
         )
         .map_err(|_| CommandError::internal())?;
+    hris::tulis_org(&transaction, id, &org)?;
     let nama = text(draft, "nama");
-    let divisi = text(draft, "divisi");
+    let divisi = org.divisi.as_str();
     transaction
         .execute(
             "UPDATE id_card SET nama = ?, divisi = ? WHERE id_unik = ?;",
@@ -518,6 +549,7 @@ pub fn update_employee(
     ) {
         outbox_payload = full_row;
     }
+    hris::isi_payload_org(&mut outbox_payload, draft, &org);
 
     sync::enqueue(
         &transaction,

@@ -181,7 +181,8 @@ export async function getDaftarBackup(filter?: {
 }) {
   await ensureDbInitialized();
 
-  let query = "SELECT * FROM backup_karyawan WHERE 1=1";
+  let query =
+    "SELECT *, COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(divisi_asal)) ORDER BY n.created_at, n.id_nama LIMIT 1), divisi_asal) AS divisi_asal, COALESCE((SELECT d.nama FROM hr_divisi_nama n JOIN hr_divisi d ON d.id_divisi = n.id_divisi WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(divisi_pengganti)) ORDER BY n.created_at, n.id_nama LIMIT 1), divisi_pengganti) AS divisi_pengganti FROM backup_karyawan WHERE 1=1";
   const params: (string | number | boolean | null)[] = [];
 
   if (filter?.tanggal) {

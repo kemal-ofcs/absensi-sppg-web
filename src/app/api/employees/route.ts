@@ -35,6 +35,13 @@ interface EmployeeMutationBody {
   drafts?: unknown;
 }
 
+function idOrg(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value.length > 160)
+    throw new ApiRequestError("Data organisasi tidak valid.", 400);
+  return value.trim();
+}
+
 function parseDraft(value: unknown): KaryawanInput {
   const draft = (value ?? {}) as Record<string, unknown>;
   const parsed: KaryawanInput = {
@@ -69,6 +76,11 @@ function parseDraft(value: unknown): KaryawanInput {
       typeof draft.tanggal_selesai_aktif === "string"
         ? draft.tanggal_selesai_aktif
         : undefined,
+    // Organisasi HRIS (v36): `""` = dikosongkan, bukan teks = tidak diubah.
+    id_cabang: idOrg(draft.id_cabang),
+    id_divisi: idOrg(draft.id_divisi),
+    id_jabatan: idOrg(draft.id_jabatan),
+    id_atasan: idOrg(draft.id_atasan),
   };
   const message = firstValidationMessage(validateEmployeeDraft(parsed));
   if (message) throw new ApiRequestError(message, 400);

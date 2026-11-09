@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-profile-save-finance"
+description = "Enables the desktop_hr_profile_save_finance command without any pre-configured scope."
+commands.allow = ["desktop_hr_profile_save_finance"]
+
+[[permission]]
+identifier = "deny-desktop-hr-profile-save-finance"
+description = "Denies the desktop_hr_profile_save_finance command without any pre-configured scope."
+commands.deny = ["desktop_hr_profile_save_finance"]

@@ -20,6 +20,7 @@ import {
   type KolomMassal,
   terapkanKolomMassal,
 } from "@/components/personnel/aturanUbahMassal";
+import { IsianOrganisasi } from "@/components/personnel/IsianOrganisasi";
 import {
   type TerapkanMassal,
   UbahMassal,
@@ -48,6 +49,7 @@ import {
   toggleStatusKaryawan,
   updateKaryawan,
 } from "@/lib/gateways/employee";
+import { ambilOrganisasi, type Organisasi } from "@/lib/gateways/hris";
 import { getDaftarIdCard } from "@/lib/gateways/id-card";
 import {
   getPersonnelPhoto,
@@ -108,12 +110,18 @@ export default function KaryawanPage() {
   const [showModal, setShowModal] = useState<boolean>(false);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [org, setOrg] = useState<Organisasi | null>(null);
+  useEffect(() => {
+    ambilOrganisasi()
+      .then(setOrg)
+      .catch(() => setOrg(null));
+  }, []);
   const [formData, setFormData] = useState<KaryawanInput>({
     id_unik: "",
     kode_karyawan: "",
     nama: "",
-    divisi: "Operational",
-    jabatan_status: "Staff",
+    divisi: "",
+    jabatan_status: "",
     no_hp: "",
     lp: "L",
     id_shift: 1,
@@ -124,6 +132,10 @@ export default function KaryawanPage() {
     tanggal_mulai_aktif: new Date().toLocaleDateString("en-CA"),
     tanggal_selesai_aktif: "",
   });
+  const editPunyaKontrak = Boolean(
+    isEditing &&
+      karyawanList.find((row) => row.id_unik === editId)?.punya_kontrak,
+  );
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -230,8 +242,27 @@ export default function KaryawanPage() {
 
   const kolomMassal = useMemo<KolomMassal[]>(
     () => [
-      { key: "divisi", label: "Divisi", jenis: "teks" },
-      { key: "jabatan_status", label: "Jabatan", jenis: "teks" },
+      {
+        key: "id_divisi",
+        label: "Divisi",
+        opsi: (org?.divisi ?? [])
+          .filter((d) => d.is_aktif === 1)
+          .map((d) => ({ value: d.id_divisi, label: d.nama })),
+      },
+      {
+        key: "id_jabatan",
+        label: "Jabatan",
+        opsi: (org?.jabatan ?? [])
+          .filter((j) => j.is_aktif === 1)
+          .map((j) => ({ value: j.id_jabatan, label: j.nama })),
+      },
+      {
+        key: "id_cabang",
+        label: "Cabang",
+        opsi: (org?.cabang ?? [])
+          .filter((c) => c.is_aktif === 1)
+          .map((c) => ({ value: c.id_cabang, label: c.nama })),
+      },
       {
         key: "id_shift",
         label: "Shift",
@@ -256,7 +287,7 @@ export default function KaryawanPage() {
         jenis: "tanggal",
       },
     ],
-    [shiftList],
+    [shiftList, org],
   );
 
   const divisions = useMemo(
@@ -280,8 +311,8 @@ export default function KaryawanPage() {
       id_unik: identifiers.idUnik,
       kode_karyawan: identifiers.kodeKaryawan,
       nama: "",
-      divisi: "Operational",
-      jabatan_status: "Staff",
+      divisi: "",
+      jabatan_status: "",
       no_hp: "",
       lp: "L",
       id_shift: Number(shiftList[0]?.id_shift || 1),
@@ -1317,44 +1348,24 @@ export default function KaryawanPage() {
               />
             </div>
 
-            {/* Divisi & Jabatan */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label
-                  htmlFor="employee-division"
-                  className="text-slate-400 block mb-1 font-semibold"
-                >
-                  Divisi:
-                </label>
-                <input
-                  id="employee-division"
-                  type="text"
-                  value={formData.divisi}
-                  onChange={(e) =>
-                    setFormData({ ...formData, divisi: e.target.value })
-                  }
-                  aria-invalid={!!formErrors.divisi}
-                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="employee-position"
-                  className="text-slate-400 block mb-1 font-semibold"
-                >
-                  Jabatan:
-                </label>
-                <input
-                  id="employee-position"
-                  type="text"
-                  value={formData.jabatan_status}
-                  onChange={(e) =>
-                    setFormData({ ...formData, jabatan_status: e.target.value })
-                  }
-                  className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
-                />
-              </div>
-            </div>
+            {/* Organisasi: divisi, jabatan, cabang, atasan (HRIS v36) */}
+            <IsianOrganisasi
+              nilai={formData}
+              onUbah={(perubahan) =>
+                setFormData((lama) => ({ ...lama, ...perubahan }))
+              }
+              calonAtasan={karyawanList
+                .filter((row) => row.status_aktif !== "Nonaktif")
+                .map((row) => ({
+                  id_unik: String(row.id_unik),
+                  nama: String(row.nama),
+                }))}
+              idDiri={isEditing ? formData.id_unik : undefined}
+              galatDivisi={formErrors.divisi}
+            />
+            {formErrors.divisi ? (
+              <p className="-mt-2 text-xs text-rose-200">{formErrors.divisi}</p>
+            ) : null}
 
             {/* Gender, Shift & Personil */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1420,6 +1431,12 @@ export default function KaryawanPage() {
                   onChange={(e) =>
                     setFormData({ ...formData, jenis_personil: e.target.value })
                   }
+                  disabled={editPunyaKontrak}
+                  title={
+                    editPunyaKontrak
+                      ? "Mengikuti kontrak terakhir di HRIS."
+                      : undefined
+                  }
                   className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
                 >
                   <option value="Pegawai">Pegawai</option>
@@ -1477,7 +1494,7 @@ export default function KaryawanPage() {
                   htmlFor="employee-reg-date"
                   className="mb-1 block text-slate-400 font-semibold"
                 >
-                  Tgl Daftar / Bergabung:
+                  Tanggal Masuk:
                 </label>
                 <input
                   id="employee-reg-date"

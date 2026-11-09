@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hris, inventory, inventory_pengajuan, license, loan,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -3353,4 +3353,195 @@ pub fn desktop_create_holidays_bulk(
 ) -> Result<Value, CommandError> {
     require_permission(&state, "holidays.manage")?;
     operational::create_holidays_bulk(&state, &entries)
+}
+
+// ── HRIS fase 1 (v36) ──────────────────────────────────────────────────────
+
+fn punya_izin(operator: &OperatorUser, izin: &str) -> bool {
+    operator.is_superadmin || operator.permissions.iter().any(|p| p == izin)
+}
+
+/// Master organisasi, nama divisi lama, tanda, dan angka bawaan kontrak.
+#[tauri::command]
+pub fn desktop_hr_org(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.view")?;
+    hris::organisasi(&state)
+}
+
+/// Simpan cabang (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_branch_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hris::simpan_master(&state, &hris::MASTER_CABANG, &draft)
+}
+
+/// Simpan divisi; ganti nama mencadangkan nama lama (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_division_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hris::simpan_master(&state, &hris::MASTER_DIVISI, &draft)
+}
+
+/// Simpan jabatan (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_position_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hris::simpan_master(&state, &hris::MASTER_JABATAN, &draft)
+}
+
+/// Simpan angka bawaan kontrak (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_settings_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hris::simpan_pengaturan(&state, &draft)
+}
+
+/// Kontrak satu karyawan, atau ringkasan status kerja semua karyawan.
+#[tauri::command]
+pub fn desktop_hr_contracts(
+    state: State<'_, DesktopState>,
+    id_karyawan: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "employees.view")?;
+    hris::kontrak(&state, id_karyawan.as_deref().filter(|id| !id.is_empty()))
+}
+
+/// Catat kontrak baru (`hr.contract.manage`).
+#[tauri::command]
+pub fn desktop_hr_contract_create(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.contract.manage")?;
+    hris::catat_kontrak(&state, &operator.username, &draft)
+}
+
+/// Batalkan kontrak dengan alasan (`hr.contract.manage`).
+#[tauri::command]
+pub fn desktop_hr_contract_cancel(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.contract.manage")?;
+    hris::batal_kontrak(&state, &operator.username, &draft)
+}
+
+/// Profil karyawan (khusus cloud); hanya kelompok yang izinnya dipegang.
+#[tauri::command]
+pub async fn desktop_hr_profile(
+    state: State<'_, DesktopState>,
+    id_karyawan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &["hr.personal.view", "hr.finance.view"])?;
+    let turso = state.get_turso_client()?;
+    hris::profil(
+        &turso,
+        &id_karyawan,
+        punya_izin(&operator, "hr.personal.view"),
+        punya_izin(&operator, "hr.finance.view"),
+    )
+    .await
+}
+
+/// Simpan data pribadi (`hr.personal.manage`, khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_profile_save_personal(
+    state: State<'_, DesktopState>,
+    id_karyawan: String,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.personal.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::simpan_profil(&turso, &id_karyawan, "pribadi", &draft, &operator.username).await
+}
+
+/// Simpan data keuangan (`hr.finance.manage`, sensitif, khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_profile_save_finance(
+    state: State<'_, DesktopState>,
+    id_karyawan: String,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.finance.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::simpan_profil(&turso, &id_karyawan, "keuangan", &draft, &operator.username).await
+}
+
+/// Jenis dokumen (khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_document_types(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["hr.org.manage", "hr.document.view"])?;
+    let turso = state.get_turso_client()?;
+    hris::jenis_dokumen(&turso).await
+}
+
+/// Simpan jenis dokumen (`hr.org.manage`, khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_document_types_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::simpan_jenis_dokumen(&turso, &draft).await
+}
+
+/// Dokumen satu karyawan tanpa isi berkas (`hr.document.view`).
+#[tauri::command]
+pub async fn desktop_hr_documents(
+    state: State<'_, DesktopState>,
+    id_karyawan: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.document.view")?;
+    let turso = state.get_turso_client()?;
+    hris::dokumen(&turso, &id_karyawan).await
+}
+
+/// Isi satu berkas dokumen (`hr.document.view`).
+#[tauri::command]
+pub async fn desktop_hr_document_file(
+    state: State<'_, DesktopState>,
+    id_berkas: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.document.view")?;
+    let turso = state.get_turso_client()?;
+    hris::berkas(&turso, &id_berkas).await
+}
+
+/// Simpan data dokumen (`hr.document.manage`).
+#[tauri::command]
+pub async fn desktop_hr_document_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.document.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::simpan_dokumen(&turso, &draft, &operator.username).await
+}
+
+/// Hapus dokumen beserta berkasnya (`hr.document.manage`).
+#[tauri::command]
+pub async fn desktop_hr_document_delete(
+    state: State<'_, DesktopState>,
+    id_dokumen: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.document.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::hapus_dokumen(&turso, &id_dokumen).await
+}
+
+/// Unggah satu berkas dokumen, maks 1 MB (`hr.document.manage`).
+#[tauri::command]
+pub async fn desktop_hr_document_file_add(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.document.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::tambah_berkas(&turso, &draft).await
+}
+
+/// Hapus satu berkas dokumen (`hr.document.manage`).
+#[tauri::command]
+pub async fn desktop_hr_document_file_delete(
+    state: State<'_, DesktopState>,
+    id_berkas: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.document.manage")?;
+    let turso = state.get_turso_client()?;
+    hris::hapus_berkas(&turso, &id_berkas).await
 }
