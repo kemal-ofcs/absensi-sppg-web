@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trip-place-save"
+description = "Enables the desktop_trip_place_save command without any pre-configured scope."
+commands.allow = ["desktop_trip_place_save"]
+
+[[permission]]
+identifier = "deny-desktop-trip-place-save"
+description = "Denies the desktop_trip_place_save command without any pre-configured scope."
+commands.deny = ["desktop_trip_place_save"]

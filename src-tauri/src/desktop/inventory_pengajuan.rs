@@ -520,7 +520,7 @@ pub struct PenerimaanValid {
     pub dicatat: Vec<usize>,
 }
 
-fn base64_sah(isi: &str) -> bool {
+pub(crate) fn base64_sah(isi: &str) -> bool {
     let tanpa_isi = isi.trim_end_matches('=');
     !isi.is_empty()
         && isi.len() % 4 == 0

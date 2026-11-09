@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trip-photo-cleanup"
+description = "Enables the desktop_trip_photo_cleanup command without any pre-configured scope."
+commands.allow = ["desktop_trip_photo_cleanup"]
+
+[[permission]]
+identifier = "deny-desktop-trip-photo-cleanup"
+description = "Denies the desktop_trip_photo_cleanup command without any pre-configured scope."
+commands.deny = ["desktop_trip_photo_cleanup"]

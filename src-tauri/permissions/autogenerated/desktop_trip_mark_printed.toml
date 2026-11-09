@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trip-mark-printed"
+description = "Enables the desktop_trip_mark_printed command without any pre-configured scope."
+commands.allow = ["desktop_trip_mark_printed"]
+
+[[permission]]
+identifier = "deny-desktop-trip-mark-printed"
+description = "Denies the desktop_trip_mark_printed command without any pre-configured scope."
+commands.deny = ["desktop_trip_mark_printed"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-trip-my-detail"
+description = "Enables the desktop_trip_my_detail command without any pre-configured scope."
+commands.allow = ["desktop_trip_my_detail"]
+
+[[permission]]
+identifier = "deny-desktop-trip-my-detail"
+description = "Denies the desktop_trip_my_detail command without any pre-configured scope."
+commands.deny = ["desktop_trip_my_detail"]

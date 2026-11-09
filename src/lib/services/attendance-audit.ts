@@ -11,6 +11,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 
 export type KeparahanTemuan = "tinggi" | "sedang" | "rendah" | "info";
@@ -148,6 +149,13 @@ export async function auditKualitasAbsensi(
   });
   const hariLibur =
     liburRes.rows.length > 0 ? String(liburRes.rows[0].nama_libur ?? "") : null;
+  // Driver tanpa terminal di pool (v34): yang melapor perjalanan pada tanggal
+  // ini bekerja di jalan, jadi tidak dinilai. Cermin `audit_absensi` Rust.
+  const pelaporRes = await targetDb.execute({
+    sql: PELAPOR_PERJALANAN_SQL,
+    args: [tanggalTarget],
+  });
+  const pelapor = new Set(pelaporRes.rows.map((r) => String(r.id_karyawan)));
 
   // ── Pre-load shift ────────────────────────────────────────────────────────
   const shiftRes = await targetDb.execute(
@@ -298,6 +306,7 @@ export async function auditKualitasAbsensi(
     ) {
       continue;
     }
+    if (pelapor.has(idUnik)) continue;
 
     ringkasan.wajibAbsen++;
 

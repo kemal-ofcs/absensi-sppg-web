@@ -512,7 +512,7 @@ export interface PenerimaanValid {
   dicatat: number[];
 }
 
-function base64Sah(isi: string): boolean {
+export function base64Sah(isi: string): boolean {
   return (
     isi.length > 0 && isi.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(isi)
   );

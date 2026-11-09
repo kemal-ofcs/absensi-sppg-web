@@ -20,12 +20,12 @@ function crc32(buf: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-interface ZipFileEntry {
+export interface ZipFileEntry {
   name: string;
   data: Uint8Array;
 }
 
-function createZipArchive(files: ZipFileEntry[]): Uint8Array {
+export function createZipArchive(files: ZipFileEntry[]): Uint8Array {
   const textEncoder = new TextEncoder();
   const fileRecords: {
     nameBytes: Uint8Array;

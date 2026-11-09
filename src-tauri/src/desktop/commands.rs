@@ -7,7 +7,8 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, face_match, inventory, inventory_pengajuan, license, loan, tutup_buku,
+    accounting, cicilan, driver, face_match, inventory, inventory_pengajuan, license, loan,
+    tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
         OperatorUser, SessionMode,
@@ -2397,6 +2398,7 @@ mod tests_offline_login {
             require_scan_photo: false,
             require_scan_ip_allowlist: false,
             totp_enabled,
+            id_karyawan: None,
             login_at: None,
         }
     }
@@ -2643,6 +2645,228 @@ pub fn desktop_inventory_receipt_create(
 ) -> Result<Value, CommandError> {
     let operator = require_permission(&state, "inventory.record")?;
     inventory_pengajuan::receive_request(&state, &operator.username, draft)
+}
+
+// ── Perjalanan driver / surat jalan (v34) ───────────────────────────────────
+
+/// Simpan jenis kendaraan. Tarif baru atau berubah butuh `trip.tariff`.
+#[tauri::command]
+pub fn desktop_trip_vehicle_type_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "fleet.manage")?;
+    let boleh_ubah_tarif = require_permission(&state, "trip.tariff").is_ok();
+    driver::simpan_daftar_tarif(&state, &driver::DAFTAR_JENIS_KENDARAAN, boleh_ubah_tarif, draft)
+}
+
+/// Simpan kategori tujuan. Tarif baru atau berubah butuh `trip.tariff`.
+#[tauri::command]
+pub fn desktop_trip_destination_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "fleet.manage")?;
+    let boleh_ubah_tarif = require_permission(&state, "trip.tariff").is_ok();
+    driver::simpan_daftar_tarif(&state, &driver::DAFTAR_KATEGORI_TUJUAN, boleh_ubah_tarif, draft)
+}
+
+/// Simpan kendaraan (plat unik di aplikasi).
+#[tauri::command]
+pub fn desktop_trip_vehicle_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "fleet.manage")?;
+    driver::simpan_kendaraan(&state, draft)
+}
+
+/// Simpan lokasi terdaftar (pool, tempat muat, tempat bongkar).
+#[tauri::command]
+pub fn desktop_trip_place_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "fleet.manage")?;
+    driver::simpan_lokasi(&state, draft)
+}
+
+/// Buat surat jalan, atau ubah yang masih Direncanakan.
+#[tauri::command]
+pub fn desktop_trip_save(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.manage")?;
+    driver::simpan_perjalanan(&state, &operator.username, draft)
+}
+
+/// Tandai surat jalan sudah dicetak.
+#[tauri::command]
+pub fn desktop_trip_mark_printed(
+    state: State<'_, DesktopState>,
+    id_perjalanan: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.manage")?;
+    driver::tandai_dicetak(&state, &id_perjalanan)
+}
+
+/// Pindahkan upah surat jalan Selesai ke driver lain; kosong = aturan bawaan.
+#[tauri::command]
+pub fn desktop_trip_wage_recipient(
+    state: State<'_, DesktopState>,
+    id_perjalanan: String,
+    id_karyawan: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.tariff")?;
+    driver::atur_penerima_upah(&state, &id_perjalanan, id_karyawan.as_deref())
+}
+
+/// Laporan dari HP driver. Cakupannya personil milik akun yang login, bukan
+/// payload: hanya surat jalan yang sedang ditugaskan kepadanya (aturan 44).
+#[tauri::command]
+pub fn desktop_trip_report(
+    state: State<'_, DesktopState>,
+    draft: Value,
+    foto: Option<driver::FotoLaporanDraft>,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.report")?;
+    driver::catat_laporan(&state, &operator.username, Some(karyawan_sesi(&operator)?), draft, foto)
+}
+
+/// Daftar pilihan formulir perjalanan: jenis, kategori, kendaraan, lokasi, personil.
+#[tauri::command]
+pub fn desktop_trip_master(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["trip.view", "trip.manage", "fleet.manage"])?;
+    driver::master_perjalanan(&state)
+}
+
+/// Surat jalan dalam rentang tanggal beserta status, penugasan, dan tanda tinjau.
+#[tauri::command]
+pub fn desktop_trip_list(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.view")?;
+    driver::daftar_perjalanan(&state, &dari, &sampai)
+}
+
+/// Rincian satu surat jalan: muatan dan linimasa laporan.
+#[tauri::command]
+pub fn desktop_trip_detail(
+    state: State<'_, DesktopState>,
+    id_perjalanan: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.view")?;
+    driver::rincian_perjalanan(&state, &id_perjalanan)
+}
+
+/// Foto satu laporan: salinan lokal, atau dari cloud. `null` = belum terkirim
+/// atau sedang offline.
+#[tauri::command]
+pub async fn desktop_trip_report_photo(
+    state: State<'_, DesktopState>,
+    id_laporan: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.view")?;
+    if let Some(foto) = driver::foto_laporan_lokal(&state, &id_laporan)? {
+        return Ok(foto);
+    }
+    let Ok(client) = state.get_turso_client() else {
+        return Ok(Value::Null);
+    };
+    match tokio::time::timeout(SCAN_PHOTO_CLOUD_TIMEOUT, client.get_trip_report_photo(&id_laporan)).await {
+        Ok(Ok(foto)) => Ok(foto),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// Satu siklus masa simpan foto laporan 90 hari, dipanggil runner berkala dari
+/// setiap sesi: aturannya tetap, tidak ada pilihan pengguna. Lokal selalu;
+/// cloud bila tersambung (kegagalan cloud tidak membatalkan bagian lokal).
+#[tauri::command]
+pub async fn desktop_trip_photo_cleanup(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_session(&state)?;
+    let lokal = driver::hapus_foto_lama_lokal(&state)?;
+    let cloud = match state.get_turso_client() {
+        Ok(client) => client.hapus_foto_laporan_lama().await.ok(),
+        Err(_) => None,
+    };
+    Ok(json!({ "lokal": lokal, "cloud": cloud }))
+}
+
+/// Jumlah foto yang terhapus dalam 7 hari, untuk peringatan "unduh dulu".
+/// Dari cloud (tempat semua foto berkumpul), atau salinan lokal saat offline.
+#[tauri::command]
+pub async fn desktop_trip_photo_expiring(
+    state: State<'_, DesktopState>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.view")?;
+    if let Ok(client) = state.get_turso_client() {
+        if let Ok(Ok(hasil)) =
+            tokio::time::timeout(SCAN_PHOTO_CLOUD_TIMEOUT, client.foto_laporan_segera_dihapus()).await
+        {
+            return Ok(hasil);
+        }
+    }
+    driver::foto_segera_dihapus_lokal(&state)
+}
+
+/// Awalan nomor surat jalan (Pengaturan). Nomor yang sudah ada tidak berubah.
+#[tauri::command]
+pub fn desktop_trip_prefix_save(
+    state: State<'_, DesktopState>,
+    prefix: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "trip.manage")?;
+    driver::simpan_prefix(&state, &prefix)
+}
+
+fn karyawan_sesi(operator: &OperatorUser) -> Result<&str, CommandError> {
+    operator.id_karyawan.as_deref().ok_or_else(|| {
+        CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Akun ini belum ditautkan ke data personil. Hubungi Admin.",
+        )
+    })
+}
+
+/// Perjalanan milik driver yang login (disaring di backend, bukan di UI).
+#[tauri::command]
+pub fn desktop_trip_mine(
+    state: State<'_, DesktopState>,
+    dari: String,
+    sampai: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.report")?;
+    driver::perjalanan_saya(&state, karyawan_sesi(&operator)?, &dari, &sampai)
+}
+
+/// Rincian perjalanan yang sedang ditugaskan kepada driver yang login.
+#[tauri::command]
+pub fn desktop_trip_my_detail(
+    state: State<'_, DesktopState>,
+    id_perjalanan: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.report")?;
+    driver::rincian_saya(&state, karyawan_sesi(&operator)?, &id_perjalanan)
+}
+
+/// Laporan dari dispatcher: ganti Langsung, setujui/tolak ganti dari driver,
+/// Tidak Jalan, dan Selesai. Membatalkan perjalanan butuh `trip.cancel`.
+#[tauri::command]
+pub fn desktop_trip_dispatch_report(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "trip.manage")?;
+    if draft.get("jenis").and_then(Value::as_str) == Some("Dibatalkan") {
+        require_permission(&state, "trip.cancel")?;
+    }
+    driver::catat_laporan(&state, &operator.username, None, draft, None)
 }
 
 /// Satu foto penerimaan: salinan lokal, atau dari cloud bila perangkat ini

@@ -18,6 +18,8 @@ export interface OperatorRecord {
   roleName: string;
   isSuperadmin: boolean;
   status: "Aktif" | "Nonaktif";
+  /** Personil pemilik akun (akun Driver, v34). */
+  idKaryawan: string | null;
 }
 
 export interface OperatorDraft {
@@ -29,4 +31,6 @@ export interface OperatorDraft {
   password?: string;
   roleId: number;
   status: "Aktif" | "Nonaktif";
+  /** Tautan ke personil. `undefined` = tetap, `null` = dilepas. */
+  idKaryawan?: string | null;
 }

@@ -12,6 +12,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 import {
   evaluateHolidayScan,
@@ -29,6 +30,8 @@ export interface RingkasanAlfa {
    * whitelist), atau di luar hari kerja shift.
    */
   jumlahLibur: number;
+  /** Dilewati karena melapor perjalanan pada tanggal itu (driver, v34). */
+  jumlahLaporPerjalanan: number;
   /** Karyawan yang dilewati karena shift-nya hilang / jam shift tidak terurai. */
   jumlahShiftTidakValid: number;
   status: string;
@@ -78,6 +81,7 @@ export async function generateAlfaHarian(
       jumlahFleksibel: 0,
       jumlahNonaktif: 0,
       jumlahLibur: 0,
+      jumlahLaporPerjalanan: 0,
       jumlahShiftTidakValid: 0,
       status: "NONAKTIF",
       pesan: "Generate Alfa dimatikan melalui Pengaturan",
@@ -155,6 +159,10 @@ export async function generateAlfaHarian(
   // ringkasan hanya menampilkan nol tanpa alasan.
   let jumlahLibur = 0;
   let jumlahShiftTidakValid = 0;
+  // Driver tanpa terminal di pool (v34): pelapor perjalanan per tanggal kerja,
+  // dibaca sekali per tanggal. Cermin `generate_alfa_harian`.
+  let jumlahLaporPerjalanan = 0;
+  const pelapor = new Map<string, Set<string>>();
 
   for (const row of empRes.rows) {
     const emp = row as Record<string, unknown>;
@@ -305,6 +313,20 @@ export async function generateAlfaHarian(
       continue;
     }
 
+    let pelaporTanggal = pelapor.get(tanggalStr);
+    if (!pelaporTanggal) {
+      const hasil = await targetDb.execute({
+        sql: PELAPOR_PERJALANAN_SQL,
+        args: [tanggalStr],
+      });
+      pelaporTanggal = new Set(hasil.rows.map((r) => String(r.id_karyawan)));
+      pelapor.set(tanggalStr, pelaporTanggal);
+    }
+    if (pelaporTanggal.has(idUnik)) {
+      jumlahLaporPerjalanan++;
+      continue;
+    }
+
     const [tY, tM] = tanggalStr.split("-").map(Number);
     const bulanStr = monthNames[tM - 1] || "Januari";
     const tahunNum = tY;
@@ -352,7 +374,7 @@ export async function generateAlfaHarian(
       : "IDLE";
   const pesan = todayHoliday
     ? `Hari ini Hari Libur (${String(todayHoliday.nama_libur || "")}). Generate Alfa dilewati untuk hari ini.`
-    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}, Fleksibel: ${jumlahFleksibel}, Libur: ${jumlahLibur}, Shift Tidak Valid: ${jumlahShiftTidakValid}`;
+    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}, Fleksibel: ${jumlahFleksibel}, Libur: ${jumlahLibur}, Lapor Perjalanan: ${jumlahLaporPerjalanan}, Shift Tidak Valid: ${jumlahShiftTidakValid}`;
 
   return {
     jumlahAlfaDibuat,
@@ -361,6 +383,7 @@ export async function generateAlfaHarian(
     jumlahFleksibel,
     jumlahNonaktif,
     jumlahLibur,
+    jumlahLaporPerjalanan,
     jumlahShiftTidakValid,
     status: statusSummary,
     pesan,

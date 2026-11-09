@@ -2264,6 +2264,7 @@ pub fn generate_alfa_harian(
             "jumlahFleksibel": 0,
             "jumlahNonaktif": 0,
             "jumlahLibur": 0,
+            "jumlahLaporPerjalanan": 0,
             "jumlahShiftTidakValid": 0,
             "status": "NONAKTIF",
             "pesan": "Generate Alfa dimatikan melalui Pengaturan"
@@ -2333,6 +2334,10 @@ pub fn generate_alfa_harian(
     // ringkasan hanya menampilkan nol tanpa alasan.
     let mut libur = 0;
     let mut shift_tidak_valid = 0;
+    // Driver tanpa terminal di pool (v34): pelapor perjalanan per tanggal,
+    // dibaca sekali per tanggal kerja (paling banyak dua: hari ini dan kemarin).
+    let mut lapor_perjalanan = 0;
+    let mut pelapor: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
 
     let now_minute = parse_time_to_minutes(&now_moment.time);
 
@@ -2532,6 +2537,19 @@ pub fn generate_alfa_harian(
             continue;
         }
 
+        // Cermin `generateAlfaHarian`: laporan perjalanan pada tanggal itu = bekerja.
+        if !pelapor.contains_key(&work_date) {
+            let set = super::driver::pelapor_perjalanan(&transaction, &work_date)?;
+            pelapor.insert(work_date.clone(), set);
+        }
+        if pelapor
+            .get(&work_date)
+            .is_some_and(|set| set.contains(&id_unik))
+        {
+            lapor_perjalanan += 1;
+            continue;
+        }
+
         let month_idx = match work_date.get(5..7).and_then(|m| m.parse::<usize>().ok()) {
             Some(m) if m >= 1 && m <= 12 => m - 1,
             _ => 0,
@@ -2631,12 +2649,12 @@ pub fn generate_alfa_harian(
             if alfa_dibuat > 0 {
                 (
                     "SELESAI",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Shift Tidak Valid: {shift_tidak_valid}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             } else {
                 (
                     "IDLE",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Shift Tidak Valid: {shift_tidak_valid}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             }
         }
@@ -2651,6 +2669,7 @@ pub fn generate_alfa_harian(
         "jumlahFleksibel": fleksibel,
         "jumlahNonaktif": nonaktif_count,
         "jumlahLibur": libur,
+        "jumlahLaporPerjalanan": lapor_perjalanan,
         "jumlahShiftTidakValid": shift_tidak_valid,
         "status": status,
         "pesan": pesan
@@ -2896,6 +2915,9 @@ pub fn get_attendance_audit(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CommandError::internal())?;
     drop(emp_statement);
+    // Driver tanpa terminal di pool (v34): yang melapor perjalanan pada
+    // tanggal ini bekerja di jalan, jadi tidak dinilai. Cermin `auditAbsensi`.
+    let pelapor = super::driver::pelapor_perjalanan(&connection, &tanggal_target)?;
 
     let total_aktif = employees.len() as i64;
     let mut wajib_absen = 0i64;
@@ -2972,6 +2994,9 @@ pub fn get_attendance_audit(
             .cloned()
             .unwrap_or_else(|| (1..=7).collect());
         if !super::hari_kerja::wajib_masuk(&tanggal_target, &hari_masuk, hari_libur.is_some(), false) {
+            continue;
+        }
+        if pelapor.contains(&id_unik) {
             continue;
         }
 

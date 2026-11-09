@@ -237,6 +237,40 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
   // terkirim tidak dicatat dan dikirim ulang dari database tujuan.
   { table: "app_telegram_setting", uniqueColumns: [], dependsOn: [] },
   { table: "notifikasi_telegram", uniqueColumns: [], dependsOn: [] },
+  // v34 — perjalanan driver / surat jalan. Kunci TEXT buatan klien, tanpa UNIQUE.
+  { table: "drv_jenis_kendaraan", uniqueColumns: [], dependsOn: [] },
+  { table: "drv_kategori_tujuan", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "drv_kendaraan",
+    uniqueColumns: [],
+    dependsOn: ["drv_jenis_kendaraan"],
+  },
+  { table: "drv_lokasi", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "drv_perjalanan",
+    uniqueColumns: [],
+    dependsOn: ["master_data", "drv_kendaraan", "drv_kategori_tujuan"],
+  },
+  {
+    table: "drv_muatan",
+    uniqueColumns: [],
+    dependsOn: ["drv_perjalanan"],
+  },
+  {
+    table: "drv_laporan",
+    uniqueColumns: [],
+    dependsOn: ["drv_perjalanan", "drv_lokasi"],
+  },
+  {
+    table: "drv_laporan_muatan",
+    uniqueColumns: [],
+    dependsOn: ["drv_laporan", "drv_muatan"],
+  },
+  {
+    table: "drv_laporan_foto",
+    uniqueColumns: [],
+    dependsOn: ["drv_laporan"],
+  },
 ];
 
 /**

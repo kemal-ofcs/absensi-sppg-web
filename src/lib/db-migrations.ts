@@ -39,6 +39,7 @@ const INVENTORY_REQUEST_MIGRATION_VERSION = 30;
 const INVENTORY_INSTALLMENT_MIGRATION_VERSION = 31;
 const INVENTORY_ITEM_DELETE_MIGRATION_VERSION = 32;
 const TELEGRAM_NOTIFICATION_MIGRATION_VERSION = 33;
+const DRIVER_TRIP_MIGRATION_VERSION = 34;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -89,6 +90,12 @@ const SYSTEM_ROLES = [
     key: "scanner",
     name: "Scanner",
     description: "Petugas terminal QR sesuai matriks permission.",
+    isSuperadmin: 0,
+  },
+  {
+    key: "driver",
+    name: "Driver",
+    description: "Pengemudi: melapor perjalanan dari HP.",
     isSuperadmin: 0,
   },
 ] as const;
@@ -1688,6 +1695,159 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'telegram-notification', ?);`,
     args: [TELEGRAM_NOTIFICATION_MIGRATION_VERSION, now],
+  });
+
+  // v34: perjalanan driver / surat jalan. DDL WAJIB identik dengan
+  // `storage.rs` dan `turso.rs`. Status tidak disimpan: diturunkan dari
+  // `drv_laporan` (append-only). `drv_laporan_foto` di luar snapshot.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_jenis_kendaraan (
+      id_jenis TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+      status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_kategori_tujuan (
+      id_kategori TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+      status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_kendaraan (
+      id_kendaraan TEXT PRIMARY KEY,
+      id_jenis TEXT NOT NULL,
+      identitas TEXT NOT NULL,
+      nama TEXT,
+      catatan TEXT,
+      status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_lokasi (
+      id_lokasi TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Pool', 'Muat', 'Bongkar', 'Lainnya')),
+      lat REAL NOT NULL CHECK (lat BETWEEN -90 AND 90),
+      lng REAL NOT NULL CHECK (lng BETWEEN -180 AND 180),
+      radius_m INTEGER NOT NULL DEFAULT 200 CHECK (radius_m BETWEEN 10 AND 10000),
+      status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_perjalanan (
+      id_perjalanan TEXT PRIMARY KEY,
+      tanggal TEXT NOT NULL,
+      seri TEXT NOT NULL,
+      nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+      nomor TEXT NOT NULL,
+      id_karyawan TEXT NOT NULL,
+      id_kendaraan TEXT NOT NULL,
+      id_jenis TEXT NOT NULL,
+      id_kategori TEXT NOT NULL,
+      tarif_kendaraan INTEGER NOT NULL CHECK (tarif_kendaraan >= 0),
+      tarif_tujuan INTEGER NOT NULL CHECK (tarif_tujuan >= 0),
+      id_karyawan_upah TEXT,
+      catatan TEXT,
+      dicetak_pada TEXT,
+      dibuat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_perjalanan_tanggal ON drv_perjalanan(tanggal);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_muatan (
+      id_muatan TEXT PRIMARY KEY,
+      id_perjalanan TEXT NOT NULL,
+      urutan INTEGER NOT NULL CHECK (urutan >= 1),
+      tempat_muat TEXT NOT NULL,
+      tempat_bongkar TEXT,
+      nama_barang TEXT NOT NULL,
+      jenis_barang TEXT,
+      qty INTEGER NOT NULL CHECK (qty > 0),
+      satuan TEXT NOT NULL,
+      berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_muatan_perjalanan ON drv_muatan(id_perjalanan);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_laporan (
+      id_laporan TEXT PRIMARY KEY,
+      id_perjalanan TEXT NOT NULL,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Berangkat', 'Tiba Muat', 'Selesai Muat', 'Tiba Bongkar', 'Selesai Bongkar', 'Kendala', 'Ganti Kendaraan', 'Ganti Driver', 'Disetujui', 'Ditolak', 'Tidak Jalan', 'Dibatalkan', 'Selesai')),
+      mode_ganti TEXT CHECK (mode_ganti IS NULL OR mode_ganti IN ('Langsung', 'Darurat', 'Minta Izin')),
+      id_ref TEXT,
+      jenis_kendala TEXT CHECK (jenis_kendala IS NULL OR jenis_kendala IN ('Macet', 'Kendaraan Rusak', 'Ban', 'Kecelakaan', 'Cuaca', 'Antre Muat/Bongkar', 'Lainnya')),
+      terlambat_menit INTEGER CHECK (terlambat_menit IS NULL OR terlambat_menit >= 0),
+      id_lokasi TEXT,
+      nama_lokasi TEXT,
+      lat REAL CHECK (lat IS NULL OR lat BETWEEN -90 AND 90),
+      lng REAL CHECK (lng IS NULL OR lng BETWEEN -180 AND 180),
+      akurasi_m REAL CHECK (akurasi_m IS NULL OR akurasi_m >= 0),
+      waktu_perangkat TEXT NOT NULL,
+      waktu_gps TEXT,
+      diterima_cloud TEXT,
+      id_karyawan TEXT,
+      id_karyawan_baru TEXT,
+      id_kendaraan_baru TEXT,
+      keterangan TEXT,
+      foto_sha256 TEXT,
+      dilaporkan_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_laporan_perjalanan ON drv_laporan(id_perjalanan, waktu_perangkat);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_laporan_karyawan ON drv_laporan(id_karyawan, waktu_perangkat);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_laporan_muatan (
+      id_baris TEXT PRIMARY KEY,
+      id_laporan TEXT NOT NULL,
+      id_muatan TEXT NOT NULL,
+      qty INTEGER NOT NULL CHECK (qty >= 0),
+      berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_drv_laporan_muatan_laporan ON drv_laporan_muatan(id_laporan);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS drv_laporan_foto (
+      id_laporan TEXT PRIMARY KEY,
+      mime_type TEXT NOT NULL CHECK (mime_type = 'image/jpeg'),
+      data_base64 TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  // Akun Driver ↔ personil. Cermin `ensure_column` di `turso.rs`.
+  if (!(await hasColumn(client, "master_operator", "id_karyawan"))) {
+    await client.execute(
+      "ALTER TABLE master_operator ADD COLUMN id_karyawan TEXT;",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'driver-trip', ?);`,
+    args: [DRIVER_TRIP_MIGRATION_VERSION, now],
   });
 
   await client.execute(

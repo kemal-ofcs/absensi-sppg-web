@@ -560,6 +560,7 @@ mod tests {
             require_scan_photo: false,
             require_scan_ip_allowlist: false,
             totp_enabled: false,
+            id_karyawan: None,
             login_at: None,
         }
     }

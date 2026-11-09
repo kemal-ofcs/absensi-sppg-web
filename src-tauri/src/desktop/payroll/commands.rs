@@ -1048,7 +1048,7 @@ pub async fn desktop_get_payroll_recap(
         loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
 
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             r#"
             SELECT 
                 md.id_unik,
@@ -1064,8 +1064,9 @@ pub async fn desktop_get_payroll_recap(
                     THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit,
                 COALESCE(sc.salary_type, 'HOURLY') AS salary_type,
                 COALESCE(sc.daily_rate, 0) AS daily_rate,
-                -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari.
-                COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present,
+                -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari,
+                -- dan hari berlaporan perjalanan driver ikut dihitung hadir (v34).
+                {hari_hadir} AS days_present,
                 -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
                 -- `apply_holiday_fallback` bila jenjang HARI_LIBUR tidak aktif.
                 COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
@@ -1092,7 +1093,8 @@ pub async fn desktop_get_payroll_recap(
             GROUP BY md.id_unik
             ORDER BY md.nama ASC;
             "#,
-        )
+            hari_hadir = super::super::driver::HARI_HADIR_SQL
+        ))
         .map_err(|_| CommandError::internal())?;
 
     struct TempAgg {

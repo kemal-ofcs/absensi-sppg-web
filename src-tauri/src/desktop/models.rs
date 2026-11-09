@@ -39,6 +39,11 @@ pub struct OperatorUser {
     /// Role ini hanya boleh melakukan scan dari alamat IP yang terdaftar.
     #[serde(default)]
     pub require_scan_ip_allowlist: bool,
+    /// Personil pemilik akun (`master_operator.id_karyawan`, v34). Laporan
+    /// perjalanan dari HP driver hanya diterima untuk surat jalan yang sedang
+    /// ditugaskan kepada personil ini. `serde(default)`: vault offline lama.
+    #[serde(default)]
+    pub id_karyawan: Option<String>,
     pub login_at: Option<String>,
 }
 

@@ -35,6 +35,8 @@ use super::{
     loan,
     // Tutup buku: waktu terima dan keputusan bentrokan ditentukan cloud.
     tutup_buku,
+    // Perjalanan driver: CHECK cloud dicek dengan validator yang sama.
+    driver,
 };
 
 /// Provider database cloud yang dipakai perangkat.
@@ -882,6 +884,47 @@ const SNAPSHOT_SOURCES: &[SnapshotSource] = &[
         table: "keu_tutup_buku",
         sql: "SELECT * FROM keu_tutup_buku ORDER BY sampai_tanggal, id_tutup\n-- batas: satu baris per tutup buku, beberapa per tahun\n;",
     },
+    // ── v34: Perjalanan driver / surat jalan ──
+    SnapshotSource {
+        payload_key: "vehicleTypes",
+        table: "drv_jenis_kendaraan",
+        sql: "SELECT * FROM drv_jenis_kendaraan ORDER BY nama, id_jenis\n-- batas: daftar jenis kendaraan, tidak tumbuh per hari\n;",
+    },
+    SnapshotSource {
+        payload_key: "tripDestinations",
+        table: "drv_kategori_tujuan",
+        sql: "SELECT * FROM drv_kategori_tujuan ORDER BY nama, id_kategori\n-- batas: daftar kategori tujuan, tidak tumbuh per hari\n;",
+    },
+    SnapshotSource {
+        payload_key: "vehicles",
+        table: "drv_kendaraan",
+        sql: "SELECT * FROM drv_kendaraan ORDER BY identitas, id_kendaraan\n-- batas: dibatasi jumlah armada perusahaan\n;",
+    },
+    SnapshotSource {
+        payload_key: "tripPlaces",
+        table: "drv_lokasi",
+        sql: "SELECT * FROM drv_lokasi ORDER BY nama, id_lokasi\n-- batas: dibatasi jumlah pool, gudang, dan pelanggan\n;",
+    },
+    SnapshotSource {
+        payload_key: "trips",
+        table: "drv_perjalanan",
+        sql: "SELECT * FROM drv_perjalanan ORDER BY tanggal, id_perjalanan;",
+    },
+    SnapshotSource {
+        payload_key: "tripCargo",
+        table: "drv_muatan",
+        sql: "SELECT * FROM drv_muatan ORDER BY id_perjalanan, urutan;",
+    },
+    SnapshotSource {
+        payload_key: "tripReports",
+        table: "drv_laporan",
+        sql: "SELECT * FROM drv_laporan ORDER BY id_perjalanan, waktu_perangkat, id_laporan\n-- sengaja-utuh: status, kendaraan, dan driver yang bertugas diturunkan dari SELURUH laporan perjalanan. ponytail: tarik utuh; tambahkan jendela waktu khusus HP Driver bila terasa lambat\n;",
+    },
+    SnapshotSource {
+        payload_key: "tripReportCargo",
+        table: "drv_laporan_muatan",
+        sql: "SELECT * FROM drv_laporan_muatan ORDER BY id_laporan, id_baris;",
+    },
 ];
 
 pub struct TursoClient {
@@ -1458,6 +1501,7 @@ impl TursoClient {
                     totp_recovery_codes TEXT,
                     password_recovery_codes TEXT,
                     password_recovery_created_at TEXT,
+                    id_karyawan TEXT,
                     status TEXT DEFAULT 'Aktif',
                     created_at TEXT,
                     updated_at TEXT
@@ -1548,6 +1592,161 @@ impl TursoClient {
             ),
             Statement::new(
                 "CREATE INDEX IF NOT EXISTS idx_notifikasi_telegram_status ON notifikasi_telegram(status, created_at);",
+                vec![],
+            ),
+            // Perjalanan driver / surat jalan (v34). WAJIB identik dengan
+            // `storage.rs` dan `db-migrations.ts`. Foto `drv_laporan_foto` di
+            // luar snapshot, pola `absensi_foto`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_jenis_kendaraan (
+                  id_jenis TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+                  status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_kategori_tujuan (
+                  id_kategori TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+                  status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_kendaraan (
+                  id_kendaraan TEXT PRIMARY KEY,
+                  id_jenis TEXT NOT NULL,
+                  identitas TEXT NOT NULL,
+                  nama TEXT,
+                  catatan TEXT,
+                  status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_lokasi (
+                  id_lokasi TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  jenis TEXT NOT NULL CHECK (jenis IN ('Pool', 'Muat', 'Bongkar', 'Lainnya')),
+                  lat REAL NOT NULL CHECK (lat BETWEEN -90 AND 90),
+                  lng REAL NOT NULL CHECK (lng BETWEEN -180 AND 180),
+                  radius_m INTEGER NOT NULL DEFAULT 200 CHECK (radius_m BETWEEN 10 AND 10000),
+                  status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_perjalanan (
+                  id_perjalanan TEXT PRIMARY KEY,
+                  tanggal TEXT NOT NULL,
+                  seri TEXT NOT NULL,
+                  nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+                  nomor TEXT NOT NULL,
+                  id_karyawan TEXT NOT NULL,
+                  id_kendaraan TEXT NOT NULL,
+                  id_jenis TEXT NOT NULL,
+                  id_kategori TEXT NOT NULL,
+                  tarif_kendaraan INTEGER NOT NULL CHECK (tarif_kendaraan >= 0),
+                  tarif_tujuan INTEGER NOT NULL CHECK (tarif_tujuan >= 0),
+                  id_karyawan_upah TEXT,
+                  catatan TEXT,
+                  dicetak_pada TEXT,
+                  dibuat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_drv_perjalanan_tanggal ON drv_perjalanan(tanggal);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_muatan (
+                  id_muatan TEXT PRIMARY KEY,
+                  id_perjalanan TEXT NOT NULL,
+                  urutan INTEGER NOT NULL CHECK (urutan >= 1),
+                  tempat_muat TEXT NOT NULL,
+                  tempat_bongkar TEXT,
+                  nama_barang TEXT NOT NULL,
+                  jenis_barang TEXT,
+                  qty INTEGER NOT NULL CHECK (qty > 0),
+                  satuan TEXT NOT NULL,
+                  berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_drv_muatan_perjalanan ON drv_muatan(id_perjalanan);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_laporan (
+                  id_laporan TEXT PRIMARY KEY,
+                  id_perjalanan TEXT NOT NULL,
+                  jenis TEXT NOT NULL CHECK (jenis IN ('Berangkat', 'Tiba Muat', 'Selesai Muat', 'Tiba Bongkar', 'Selesai Bongkar', 'Kendala', 'Ganti Kendaraan', 'Ganti Driver', 'Disetujui', 'Ditolak', 'Tidak Jalan', 'Dibatalkan', 'Selesai')),
+                  mode_ganti TEXT CHECK (mode_ganti IS NULL OR mode_ganti IN ('Langsung', 'Darurat', 'Minta Izin')),
+                  id_ref TEXT,
+                  jenis_kendala TEXT CHECK (jenis_kendala IS NULL OR jenis_kendala IN ('Macet', 'Kendaraan Rusak', 'Ban', 'Kecelakaan', 'Cuaca', 'Antre Muat/Bongkar', 'Lainnya')),
+                  terlambat_menit INTEGER CHECK (terlambat_menit IS NULL OR terlambat_menit >= 0),
+                  id_lokasi TEXT,
+                  nama_lokasi TEXT,
+                  lat REAL CHECK (lat IS NULL OR lat BETWEEN -90 AND 90),
+                  lng REAL CHECK (lng IS NULL OR lng BETWEEN -180 AND 180),
+                  akurasi_m REAL CHECK (akurasi_m IS NULL OR akurasi_m >= 0),
+                  waktu_perangkat TEXT NOT NULL,
+                  waktu_gps TEXT,
+                  diterima_cloud TEXT,
+                  id_karyawan TEXT,
+                  id_karyawan_baru TEXT,
+                  id_kendaraan_baru TEXT,
+                  keterangan TEXT,
+                  foto_sha256 TEXT,
+                  dilaporkan_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_drv_laporan_perjalanan ON drv_laporan(id_perjalanan, waktu_perangkat);",
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_drv_laporan_karyawan ON drv_laporan(id_karyawan, waktu_perangkat);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_laporan_muatan (
+                  id_baris TEXT PRIMARY KEY,
+                  id_laporan TEXT NOT NULL,
+                  id_muatan TEXT NOT NULL,
+                  qty INTEGER NOT NULL CHECK (qty >= 0),
+                  berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_drv_laporan_muatan_laporan ON drv_laporan_muatan(id_laporan);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS drv_laporan_foto (
+                  id_laporan TEXT PRIMARY KEY,
+                  mime_type TEXT NOT NULL CHECK (mime_type = 'image/jpeg'),
+                  data_base64 TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
                 vec![],
             ),
             Statement::new(
@@ -2499,7 +2698,13 @@ impl TursoClient {
                 ('loan.manage', 'Ajukan & Kelola Kasbon', 'Keuangan', 'Mengajukan kasbon, menunda cicilan, dan mencatat pelunasan tunai.', 1, 1411),
                 ('loan.approve', 'Setujui & Batalkan Kasbon', 'Keuangan', 'Menyetujui (mencairkan), menolak, atau membatalkan kasbon karyawan.', 1, 1412),
                 ('installment.cancel', 'Batalkan Pembayaran & Tutup Kontrak Cicilan', 'Keuangan', 'Membatalkan pembayaran cicilan pembelian dan menutup kontrak cicilan.', 1, 1404),
-                ('accounting.close', 'Tutup Buku', 'Keuangan', 'Menutup dan membuka kembali periode pembukuan, serta memutuskan bentrokan tutup buku.', 1, 1403);"#,
+                ('accounting.close', 'Tutup Buku', 'Keuangan', 'Menutup dan membuka kembali periode pembukuan, serta memutuskan bentrokan tutup buku.', 1, 1403),
+                ('trip.report', 'Lapor Perjalanan dari HP Driver', 'Perjalanan', 'Melapor berangkat, muat, bongkar, kendala, dan selesai di surat jalan yang sedang ditugaskan.', 1, 1500),
+                ('trip.view', 'Lihat Perjalanan & Laporan', 'Perjalanan', 'Melihat surat jalan, laporan, foto, dan daftar Perlu ditinjau.', 1, 1501),
+                ('trip.manage', 'Buat Surat Jalan & Ganti Driver/Kendaraan', 'Perjalanan', 'Membuat dan mencetak surat jalan, mengganti kendaraan atau driver, dan menandai Tidak Jalan.', 1, 1502),
+                ('trip.cancel', 'Batalkan Perjalanan yang Berjalan', 'Perjalanan', 'Membatalkan perjalanan yang sudah berangkat; surat jalan batal tidak dibayar.', 1, 1503),
+                ('fleet.manage', 'Kelola Kendaraan, Kategori Tujuan & Lokasi', 'Perjalanan', 'Mengelola kendaraan, jenis kendaraan, kategori tujuan, dan lokasi terdaftar.', 1, 1504),
+                ('trip.tariff', 'Ubah Tarif & Penerima Upah Surat Jalan', 'Perjalanan', 'Mengubah tarif jenis kendaraan dan kategori tujuan, serta memindahkan upah ke driver lain.', 1, 1505);"#,
                 vec![],
             ),
             // Seed Default Role Permissions untuk Role Superadmin (Role 1)
@@ -2512,7 +2717,20 @@ impl TursoClient {
             Statement::new(
                 r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
                 SELECT 2, permission_key, 1, datetime('now'), 'system' FROM app_permission
-                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'inventory.item.delete', 'accounting.reverse', 'loan.approve', 'accounting.close', 'installment.cancel');"#,
+                WHERE permission_key NOT IN ('roles.manage', 'operators.manage', 'face_template.manage', 'inventory.adjust', 'inventory.column.delete', 'inventory.item.delete', 'accounting.reverse', 'loan.approve', 'accounting.close', 'installment.cancel', 'trip.cancel', 'trip.tariff');"#,
+                vec![],
+            ),
+            // Role bawaan Driver (v34). Tanpa id eksplisit: database Web bisa
+            // sudah memakai id 5 untuk role buatan pengguna. Izinnya ditanam
+            // lewat role_key, bukan id.
+            Statement::new(
+                r#"INSERT OR IGNORE INTO app_role (role_key, nama_role, deskripsi, is_system, is_superadmin, status, created_at, updated_at)
+                VALUES ('driver', 'Driver', 'Pengemudi: melapor perjalanan dari HP.', 1, 0, 'Aktif', datetime('now'), datetime('now'));"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"INSERT OR IGNORE INTO role_permission (role_id, permission_key, is_allowed, updated_at, updated_by)
+                SELECT id, 'trip.report', 1, datetime('now'), 'system' FROM app_role WHERE role_key = 'driver';"#,
                 vec![],
             ),
             // Seed Settings
@@ -2821,6 +3039,8 @@ impl TursoClient {
             // Vonis verifikasi wajah pada foto bukti (v19).
             ("absensi_foto", "wajah_vonis", "ALTER TABLE absensi_foto ADD COLUMN wajah_vonis TEXT;"),
             ("absensi_foto", "wajah_skor", "ALTER TABLE absensi_foto ADD COLUMN wajah_skor REAL;"),
+            // Akun Driver ↔ personil (v34). NULL = akun bukan milik personil.
+            ("master_operator", "id_karyawan", "ALTER TABLE master_operator ADD COLUMN id_karyawan TEXT;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
@@ -3150,6 +3370,17 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // Perjalanan driver / surat jalan (v34).
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (34, 'driver-trip', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2030, 'driver-trip-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -3364,7 +3595,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2029;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2030;",
                 vec![],
             )
             .await
@@ -3860,11 +4091,15 @@ impl TursoClient {
                 m.role_id, r.role_key, r.nama_role, r.is_superadmin,
                 COALESCE(m.totp_enabled, 0) AS totp_enabled,
                 COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
-                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
+                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist,
+                m.id_karyawan
             FROM master_operator m
             JOIN app_role r ON r.id = m.role_id
             WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
               AND m.status = 'Aktif' AND r.status = 'Aktif'
+              AND (m.id_karyawan IS NULL OR EXISTS (
+                  SELECT 1 FROM master_data d
+                  WHERE d.id_unik = m.id_karyawan AND d.status_aktif = 'Aktif'))
             LIMIT 1;
         "#;
 
@@ -4039,6 +4274,12 @@ impl TursoClient {
             // Penanda akun, bukan penanda role — dibaca dengan closure yang sama
             // karena keduanya sama-sama kolom integer 0/1 pada baris ini.
             totp_enabled: role_flag("totp_enabled"),
+            id_karyawan: row
+                .get("id_karyawan")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
             login_at: Some(chrono_like_now_iso()),
         })
     }
@@ -4060,10 +4301,14 @@ impl TursoClient {
                 m.role_id, r.role_key, r.nama_role, r.is_superadmin,
                 COALESCE(m.totp_enabled, 0) AS totp_enabled,
                 COALESCE(r.require_scan_photo, 0) AS require_scan_photo,
-                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist
+                COALESCE(r.require_scan_ip_allowlist, 0) AS require_scan_ip_allowlist,
+                m.id_karyawan
             FROM master_operator m
             JOIN app_role r ON r.id = m.role_id
             WHERE m.id = ? AND m.status = 'Aktif' AND r.status = 'Aktif'
+              AND (m.id_karyawan IS NULL OR EXISTS (
+                  SELECT 1 FROM master_data d
+                  WHERE d.id_unik = m.id_karyawan AND d.status_aktif = 'Aktif'))
             LIMIT 1;
         "#;
         let result = self.query_one(sql, vec![json!(operator_id)]).await?;
@@ -4755,7 +5000,8 @@ impl TursoClient {
                 COALESCE(r.role_key, 'admin') AS role_key,
                 COALESCE(r.is_superadmin, 0) AS is_superadmin,
                 COALESCE(m.created_at, '') AS created_at,
-                COALESCE(m.updated_at, '') AS updated_at
+                COALESCE(m.updated_at, '') AS updated_at,
+                m.id_karyawan
             FROM master_operator m
             LEFT JOIN app_role r ON r.id = m.role_id
             ORDER BY m.id ASC;
@@ -4763,6 +5009,51 @@ impl TursoClient {
         let res = self.query_one(sql, vec![]).await?;
         let rows: Vec<Value> = res.to_objects().into_iter().map(|m| json!(m)).collect();
         Ok(json!({ "operators": rows }))
+    }
+
+    /// Cermin `assertTautanPersonil`: tautan baru hanya ke personil aktif
+    /// (`cek_personil`), dan satu personil paling banyak punya satu akun aktif.
+    /// Tautan lama ke personil yang kini nonaktif tidak menghalangi menyunting
+    /// akunnya; login-nya sudah ditolak `authenticate_operator`. Tanpa UNIQUE
+    /// di database (aturan 32).
+    async fn assert_tautan_personil(
+        &self,
+        operator_id: Option<i64>,
+        id_karyawan: &str,
+        cek_personil: bool,
+        akun_aktif: bool,
+    ) -> Result<(), CommandError> {
+        if cek_personil {
+            let personil = self
+                .query_one(
+                    "SELECT 1 AS ada FROM master_data WHERE id_unik = ? AND status_aktif = 'Aktif' LIMIT 1;",
+                    vec![json!(id_karyawan)],
+                )
+                .await?;
+            if personil.to_objects().is_empty() {
+                return Err(CommandError::new(
+                    "VALIDATION_ERROR",
+                    "Personil tidak ditemukan atau nonaktif.",
+                ));
+            }
+        }
+        if !akun_aktif {
+            return Ok(());
+        }
+        let kembar = self
+            .query_one(
+                "SELECT 1 AS ada FROM master_operator
+                 WHERE id_karyawan = ? AND status = 'Aktif' AND id <> ? LIMIT 1;",
+                vec![json!(id_karyawan), json!(operator_id.unwrap_or(0))],
+            )
+            .await?;
+        if !kembar.to_objects().is_empty() {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "Personil ini sudah punya akun aktif lain.",
+            ));
+        }
+        Ok(())
     }
 
     pub async fn create_operator(&self, draft: &Value) -> Result<Value, CommandError> {
@@ -4809,6 +5100,15 @@ impl TursoClient {
             ));
         }
         validate_operator_contact(&email, &no_hp)?;
+        let id_karyawan = draft
+            .get("id_karyawan")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if let Some(id_karyawan) = id_karyawan {
+            self.assert_tautan_personil(None, id_karyawan, true, status == "Aktif")
+                .await?;
+        }
 
         let role_row = self
             .query_one(
@@ -4852,7 +5152,7 @@ impl TursoClient {
         let sql = r#"
             INSERT INTO master_operator (
                 kode_operator, nama_operator, username, email, no_hp, password_hash,
-                role, role_id, status, created_at, updated_at
+                role, role_id, status, id_karyawan, created_at, updated_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?,
@@ -4864,7 +5164,7 @@ impl TursoClient {
                         ELSE 'Operator'
                     END FROM app_role r WHERE r.id = ?
                 ), 'Operator'),
-                ?, ?, datetime('now'), datetime('now')
+                ?, ?, ?, datetime('now'), datetime('now')
             );
         "#;
 
@@ -4881,6 +5181,7 @@ impl TursoClient {
                     json!(role_id),
                     json!(role_id),
                     json!(status),
+                    json!(id_karyawan),
                 ],
             )
             .await?;
@@ -5017,6 +5318,46 @@ impl TursoClient {
                 updates.push("no_hp = ?");
                 args.push(json!(phone));
             }
+        }
+        // Tautan akun ↔ personil (v34). Kunci yang absen = tetap; `null` atau
+        // teks kosong = dilepas. Diperiksa dengan status akhir akunnya, jadi
+        // mengaktifkan kembali akun yang personilnya sudah punya akun aktif lain
+        // ikut ditolak.
+        let tautan_baru = draft.get("id_karyawan").map(|nilai| {
+            nilai
+                .as_str()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        });
+        let tersimpan = self
+            .query_one(
+                "SELECT id_karyawan, COALESCE(status, 'Aktif') AS status FROM master_operator WHERE id = ? LIMIT 1;",
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let tautan_lama = tersimpan
+            .get("id_karyawan")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let tautan_akhir = tautan_baru.clone().unwrap_or_else(|| tautan_lama.clone());
+        let status_akhir = draft
+            .get("status")
+            .and_then(Value::as_str)
+            .or_else(|| tersimpan.get("status").and_then(Value::as_str))
+            .unwrap_or("Aktif");
+        if let Some(id_karyawan) = &tautan_akhir {
+            let berganti = tautan_lama.as_ref() != Some(id_karyawan);
+            self.assert_tautan_personil(Some(id), id_karyawan, berganti, status_akhir == "Aktif")
+                .await?;
+        }
+        if let Some(baru) = tautan_baru {
+            updates.push("id_karyawan = ?");
+            args.push(json!(baru));
         }
         if let Some(password) = draft.get("password").and_then(Value::as_str) {
             if !password.trim().is_empty() {
@@ -5780,6 +6121,13 @@ fn canonical_sync_route(domain: &str, operation: &str) -> Option<(&'static str, 
         ("inventory-request", "close") => ("inventory-request", "close"),
         ("inventory-receipt", "create") => ("inventory-receipt", "create"),
         ("inventory-receipt-photo", "save") => ("inventory-receipt-photo", "save"),
+        ("vehicle-type", "save") => ("vehicle-type", "save"),
+        ("trip-destination", "save") => ("trip-destination", "save"),
+        ("vehicle", "save") => ("vehicle", "save"),
+        ("trip-place", "save") => ("trip-place", "save"),
+        ("trip", "save") => ("trip", "save"),
+        ("trip-report", "create") => ("trip-report", "create"),
+        ("trip-report-photo", "save") => ("trip-report-photo", "save"),
         ("installment", "activate") => ("installment", "activate"),
         ("installment", "reapprove") => ("installment", "reapprove"),
         ("installment", "close") => ("installment", "close"),
@@ -6695,6 +7043,52 @@ async fn apply_event_to_turso(
             if let Some(values) = inventory_pengajuan::cloud_photo_values(payload, entity_key) {
                 turso
                     .query_one(inventory_pengajuan::CLOUD_INSERT_FOTO_SQL, values)
+                    .await?;
+            }
+        }
+        // Perjalanan driver (v34). Master: siapa terakhir menang. Surat jalan:
+        // header + muatan satu event. Laporan dan fotonya append-only dan
+        // TIDAK PERNAH ditolak karena urutan atau penugasan (outbox macet).
+        ("vehicle-type" | "trip-destination", "save") => {
+            let daftar = if domain == "vehicle-type" {
+                &driver::DAFTAR_JENIS_KENDARAAN
+            } else {
+                &driver::DAFTAR_KATEGORI_TUJUAN
+            };
+            if let Some(values) = driver::cloud_daftar_tarif_values(daftar, payload, entity_key) {
+                turso.query_one(daftar.sql_cloud, values).await?;
+            }
+        }
+        ("vehicle", "save") => {
+            if let Some(values) = driver::cloud_kendaraan_values(payload, entity_key) {
+                turso
+                    .query_one(driver::CLOUD_UPSERT_KENDARAAN_SQL, values)
+                    .await?;
+            }
+        }
+        ("trip-place", "save") => {
+            if let Some(values) = driver::cloud_lokasi_values(payload, entity_key) {
+                turso.query_one(driver::CLOUD_UPSERT_LOKASI_SQL, values).await?;
+            }
+        }
+        ("trip", "save") => {
+            if let Some(statements) = driver::cloud_perjalanan_statements(payload, entity_key) {
+                for (sql, values) in statements {
+                    turso.query_one(sql, values).await?;
+                }
+            }
+        }
+        ("trip-report", "create") => {
+            if let Some(statements) = driver::cloud_laporan_statements(payload, entity_key) {
+                for (sql, values) in statements {
+                    turso.query_one(sql, values).await?;
+                }
+            }
+        }
+        ("trip-report-photo", "save") => {
+            if let Some(values) = driver::cloud_foto_laporan_values(payload, entity_key) {
+                turso
+                    .query_one(driver::CLOUD_INSERT_FOTO_LAPORAN_SQL, values)
                     .await?;
             }
         }
@@ -8434,6 +8828,53 @@ impl TursoClient {
                     "data_base64": row.get("data_base64").cloned().unwrap_or(Value::Null),
                 })
             })
+            .unwrap_or(Value::Null))
+    }
+
+    /// Foto laporan perjalanan (v34), di luar snapshot: diambil per id saat dibuka.
+    pub async fn get_trip_report_photo(&self, id_laporan: &str) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        let id = id_laporan.trim();
+        if id.is_empty() || id.len() > 200 {
+            return Err(CommandError::new("VALIDATION_ERROR", "Foto tidak valid."));
+        }
+        Ok(self
+            .query_one(
+                "SELECT mime_type, data_base64 FROM drv_laporan_foto WHERE id_laporan = ? LIMIT 1;",
+                vec![json!(id)],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .map(|row| {
+                json!({
+                    "mime_type": row.get("mime_type").cloned().unwrap_or(Value::Null),
+                    "data_base64": row.get("data_base64").cloned().unwrap_or(Value::Null),
+                })
+            })
+            .unwrap_or(Value::Null))
+    }
+
+    /// Hapus foto laporan perjalanan yang lebih tua dari 90 hari (jam database).
+    pub async fn hapus_foto_laporan_lama(&self) -> Result<u64, CommandError> {
+        self.ensure_schema_current().await?;
+        Ok(self
+            .query_one(driver::HAPUS_FOTO_LAMA_SQL, vec![])
+            .await?
+            .rows_affected)
+    }
+
+    /// Foto laporan yang akan terhapus dalam 7 hari ke depan.
+    pub async fn foto_laporan_segera_dihapus(&self) -> Result<Value, CommandError> {
+        self.ensure_schema_current().await?;
+        Ok(self
+            .query_one(driver::FOTO_SEGERA_DIHAPUS_SQL, vec![])
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .map(|row| json!(row))
             .unwrap_or(Value::Null))
     }
 
@@ -10782,7 +11223,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 
@@ -10822,7 +11263,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 
@@ -10861,7 +11302,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 
@@ -10901,7 +11342,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 
@@ -10938,7 +11379,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 
@@ -10976,7 +11417,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030);",
                 )
                 .expect("siapkan database lama");
 

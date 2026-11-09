@@ -99,6 +99,23 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     ],
   },
   {
+    label: "Perjalanan",
+    items: [
+      {
+        area: "perjalanan",
+        href: "/perjalanan",
+        icon: "document",
+        label: "Surat Jalan",
+      },
+      {
+        area: "driver",
+        href: "/driver",
+        icon: "scanner",
+        label: "Lapor Perjalanan",
+      },
+    ],
+  },
+  {
     label: "Keuangan & Aset",
     items: [
       {

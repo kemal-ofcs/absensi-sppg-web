@@ -3,6 +3,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useAuth } from "@/lib/context/AuthContext";
 import { AutoAlfaRunner } from "./AutoAlfaRunner";
+import { AutoFotoCleanupRunner } from "./AutoFotoCleanupRunner";
 import { AutoSyncRunner } from "./AutoSyncRunner";
 import { AutoTelegramRunner } from "./AutoTelegramRunner";
 import { HeaderBar } from "./HeaderBar";
@@ -47,6 +48,7 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
       <AutoAlfaRunner />
       <AutoSyncRunner />
       <AutoTelegramRunner />
+      <AutoFotoCleanupRunner />
       <a
         href="#main-content"
         className="fixed left-4 top-3 z-[100] -translate-y-20 rounded-lg bg-white px-3 py-2 text-sm font-bold text-slate-950 shadow-xl transition-transform focus:translate-y-0"

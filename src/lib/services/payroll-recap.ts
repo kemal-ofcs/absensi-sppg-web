@@ -10,6 +10,7 @@ import {
   type PayrollComponent,
   type TaxRule,
 } from "@/lib/services/payroll-calculator";
+import { HARI_HADIR_SQL } from "@/lib/validations/driver";
 import { komponenKasbon, potongKasbon } from "@/lib/validations/loan";
 
 export interface PayrollRecapRow {
@@ -207,8 +208,9 @@ export async function computePayrollRecap(
               THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0) AS total_libur_menit,
             COALESCE(sc.salary_type, 'HOURLY') AS salary_type,
             COALESCE(sc.daily_rate, 0) AS daily_rate,
-            -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari.
-            COUNT(DISTINCT CASE WHEN ah.status_kehadiran IN ('Hadir', 'PRESENT') THEN ah.tanggal END) AS days_present,
+            -- Hari UNIK: sesi PENGGANTI di tanggal yang sama tidak menambah hari,
+            -- dan hari berlaporan perjalanan driver ikut dihitung hadir (v34).
+            ${HARI_HADIR_SQL} AS days_present,
             -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
             -- applyHolidayFallback bila jenjang HARI_LIBUR tidak aktif.
             COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
@@ -217,10 +219,10 @@ export async function computePayrollRecap(
           LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
             AND sc.effective_date = (
               SELECT MAX(effective_date) FROM salary_configs
-              WHERE id_karyawan = md.id_unik AND effective_date <= ?
+              WHERE id_karyawan = md.id_unik AND effective_date <= ?2
             )
           LEFT JOIN absensi_harian ah ON ah.id_karyawan = md.id_unik
-            AND ah.tanggal >= ? AND ah.tanggal <= ?
+            AND ah.tanggal >= ?1 AND ah.tanggal <= ?2
           -- Penanda hari libur diambil dari tanggal kerja barisnya, BUKAN dari
           -- kolom pada absensi_harian. Kolom tbl_hari_libur.tanggal UNIQUE sehingga
           -- join ini tidak pernah menggandakan baris, dan absensi lama otomatis
@@ -235,7 +237,9 @@ export async function computePayrollRecap(
           GROUP BY md.id_unik
           ORDER BY md.nama ASC;
         `,
-      args: [periodEnd, periodStart, periodEnd],
+      // Bernomor (?1 = mulai, ?2 = akhir), sama dengan kueri Rust, karena
+      // HARI_HADIR_SQL memakai keduanya lebih dari sekali.
+      args: [periodStart, periodEnd],
     }),
     // Kasbon: jatah cicilan per BULAN menurut bulan tanggal mulai periode.
     // Cerminan `loan::pinjaman_aktif`.

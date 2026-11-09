@@ -220,6 +220,33 @@ export const PERMISSION_CATALOG = [
     name: "Setujui & Batalkan Kasbon",
     group: "Keuangan",
   },
+  // Perjalanan driver / surat jalan (v34).
+  {
+    key: "trip.report",
+    name: "Lapor Perjalanan dari HP Driver",
+    group: "Perjalanan",
+  },
+  { key: "trip.view", name: "Lihat Perjalanan & Laporan", group: "Perjalanan" },
+  {
+    key: "trip.manage",
+    name: "Buat Surat Jalan & Ganti Driver/Kendaraan",
+    group: "Perjalanan",
+  },
+  {
+    key: "trip.cancel",
+    name: "Batalkan Perjalanan yang Berjalan",
+    group: "Perjalanan",
+  },
+  {
+    key: "fleet.manage",
+    name: "Kelola Kendaraan, Kategori Tujuan & Lokasi",
+    group: "Perjalanan",
+  },
+  {
+    key: "trip.tariff",
+    name: "Ubah Tarif & Penerima Upah Surat Jalan",
+    group: "Perjalanan",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -279,6 +306,11 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Membatalkan pembayaran cicilan membalik jurnalnya, dan menutup kontrak
   // membuat sisa utangnya hanya bisa dibereskan dengan jurnal manual.
   "installment.cancel",
+  // Perjalanan yang dibatalkan tidak dibayar: membatalkannya memutus upah
+  // driver yang mungkin sudah setengah jalan.
+  "trip.cancel",
+  // Tarif dan penerima upah menentukan uang yang dibayarkan per surat jalan.
+  "trip.tariff",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
@@ -286,6 +318,7 @@ export const SYSTEM_ROLE_KEYS = [
   "admin",
   "operator",
   "scanner",
+  "driver",
 ] as const;
 
 export type SystemRoleKey = (typeof SYSTEM_ROLE_KEYS)[number];
@@ -309,6 +342,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "sync.view",
   ],
   scanner: ["home.view", "scanner.use", "sync.view"],
+  // Hanya melapor perjalanan yang sedang ditugaskan kepadanya (cakupan
+  // diperiksa backend terhadap `master_operator.id_karyawan`).
+  driver: ["trip.report"],
 };
 
 export function normalizeRoleKey(value: string) {

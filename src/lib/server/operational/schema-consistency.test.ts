@@ -44,7 +44,8 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'keu_akun', 'keu_jurnal', 'keu_jurnal_baris',
         'keu_pinjaman', 'keu_pinjaman_mutasi', 'keu_pinjaman_tunda',
         'keu_tutup_buku',
-        'app_telegram_setting', 'notifikasi_telegram'
+        'app_telegram_setting', 'notifikasi_telegram',
+        'drv_jenis_kendaraan', 'drv_kategori_tujuan', 'drv_kendaraan', 'drv_lokasi', 'drv_perjalanan', 'drv_muatan', 'drv_laporan', 'drv_laporan_muatan', 'drv_laporan_foto'
       );
     `);
     const tableCount = Number(tablesRes.rows[0]?.count ?? 0);

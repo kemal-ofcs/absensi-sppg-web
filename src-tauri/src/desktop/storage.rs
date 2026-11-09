@@ -1042,6 +1042,121 @@ pub fn initialize(path: &Path) -> Result<(), String> {
       CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_karyawan ON keu_pinjaman(id_karyawan, status);
       CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_mutasi_pinjaman ON keu_pinjaman_mutasi(id_pinjaman);
       CREATE INDEX IF NOT EXISTS idx_keu_pinjaman_tunda_pinjaman ON keu_pinjaman_tunda(id_pinjaman, periode);
+      -- Perjalanan driver / surat jalan (v34). Status TIDAK disimpan: diturunkan
+      -- dari `drv_laporan` (append-only). Kendaraan dan driver yang bertugas
+      -- diturunkan dari laporan ganti terakhir. Foto di luar snapshot (pola
+      -- `absensi_foto`). Tanpa UNIQUE selain PK. DDL WAJIB identik dengan
+      -- `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS drv_jenis_kendaraan (
+        id_jenis TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS drv_kategori_tujuan (
+        id_kategori TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        tarif INTEGER NOT NULL DEFAULT 0 CHECK (tarif >= 0),
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS drv_kendaraan (
+        id_kendaraan TEXT PRIMARY KEY,
+        id_jenis TEXT NOT NULL,
+        identitas TEXT NOT NULL,
+        nama TEXT,
+        catatan TEXT,
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS drv_lokasi (
+        id_lokasi TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Pool', 'Muat', 'Bongkar', 'Lainnya')),
+        lat REAL NOT NULL CHECK (lat BETWEEN -90 AND 90),
+        lng REAL NOT NULL CHECK (lng BETWEEN -180 AND 180),
+        radius_m INTEGER NOT NULL DEFAULT 200 CHECK (radius_m BETWEEN 10 AND 10000),
+        status_aktif INTEGER NOT NULL DEFAULT 1 CHECK (status_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS drv_perjalanan (
+        id_perjalanan TEXT PRIMARY KEY,
+        tanggal TEXT NOT NULL,
+        seri TEXT NOT NULL,
+        nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
+        nomor TEXT NOT NULL,
+        id_karyawan TEXT NOT NULL,
+        id_kendaraan TEXT NOT NULL,
+        id_jenis TEXT NOT NULL,
+        id_kategori TEXT NOT NULL,
+        tarif_kendaraan INTEGER NOT NULL CHECK (tarif_kendaraan >= 0),
+        tarif_tujuan INTEGER NOT NULL CHECK (tarif_tujuan >= 0),
+        id_karyawan_upah TEXT,
+        catatan TEXT,
+        dicetak_pada TEXT,
+        dibuat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_perjalanan_tanggal ON drv_perjalanan(tanggal);
+      CREATE TABLE IF NOT EXISTS drv_muatan (
+        id_muatan TEXT PRIMARY KEY,
+        id_perjalanan TEXT NOT NULL,
+        urutan INTEGER NOT NULL CHECK (urutan >= 1),
+        tempat_muat TEXT NOT NULL,
+        tempat_bongkar TEXT,
+        nama_barang TEXT NOT NULL,
+        jenis_barang TEXT,
+        qty INTEGER NOT NULL CHECK (qty > 0),
+        satuan TEXT NOT NULL,
+        berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_muatan_perjalanan ON drv_muatan(id_perjalanan);
+      CREATE TABLE IF NOT EXISTS drv_laporan (
+        id_laporan TEXT PRIMARY KEY,
+        id_perjalanan TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Berangkat', 'Tiba Muat', 'Selesai Muat', 'Tiba Bongkar', 'Selesai Bongkar', 'Kendala', 'Ganti Kendaraan', 'Ganti Driver', 'Disetujui', 'Ditolak', 'Tidak Jalan', 'Dibatalkan', 'Selesai')),
+        mode_ganti TEXT CHECK (mode_ganti IS NULL OR mode_ganti IN ('Langsung', 'Darurat', 'Minta Izin')),
+        id_ref TEXT,
+        jenis_kendala TEXT CHECK (jenis_kendala IS NULL OR jenis_kendala IN ('Macet', 'Kendaraan Rusak', 'Ban', 'Kecelakaan', 'Cuaca', 'Antre Muat/Bongkar', 'Lainnya')),
+        terlambat_menit INTEGER CHECK (terlambat_menit IS NULL OR terlambat_menit >= 0),
+        id_lokasi TEXT,
+        nama_lokasi TEXT,
+        lat REAL CHECK (lat IS NULL OR lat BETWEEN -90 AND 90),
+        lng REAL CHECK (lng IS NULL OR lng BETWEEN -180 AND 180),
+        akurasi_m REAL CHECK (akurasi_m IS NULL OR akurasi_m >= 0),
+        waktu_perangkat TEXT NOT NULL,
+        waktu_gps TEXT,
+        diterima_cloud TEXT,
+        id_karyawan TEXT,
+        id_karyawan_baru TEXT,
+        id_kendaraan_baru TEXT,
+        keterangan TEXT,
+        foto_sha256 TEXT,
+        dilaporkan_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_laporan_perjalanan ON drv_laporan(id_perjalanan, waktu_perangkat);
+      CREATE INDEX IF NOT EXISTS idx_drv_laporan_karyawan ON drv_laporan(id_karyawan, waktu_perangkat);
+      CREATE TABLE IF NOT EXISTS drv_laporan_muatan (
+        id_baris TEXT PRIMARY KEY,
+        id_laporan TEXT NOT NULL,
+        id_muatan TEXT NOT NULL,
+        qty INTEGER NOT NULL CHECK (qty >= 0),
+        berat_kg_x100 INTEGER CHECK (berat_kg_x100 IS NULL OR berat_kg_x100 >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_drv_laporan_muatan_laporan ON drv_laporan_muatan(id_laporan);
+      CREATE TABLE IF NOT EXISTS drv_laporan_foto (
+        id_laporan TEXT PRIMARY KEY,
+        mime_type TEXT NOT NULL CHECK (mime_type = 'image/jpeg'),
+        data_base64 TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
       -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
       -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
@@ -1408,6 +1523,16 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "keu_pinjaman_mutasi",
     "keu_pinjaman_tunda",
     "keu_tutup_buku",
+    // v34: perjalanan driver / surat jalan, milik perusahaan database asalnya.
+    "drv_jenis_kendaraan",
+    "drv_kategori_tujuan",
+    "drv_kendaraan",
+    "drv_lokasi",
+    "drv_perjalanan",
+    "drv_muatan",
+    "drv_laporan",
+    "drv_laporan_muatan",
+    "drv_laporan_foto",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke

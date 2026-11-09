@@ -59,6 +59,9 @@ export async function authenticateOperatorWithClient(
       JOIN app_role r ON r.id = m.role_id
       WHERE (m.username = ? COLLATE NOCASE OR m.kode_operator = ? COLLATE NOCASE)
         AND m.status = 'Aktif' AND r.status = 'Aktif'
+        AND (m.id_karyawan IS NULL OR EXISTS (
+          SELECT 1 FROM master_data d
+          WHERE d.id_unik = m.id_karyawan AND d.status_aktif = 'Aktif'))
       LIMIT 1;
     `,
     args: [identifier, identifier],

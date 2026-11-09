@@ -327,7 +327,10 @@ export default function Home() {
   }
 
   if (!isAuthenticated) redirect("/login");
-  if (!canAccessArea(user, "home")) redirect("/forbidden");
+  if (!canAccessArea(user, "home")) {
+    // Akun Driver (hanya lapor perjalanan) langsung ke layarnya.
+    redirect(canAccessArea(user, "driver") ? "/driver" : "/forbidden");
+  }
 
   const visibleModules = MODULES.filter((item) =>
     canAccessArea(user, item.area),

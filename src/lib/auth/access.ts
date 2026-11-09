@@ -20,6 +20,8 @@ export type AppArea =
   | "inventaris"
   | "keuangan"
   | "kasbon"
+  | "perjalanan"
+  | "driver"
   | "diagnostics";
 
 export interface AccessSubject {
@@ -49,6 +51,8 @@ const AREA_PERMISSION: Record<
   inventaris: "inventory.view",
   keuangan: "accounting.view",
   kasbon: "loan.view",
+  perjalanan: "trip.view",
+  driver: "trip.report",
   diagnostics: "diagnostics.view",
 };
 

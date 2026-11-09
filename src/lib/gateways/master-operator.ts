@@ -48,6 +48,10 @@ function normalizeOperator(value: JsonRecord): OperatorRecord {
       value.isSuperadmin ?? Number(value.is_superadmin ?? 0) === 1,
     ),
     status: value.status === "Nonaktif" ? "Nonaktif" : "Aktif",
+    idKaryawan:
+      typeof (value.idKaryawan ?? value.id_karyawan) === "string"
+        ? String(value.idKaryawan ?? value.id_karyawan)
+        : null,
   };
 }
 
@@ -110,6 +114,7 @@ export async function createOperator(actorId: number, draft: OperatorDraft) {
           password: draft.password,
           role_id: draft.roleId,
           status: draft.status,
+          id_karyawan: draft.idKaryawan,
         },
       },
     );
@@ -139,6 +144,7 @@ export async function updateMasterOperator(
         password: draft.password,
         role_id: draft.roleId,
         status: draft.status,
+        id_karyawan: draft.idKaryawan,
       },
     });
   }

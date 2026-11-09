@@ -34,6 +34,12 @@ function parseDraft(value: unknown): OperatorDraft {
     password: typeof draft.password === "string" ? draft.password : undefined,
     roleId: Number(draft.roleId),
     status: String(draft.status) as OperatorDraft["status"],
+    idKaryawan:
+      typeof draft.idKaryawan === "string"
+        ? draft.idKaryawan
+        : draft.idKaryawan === null
+          ? null
+          : undefined,
   };
 }
 

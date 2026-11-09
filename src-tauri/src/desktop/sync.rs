@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 33;
+pub const CLIENT_SCHEMA_VERSION: i64 = 34;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -1019,6 +1019,176 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_tutup",
         delete_missing: false,
     },
+    // ── v34: Perjalanan driver / surat jalan ──
+    // Daftar bertarif; tidak pernah dihapus, nonaktif = sembunyi.
+    SnapshotTable {
+        payload_key: "vehicleTypes",
+        domain: "vehicle-type",
+        table: "drv_jenis_kendaraan",
+        columns: &[
+            "id_jenis",
+            "nama",
+            "tarif",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_jenis",
+        entity_column: "id_jenis",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "tripDestinations",
+        domain: "trip-destination",
+        table: "drv_kategori_tujuan",
+        columns: &[
+            "id_kategori",
+            "nama",
+            "tarif",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_kategori",
+        entity_column: "id_kategori",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "vehicles",
+        domain: "vehicle",
+        table: "drv_kendaraan",
+        columns: &[
+            "id_kendaraan",
+            "id_jenis",
+            "identitas",
+            "nama",
+            "catatan",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_kendaraan",
+        entity_column: "id_kendaraan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "tripPlaces",
+        domain: "trip-place",
+        table: "drv_lokasi",
+        columns: &[
+            "id_lokasi",
+            "nama",
+            "jenis",
+            "lat",
+            "lng",
+            "radius_m",
+            "status_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_lokasi",
+        entity_column: "id_lokasi",
+        delete_missing: false,
+    },
+    // Surat jalan tidak pernah dihapus: batal dan tidak jalan adalah laporan.
+    SnapshotTable {
+        payload_key: "trips",
+        domain: "trip",
+        table: "drv_perjalanan",
+        columns: &[
+            "id_perjalanan",
+            "tanggal",
+            "seri",
+            "nomor_urut",
+            "nomor",
+            "id_karyawan",
+            "id_kendaraan",
+            "id_jenis",
+            "id_kategori",
+            "tarif_kendaraan",
+            "tarif_tujuan",
+            "id_karyawan_upah",
+            "catatan",
+            "dicetak_pada",
+            "dibuat_oleh",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_perjalanan",
+        entity_column: "id_perjalanan",
+        delete_missing: false,
+    },
+    // `true`: baris muatan yang dibuang saat surat jalan disunting hanya
+    // terlihat dari ketiadaannya di snapshot (pola baris pengajuan v30).
+    SnapshotTable {
+        payload_key: "tripCargo",
+        domain: "trip-cargo",
+        table: "drv_muatan",
+        columns: &[
+            "id_muatan",
+            "id_perjalanan",
+            "urutan",
+            "tempat_muat",
+            "tempat_bongkar",
+            "nama_barang",
+            "jenis_barang",
+            "qty",
+            "satuan",
+            "berat_kg_x100",
+        ],
+        conflict_column: "id_muatan",
+        entity_column: "id_muatan",
+        delete_missing: true,
+    },
+    // Append-only. `diterima_cloud` hanya diisi cloud.
+    SnapshotTable {
+        payload_key: "tripReports",
+        domain: "trip-report",
+        table: "drv_laporan",
+        columns: &[
+            "id_laporan",
+            "id_perjalanan",
+            "jenis",
+            "mode_ganti",
+            "id_ref",
+            "jenis_kendala",
+            "terlambat_menit",
+            "id_lokasi",
+            "nama_lokasi",
+            "lat",
+            "lng",
+            "akurasi_m",
+            "waktu_perangkat",
+            "waktu_gps",
+            "diterima_cloud",
+            "id_karyawan",
+            "id_karyawan_baru",
+            "id_kendaraan_baru",
+            "keterangan",
+            "foto_sha256",
+            "dilaporkan_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_laporan",
+        entity_column: "id_laporan",
+        delete_missing: false,
+    },
+    // Append-only; menumpang event `trip-report`.
+    SnapshotTable {
+        payload_key: "tripReportCargo",
+        domain: "trip-report-cargo",
+        table: "drv_laporan_muatan",
+        columns: &[
+            "id_baris",
+            "id_laporan",
+            "id_muatan",
+            "qty",
+            "berat_kg_x100",
+        ],
+        conflict_column: "id_baris",
+        entity_column: "id_baris",
+        delete_missing: false,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
@@ -1068,6 +1238,13 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("inventory-request", "close"),
     ("inventory-receipt", "create"),
     ("inventory-receipt-photo", "save"),
+    ("vehicle-type", "save"),
+    ("trip-destination", "save"),
+    ("vehicle", "save"),
+    ("trip-place", "save"),
+    ("trip", "save"),
+    ("trip-report", "create"),
+    ("trip-report-photo", "save"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),
@@ -1228,6 +1405,10 @@ impl PendingGuard {
             "inventory-request-line" => inventory_pengajuan::id_pengajuan_dari_baris(key)
                 .is_some_and(|induk| self.has("inventory-request", induk)),
             "installment" => pengajuan_tertunda(key),
+            // Muatan surat jalan (v34) ikut event `trip/save` induknya; id-nya
+            // `<id_perjalanan>-<urutan>`, bentuk yang sama dengan baris pengajuan.
+            "trip-cargo" => inventory_pengajuan::id_pengajuan_dari_baris(key)
+                .is_some_and(|induk| self.has("trip", induk)),
             "installment-schedule" => cicilan::id_cicilan_dari_jadwal(key).is_some_and(|induk| {
                 self.has("installment", induk) || pengajuan_tertunda(induk)
             }),
@@ -4608,5 +4789,17 @@ mod tests {
             .insert(super::guard_key("installment", "cil-pgj-b"));
         assert!(guard.induk_tertunda("installment-schedule", "cil-pgj-b-0"));
         assert!(!guard.induk_tertunda("installment", "cil-pgj-c"));
+    }
+
+    /// Muatan surat jalan mengikuti outbox `trip/save` induknya (v34).
+    #[test]
+    fn muatan_terlindungi_oleh_outbox_surat_jalan() {
+        let mut guard = super::PendingGuard::default();
+        guard
+            .by_domain_key
+            .insert(super::guard_key("trip", "trp-a1"));
+        assert!(guard.induk_tertunda("trip-cargo", "trp-a1-3"));
+        assert!(!guard.induk_tertunda("trip-cargo", "trp-b2-3"));
+        assert!(!guard.induk_tertunda("trip-report-cargo", "trp-a1-3"));
     }
 }

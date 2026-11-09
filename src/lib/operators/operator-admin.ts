@@ -52,6 +52,7 @@ function toOperatorRecord(row: Record<string, unknown>): OperatorRecord {
     roleName: String(row.nama_role),
     isSuperadmin: Number(row.is_superadmin) === 1,
     status: String(row.status) === "Nonaktif" ? "Nonaktif" : "Aktif",
+    idKaryawan: row.id_karyawan == null ? null : String(row.id_karyawan),
   };
 }
 
@@ -60,7 +61,7 @@ export async function listOperators(client: Client) {
     SELECT
       m.id, m.kode_operator, m.nama_operator, m.username, m.email, m.no_hp,
       COALESCE(m.totp_enabled, 0) AS totp_enabled,
-      m.role_id, m.status,
+      m.role_id, m.status, m.id_karyawan,
       r.role_key, r.nama_role, r.is_superadmin
     FROM master_operator m
     JOIN app_role r ON r.id = m.role_id
@@ -69,6 +70,44 @@ export async function listOperators(client: Client) {
   return result.rows.map((row) =>
     toOperatorRecord(row as unknown as Record<string, unknown>),
   );
+}
+
+function idTautan(value: string | null | undefined): string | null {
+  const id = value?.trim() ?? "";
+  return id ? id : null;
+}
+
+/**
+ * Cermin `assert_tautan_personil` di `turso.rs`: tautan baru hanya ke personil
+ * aktif (`cekPersonil`), dan satu personil paling banyak punya satu akun
+ * aktif. Tautan lama ke personil yang kini nonaktif tidak menghalangi
+ * menyunting akunnya; login-nya sudah ditolak. Tanpa UNIQUE (aturan 32).
+ */
+async function assertTautanPersonil(
+  client: Client,
+  operatorId: number | null,
+  idKaryawan: string,
+  cekPersonil: boolean,
+  akunAktif: boolean,
+) {
+  if (cekPersonil) {
+    const personil = await client.execute({
+      sql: "SELECT 1 FROM master_data WHERE id_unik = ? AND status_aktif = 'Aktif' LIMIT 1;",
+      args: [idKaryawan],
+    });
+    if (personil.rows.length === 0) {
+      throw new Error("Personil tidak ditemukan atau nonaktif.");
+    }
+  }
+  if (!akunAktif) return;
+  const kembar = await client.execute({
+    sql: `SELECT 1 FROM master_operator
+          WHERE id_karyawan = ? AND status = 'Aktif' AND id <> ? LIMIT 1;`,
+    args: [idKaryawan, operatorId ?? 0],
+  });
+  if (kembar.rows.length > 0) {
+    throw new Error("Personil ini sudah punya akun aktif lain.");
+  }
 }
 
 async function getLegacyRole(client: Client, roleId: number) {
@@ -104,13 +143,23 @@ export async function insertOperator(
   if (!allowSuperadmin && Number(roleCheck.rows[0]?.is_superadmin) === 1) {
     throw new Error("Role Superadmin tidak dapat ditambahkan secara manual.");
   }
+  const idKaryawan = idTautan(draft.idKaryawan);
+  if (idKaryawan) {
+    await assertTautanPersonil(
+      client,
+      null,
+      idKaryawan,
+      true,
+      draft.status === "Aktif",
+    );
+  }
 
   const result = await client.execute({
     sql: `
       INSERT INTO master_operator (
         kode_operator, nama_operator, username, email, no_hp,
-        password_hash, role, role_id, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        password_hash, role, role_id, status, id_karyawan, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     args: [
       draft.kodeOperator.trim().toUpperCase(),
@@ -122,6 +171,7 @@ export async function insertOperator(
       await getLegacyRole(client, draft.roleId),
       draft.roleId,
       draft.status,
+      idKaryawan,
       new Date().toISOString(),
       new Date().toISOString(),
     ],
@@ -271,7 +321,7 @@ export async function editOperator(
   validateOperatorDraft(draft);
   const target = await client.execute({
     sql: `
-      SELECT m.id, m.status, r.is_superadmin
+      SELECT m.id, m.status, m.id_karyawan, r.is_superadmin
       FROM master_operator m JOIN app_role r ON r.id = m.role_id
       WHERE m.id = ? LIMIT 1;
     `,
@@ -321,7 +371,7 @@ export async function editOperator(
     "status = ?",
     "updated_at = ?",
   ];
-  const args: (string | number)[] = [
+  const args: (string | number | null)[] = [
     draft.kodeOperator.trim().toUpperCase(),
     draft.name.trim(),
     draft.username.trim(),
@@ -332,6 +382,27 @@ export async function editOperator(
     draft.status,
     new Date().toISOString(),
   ];
+  // Tautan akun ↔ personil (v34): `undefined` = tetap, `null`/kosong = dilepas.
+  const tautanLama = idTautan(
+    target.rows[0]?.id_karyawan == null
+      ? null
+      : String(target.rows[0]?.id_karyawan),
+  );
+  const tautanAkhir =
+    draft.idKaryawan === undefined ? tautanLama : idTautan(draft.idKaryawan);
+  if (tautanAkhir) {
+    await assertTautanPersonil(
+      client,
+      operatorId,
+      tautanAkhir,
+      tautanAkhir !== tautanLama,
+      draft.status === "Aktif",
+    );
+  }
+  if (draft.idKaryawan !== undefined) {
+    updates.push("id_karyawan = ?");
+    args.push(tautanAkhir);
+  }
   if (draft.password) {
     updates.push("password_hash = ?");
     args.push(await hashPassword(draft.password));
