@@ -47,6 +47,11 @@ beforeEach(async () => {
       "DELETE FROM keu_tutup_buku;",
       "DELETE FROM payroll_audit_logs;",
       "DELETE FROM payroll_runs;",
+      "DELETE FROM drv_laporan;",
+      "DELETE FROM drv_perjalanan;",
+      "DELETE FROM drv_kendaraan;",
+      "DELETE FROM drv_jenis_kendaraan;",
+      "DELETE FROM master_data;",
     ],
     "write",
   );
@@ -304,11 +309,143 @@ describe("kejadian pimpinan", () => {
   });
 });
 
+// Cermin `catat_armada_dari_data_cloud` di `desktop/telegram.rs`.
+describe("kejadian armada", () => {
+  test("kendala, ganti, selesai, lokasi palsu, dan tidak jalan ke grup Armada", async () => {
+    await aktifkan({
+      "grup:armada": "-444",
+      "kirim:trip_kendala": "1",
+      "kirim:trip_selesai": "1",
+      "kirim:trip_tidak_jalan": "1",
+      "kirim:trip_dibatalkan": "1",
+      "kirim:trip_ganti_izin": "1",
+      "kirim:trip_lokasi_palsu": "1",
+    });
+    const laporan = (
+      id: string,
+      perjalanan: string,
+      jenis: string,
+      waktu: string,
+      kolom: Record<string, string | number | null> = {},
+      diterima = "datetime('now', '-1 minute')",
+    ) => {
+      const nama = Object.keys(kolom);
+      return {
+        sql: `INSERT INTO drv_laporan (id_laporan, id_perjalanan, jenis, waktu_perangkat, dilaporkan_oleh, diterima_cloud${nama.map((n) => `, ${n}`).join("")})
+              VALUES (?, ?, ?, ${waktu}, ?, ${diterima}${nama.map(() => ", ?").join("")});`,
+        args: [
+          id,
+          perjalanan,
+          jenis,
+          kolom.id_karyawan ? "hp-driver" : "dispatcher",
+          ...Object.values(kolom),
+        ],
+      };
+    };
+    await client.batch(
+      [
+        `INSERT OR IGNORE INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+           jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+           buffer_shift_malam_menit, offset_generate_alfa, hari_kerja)
+         VALUES (1, 1, 'Kantor', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5');`,
+        `INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif)
+         VALUES ('d1', 'Budi', 'Armada', 1, 'Aktif'), ('d2', 'Andi', 'Armada', 1, 'Aktif');`,
+        `INSERT INTO drv_jenis_kendaraan (id_jenis, nama, tarif) VALUES ('j1', 'CDD', 100000), ('j2', 'CDE', 50000);`,
+        `INSERT INTO drv_kendaraan (id_kendaraan, id_jenis, identitas)
+         VALUES ('v1', 'j1', 'B 1 A'), ('v2', 'j2', 'B 2 B');`,
+        `INSERT INTO drv_perjalanan (id_perjalanan, tanggal, seri, nomor_urut, nomor, id_karyawan, id_kendaraan,
+           id_jenis, id_kategori, tarif_kendaraan, tarif_tujuan, dibuat_oleh)
+         VALUES ('t1', '2026-11-09', 'WEB', 1, 'SJ-1', 'd1', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher'),
+                ('t2', '2026-11-09', 'WEB', 2, 'SJ-2', 'd2', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher'),
+                ('t3', '2026-11-09', 'WEB', 3, 'SJ-3', 'd1', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher');`,
+        laporan("l1", "t1", "Berangkat", "'2026-11-09 01:00:00'", {
+          id_karyawan: "d1",
+        }),
+        laporan("l2", "t1", "Kendala", "'2026-11-09 02:00:00'", {
+          id_karyawan: "d1",
+          jenis_kendala: "Macet",
+          terlambat_menit: 30,
+          nama_lokasi: "Tol Cikampek",
+        }),
+        laporan("l3", "t1", "Ganti Kendaraan", "'2026-11-09 03:00:00'", {
+          id_karyawan: "d1",
+          mode_ganti: "Darurat",
+          id_kendaraan_baru: "v2",
+          keterangan: "Mesin mati",
+        }),
+        laporan("l4", "t1", "Selesai", "'2026-11-09 05:00:00'", {
+          id_karyawan: "d1",
+          nama_lokasi: "Gudang Cikarang",
+          lokasi_palsu: 1,
+        }),
+        // Selesai kembar dari perangkat lain: tetap satu pesan per surat jalan.
+        laporan("l4b", "t1", "Selesai", "'2026-11-09 05:01:00'", {
+          id_karyawan: "d1",
+        }),
+        laporan("l5", "t2", "Tidak Jalan", "datetime('now', '-2 minutes')", {
+          keterangan: "Pelanggan menunda",
+        }),
+        // Minta izin yang sudah diputuskan tidak dikirim.
+        laporan("l6", "t3", "Ganti Driver", "'2026-11-09 04:00:00'", {
+          id_karyawan: "d1",
+          mode_ganti: "Minta Izin",
+          id_karyawan_baru: "d2",
+        }),
+        laporan("l7", "t3", "Disetujui", "'2026-11-09 04:05:00'", {
+          id_ref: "l6",
+        }),
+        // Sampai di cloud sebelum Telegram diaktifkan: tidak dikirim.
+        laporan(
+          "l8",
+          "t3",
+          "Kendala",
+          "'2026-11-09 04:10:00'",
+          { id_karyawan: "d2", jenis_kendala: "Ban" },
+          "datetime('now', '-2 hours')",
+        ),
+      ],
+      "write",
+    );
+
+    const hasil = await drainTelegram(client, "uji", { jedaMs: 0 });
+    expect(hasil.terkirim).toBe(5);
+    expect(kiriman.every((item) => item.body.chat_id === "-444")).toBe(true);
+    const teks = kiriman.map((item) => String(item.body.text));
+    expect(teks).toContain(
+      "🚧 Kendala Macet: SJ-1\nDriver: Budi · CDD B 1 A\nTempat: Tol Cikampek\nPerkiraan terlambat: 30 menit\nWaktu: 09/11/2026 09:00:00 WIB\nDikirim terlambat (offline).",
+    );
+    expect(teks).toContain(
+      "🔁 Ganti kendaraan darurat: SJ-1\nDari: CDD B 1 A\nKe: CDE B 2 B\nDilaporkan oleh: Budi\nAlasan: Mesin mati\nSudah berlaku. Setujui atau tolak di aplikasi.\nWaktu: 09/11/2026 10:00:00 WIB\nDikirim terlambat (offline).",
+    );
+    expect(teks).toContain(
+      "🏁 Surat jalan SJ-1 selesai\nDriver: Budi · CDE B 2 B\nTempat: Gudang Cikarang\nWaktu: 09/11/2026 12:00:00 WIB\nDikirim terlambat (offline).",
+    );
+    expect(teks).toContain(
+      "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-1\nLaporan: Selesai · Gudang Cikarang\nDriver: Budi · CDE B 2 B\nWaktu: 09/11/2026 12:00:00 WIB\nDikirim terlambat (offline).",
+    );
+    const tidakJalan = teks.find((isi) => isi.startsWith("⛔"));
+    expect(tidakJalan).toStartWith(
+      "⛔ Surat jalan SJ-2 tidak jalan\nDriver: Andi · CDD B 1 A\nOleh: dispatcher\nAlasan: Pelanggan menunda\nWaktu: ",
+    );
+    expect(tidakJalan).not.toContain("terlambat");
+
+    kiriman = [];
+    expect((await drainTelegram(client, "uji", { jedaMs: 0 })).terkirim).toBe(
+      0,
+    );
+  });
+});
+
 describe("konfigurasi Telegram", () => {
   const draft = {
     aktif: true,
     botToken: "",
-    grup: { inventaris: " -100111 ", keuangan: "", pimpinan: "" },
+    grup: {
+      inventaris: " -100111 ",
+      keuangan: "",
+      pimpinan: "",
+      armada: "-444",
+    },
     kirim: {
       pengajuan_baru: true,
       pengajuan_putus: true,
@@ -317,6 +454,12 @@ describe("konfigurasi Telegram", () => {
       tutup_buku: false,
       gaji_status: false,
       buka_buku_pimpinan: false,
+      trip_kendala: true,
+      trip_selesai: false,
+      trip_tidak_jalan: false,
+      trip_dibatalkan: false,
+      trip_ganti_izin: false,
+      trip_lokasi_palsu: false,
     },
   };
 
@@ -335,7 +478,12 @@ describe("konfigurasi Telegram", () => {
       aktif: true,
       tokenTersimpan: true,
       tokenAkhir: "saw0",
-      grup: { inventaris: "-100111", keuangan: "", pimpinan: "" },
+      grup: {
+        inventaris: "-100111",
+        keuangan: "",
+        pimpinan: "",
+        armada: "-444",
+      },
     });
     expect(JSON.stringify(config)).not.toContain(TOKEN);
     const sejak = await client.execute(
@@ -353,7 +501,12 @@ describe("konfigurasi Telegram", () => {
       saveTelegramConfig(client, {
         ...draft,
         botToken: TOKEN,
-        grup: { inventaris: "t.me/abc", keuangan: "", pimpinan: "" },
+        grup: {
+          inventaris: "t.me/abc",
+          keuangan: "",
+          pimpinan: "",
+          armada: "",
+        },
       }),
     ).rejects.toThrow("Id grup Inventaris tidak valid");
   });

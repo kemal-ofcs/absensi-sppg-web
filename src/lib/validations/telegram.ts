@@ -14,9 +14,14 @@
 
 import { formatRupiah } from "@/lib/validations/accounting";
 import { formatJumlah } from "@/lib/validations/inventory";
-import { tanggalTampil } from "@/lib/validations/tutup-buku";
+import { tanggalTampil, waktuTampil } from "@/lib/validations/tutup-buku";
 
-export const TELEGRAM_BIDANG = ["inventaris", "keuangan", "pimpinan"] as const;
+export const TELEGRAM_BIDANG = [
+  "inventaris",
+  "keuangan",
+  "pimpinan",
+  "armada",
+] as const;
 export type BidangTelegram = (typeof TELEGRAM_BIDANG)[number];
 
 export const TELEGRAM_KEJADIAN = [
@@ -27,6 +32,12 @@ export const TELEGRAM_KEJADIAN = [
   "tutup_buku",
   "gaji_status",
   "buka_buku_pimpinan",
+  "trip_kendala",
+  "trip_selesai",
+  "trip_tidak_jalan",
+  "trip_dibatalkan",
+  "trip_ganti_izin",
+  "trip_lokasi_palsu",
 ] as const;
 export type KejadianTelegram = (typeof TELEGRAM_KEJADIAN)[number];
 
@@ -42,12 +53,19 @@ export const BIDANG_KEJADIAN: Record<KejadianTelegram, BidangTelegram> = {
   tutup_buku: "keuangan",
   gaji_status: "pimpinan",
   buka_buku_pimpinan: "pimpinan",
+  trip_kendala: "armada",
+  trip_selesai: "armada",
+  trip_tidak_jalan: "armada",
+  trip_dibatalkan: "armada",
+  trip_ganti_izin: "armada",
+  trip_lokasi_palsu: "armada",
 };
 
 export const LABEL_BIDANG: Record<BidangTelegram, string> = {
   inventaris: "Inventaris",
   keuangan: "Keuangan",
   pimpinan: "Pimpinan",
+  armada: "Armada",
 };
 
 export const LABEL_KEJADIAN: Record<KejadianTelegram, string> = {
@@ -58,6 +76,12 @@ export const LABEL_KEJADIAN: Record<KejadianTelegram, string> = {
   tutup_buku: "Tutup buku dan buka kembali",
   gaji_status: "Status proses gaji (hanya jumlah pegawai dan total)",
   buka_buku_pimpinan: "Buku dibuka kembali",
+  trip_kendala: "Kendala di perjalanan",
+  trip_selesai: "Surat jalan selesai",
+  trip_tidak_jalan: "Surat jalan tidak jalan",
+  trip_dibatalkan: "Surat jalan dibatalkan",
+  trip_ganti_izin: "Ganti kendaraan atau driver yang menunggu keputusan",
+  trip_lokasi_palsu: "Lokasi palsu terdeteksi (perlu ditinjau)",
 };
 
 /** Kunci `app_telegram_setting`. Cermin konstanta `KUNCI_*` di Rust. */
@@ -177,6 +201,62 @@ WHERE a.action = 'TRANSITION_STATUS'
 ORDER BY datetime(a.created_at), a.id
 LIMIT 50;`;
 
+/**
+ * Laporan perjalanan (v34) disaring jam cloud `diterima_cloud` (UTC), bukan jam
+ * perangkat: laporan offline yang telat sampai tetap dikirim selama sampai di
+ * cloud dalam 7 hari. `telat_menit` = jam cloud − jam kejadian di perangkat.
+ * Laporan yang surat jalannya belum sampai di cloud menunggu siklus berikutnya.
+ * Parameter pertama = `aktif_sejak`.
+ */
+const KOLOM_LAPORAN_SQL = `SELECT l.id_laporan, l.id_perjalanan, l.jenis, l.mode_ganti, l.jenis_kendala, l.terlambat_menit,
+       l.nama_lokasi, l.keterangan, l.id_karyawan, l.id_karyawan_baru, l.id_kendaraan_baru, l.waktu_perangkat,
+       p.nomor, p.id_karyawan AS awal_karyawan, p.id_kendaraan AS awal_kendaraan,
+       datetime(l.waktu_perangkat, '+7 hours') AS waktu_wib,
+       COALESCE(CAST(ROUND((julianday(l.diterima_cloud) - julianday(l.waktu_perangkat)) * 1440) AS INTEGER), 0) AS telat_menit,
+       COALESCE(o.nama_operator, l.dilaporkan_oleh) AS oleh
+FROM drv_laporan l
+JOIN drv_perjalanan p ON p.id_perjalanan = l.id_perjalanan
+LEFT JOIN master_operator o ON o.username = l.dilaporkan_oleh
+WHERE l.diterima_cloud >= ? AND l.diterima_cloud >= datetime('now', '-7 days')`;
+
+export const TELEGRAM_SQL_TRIP_KENDALA = `${KOLOM_LAPORAN_SQL}
+  AND l.jenis = 'Kendala'
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-kendala:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;`;
+
+/**
+ * Parameter: `aktif_sejak`, jenis laporan penutup, awalan id. Satu pesan per
+ * surat jalan: laporan penutup kembar dari dua perangkat offline berbagi id.
+ */
+export const TELEGRAM_SQL_TRIP_TUTUP = `${KOLOM_LAPORAN_SQL}
+  AND l.jenis = ?
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = ? || l.id_perjalanan)
+ORDER BY l.diterima_cloud, l.waktu_perangkat, l.id_laporan
+LIMIT 50;`;
+
+/** Ganti dari driver yang belum diputuskan saat dibaca. */
+export const TELEGRAM_SQL_TRIP_GANTI_IZIN = `${KOLOM_LAPORAN_SQL}
+  AND l.jenis IN ('Ganti Kendaraan', 'Ganti Driver') AND l.mode_ganti IN ('Darurat', 'Minta Izin')
+  AND NOT EXISTS (SELECT 1 FROM drv_laporan k WHERE k.id_perjalanan = l.id_perjalanan AND k.jenis IN ('Disetujui', 'Ditolak') AND k.id_ref = l.id_laporan)
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-ganti:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;`;
+
+export const TELEGRAM_SQL_TRIP_LOKASI_PALSU = `${KOLOM_LAPORAN_SQL}
+  AND l.lokasi_palsu = 1
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-palsu:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;`;
+
+/** Bahan `penugasan`: seluruh laporan satu surat jalan. */
+export const TELEGRAM_SQL_TRIP_LAPORAN =
+  "SELECT id_laporan, jenis, mode_ganti, id_ref, waktu_perangkat, id_karyawan_baru, id_kendaraan_baru FROM drv_laporan WHERE id_perjalanan = ?;";
+export const TELEGRAM_SQL_NAMA_PERSONIL =
+  "SELECT nama FROM master_data WHERE id_unik = ?;";
+export const TELEGRAM_SQL_LABEL_KENDARAAN =
+  "SELECT TRIM(COALESCE(j.nama, '') || ' ' || k.identitas) AS label FROM drv_kendaraan k LEFT JOIN drv_jenis_kendaraan j ON j.id_jenis = k.id_jenis WHERE k.id_kendaraan = ?;";
+
 export const TELEGRAM_SQL_JAM_WIB =
   "SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam;";
 
@@ -200,6 +280,30 @@ export const AWALAN_BUKA_PIMPINAN = "buka-pimpinan:";
 export function idGajiStatus(idLog: string) {
   return `gaji:${idLog}`;
 }
+export function idTripKendala(idLaporan: string) {
+  return `drv-kendala:${idLaporan}`;
+}
+export function idTripGantiIzin(idLaporan: string) {
+  return `drv-ganti:${idLaporan}`;
+}
+export function idTripLokasiPalsu(idLaporan: string) {
+  return `drv-palsu:${idLaporan}`;
+}
+
+/** Laporan penutup surat jalan → kejadian dan awalan id (satu per surat jalan). */
+export const TRIP_TUTUP: readonly {
+  jenis: "Selesai" | "Tidak Jalan" | "Dibatalkan";
+  kejadian: KejadianTelegram;
+  awalan: string;
+}[] = [
+  { jenis: "Selesai", kejadian: "trip_selesai", awalan: "drv-selesai:" },
+  {
+    jenis: "Tidak Jalan",
+    kejadian: "trip_tidak_jalan",
+    awalan: "drv-tidak-jalan:",
+  },
+  { jenis: "Dibatalkan", kejadian: "trip_dibatalkan", awalan: "drv-batal:" },
+];
 
 /** Cermin `token_bot_valid`: `<id bot>:<rahasia>` dari BotFather. */
 export function tokenBotValid(token: string): boolean {
@@ -429,6 +533,136 @@ export function pesanGajiStatus(isi: IsiGajiStatus): string | null {
     baris.push(`Alasan: ${potong(isi.catatan, 300)}`);
   }
   return baris.join("\n");
+}
+
+/** Selisih jam cloud dan jam kejadian di atas ini ditandai terlambat (Q-38). */
+export const MENIT_TERLAMBAT = 30;
+
+/**
+ * Isi bersama pesan perjalanan. `waktu` = jam kejadian WIB
+ * `YYYY-MM-DD HH:MM:SS`; `telatMenit` = jam cloud − jam kejadian. Koordinat,
+ * foto, upah, dan muatan sengaja tidak pernah ikut (Q-37).
+ */
+export interface IsiLaporanPerjalanan {
+  nomor: string;
+  driver: string;
+  kendaraan: string;
+  tempat: string;
+  keterangan: string;
+  waktu: string;
+  telatMenit: number;
+}
+
+function barisDriver(isi: IsiLaporanPerjalanan) {
+  return isi.kendaraan === ""
+    ? `Driver: ${isi.driver}`
+    : `Driver: ${isi.driver} · ${isi.kendaraan}`;
+}
+
+function tutupPesan(baris: string[], isi: IsiLaporanPerjalanan) {
+  baris.push(`Waktu: ${waktuTampil(isi.waktu)}`);
+  if (isi.telatMenit > MENIT_TERLAMBAT) {
+    baris.push("Dikirim terlambat (offline).");
+  }
+  return baris.join("\n");
+}
+
+/** Cermin `pesan_trip_kendala`. */
+export function pesanTripKendala(
+  isi: IsiLaporanPerjalanan & {
+    jenisKendala: string;
+    terlambatMenit: number | null;
+  },
+): string {
+  const baris = [
+    isi.jenisKendala === ""
+      ? `🚧 Kendala: ${isi.nomor}`
+      : `🚧 Kendala ${isi.jenisKendala}: ${isi.nomor}`,
+    barisDriver(isi),
+  ];
+  if (isi.tempat !== "") baris.push(`Tempat: ${potong(isi.tempat, 100)}`);
+  if (isi.terlambatMenit !== null && isi.terlambatMenit > 0) {
+    baris.push(`Perkiraan terlambat: ${isi.terlambatMenit} menit`);
+  }
+  if (isi.keterangan !== "") {
+    baris.push(`Keterangan: ${potong(isi.keterangan, 300)}`);
+  }
+  return tutupPesan(baris, isi);
+}
+
+const JUDUL_TUTUP: Record<string, string> = {
+  Selesai: "🏁 Surat jalan {nomor} selesai",
+  "Tidak Jalan": "⛔ Surat jalan {nomor} tidak jalan",
+  Dibatalkan: "🛑 Surat jalan {nomor} dibatalkan",
+};
+
+/**
+ * Cermin `pesan_trip_tutup`. `oleh` = operator bila dicatat dispatcher, kosong
+ * bila dari HP driver. Jenis di luar `TRIP_TUTUP` tidak menghasilkan pesan.
+ */
+export function pesanTripTutup(
+  isi: IsiLaporanPerjalanan & { jenis: string; oleh: string },
+): string | null {
+  const judul = JUDUL_TUTUP[isi.jenis];
+  if (!judul) return null;
+  const baris = [judul.replace("{nomor}", isi.nomor), barisDriver(isi)];
+  if (isi.tempat !== "") baris.push(`Tempat: ${potong(isi.tempat, 100)}`);
+  if (isi.oleh !== "") baris.push(`Oleh: ${isi.oleh}`);
+  if (isi.keterangan !== "") {
+    baris.push(
+      `${isi.oleh !== "" ? "Alasan" : "Catatan"}: ${potong(isi.keterangan, 300)}`,
+    );
+  }
+  return tutupPesan(baris, isi);
+}
+
+/**
+ * Cermin `pesan_trip_ganti_izin`. `driver` = pelapor (driver yang meminta);
+ * `dari`/`ke` = driver atau kendaraan sebelum dan sesudah ganti.
+ */
+export function pesanTripGantiIzin(
+  isi: IsiLaporanPerjalanan & {
+    gantiDriver: boolean;
+    darurat: boolean;
+    dari: string;
+    ke: string;
+  },
+): string {
+  const objek = isi.gantiDriver ? "driver" : "kendaraan";
+  const baris = [
+    isi.darurat
+      ? `🔁 Ganti ${objek} darurat: ${isi.nomor}`
+      : `🔁 Minta izin ganti ${objek}: ${isi.nomor}`,
+    `Dari: ${isi.dari}`,
+    `Ke: ${isi.ke}`,
+    `Dilaporkan oleh: ${isi.driver}`,
+  ];
+  if (isi.keterangan !== "") {
+    baris.push(`Alasan: ${potong(isi.keterangan, 300)}`);
+  }
+  baris.push(
+    isi.darurat
+      ? "Sudah berlaku. Setujui atau tolak di aplikasi."
+      : "Berlaku setelah disetujui di aplikasi.",
+  );
+  return tutupPesan(baris, isi);
+}
+
+/** Cermin `pesan_trip_lokasi_palsu`. Ditulis sebagai tanda tinjau, bukan vonis. */
+export function pesanTripLokasiPalsu(
+  isi: IsiLaporanPerjalanan & { jenisLaporan: string },
+): string {
+  return tutupPesan(
+    [
+      "⚠️ Perlu ditinjau: lokasi palsu terdeteksi",
+      `Surat jalan: ${isi.nomor}`,
+      isi.tempat === ""
+        ? `Laporan: ${isi.jenisLaporan}`
+        : `Laporan: ${isi.jenisLaporan} · ${potong(isi.tempat, 100)}`,
+      barisDriver(isi),
+    ],
+    isi,
+  );
 }
 
 export interface PermintaanTelegram {

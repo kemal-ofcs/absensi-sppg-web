@@ -3,6 +3,7 @@ import "server-only";
 import type { Client, InStatement } from "@libsql/client";
 import { z } from "zod";
 import { ApiRequestError } from "@/lib/server/http/api-response";
+import { type Laporan, penugasan } from "@/lib/validations/driver";
 import {
   AWALAN_BUKA,
   AWALAN_BUKA_PIMPINAN,
@@ -11,11 +12,15 @@ import {
   type BidangTelegram,
   galatTelegram,
   grupDariUpdates,
+  type IsiLaporanPerjalanan,
   idGajiStatus,
   idKasbonBaru,
   idPengajuanBaru,
   idPengajuanPutus,
   idStokMenipis,
+  idTripGantiIzin,
+  idTripKendala,
+  idTripLokasiPalsu,
   idTutupBuku,
   JAM_RINGKASAN_STOK,
   type KejadianTelegram,
@@ -33,6 +38,10 @@ import {
   pesanPengajuanBaru,
   pesanPengajuanPutus,
   pesanStokMenipis,
+  pesanTripGantiIzin,
+  pesanTripKendala,
+  pesanTripLokasiPalsu,
+  pesanTripTutup,
   pesanTutupBuku,
   potong,
   samarkanToken,
@@ -46,14 +55,22 @@ import {
   TELEGRAM_SQL_GAJI_STATUS,
   TELEGRAM_SQL_JAM_WIB,
   TELEGRAM_SQL_KASBON_BARU,
+  TELEGRAM_SQL_LABEL_KENDARAAN,
+  TELEGRAM_SQL_NAMA_PERSONIL,
   TELEGRAM_SQL_PENGAJUAN_BARU,
   TELEGRAM_SQL_PENGAJUAN_PUTUS,
   TELEGRAM_SQL_STOK_MENIPIS,
+  TELEGRAM_SQL_TRIP_GANTI_IZIN,
+  TELEGRAM_SQL_TRIP_KENDALA,
+  TELEGRAM_SQL_TRIP_LAPORAN,
+  TELEGRAM_SQL_TRIP_LOKASI_PALSU,
+  TELEGRAM_SQL_TRIP_TUTUP,
   TELEGRAM_SQL_TUTUP_BUKU,
   TELEGRAM_UPSERT_SETTING_SQL,
   type TelegramConfig,
   type TelegramConfigDraft,
   type TelegramDrainResult,
+  TRIP_TUTUP,
   tokenBotValid,
 } from "@/lib/validations/telegram";
 
@@ -78,6 +95,7 @@ export const telegramDraftSchema = z
         inventaris: chatIdSchema,
         keuangan: chatIdSchema,
         pimpinan: chatIdSchema,
+        armada: chatIdSchema,
       })
       .strict(),
     kirim: z
@@ -89,6 +107,12 @@ export const telegramDraftSchema = z
         tutup_buku: z.boolean(),
         gaji_status: z.boolean(),
         buka_buku_pimpinan: z.boolean(),
+        trip_kendala: z.boolean(),
+        trip_selesai: z.boolean(),
+        trip_tidak_jalan: z.boolean(),
+        trip_dibatalkan: z.boolean(),
+        trip_ganti_izin: z.boolean(),
+        trip_lokasi_palsu: z.boolean(),
       })
       .strict(),
   })
@@ -429,7 +453,178 @@ async function catatKejadian(client: Client, pengaturan: Pengaturan) {
       }
     }
   }
+  await catatArmada(client, pengaturan, sejak);
   await catatHarian(client, pengaturan);
+}
+
+type Baris = Record<string, unknown>;
+
+/**
+ * Cermin `tugas_sebelum`: driver dan kendaraan yang bertugas TEPAT SEBELUM
+ * laporan `row`, menurut ganti yang berlaku saat itu.
+ */
+async function tugasSebelum(client: Client, row: Baris) {
+  const semua = await client.execute({
+    sql: TELEGRAM_SQL_TRIP_LAPORAN,
+    args: [teks(row.id_perjalanan)],
+  });
+  const opsi = (nilai: unknown) => teks(nilai) || null;
+  const sasaran = [teks(row.waktu_perangkat), teks(row.id_laporan)] as const;
+  const laporan: Laporan[] = semua.rows
+    .map((l) => ({
+      id_laporan: teks(l.id_laporan),
+      jenis: teks(l.jenis),
+      mode_ganti: opsi(l.mode_ganti),
+      id_ref: opsi(l.id_ref),
+      waktu_perangkat: teks(l.waktu_perangkat),
+      id_karyawan_baru: opsi(l.id_karyawan_baru),
+      id_kendaraan_baru: opsi(l.id_kendaraan_baru),
+    }))
+    .filter(
+      (l) =>
+        l.waktu_perangkat < sasaran[0] ||
+        (l.waktu_perangkat === sasaran[0] && l.id_laporan < sasaran[1]),
+    );
+  return penugasan(teks(row.awal_karyawan), teks(row.awal_kendaraan), laporan);
+}
+
+async function satuTeks(
+  client: Client,
+  sql: string,
+  id: string,
+  kolom: string,
+) {
+  if (id === "") return "";
+  const hasil = await client.execute({ sql, args: [id] });
+  return teks(hasil.rows[0]?.[kolom]);
+}
+
+/** Cermin `nama_personil`: nama, lalu `cadangan`, lalu id-nya. */
+async function namaPersonil(client: Client, id: string, cadangan = "") {
+  const nama = await satuTeks(client, TELEGRAM_SQL_NAMA_PERSONIL, id, "nama");
+  return nama || cadangan || id || "-";
+}
+
+/** Cermin `label_kendaraan`. */
+async function labelKendaraan(client: Client, id: string) {
+  return (
+    (await satuTeks(client, TELEGRAM_SQL_LABEL_KENDARAAN, id, "label")) || id
+  );
+}
+
+/** Cermin `catat_armada`: kejadian perjalanan (v34) ke grup Armada. */
+async function catatArmada(
+  client: Client,
+  pengaturan: Pengaturan,
+  sejak: string,
+) {
+  const sumber: {
+    kejadian: KejadianTelegram;
+    sql: string;
+    args: string[];
+    awalan: string;
+  }[] = [];
+  if (pengaturan.siap("trip_kendala")) {
+    sumber.push({
+      kejadian: "trip_kendala",
+      sql: TELEGRAM_SQL_TRIP_KENDALA,
+      args: [sejak],
+      awalan: "",
+    });
+  }
+  for (const { jenis, kejadian, awalan } of TRIP_TUTUP) {
+    if (pengaturan.siap(kejadian)) {
+      sumber.push({
+        kejadian,
+        sql: TELEGRAM_SQL_TRIP_TUTUP,
+        args: [sejak, jenis, awalan],
+        awalan,
+      });
+    }
+  }
+  if (pengaturan.siap("trip_ganti_izin")) {
+    sumber.push({
+      kejadian: "trip_ganti_izin",
+      sql: TELEGRAM_SQL_TRIP_GANTI_IZIN,
+      args: [sejak],
+      awalan: "",
+    });
+  }
+  if (pengaturan.siap("trip_lokasi_palsu")) {
+    sumber.push({
+      kejadian: "trip_lokasi_palsu",
+      sql: TELEGRAM_SQL_TRIP_LOKASI_PALSU,
+      args: [sejak],
+      awalan: "",
+    });
+  }
+
+  for (const { kejadian, sql, args, awalan } of sumber) {
+    const hasil = await client.execute({ sql, args });
+    for (const row of hasil.rows) {
+      const tugas = await tugasSebelum(client, row);
+      const pelapor = teks(row.id_karyawan);
+      const oleh = teks(row.oleh);
+      const driver =
+        pelapor === ""
+          ? await namaPersonil(client, tugas.id_karyawan)
+          : await namaPersonil(client, pelapor, oleh);
+      const jenis = teks(row.jenis);
+      const gantiDriver = jenis === "Ganti Driver";
+      const isi: IsiLaporanPerjalanan = {
+        nomor: teks(row.nomor),
+        driver,
+        kendaraan:
+          kejadian === "trip_ganti_izin"
+            ? ""
+            : await labelKendaraan(client, tugas.id_kendaraan),
+        tempat: teks(row.nama_lokasi),
+        keterangan: teks(row.keterangan),
+        waktu: teks(row.waktu_wib),
+        telatMenit: Number(row.telat_menit ?? 0),
+      };
+      const idLaporan = teks(row.id_laporan);
+      let id: string;
+      let pesan: string | null;
+      if (kejadian === "trip_kendala") {
+        id = idTripKendala(idLaporan);
+        pesan = pesanTripKendala({
+          ...isi,
+          jenisKendala: teks(row.jenis_kendala),
+          terlambatMenit: Number(row.terlambat_menit ?? 0),
+        });
+      } else if (kejadian === "trip_ganti_izin") {
+        const [dari, ke] = gantiDriver
+          ? [
+              await namaPersonil(client, tugas.id_karyawan),
+              await namaPersonil(client, teks(row.id_karyawan_baru)),
+            ]
+          : [
+              await labelKendaraan(client, tugas.id_kendaraan),
+              await labelKendaraan(client, teks(row.id_kendaraan_baru)),
+            ];
+        id = idTripGantiIzin(idLaporan);
+        pesan = pesanTripGantiIzin({
+          ...isi,
+          gantiDriver,
+          darurat: teks(row.mode_ganti) === "Darurat",
+          dari,
+          ke,
+        });
+      } else if (kejadian === "trip_lokasi_palsu") {
+        id = idTripLokasiPalsu(idLaporan);
+        pesan = pesanTripLokasiPalsu({ ...isi, jenisLaporan: jenis });
+      } else {
+        id = `${awalan}${teks(row.id_perjalanan)}`;
+        pesan = pesanTripTutup({
+          ...isi,
+          jenis,
+          oleh: pelapor === "" ? oleh : "",
+        });
+      }
+      if (pesan !== null) await antrekan(client, id, kejadian, pesan);
+    }
+  }
 }
 
 /** Cermin `catat_buka_buku`: awalan id menentukan grup tujuannya. */

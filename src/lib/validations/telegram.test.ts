@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type BarisStokMenipis,
   BIDANG_KEJADIAN,
   galatTelegram,
   grupDariUpdates,
+  type IsiLaporanPerjalanan,
+  idTripGantiIzin,
+  idTripKendala,
+  idTripLokasiPalsu,
   labelBulan,
   normalisasiChatId,
   permintaanKirim,
@@ -13,10 +19,23 @@ import {
   pesanPengajuanBaru,
   pesanPengajuanPutus,
   pesanStokMenipis,
+  pesanTripGantiIzin,
+  pesanTripKendala,
+  pesanTripLokasiPalsu,
+  pesanTripTutup,
   pesanTutupBuku,
   potong,
   samarkanToken,
   statusSetelahGagal,
+  TELEGRAM_KEJADIAN,
+  TELEGRAM_SQL_LABEL_KENDARAAN,
+  TELEGRAM_SQL_NAMA_PERSONIL,
+  TELEGRAM_SQL_TRIP_GANTI_IZIN,
+  TELEGRAM_SQL_TRIP_KENDALA,
+  TELEGRAM_SQL_TRIP_LAPORAN,
+  TELEGRAM_SQL_TRIP_LOKASI_PALSU,
+  TELEGRAM_SQL_TRIP_TUTUP,
+  TRIP_TUTUP,
   tokenBotValid,
 } from "./telegram";
 
@@ -305,5 +324,160 @@ describe("aturan murni Telegram", () => {
     expect(BIDANG_KEJADIAN.pengajuan_baru).toBe("keuangan");
     expect(BIDANG_KEJADIAN.pengajuan_putus).toBe("inventaris");
     expect(BIDANG_KEJADIAN.stok_menipis).toBe("inventaris");
+    for (const kejadian of TELEGRAM_KEJADIAN.slice(7)) {
+      expect(BIDANG_KEJADIAN[kejadian]).toBe("armada");
+    }
+    for (const { kejadian } of TRIP_TUTUP) {
+      expect(TELEGRAM_KEJADIAN).toContain(kejadian);
+    }
+    expect(idTripKendala("lap-1")).toBe("drv-kendala:lap-1");
+    expect(idTripGantiIzin("lap-2")).toBe("drv-ganti:lap-2");
+    expect(idTripLokasiPalsu("lap-3")).toBe("drv-palsu:lap-3");
+  });
+
+  test("SQL perjalanan disalin harfiah ke telegram.rs", () => {
+    // Berkas ini ikut disalin ke Mobile, tempat salinan Rust-nya di `src/mobile`.
+    const berkas = ["desktop", "mobile"]
+      .map((dir) =>
+        join(import.meta.dir, `../../../src-tauri/src/${dir}/telegram.rs`),
+      )
+      .find((path) => existsSync(path));
+    expect(berkas).toBeDefined();
+    const rust = readFileSync(berkas as string, "utf8").replaceAll(
+      "\r\n",
+      "\n",
+    );
+    for (const sql of [
+      TELEGRAM_SQL_TRIP_KENDALA,
+      TELEGRAM_SQL_TRIP_TUTUP,
+      TELEGRAM_SQL_TRIP_GANTI_IZIN,
+      TELEGRAM_SQL_TRIP_LOKASI_PALSU,
+      TELEGRAM_SQL_TRIP_LAPORAN,
+      TELEGRAM_SQL_NAMA_PERSONIL,
+      TELEGRAM_SQL_LABEL_KENDARAAN,
+    ]) {
+      expect(rust).toContain(`"${sql}"`);
+    }
+    expect(rust).toContain(
+      '("Tidak Jalan", "trip_tidak_jalan", "drv-tidak-jalan:")',
+    );
+  });
+
+  // Vektor yang sama diuji di `desktop/telegram.rs` (`isi_pesan_perjalanan`).
+  test("isi pesan perjalanan", () => {
+    const isi: IsiLaporanPerjalanan = {
+      nomor: "SJ-2611-WAB12-001",
+      driver: "Budi Santoso",
+      kendaraan: "CDD B 1234 XYZ",
+      tempat: "Tol Cikampek KM 57",
+      keterangan: "Radiator bocor",
+      waktu: "2026-11-09 14:32:05",
+      telatMenit: 0,
+    };
+    expect(
+      pesanTripKendala({
+        ...isi,
+        jenisKendala: "Kendaraan Rusak",
+        terlambatMenit: 90,
+      }),
+    ).toBe(
+      "🚧 Kendala Kendaraan Rusak: SJ-2611-WAB12-001\nDriver: Budi Santoso · CDD B 1234 XYZ\nTempat: Tol Cikampek KM 57\nPerkiraan terlambat: 90 menit\nKeterangan: Radiator bocor\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    const polos = {
+      ...isi,
+      kendaraan: "",
+      tempat: "",
+      keterangan: "",
+      telatMenit: 31,
+    };
+    expect(
+      pesanTripKendala({ ...polos, jenisKendala: "", terlambatMenit: 0 }),
+    ).toBe(
+      "🚧 Kendala: SJ-2611-WAB12-001\nDriver: Budi Santoso\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline).",
+    );
+    expect(
+      pesanTripKendala({
+        ...polos,
+        telatMenit: 30,
+        jenisKendala: "Macet",
+        terlambatMenit: null,
+      }),
+    ).not.toContain("terlambat");
+
+    const selesai = { ...isi, tempat: "Gudang Cikarang 2", keterangan: "" };
+    expect(pesanTripTutup({ ...selesai, jenis: "Selesai", oleh: "" })).toBe(
+      "🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nTempat: Gudang Cikarang 2\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    expect(
+      pesanTripTutup({
+        ...isi,
+        tempat: "",
+        keterangan: "HP driver mati",
+        jenis: "Selesai",
+        oleh: "Dispatcher 1",
+      }),
+    ).toBe(
+      "🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nOleh: Dispatcher 1\nAlasan: HP driver mati\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    expect(
+      pesanTripTutup({
+        ...isi,
+        tempat: "",
+        keterangan: "Diterima satpam",
+        jenis: "Selesai",
+        oleh: "",
+      }),
+    ).toBe(
+      "🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nCatatan: Diterima satpam\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    const batal = {
+      ...isi,
+      tempat: "",
+      keterangan: "Pelanggan menunda",
+      telatMenit: 45,
+      oleh: "Dispatcher 1",
+    };
+    expect(pesanTripTutup({ ...batal, jenis: "Tidak Jalan" })).toBe(
+      "⛔ Surat jalan SJ-2611-WAB12-001 tidak jalan\nDriver: Budi Santoso · CDD B 1234 XYZ\nOleh: Dispatcher 1\nAlasan: Pelanggan menunda\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline).",
+    );
+    expect(
+      pesanTripTutup({ ...batal, jenis: "Dibatalkan" })?.split("\n")[0],
+    ).toBe("🛑 Surat jalan SJ-2611-WAB12-001 dibatalkan");
+    expect(pesanTripTutup({ ...batal, jenis: "Kendala", oleh: "" })).toBeNull();
+
+    expect(
+      pesanTripGantiIzin({
+        ...isi,
+        keterangan: "Mesin mati",
+        gantiDriver: false,
+        darurat: true,
+        dari: "CDD B 1234 XYZ",
+        ke: "CDE B 999 AA",
+      }),
+    ).toBe(
+      "🔁 Ganti kendaraan darurat: SJ-2611-WAB12-001\nDari: CDD B 1234 XYZ\nKe: CDE B 999 AA\nDilaporkan oleh: Budi Santoso\nAlasan: Mesin mati\nSudah berlaku. Setujui atau tolak di aplikasi.\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    expect(
+      pesanTripGantiIzin({
+        ...isi,
+        keterangan: "",
+        driver: "Andi",
+        gantiDriver: true,
+        darurat: false,
+        dari: "Budi Santoso",
+        ke: "Andi",
+      }),
+    ).toBe(
+      "🔁 Minta izin ganti driver: SJ-2611-WAB12-001\nDari: Budi Santoso\nKe: Andi\nDilaporkan oleh: Andi\nBerlaku setelah disetujui di aplikasi.\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+
+    expect(
+      pesanTripLokasiPalsu({ ...selesai, jenisLaporan: "Tiba Bongkar" }),
+    ).toBe(
+      "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-2611-WAB12-001\nLaporan: Tiba Bongkar · Gudang Cikarang 2\nDriver: Budi Santoso · CDD B 1234 XYZ\nWaktu: 09/11/2026 14:32:05 WIB",
+    );
+    expect(pesanTripLokasiPalsu({ ...polos, jenisLaporan: "Berangkat" })).toBe(
+      "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-2611-WAB12-001\nLaporan: Berangkat\nDriver: Budi Santoso\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline).",
+    );
   });
 });

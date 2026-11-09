@@ -257,7 +257,7 @@ export function NotifikasiTelegramCard() {
           ) : null}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           {TELEGRAM_BIDANG.map((bidang) => (
             <div key={bidang} className="grid gap-1.5">
               <label
@@ -291,6 +291,12 @@ export function NotifikasiTelegramCard() {
                   {sibuk === `uji:${bidang}` ? "Mengirim..." : "Kirim uji"}
                 </button>
               </div>
+              {bidang === "armada" ? (
+                <p className="text-xs text-slate-500">
+                  Perbarui aplikasi di semua HP dan komputer lebih dulu. Versi
+                  lama membatalkan pesan perjalanan tanpa mengirimnya.
+                </p>
+              ) : null}
             </div>
           ))}
         </div>

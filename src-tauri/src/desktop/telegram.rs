@@ -18,14 +18,15 @@ use serde_json::{json, Value};
 
 use super::{
     accounting::format_rupiah,
+    driver::{penugasan, Laporan, Penugasan},
     inventory::format_jumlah,
     models::CommandError,
     turso::{Statement, TursoClient},
     tutup_buku::tanggal_tampil,
 };
 
-pub const BIDANG: [&str; 3] = ["inventaris", "keuangan", "pimpinan"];
-pub const KEJADIAN: [&str; 7] = [
+pub const BIDANG: [&str; 4] = ["inventaris", "keuangan", "pimpinan", "armada"];
+pub const KEJADIAN: [&str; 13] = [
     "pengajuan_baru",
     "pengajuan_putus",
     "stok_menipis",
@@ -33,6 +34,12 @@ pub const KEJADIAN: [&str; 7] = [
     "tutup_buku",
     "gaji_status",
     "buka_buku_pimpinan",
+    "trip_kendala",
+    "trip_selesai",
+    "trip_tidak_jalan",
+    "trip_dibatalkan",
+    "trip_ganti_izin",
+    "trip_lokasi_palsu",
 ];
 
 /// Grup tujuan setiap kejadian. Cermin `BIDANG_KEJADIAN`.
@@ -41,6 +48,8 @@ pub fn bidang_kejadian(kejadian: &str) -> Option<&'static str> {
         "pengajuan_baru" | "kasbon_baru" | "tutup_buku" => Some("keuangan"),
         "pengajuan_putus" | "stok_menipis" => Some("inventaris"),
         "gaji_status" | "buka_buku_pimpinan" => Some("pimpinan"),
+        "trip_kendala" | "trip_selesai" | "trip_tidak_jalan" | "trip_dibatalkan"
+        | "trip_ganti_izin" | "trip_lokasi_palsu" => Some("armada"),
         _ => None,
     }
 }
@@ -49,6 +58,7 @@ fn label_bidang(bidang: &str) -> &'static str {
     match bidang {
         "keuangan" => "Keuangan",
         "pimpinan" => "Pimpinan",
+        "armada" => "Armada",
         _ => "Inventaris",
     }
 }
@@ -144,6 +154,97 @@ LIMIT 50;";
 /// ke Keuangan dan ke Pimpinan. Cermin `AWALAN_BUKA*`.
 const AWALAN_BUKA: &str = "buka:";
 const AWALAN_BUKA_PIMPINAN: &str = "buka-pimpinan:";
+
+/// Laporan perjalanan (v34) disaring jam cloud `diterima_cloud` (UTC), bukan
+/// jam perangkat: laporan offline yang telat sampai tetap dikirim selama sampai
+/// di cloud dalam 7 hari. Parameter pertama = `aktif_sejak`. Cermin
+/// `TELEGRAM_SQL_TRIP_*`; teksnya diperiksa sama oleh `telegram.test.ts`.
+pub(crate) const SQL_TRIP_KENDALA: &str = "SELECT l.id_laporan, l.id_perjalanan, l.jenis, l.mode_ganti, l.jenis_kendala, l.terlambat_menit,
+       l.nama_lokasi, l.keterangan, l.id_karyawan, l.id_karyawan_baru, l.id_kendaraan_baru, l.waktu_perangkat,
+       p.nomor, p.id_karyawan AS awal_karyawan, p.id_kendaraan AS awal_kendaraan,
+       datetime(l.waktu_perangkat, '+7 hours') AS waktu_wib,
+       COALESCE(CAST(ROUND((julianday(l.diterima_cloud) - julianday(l.waktu_perangkat)) * 1440) AS INTEGER), 0) AS telat_menit,
+       COALESCE(o.nama_operator, l.dilaporkan_oleh) AS oleh
+FROM drv_laporan l
+JOIN drv_perjalanan p ON p.id_perjalanan = l.id_perjalanan
+LEFT JOIN master_operator o ON o.username = l.dilaporkan_oleh
+WHERE l.diterima_cloud >= ? AND l.diterima_cloud >= datetime('now', '-7 days')
+  AND l.jenis = 'Kendala'
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-kendala:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;";
+
+/// Parameter: `aktif_sejak`, jenis laporan penutup, awalan id (`TRIP_TUTUP`).
+pub(crate) const SQL_TRIP_TUTUP: &str = "SELECT l.id_laporan, l.id_perjalanan, l.jenis, l.mode_ganti, l.jenis_kendala, l.terlambat_menit,
+       l.nama_lokasi, l.keterangan, l.id_karyawan, l.id_karyawan_baru, l.id_kendaraan_baru, l.waktu_perangkat,
+       p.nomor, p.id_karyawan AS awal_karyawan, p.id_kendaraan AS awal_kendaraan,
+       datetime(l.waktu_perangkat, '+7 hours') AS waktu_wib,
+       COALESCE(CAST(ROUND((julianday(l.diterima_cloud) - julianday(l.waktu_perangkat)) * 1440) AS INTEGER), 0) AS telat_menit,
+       COALESCE(o.nama_operator, l.dilaporkan_oleh) AS oleh
+FROM drv_laporan l
+JOIN drv_perjalanan p ON p.id_perjalanan = l.id_perjalanan
+LEFT JOIN master_operator o ON o.username = l.dilaporkan_oleh
+WHERE l.diterima_cloud >= ? AND l.diterima_cloud >= datetime('now', '-7 days')
+  AND l.jenis = ?
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = ? || l.id_perjalanan)
+ORDER BY l.diterima_cloud, l.waktu_perangkat, l.id_laporan
+LIMIT 50;";
+
+pub(crate) const SQL_TRIP_GANTI_IZIN: &str = "SELECT l.id_laporan, l.id_perjalanan, l.jenis, l.mode_ganti, l.jenis_kendala, l.terlambat_menit,
+       l.nama_lokasi, l.keterangan, l.id_karyawan, l.id_karyawan_baru, l.id_kendaraan_baru, l.waktu_perangkat,
+       p.nomor, p.id_karyawan AS awal_karyawan, p.id_kendaraan AS awal_kendaraan,
+       datetime(l.waktu_perangkat, '+7 hours') AS waktu_wib,
+       COALESCE(CAST(ROUND((julianday(l.diterima_cloud) - julianday(l.waktu_perangkat)) * 1440) AS INTEGER), 0) AS telat_menit,
+       COALESCE(o.nama_operator, l.dilaporkan_oleh) AS oleh
+FROM drv_laporan l
+JOIN drv_perjalanan p ON p.id_perjalanan = l.id_perjalanan
+LEFT JOIN master_operator o ON o.username = l.dilaporkan_oleh
+WHERE l.diterima_cloud >= ? AND l.diterima_cloud >= datetime('now', '-7 days')
+  AND l.jenis IN ('Ganti Kendaraan', 'Ganti Driver') AND l.mode_ganti IN ('Darurat', 'Minta Izin')
+  AND NOT EXISTS (SELECT 1 FROM drv_laporan k WHERE k.id_perjalanan = l.id_perjalanan AND k.jenis IN ('Disetujui', 'Ditolak') AND k.id_ref = l.id_laporan)
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-ganti:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;";
+
+pub(crate) const SQL_TRIP_LOKASI_PALSU: &str = "SELECT l.id_laporan, l.id_perjalanan, l.jenis, l.mode_ganti, l.jenis_kendala, l.terlambat_menit,
+       l.nama_lokasi, l.keterangan, l.id_karyawan, l.id_karyawan_baru, l.id_kendaraan_baru, l.waktu_perangkat,
+       p.nomor, p.id_karyawan AS awal_karyawan, p.id_kendaraan AS awal_kendaraan,
+       datetime(l.waktu_perangkat, '+7 hours') AS waktu_wib,
+       COALESCE(CAST(ROUND((julianday(l.diterima_cloud) - julianday(l.waktu_perangkat)) * 1440) AS INTEGER), 0) AS telat_menit,
+       COALESCE(o.nama_operator, l.dilaporkan_oleh) AS oleh
+FROM drv_laporan l
+JOIN drv_perjalanan p ON p.id_perjalanan = l.id_perjalanan
+LEFT JOIN master_operator o ON o.username = l.dilaporkan_oleh
+WHERE l.diterima_cloud >= ? AND l.diterima_cloud >= datetime('now', '-7 days')
+  AND l.lokasi_palsu = 1
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'drv-palsu:' || l.id_laporan)
+ORDER BY l.diterima_cloud, l.id_laporan
+LIMIT 50;";
+
+/// Laporan penutup surat jalan → (jenis, kejadian, awalan id). Satu pesan per
+/// surat jalan: laporan penutup kembar dari dua perangkat offline berbagi id.
+/// Cermin `TRIP_TUTUP`.
+pub(crate) const TRIP_TUTUP: [(&str, &str, &str); 3] = [
+    ("Selesai", "trip_selesai", "drv-selesai:"),
+    ("Tidak Jalan", "trip_tidak_jalan", "drv-tidak-jalan:"),
+    ("Dibatalkan", "trip_dibatalkan", "drv-batal:"),
+];
+
+/// Bahan `penugasan`: seluruh laporan satu surat jalan. Cermin
+/// `TELEGRAM_SQL_TRIP_LAPORAN`.
+pub(crate) const SQL_TRIP_LAPORAN: &str = "SELECT id_laporan, jenis, mode_ganti, id_ref, waktu_perangkat, id_karyawan_baru, id_kendaraan_baru FROM drv_laporan WHERE id_perjalanan = ?;";
+pub(crate) const SQL_NAMA_PERSONIL: &str = "SELECT nama FROM master_data WHERE id_unik = ?;";
+pub(crate) const SQL_LABEL_KENDARAAN: &str = "SELECT TRIM(COALESCE(j.nama, '') || ' ' || k.identitas) AS label FROM drv_kendaraan k LEFT JOIN drv_jenis_kendaraan j ON j.id_jenis = k.id_jenis WHERE k.id_kendaraan = ?;";
+
+pub(crate) fn id_trip_kendala(id_laporan: &str) -> String {
+    format!("drv-kendala:{id_laporan}")
+}
+pub(crate) fn id_trip_ganti_izin(id_laporan: &str) -> String {
+    format!("drv-ganti:{id_laporan}")
+}
+pub(crate) fn id_trip_lokasi_palsu(id_laporan: &str) -> String {
+    format!("drv-palsu:{id_laporan}")
+}
 
 const SQL_JAM_WIB: &str = "SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam;";
 
@@ -403,6 +504,154 @@ pub fn pesan_gaji_status(
         baris.push(format!("Alasan: {}", potong(catatan, 300)));
     }
     Some(baris.join("\n"))
+}
+
+/// Selisih jam cloud dan jam kejadian di atas ini ditandai terlambat (Q-38).
+/// Cermin `MENIT_TERLAMBAT`.
+pub const MENIT_TERLAMBAT: i64 = 30;
+
+/// Cermin `IsiLaporanPerjalanan`. `waktu` = jam kejadian WIB
+/// `YYYY-MM-DD HH:MM:SS`; `telat_menit` = jam cloud − jam kejadian. Koordinat,
+/// foto, upah, dan muatan sengaja tidak pernah ikut (Q-37).
+#[derive(Debug, Clone, Default)]
+pub struct IsiLaporan<'a> {
+    pub nomor: &'a str,
+    pub driver: &'a str,
+    pub kendaraan: &'a str,
+    pub tempat: &'a str,
+    pub keterangan: &'a str,
+    pub waktu: &'a str,
+    pub telat_menit: i64,
+}
+
+/// Cermin `waktuTampil`: `2026-10-14 08:05:09` → `14/10/2026 08:05:09 WIB`.
+fn waktu_tampil(waktu: &str) -> String {
+    let mut bagian = waktu.split(' ');
+    let tanggal = bagian.next().unwrap_or("");
+    match bagian.next().filter(|jam| !jam.is_empty()) {
+        Some(jam) => format!("{} {jam} WIB", tanggal_tampil(tanggal)),
+        None => waktu.to_owned(),
+    }
+}
+
+fn baris_driver(isi: &IsiLaporan<'_>) -> String {
+    if isi.kendaraan.is_empty() {
+        format!("Driver: {}", isi.driver)
+    } else {
+        format!("Driver: {} · {}", isi.driver, isi.kendaraan)
+    }
+}
+
+fn tutup_pesan(mut baris: Vec<String>, isi: &IsiLaporan<'_>) -> String {
+    baris.push(format!("Waktu: {}", waktu_tampil(isi.waktu)));
+    if isi.telat_menit > MENIT_TERLAMBAT {
+        baris.push("Dikirim terlambat (offline).".to_owned());
+    }
+    baris.join("\n")
+}
+
+/// Cermin `pesanTripKendala`.
+pub fn pesan_trip_kendala(
+    isi: &IsiLaporan<'_>,
+    jenis_kendala: &str,
+    terlambat_menit: Option<i64>,
+) -> String {
+    let mut baris = vec![
+        if jenis_kendala.is_empty() {
+            format!("🚧 Kendala: {}", isi.nomor)
+        } else {
+            format!("🚧 Kendala {jenis_kendala}: {}", isi.nomor)
+        },
+        baris_driver(isi),
+    ];
+    if !isi.tempat.is_empty() {
+        baris.push(format!("Tempat: {}", potong(isi.tempat, 100)));
+    }
+    if let Some(menit) = terlambat_menit.filter(|menit| *menit > 0) {
+        baris.push(format!("Perkiraan terlambat: {menit} menit"));
+    }
+    if !isi.keterangan.is_empty() {
+        baris.push(format!("Keterangan: {}", potong(isi.keterangan, 300)));
+    }
+    tutup_pesan(baris, isi)
+}
+
+/// Cermin `pesanTripTutup`. `oleh` = operator bila dicatat dispatcher, kosong
+/// bila dari HP driver. Jenis di luar `TRIP_TUTUP` tidak menghasilkan pesan.
+pub fn pesan_trip_tutup(isi: &IsiLaporan<'_>, jenis: &str, oleh: &str) -> Option<String> {
+    let judul = match jenis {
+        "Selesai" => format!("🏁 Surat jalan {} selesai", isi.nomor),
+        "Tidak Jalan" => format!("⛔ Surat jalan {} tidak jalan", isi.nomor),
+        "Dibatalkan" => format!("🛑 Surat jalan {} dibatalkan", isi.nomor),
+        _ => return None,
+    };
+    let mut baris = vec![judul, baris_driver(isi)];
+    if !isi.tempat.is_empty() {
+        baris.push(format!("Tempat: {}", potong(isi.tempat, 100)));
+    }
+    if !oleh.is_empty() {
+        baris.push(format!("Oleh: {oleh}"));
+    }
+    if !isi.keterangan.is_empty() {
+        baris.push(format!(
+            "{}: {}",
+            if oleh.is_empty() { "Catatan" } else { "Alasan" },
+            potong(isi.keterangan, 300)
+        ));
+    }
+    Some(tutup_pesan(baris, isi))
+}
+
+/// Cermin `pesanTripGantiIzin`. `isi.driver` = pelapor (driver yang meminta);
+/// `dari`/`ke` = driver atau kendaraan sebelum dan sesudah ganti.
+pub fn pesan_trip_ganti_izin(
+    isi: &IsiLaporan<'_>,
+    ganti_driver: bool,
+    darurat: bool,
+    dari: &str,
+    ke: &str,
+) -> String {
+    let objek = if ganti_driver { "driver" } else { "kendaraan" };
+    let mut baris = vec![
+        if darurat {
+            format!("🔁 Ganti {objek} darurat: {}", isi.nomor)
+        } else {
+            format!("🔁 Minta izin ganti {objek}: {}", isi.nomor)
+        },
+        format!("Dari: {dari}"),
+        format!("Ke: {ke}"),
+        format!("Dilaporkan oleh: {}", isi.driver),
+    ];
+    if !isi.keterangan.is_empty() {
+        baris.push(format!("Alasan: {}", potong(isi.keterangan, 300)));
+    }
+    baris.push(
+        if darurat {
+            "Sudah berlaku. Setujui atau tolak di aplikasi."
+        } else {
+            "Berlaku setelah disetujui di aplikasi."
+        }
+        .to_owned(),
+    );
+    tutup_pesan(baris, isi)
+}
+
+/// Cermin `pesanTripLokasiPalsu`. Ditulis sebagai tanda tinjau, bukan vonis.
+pub fn pesan_trip_lokasi_palsu(isi: &IsiLaporan<'_>, jenis_laporan: &str) -> String {
+    let laporan = if isi.tempat.is_empty() {
+        format!("Laporan: {jenis_laporan}")
+    } else {
+        format!("Laporan: {jenis_laporan} · {}", potong(isi.tempat, 100))
+    };
+    tutup_pesan(
+        vec![
+            "⚠️ Perlu ditinjau: lokasi palsu terdeteksi".to_owned(),
+            format!("Surat jalan: {}", isi.nomor),
+            laporan,
+            baris_driver(isi),
+        ],
+        isi,
+    )
 }
 
 pub fn permintaan_kirim(token: &str, chat_id: &str, teks: &str) -> (String, Value) {
@@ -917,7 +1166,211 @@ async fn catat_kejadian(turso: &TursoClient, pengaturan: &Pengaturan) -> Result<
             }
         }
     }
+    catat_armada(turso, pengaturan, &sejak).await?;
     catat_harian(turso, pengaturan).await
+}
+
+/// Driver dan kendaraan yang bertugas TEPAT SEBELUM laporan `row`, menurut
+/// laporan ganti yang berlaku saat itu (keputusan yang datang belakangan tidak
+/// dihitung). Cermin `tugasSebelum`.
+async fn tugas_sebelum(
+    turso: &TursoClient,
+    row: &HashMap<String, Value>,
+) -> Result<Penugasan, CommandError> {
+    let semua = turso
+        .query_one(SQL_TRIP_LAPORAN, vec![json!(text(row, "id_perjalanan"))])
+        .await?
+        .to_objects();
+    let opsi = |baris: &HashMap<String, Value>, kunci: &str| {
+        Some(text(baris, kunci)).filter(|nilai| !nilai.is_empty())
+    };
+    let milik: Vec<[Option<String>; 7]> = semua
+        .iter()
+        .map(|baris| {
+            [
+                "id_laporan",
+                "jenis",
+                "mode_ganti",
+                "id_ref",
+                "waktu_perangkat",
+                "id_karyawan_baru",
+                "id_kendaraan_baru",
+            ]
+            .map(|kunci| opsi(baris, kunci))
+        })
+        .collect();
+    let sasaran = (text(row, "waktu_perangkat"), text(row, "id_laporan"));
+    let laporan: Vec<Laporan<'_>> = milik
+        .iter()
+        .map(|[id, jenis, mode, id_ref, waktu, karyawan, kendaraan]| Laporan {
+            id_laporan: id.as_deref().unwrap_or(""),
+            jenis: jenis.as_deref().unwrap_or(""),
+            mode_ganti: mode.as_deref(),
+            id_ref: id_ref.as_deref(),
+            waktu_perangkat: waktu.as_deref().unwrap_or(""),
+            id_karyawan_baru: karyawan.as_deref(),
+            id_kendaraan_baru: kendaraan.as_deref(),
+            ..Default::default()
+        })
+        .filter(|l| (l.waktu_perangkat, l.id_laporan) < (sasaran.0.as_str(), sasaran.1.as_str()))
+        .collect();
+    Ok(penugasan(
+        &text(row, "awal_karyawan"),
+        &text(row, "awal_kendaraan"),
+        &laporan,
+    ))
+}
+
+/// Isi kolom pertama baris pertama `sql`, atau kosong.
+async fn satu_teks(
+    turso: &TursoClient,
+    sql: &str,
+    id: &str,
+    kolom: &str,
+) -> Result<String, CommandError> {
+    if id.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(turso
+        .query_one(sql, vec![json!(id)])
+        .await?
+        .to_objects()
+        .first()
+        .map(|baris| text(baris, kolom))
+        .unwrap_or_default())
+}
+
+/// Nama personil; bila tidak ada di `master_data`, `cadangan`, lalu id-nya.
+async fn nama_personil(
+    turso: &TursoClient,
+    id: &str,
+    cadangan: &str,
+) -> Result<String, CommandError> {
+    let nama = satu_teks(turso, SQL_NAMA_PERSONIL, id, "nama").await?;
+    let pilihan = [nama.as_str(), cadangan, id]
+        .into_iter()
+        .find(|nilai| !nilai.is_empty())
+        .unwrap_or("-")
+        .to_owned();
+    Ok(pilihan)
+}
+
+/// `<jenis> <identitas>`; kendaraan yang tidak dikenal = id-nya.
+async fn label_kendaraan(turso: &TursoClient, id: &str) -> Result<String, CommandError> {
+    let label = satu_teks(turso, SQL_LABEL_KENDARAAN, id, "label").await?;
+    Ok(if label.is_empty() { id.to_owned() } else { label })
+}
+
+/// Kejadian perjalanan (v34) ke grup Armada. Cermin `catatArmada`. Driver di
+/// pesan = pelapor bila laporan dari HP driver, selain itu driver yang
+/// bertugas; kendaraan = yang bertugas saat kejadian.
+async fn catat_armada(
+    turso: &TursoClient,
+    pengaturan: &Pengaturan,
+    sejak: &str,
+) -> Result<(), CommandError> {
+    let mut sumber: Vec<(&str, &str, Vec<Value>, String)> = Vec::new();
+    if pengaturan.siap("trip_kendala") {
+        sumber.push(("trip_kendala", SQL_TRIP_KENDALA, vec![json!(sejak)], String::new()));
+    }
+    for (jenis, kejadian, awalan) in TRIP_TUTUP {
+        if pengaturan.siap(kejadian) {
+            sumber.push((
+                kejadian,
+                SQL_TRIP_TUTUP,
+                vec![json!(sejak), json!(jenis), json!(awalan)],
+                awalan.to_owned(),
+            ));
+        }
+    }
+    if pengaturan.siap("trip_ganti_izin") {
+        sumber.push(("trip_ganti_izin", SQL_TRIP_GANTI_IZIN, vec![json!(sejak)], String::new()));
+    }
+    if pengaturan.siap("trip_lokasi_palsu") {
+        sumber.push(("trip_lokasi_palsu", SQL_TRIP_LOKASI_PALSU, vec![json!(sejak)], String::new()));
+    }
+
+    for (kejadian, sql, args, awalan) in sumber {
+        let rows = turso.query_one(sql, args).await?.to_objects();
+        for row in rows {
+            let tugas = tugas_sebelum(turso, &row).await?;
+            let pelapor = text(&row, "id_karyawan");
+            let oleh = text(&row, "oleh");
+            let driver = if pelapor.is_empty() {
+                nama_personil(turso, &tugas.id_karyawan, "").await?
+            } else {
+                nama_personil(turso, &pelapor, &oleh).await?
+            };
+            let jenis = text(&row, "jenis");
+            let ganti_driver = jenis == "Ganti Driver";
+            let kendaraan = if kejadian == "trip_ganti_izin" {
+                String::new()
+            } else {
+                label_kendaraan(turso, &tugas.id_kendaraan).await?
+            };
+            let (nomor, tempat, keterangan, waktu) = (
+                text(&row, "nomor"),
+                text(&row, "nama_lokasi"),
+                text(&row, "keterangan"),
+                text(&row, "waktu_wib"),
+            );
+            let isi = IsiLaporan {
+                nomor: &nomor,
+                driver: &driver,
+                kendaraan: &kendaraan,
+                tempat: &tempat,
+                keterangan: &keterangan,
+                waktu: &waktu,
+                telat_menit: int(&row, "telat_menit"),
+            };
+            let id_laporan = text(&row, "id_laporan");
+            let (id, pesan) = match kejadian {
+                "trip_kendala" => (
+                    id_trip_kendala(&id_laporan),
+                    Some(pesan_trip_kendala(
+                        &isi,
+                        &text(&row, "jenis_kendala"),
+                        Some(int(&row, "terlambat_menit")),
+                    )),
+                ),
+                "trip_ganti_izin" => {
+                    let (dari, ke) = if ganti_driver {
+                        (
+                            nama_personil(turso, &tugas.id_karyawan, "").await?,
+                            nama_personil(turso, &text(&row, "id_karyawan_baru"), "").await?,
+                        )
+                    } else {
+                        (
+                            label_kendaraan(turso, &tugas.id_kendaraan).await?,
+                            label_kendaraan(turso, &text(&row, "id_kendaraan_baru")).await?,
+                        )
+                    };
+                    (
+                        id_trip_ganti_izin(&id_laporan),
+                        Some(pesan_trip_ganti_izin(
+                            &isi,
+                            ganti_driver,
+                            text(&row, "mode_ganti") == "Darurat",
+                            &dari,
+                            &ke,
+                        )),
+                    )
+                }
+                "trip_lokasi_palsu" => (
+                    id_trip_lokasi_palsu(&id_laporan),
+                    Some(pesan_trip_lokasi_palsu(&isi, &jenis)),
+                ),
+                _ => (
+                    format!("{awalan}{}", text(&row, "id_perjalanan")),
+                    pesan_trip_tutup(&isi, &jenis, if pelapor.is_empty() { &oleh } else { "" }),
+                ),
+            };
+            if let Some(pesan) = pesan {
+                antrekan(turso, &id, kejadian, &pesan).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Cermin `catatBukaBuku`: awalan id menentukan grup tujuannya.
@@ -1319,6 +1772,170 @@ mod tests {
         assert_eq!(bidang_kejadian("gaji_status"), Some("pimpinan"));
         assert_eq!(bidang_kejadian("buka_buku_pimpinan"), Some("pimpinan"));
         assert_eq!(bidang_kejadian("gaji"), None);
+        for kejadian in &KEJADIAN[7..] {
+            assert_eq!(bidang_kejadian(kejadian), Some("armada"));
+        }
+        for (_, kejadian, _) in TRIP_TUTUP {
+            assert!(KEJADIAN.contains(&kejadian));
+        }
+        assert_eq!(id_trip_kendala("lap-1"), "drv-kendala:lap-1");
+        assert_eq!(id_trip_ganti_izin("lap-2"), "drv-ganti:lap-2");
+        assert_eq!(id_trip_lokasi_palsu("lap-3"), "drv-palsu:lap-3");
+    }
+
+    // Vektor yang sama diuji di `validations/telegram.test.ts`.
+    #[test]
+    fn isi_pesan_perjalanan() {
+        let isi = IsiLaporan {
+            nomor: "SJ-2611-WAB12-001",
+            driver: "Budi Santoso",
+            kendaraan: "CDD B 1234 XYZ",
+            tempat: "Tol Cikampek KM 57",
+            keterangan: "Radiator bocor",
+            waktu: "2026-11-09 14:32:05",
+            telat_menit: 0,
+        };
+        assert_eq!(
+            pesan_trip_kendala(&isi, "Kendaraan Rusak", Some(90)),
+            "🚧 Kendala Kendaraan Rusak: SJ-2611-WAB12-001\nDriver: Budi Santoso · CDD B 1234 XYZ\nTempat: Tol Cikampek KM 57\nPerkiraan terlambat: 90 menit\nKeterangan: Radiator bocor\nWaktu: 09/11/2026 14:32:05 WIB"
+        );
+        let polos = IsiLaporan { kendaraan: "", tempat: "", keterangan: "", telat_menit: 31, ..isi.clone() };
+        assert_eq!(
+            pesan_trip_kendala(&polos, "", Some(0)),
+            "🚧 Kendala: SJ-2611-WAB12-001\nDriver: Budi Santoso\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline)."
+        );
+        let tepat = IsiLaporan { telat_menit: 30, ..polos.clone() };
+        assert!(!pesan_trip_kendala(&tepat, "Macet", None).contains("terlambat"));
+
+        let selesai = IsiLaporan { tempat: "Gudang Cikarang 2", keterangan: "", ..isi.clone() };
+        assert_eq!(
+            pesan_trip_tutup(&selesai, "Selesai", ""),
+            Some("🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nTempat: Gudang Cikarang 2\nWaktu: 09/11/2026 14:32:05 WIB".to_owned())
+        );
+        let tutup = IsiLaporan { tempat: "", keterangan: "HP driver mati", ..isi.clone() };
+        assert_eq!(
+            pesan_trip_tutup(&tutup, "Selesai", "Dispatcher 1"),
+            Some("🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nOleh: Dispatcher 1\nAlasan: HP driver mati\nWaktu: 09/11/2026 14:32:05 WIB".to_owned())
+        );
+        let catatan = IsiLaporan { tempat: "", keterangan: "Diterima satpam", ..isi.clone() };
+        assert_eq!(
+            pesan_trip_tutup(&catatan, "Selesai", ""),
+            Some("🏁 Surat jalan SJ-2611-WAB12-001 selesai\nDriver: Budi Santoso · CDD B 1234 XYZ\nCatatan: Diterima satpam\nWaktu: 09/11/2026 14:32:05 WIB".to_owned())
+        );
+        let batal = IsiLaporan { tempat: "", keterangan: "Pelanggan menunda", telat_menit: 45, ..isi.clone() };
+        assert_eq!(
+            pesan_trip_tutup(&batal, "Tidak Jalan", "Dispatcher 1"),
+            Some("⛔ Surat jalan SJ-2611-WAB12-001 tidak jalan\nDriver: Budi Santoso · CDD B 1234 XYZ\nOleh: Dispatcher 1\nAlasan: Pelanggan menunda\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline).".to_owned())
+        );
+        assert_eq!(
+            pesan_trip_tutup(&batal, "Dibatalkan", "Dispatcher 1").unwrap().lines().next(),
+            Some("🛑 Surat jalan SJ-2611-WAB12-001 dibatalkan")
+        );
+        assert_eq!(pesan_trip_tutup(&batal, "Kendala", ""), None);
+
+        let ganti = IsiLaporan { keterangan: "Mesin mati", ..isi.clone() };
+        assert_eq!(
+            pesan_trip_ganti_izin(&ganti, false, true, "CDD B 1234 XYZ", "CDE B 999 AA"),
+            "🔁 Ganti kendaraan darurat: SJ-2611-WAB12-001\nDari: CDD B 1234 XYZ\nKe: CDE B 999 AA\nDilaporkan oleh: Budi Santoso\nAlasan: Mesin mati\nSudah berlaku. Setujui atau tolak di aplikasi.\nWaktu: 09/11/2026 14:32:05 WIB"
+        );
+        let izin = IsiLaporan { keterangan: "", driver: "Andi", ..isi.clone() };
+        assert_eq!(
+            pesan_trip_ganti_izin(&izin, true, false, "Budi Santoso", "Andi"),
+            "🔁 Minta izin ganti driver: SJ-2611-WAB12-001\nDari: Budi Santoso\nKe: Andi\nDilaporkan oleh: Andi\nBerlaku setelah disetujui di aplikasi.\nWaktu: 09/11/2026 14:32:05 WIB"
+        );
+
+        assert_eq!(
+            pesan_trip_lokasi_palsu(&selesai, "Tiba Bongkar"),
+            "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-2611-WAB12-001\nLaporan: Tiba Bongkar · Gudang Cikarang 2\nDriver: Budi Santoso · CDD B 1234 XYZ\nWaktu: 09/11/2026 14:32:05 WIB"
+        );
+        assert_eq!(
+            pesan_trip_lokasi_palsu(&polos, "Berangkat"),
+            "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-2611-WAB12-001\nLaporan: Berangkat\nDriver: Budi Santoso\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline)."
+        );
+        assert_eq!(waktu_tampil(""), "");
+        assert_eq!(waktu_tampil("2026-11-09"), "2026-11-09");
+    }
+
+    /// Cermin "kejadian armada" di `services/telegram.test.ts`, dengan data dan
+    /// isi pesan yang sama, terhadap berkas SQLite sungguhan (tanpa HTTP).
+    #[test]
+    fn catat_armada_dari_data_cloud() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let turso = TursoClient::local_file(
+                reqwest::Url::parse("https://telegram-armada.sppg.invalid").expect("origin uji"),
+                dir.path().join("hub.db"),
+                reqwest::Client::new(),
+            );
+            turso.ensure_schema().await.expect("skema");
+            let mut sql = vec![
+                "INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('aktif_sejak', datetime('now', '-1 hour'));".to_owned(),
+                "INSERT OR IGNORE INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit, buffer_shift_malam_menit, offset_generate_alfa, hari_kerja) VALUES (1, 1, 'Kantor', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5');".to_owned(),
+                "INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif) VALUES ('d1', 'Budi', 'Armada', 1, 'Aktif'), ('d2', 'Andi', 'Armada', 1, 'Aktif');".to_owned(),
+                "INSERT INTO drv_jenis_kendaraan (id_jenis, nama, tarif) VALUES ('j1', 'CDD', 100000), ('j2', 'CDE', 50000);".to_owned(),
+                "INSERT INTO drv_kendaraan (id_kendaraan, id_jenis, identitas) VALUES ('v1', 'j1', 'B 1 A'), ('v2', 'j2', 'B 2 B');".to_owned(),
+                "INSERT INTO drv_perjalanan (id_perjalanan, tanggal, seri, nomor_urut, nomor, id_karyawan, id_kendaraan, id_jenis, id_kategori, tarif_kendaraan, tarif_tujuan, dibuat_oleh)
+                 VALUES ('t1', '2026-11-09', 'WEB', 1, 'SJ-1', 'd1', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher'),
+                        ('t2', '2026-11-09', 'WEB', 2, 'SJ-2', 'd2', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher'),
+                        ('t3', '2026-11-09', 'WEB', 3, 'SJ-3', 'd1', 'v1', 'j1', 'k1', 100000, 0, 'dispatcher');".to_owned(),
+            ];
+            for (kunci, nilai) in [
+                ("bot_token", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0"),
+                ("aktif", "1"),
+                ("grup:armada", "-444"),
+            ] {
+                sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('{kunci}', '{nilai}');"));
+            }
+            for kejadian in &KEJADIAN[7..] {
+                sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('kirim:{kejadian}', '1');"));
+            }
+            let lapor = "INSERT INTO drv_laporan (id_laporan, id_perjalanan, jenis, waktu_perangkat, dilaporkan_oleh, diterima_cloud, id_karyawan, jenis_kendala, terlambat_menit, nama_lokasi, mode_ganti, id_kendaraan_baru, id_karyawan_baru, id_ref, keterangan, lokasi_palsu) VALUES";
+            sql.push(format!("{lapor}
+                ('l1', 't1', 'Berangkat', '2026-11-09 01:00:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('l2', 't1', 'Kendala', '2026-11-09 02:00:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', 'Macet', 30, 'Tol Cikampek', NULL, NULL, NULL, NULL, NULL, NULL),
+                ('l3', 't1', 'Ganti Kendaraan', '2026-11-09 03:00:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', NULL, NULL, NULL, 'Darurat', 'v2', NULL, NULL, 'Mesin mati', NULL),
+                ('l4', 't1', 'Selesai', '2026-11-09 05:00:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', NULL, NULL, 'Gudang Cikarang', NULL, NULL, NULL, NULL, NULL, 1),
+                ('l4b', 't1', 'Selesai', '2026-11-09 05:01:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                ('l5', 't2', 'Tidak Jalan', datetime('now', '-2 minutes'), 'dispatcher', datetime('now', '-1 minute'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'Pelanggan menunda', NULL),
+                ('l6', 't3', 'Ganti Driver', '2026-11-09 04:00:00', 'hp-driver', datetime('now', '-1 minute'), 'd1', NULL, NULL, NULL, 'Minta Izin', NULL, 'd2', NULL, NULL, NULL),
+                ('l7', 't3', 'Disetujui', '2026-11-09 04:05:00', 'dispatcher', datetime('now', '-1 minute'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'l6', NULL, NULL),
+                ('l8', 't3', 'Kendala', '2026-11-09 04:10:00', 'hp-driver', datetime('now', '-2 hours'), 'd2', 'Ban', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);"));
+            turso
+                .execute_atomic(sql.into_iter().map(|s| Statement::new(s, vec![])).collect())
+                .await
+                .expect("data uji");
+
+            let pengaturan = baca_pengaturan(&turso).await.unwrap();
+            catat_kejadian(&turso, &pengaturan).await.unwrap();
+            catat_kejadian(&turso, &pengaturan).await.unwrap();
+            let antrean: Vec<(String, String)> = turso
+                .query_one(
+                    "SELECT id_notifikasi, isi_pesan FROM notifikasi_telegram ORDER BY id_notifikasi;",
+                    vec![],
+                )
+                .await
+                .unwrap()
+                .to_objects()
+                .iter()
+                .map(|row| (text(row, "id_notifikasi"), text(row, "isi_pesan")))
+                .collect();
+            let ids: Vec<&str> = antrean.iter().map(|(id, _)| id.as_str()).collect();
+            assert_eq!(
+                ids,
+                ["drv-ganti:l3", "drv-kendala:l2", "drv-palsu:l4", "drv-selesai:t1", "drv-tidak-jalan:t2"]
+            );
+            let isi = |id: &str| antrean.iter().find(|(ada, _)| ada == id).unwrap().1.clone();
+            assert_eq!(isi("drv-kendala:l2"), "🚧 Kendala Macet: SJ-1\nDriver: Budi · CDD B 1 A\nTempat: Tol Cikampek\nPerkiraan terlambat: 30 menit\nWaktu: 09/11/2026 09:00:00 WIB\nDikirim terlambat (offline).");
+            assert_eq!(isi("drv-ganti:l3"), "🔁 Ganti kendaraan darurat: SJ-1\nDari: CDD B 1 A\nKe: CDE B 2 B\nDilaporkan oleh: Budi\nAlasan: Mesin mati\nSudah berlaku. Setujui atau tolak di aplikasi.\nWaktu: 09/11/2026 10:00:00 WIB\nDikirim terlambat (offline).");
+            assert_eq!(isi("drv-selesai:t1"), "🏁 Surat jalan SJ-1 selesai\nDriver: Budi · CDE B 2 B\nTempat: Gudang Cikarang\nWaktu: 09/11/2026 12:00:00 WIB\nDikirim terlambat (offline).");
+            assert_eq!(isi("drv-palsu:l4"), "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-1\nLaporan: Selesai · Gudang Cikarang\nDriver: Budi · CDE B 2 B\nWaktu: 09/11/2026 12:00:00 WIB\nDikirim terlambat (offline).");
+            let tidak_jalan = isi("drv-tidak-jalan:t2");
+            assert!(tidak_jalan.starts_with("⛔ Surat jalan SJ-2 tidak jalan\nDriver: Andi · CDD B 1 A\nOleh: dispatcher\nAlasan: Pelanggan menunda\nWaktu: "));
+            assert!(!tidak_jalan.contains("terlambat"));
+        });
     }
 
     #[test]
@@ -1326,11 +1943,13 @@ mod tests {
         let sah = json!({
             "aktif": true,
             "botToken": "",
-            "grup": { "inventaris": "-100111", "keuangan": "", "pimpinan": "-100333" },
+            "grup": { "inventaris": "-100111", "keuangan": "", "pimpinan": "-100333", "armada": "-100444" },
             "kirim": {
                 "pengajuan_baru": true, "pengajuan_putus": false, "stok_menipis": true,
                 "kasbon_baru": true, "tutup_buku": false,
                 "gaji_status": true, "buka_buku_pimpinan": false,
+                "trip_kendala": true, "trip_selesai": false, "trip_tidak_jalan": true,
+                "trip_dibatalkan": true, "trip_ganti_izin": true, "trip_lokasi_palsu": false,
             },
         });
         let draft = baca_draft(&sah).unwrap();
@@ -1340,7 +1959,8 @@ mod tests {
             vec![
                 ("inventaris", "-100111".to_owned()),
                 ("keuangan", String::new()),
-                ("pimpinan", "-100333".to_owned())
+                ("pimpinan", "-100333".to_owned()),
+                ("armada", "-100444".to_owned())
             ]
         );
         assert_eq!(
@@ -1352,13 +1972,22 @@ mod tests {
                 ("kasbon_baru", true),
                 ("tutup_buku", false),
                 ("gaji_status", true),
-                ("buka_buku_pimpinan", false)
+                ("buka_buku_pimpinan", false),
+                ("trip_kendala", true),
+                ("trip_selesai", false),
+                ("trip_tidak_jalan", true),
+                ("trip_dibatalkan", true),
+                ("trip_ganti_izin", true),
+                ("trip_lokasi_palsu", false)
             ]
         );
 
         let mut asing = sah.clone();
         asing["is_active"] = json!(true);
         assert!(baca_draft(&asing).is_err());
+        let mut tanpa_armada = sah.clone();
+        tanpa_armada["grup"].as_object_mut().unwrap().remove("armada");
+        assert!(baca_draft(&tanpa_armada).is_err());
         let mut kurang = sah.clone();
         kurang["kirim"]
             .as_object_mut()
