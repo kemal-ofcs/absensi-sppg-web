@@ -11,6 +11,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { pengajuTanggal } from "@/lib/services/hr-pengajuan";
 import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 
@@ -156,6 +157,8 @@ export async function auditKualitasAbsensi(
     args: [tanggalTarget],
   });
   const pelapor = new Set(pelaporRes.rows.map((r) => String(r.id_karyawan)));
+  // Pengajuan cuti/izin/sakit berlaku (v37, A-3): tidak dinilai.
+  const pengaju = await pengajuTanggal(targetDb, tanggalTarget);
 
   // ── Pre-load shift ────────────────────────────────────────────────────────
   const shiftRes = await targetDb.execute(
@@ -306,7 +309,7 @@ export async function auditKualitasAbsensi(
     ) {
       continue;
     }
-    if (pelapor.has(idUnik)) continue;
+    if (pelapor.has(idUnik) || pengaju.has(idUnik)) continue;
 
     ringkasan.wajibAbsen++;
 

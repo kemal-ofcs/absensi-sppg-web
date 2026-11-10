@@ -13,6 +13,7 @@ import {
   evaluateHolidayScan,
   type HolidayWhitelistEntry,
 } from "./holiday-whitelist";
+import { kodeKelompok } from "./hr-pengajuan";
 
 type Hasil<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -52,6 +53,15 @@ export interface DataLaporanKehadiran {
   hari: HariLaporan[];
   libur: { tanggal: string; nama: string }[];
   whitelist: HolidayWhitelistEntry[];
+  /** Pengajuan cuti/izin/sakit yang berlaku (HRIS v37). */
+  pengajuan?: PengajuanLaporan[];
+}
+
+export interface PengajuanLaporan {
+  id: string;
+  mulai: string;
+  selesai: string;
+  kelompok: string;
 }
 
 export const KODE_LAPORAN = [
@@ -59,6 +69,7 @@ export const KODE_LAPORAN = [
   ["T", "Hadir, terlambat"],
   ["S", "Sakit"],
   ["I", "Izin"],
+  ["C", "Cuti (pengajuan HRIS)"],
   ["D", "Dispensasi"],
   ["A", "Alfa (tidak hadir tanpa keterangan)"],
   ["L", "Hari libur dari halaman Hari Libur"],
@@ -75,6 +86,7 @@ export interface BarisLaporan {
   menitTerlambat: number;
   sakit: number;
   izin: number;
+  cuti: number;
   dispensasi: number;
   alfa: number;
   tanpaData: number;
@@ -146,10 +158,35 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
   const catatan = new Map(
     data.hari.map((hari) => [`${hari.id}|${hari.tanggal}`, hari]),
   );
+  const kodeAjuan = new Map<string, string>();
+  for (const p of data.pengajuan ?? []) {
+    const kode = kodeKelompok(p.kelompok);
+    if (!kode) continue;
+    for (const t of tanggal) {
+      if (t >= p.mulai && t <= p.selesai && !kodeAjuan.has(`${p.id}|${t}`)) {
+        kodeAjuan.set(`${p.id}|${t}`, kode);
+      }
+    }
+  }
 
   const baris = data.karyawan.map((karyawan): BarisLaporan => {
     const hariMasuk = parseHariKerja(karyawan.hari_kerja);
     const kodeShift = Number(karyawan.kode_shift);
+    const dijadwalkanPada = (t: string) => {
+      const tanggalLibur = libur.has(t);
+      return wajibMasuk({
+        tanggal: t,
+        hariMasuk,
+        libur: tanggalLibur,
+        masukSaatLibur:
+          tanggalLibur &&
+          evaluateHolidayScan(data.whitelist, {
+            tanggal: t,
+            divisi: karyawan.divisi,
+            kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
+          }).allowed,
+      });
+    };
     const hasil: BarisLaporan = {
       karyawan,
       sel: [],
@@ -158,6 +195,7 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
       menitTerlambat: 0,
       sakit: 0,
       izin: 0,
+      cuti: 0,
       dispensasi: 0,
       alfa: 0,
       tanpaData: 0,
@@ -173,6 +211,21 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
       }
       const hari = catatan.get(`${karyawan.id}|${t}`);
       const kode = kodeTercatat(hari);
+      // Pengajuan berlaku kalah dari Hadir (Q-34) tetapi menang atas koreksi
+      // Sakit/Izin/Dispen dan Alfa, dan hanya di tanggal yang dijadwalkan
+      // atau yang punya catatan.
+      const ajuan =
+        kode === "H" || kode === "T"
+          ? null
+          : (kodeAjuan.get(`${karyawan.id}|${t}`) ?? null);
+      if (ajuan && (kode || dijadwalkanPada(t))) {
+        hasil.sel.push(ajuan);
+        hasil.wajibMasuk++;
+        if (ajuan === "S") hasil.sakit++;
+        if (ajuan === "I") hasil.izin++;
+        if (ajuan === "C") hasil.cuti++;
+        continue;
+      }
       if (kode) {
         hasil.sel.push(kode);
         hasil.wajibMasuk++;
@@ -189,19 +242,7 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
       }
 
       const tanggalLibur = libur.has(t);
-      const dijadwalkan = wajibMasuk({
-        tanggal: t,
-        hariMasuk,
-        libur: tanggalLibur,
-        masukSaatLibur:
-          tanggalLibur &&
-          evaluateHolidayScan(data.whitelist, {
-            tanggal: t,
-            divisi: karyawan.divisi,
-            kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
-          }).allowed,
-      });
-      if (dijadwalkan) {
+      if (dijadwalkanPada(t)) {
         hasil.sel.push("-");
         hasil.wajibMasuk++;
         hasil.tanpaData++;

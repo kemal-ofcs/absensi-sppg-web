@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, hris, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -3544,4 +3544,127 @@ pub async fn desktop_hr_document_file_delete(
     require_permission(&state, "hr.document.manage")?;
     let turso = state.get_turso_client()?;
     hris::hapus_berkas(&turso, &id_berkas).await
+}
+
+// ── HRIS fase 2: pengajuan cuti, izin, sakit dan jatah cuti (§17) ──────────
+
+/// Daftar pengajuan + status + tanda, dan semua jenis pengajuan.
+#[tauri::command]
+pub fn desktop_hr_requests(state: State<'_, DesktopState>, filter: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    hr_pengajuan::daftar(&state, &filter)
+}
+
+/// Riwayat keputusan satu pengajuan.
+#[tauri::command]
+pub fn desktop_hr_request_detail(state: State<'_, DesktopState>, id_pengajuan: String) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    hr_pengajuan::rincian(&state, &id_pengajuan)
+}
+
+/// Ajukan atau sunting pengajuan. Urgent juga butuh `hr.request.urgent`.
+#[tauri::command]
+pub fn desktop_hr_request_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.request.submit")?;
+    hr_pengajuan::simpan_pengajuan(&state, &operator, &draft)
+}
+
+/// Setujui, Tolak, Diketahui, atau Batal; izin rinci dinilai per aksi.
+#[tauri::command]
+pub fn desktop_hr_request_decide(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    hr_pengajuan::putuskan(&state, &operator, &draft)
+}
+
+/// Simpan jenis pengajuan (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_request_types_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hr_pengajuan::simpan_jenis(&state, &draft)
+}
+
+/// Simpan aturan cuti tahunan (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_leave_settings_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hr_pengajuan::simpan_aturan(&state, &draft)
+}
+
+/// Jatah cuti per periode satu karyawan.
+#[tauri::command]
+pub fn desktop_hr_leave_balance(state: State<'_, DesktopState>, id_karyawan: String) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    hr_pengajuan::jatah(&state, &id_karyawan)
+}
+
+/// Saldo awal atau koreksi jatah (`hr.leave.adjust`).
+#[tauri::command]
+pub fn desktop_hr_leave_adjust(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.leave.adjust")?;
+    hr_pengajuan::simpan_penyesuaian(&state, &operator.username, &draft)
+}
+
+/// Batalkan penyesuaian jatah (`hr.leave.adjust`).
+#[tauri::command]
+pub fn desktop_hr_leave_adjust_cancel(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.leave.adjust")?;
+    hr_pengajuan::batal_penyesuaian(&state, &operator.username, &draft)
+}
+
+/// Periode cuti berakhir yang belum diproses dan cuti diuangkan.
+#[tauri::command]
+pub fn desktop_hr_leave_periods(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    hr_pengajuan::akhir_periode(&state)
+}
+
+/// Catat sisa cuti periode berakhir sebagai diuangkan (`hr.leave.adjust`).
+#[tauri::command]
+pub fn desktop_hr_leave_period_close(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.leave.adjust")?;
+    hr_pengajuan::proses_akhir_periode(&state, &operator.username, &draft)
+}
+
+/// Daftar lampiran satu pengajuan (khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_request_files(
+    state: State<'_, DesktopState>,
+    id_pengajuan: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    let turso = state.get_turso_client()?;
+    hr_pengajuan::lampiran(&turso, &id_pengajuan).await
+}
+
+/// Isi satu lampiran (khusus cloud).
+#[tauri::command]
+pub async fn desktop_hr_request_file(
+    state: State<'_, DesktopState>,
+    id_berkas: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.request.view")?;
+    let turso = state.get_turso_client()?;
+    hr_pengajuan::isi_lampiran(&turso, &id_berkas).await
+}
+
+/// Tambah lampiran (khusus cloud): pengaju atau HRD.
+#[tauri::command]
+pub async fn desktop_hr_request_file_add(
+    state: State<'_, DesktopState>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    let turso = state.get_turso_client()?;
+    hr_pengajuan::tambah_lampiran(&turso, &operator, &draft).await
+}
+
+/// Hapus lampiran (khusus cloud): pengaju atau HRD.
+#[tauri::command]
+pub async fn desktop_hr_request_file_delete(
+    state: State<'_, DesktopState>,
+    id_berkas: String,
+) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    let turso = state.get_turso_client()?;
+    hr_pengajuan::hapus_lampiran(&turso, &operator, &id_berkas).await
 }

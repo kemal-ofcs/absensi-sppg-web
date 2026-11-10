@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-leave-periods"
+description = "Enables the desktop_hr_leave_periods command without any pre-configured scope."
+commands.allow = ["desktop_hr_leave_periods"]
+
+[[permission]]
+identifier = "deny-desktop-hr-leave-periods"
+description = "Denies the desktop_hr_leave_periods command without any pre-configured scope."
+commands.deny = ["desktop_hr_leave_periods"]

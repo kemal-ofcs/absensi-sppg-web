@@ -308,7 +308,14 @@ pub struct PayrollRecapRow {
     pub daily_rate: i64,
     /// Tanggal unik berstatus Hadir. Berbeda dengan `total_hadir` (jumlah
     /// baris): sesi PENGGANTI di tanggal yang sama tidak menambah hari.
+    /// Sudah termasuk `cuti_dibayar_hari`.
     pub days_present: i64,
+    /// Pengajuan cuti/izin/sakit `Dibayar` (HRIS v37): hari yang ditambahkan ke
+    /// `days_present` dan menit yang ditambahkan ke jam reguler.
+    #[serde(default)]
+    pub cuti_dibayar_hari: i64,
+    #[serde(default)]
+    pub cuti_dibayar_menit: i64,
 }
 
 #[cfg(test)]

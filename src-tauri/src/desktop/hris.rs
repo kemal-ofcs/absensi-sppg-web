@@ -802,7 +802,7 @@ fn internal<E>(_: E) -> CommandError {
     CommandError::internal()
 }
 
-fn dalam_transaksi<T>(
+pub(super) fn dalam_transaksi<T>(
     state: &DesktopState,
     kerja: impl FnOnce(&Transaction<'_>, &str) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
@@ -816,7 +816,7 @@ fn dalam_transaksi<T>(
 
 /// Setiap baris hasil kueri sebagai objek JSON berkunci nama kolom. Payload
 /// outbox = baris lokal apa adanya, jadi handler cloud membaca kolom yang sama.
-fn baris_json(conn: &Connection, sql: &str, arg: Option<&str>) -> Result<Vec<Value>, CommandError> {
+pub(super) fn baris_json(conn: &Connection, sql: &str, arg: Option<&str>) -> Result<Vec<Value>, CommandError> {
     let mut statement = conn.prepare(sql).map_err(internal)?;
     let kolom: Vec<String> = statement.column_names().into_iter().map(str::to_owned).collect();
     let ubah = |row: &rusqlite::Row<'_>| {
@@ -840,7 +840,7 @@ fn baris_json(conn: &Connection, sql: &str, arg: Option<&str>) -> Result<Vec<Val
     baris.collect::<Result<_, _>>().map_err(internal)
 }
 
-fn satu_baris(conn: &Connection, sql: &str, id: &str) -> Result<Value, CommandError> {
+pub(super) fn satu_baris(conn: &Connection, sql: &str, id: &str) -> Result<Value, CommandError> {
     baris_json(conn, sql, Some(id))?
         .into_iter()
         .next()
@@ -858,7 +858,7 @@ fn semua_nama(conn: &Connection, sql: &str, arg: Option<&str>) -> Result<Vec<(St
     baris.collect::<Result<_, _>>().map_err(internal)
 }
 
-fn hari_ini_wib(conn: &Connection) -> Result<String, CommandError> {
+pub(super) fn hari_ini_wib(conn: &Connection) -> Result<String, CommandError> {
     conn.query_row("SELECT date('now', '+7 hours');", [], |r| r.get(0))
         .map_err(internal)
 }
@@ -1480,7 +1480,7 @@ pub fn kontrak(state: &DesktopState, id_karyawan: Option<&str>) -> Result<Value,
 
 // ── Handler cloud (tidak pernah menolak karena master) ─────────────────────
 
-fn id_dari(row: &Value, kolom: &str, entity_key: &str) -> Option<String> {
+pub(super) fn id_dari(row: &Value, kolom: &str, entity_key: &str) -> Option<String> {
     payload_text(row, kolom)
         .or_else(|| Some(entity_key.trim().to_owned()))
         .filter(|id| !id.is_empty())
@@ -1597,7 +1597,7 @@ pub fn cloud_org_karyawan_statements(row: &Value, id_unik: &str) -> Vec<(String,
 
 // ── Khusus cloud: profil dan dokumen (Q-30, Q-45) ──────────────────────────
 
-fn tak_terhubung(error: CommandError) -> CommandError {
+pub(super) fn tak_terhubung(error: CommandError) -> CommandError {
     if error.code == "TURSO_NOT_CONFIGURED" {
         return CommandError::new(
             "TURSO_NOT_CONFIGURED",
@@ -1607,11 +1607,11 @@ fn tak_terhubung(error: CommandError) -> CommandError {
     error
 }
 
-async fn siap(turso: &TursoClient) -> Result<(), CommandError> {
+pub(super) async fn siap(turso: &TursoClient) -> Result<(), CommandError> {
     turso.ensure_schema_current().await.map_err(tak_terhubung)
 }
 
-async fn objek(turso: &TursoClient, sql: &str, args: Vec<Value>) -> Result<Vec<HashMap<String, Value>>, CommandError> {
+pub(super) async fn objek(turso: &TursoClient, sql: &str, args: Vec<Value>) -> Result<Vec<HashMap<String, Value>>, CommandError> {
     Ok(turso.query_one(sql, args).await.map_err(tak_terhubung)?.to_objects())
 }
 

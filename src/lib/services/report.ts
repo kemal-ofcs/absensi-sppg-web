@@ -3,6 +3,10 @@ import "server-only";
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 import {
+  LAPORAN_PENGAJUAN_SQL,
+  PENGAJUAN_BERLAKU_SQL,
+} from "@/lib/validations/hr-pengajuan";
+import {
   type DataLaporanKehadiran,
   validateRentangLaporan,
 } from "@/lib/validations/laporan-kehadiran";
@@ -26,6 +30,8 @@ export interface RekapBulananItem {
   totalSakit: number;
   totalIzin: number;
   totalDispen: number;
+  /** Hari tanpa hadir yang ditutup pengajuan Cuti berlaku (v37). */
+  totalCuti: number;
   totalAlfa: number;
   totalJamKerja: number; // Jam
   totalLembur: number; // Jam
@@ -249,11 +255,14 @@ export const REKAP_BULANAN_SQL = `
     SUM(hadir) AS totalHadir,
     SUM(menit) AS totalTerlambat,
     SUM(CASE WHEN hadir = 1 AND telat > 0 THEN 1 ELSE 0 END) AS frekuensiTelat,
-    SUM(CASE WHEN hadir = 0 AND sakit = 1 THEN 1 ELSE 0 END) AS totalSakit,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 1 THEN 1 ELSE 0 END) AS totalIzin,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 0 AND dispen = 1
+    SUM(CASE WHEN hadir = 0 AND (ajuan = 'Sakit' OR (ajuan IS NULL AND sakit = 1))
+      THEN 1 ELSE 0 END) AS totalSakit,
+    SUM(CASE WHEN hadir = 0 AND (ajuan = 'Izin' OR (ajuan IS NULL AND sakit = 0 AND izin = 1))
+      THEN 1 ELSE 0 END) AS totalIzin,
+    SUM(CASE WHEN hadir = 0 AND ajuan = 'Cuti' THEN 1 ELSE 0 END) AS totalCuti,
+    SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 1
       THEN 1 ELSE 0 END) AS totalDispen,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 0 AND dispen = 0 AND alfa = 1
+    SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 0 AND alfa = 1
       THEN 1 ELSE 0 END) AS totalAlfa,
     ROUND(SUM(jam_kerja) / 60.0, 1) AS totalJamKerja,
     ROUND(SUM(lembur) / 60.0, 1) AS totalLembur
@@ -271,6 +280,7 @@ export const REKAP_BULANAN_SQL = `
       MAX(CASE WHEN status_kehadiran IN ('Dispen', 'Dispensasi')
         THEN 1 ELSE 0 END) AS dispen,
       MAX(CASE WHEN status_kehadiran = 'Alfa' THEN 1 ELSE 0 END) AS alfa,
+      MAX((SELECT p.kelompok FROM hr_pengajuan p WHERE p.id_karyawan = absensi_harian.id_karyawan AND absensi_harian.tanggal BETWEEN p.tanggal_mulai AND p.tanggal_selesai AND p.kelompok IN ('Cuti', 'Izin', 'Sakit') AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.tanggal_mulai, p.id_pengajuan LIMIT 1)) AS ajuan,
       SUM(COALESCE(jam_kerja, 0)) AS jam_kerja,
       SUM(COALESCE(lembur, 0)) AS lembur
     FROM absensi_harian
@@ -326,6 +336,7 @@ export async function getRekapBulanan(filter?: {
       totalSakit: Number(row.totalSakit || 0),
       totalIzin: Number(row.totalIzin || 0),
       totalDispen: Number(row.totalDispen || 0),
+      totalCuti: Number(row.totalCuti || 0),
       totalAlfa: Number(row.totalAlfa || 0),
       totalJamKerja: Number(row.totalJamKerja || 0),
       totalLembur: Number(row.totalLembur || 0),
@@ -422,6 +433,7 @@ export async function getLaporanKehadiran(
     hari: await daftar(LAPORAN_KEHADIRAN_SQL.hari),
     libur: await daftar(LAPORAN_KEHADIRAN_SQL.libur),
     whitelist: await daftar(LAPORAN_KEHADIRAN_SQL.whitelist),
+    pengajuan: await daftar(LAPORAN_PENGAJUAN_SQL),
   };
 }
 

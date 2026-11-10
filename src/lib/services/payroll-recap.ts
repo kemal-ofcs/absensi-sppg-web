@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Client } from "@libsql/client";
+import { cutiDibayar } from "@/lib/services/hr-pengajuan";
 import { pinjamanAktif } from "@/lib/services/loan";
 import {
   applyHolidayFallback,
@@ -49,9 +50,13 @@ export interface PayrollRecapRow {
   daily_rate: number;
   /**
    * Tanggal unik berstatus Hadir. Berbeda dengan `total_hadir` (jumlah baris):
-   * sesi PENGGANTI di tanggal yang sama tidak menambah hari.
+   * sesi PENGGANTI di tanggal yang sama tidak menambah hari. Sudah termasuk
+   * `cuti_dibayar_hari`.
    */
   days_present: number;
+  /** Pengajuan cuti/izin/sakit `Dibayar` (HRIS v37), cermin Rust. */
+  cuti_dibayar_hari: number;
+  cuti_dibayar_menit: number;
   // Extra fields (not part of the Rust PayrollRecapRow response shape, but
   // needed by run creation to build payroll_items without recomputing).
   breakdown_snapshot: string;
@@ -183,6 +188,7 @@ export async function computePayrollRecap(
     bpjsRules,
     aggResult,
     kasbonAktif,
+    cuti,
   ] = await Promise.all([
     loadOvertimeTiers(client, "HARI_KERJA"),
     // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
@@ -244,14 +250,17 @@ export async function computePayrollRecap(
     // Kasbon: jatah cicilan per BULAN menurut bulan tanggal mulai periode.
     // Cerminan `loan::pinjaman_aktif`.
     pinjamanAktif(client, periodStart.slice(0, 7)),
+    // Pengajuan `Dibayar` (A-4): cermin `hr_pengajuan::cuti_dibayar` di rekap Rust.
+    cutiDibayar(client, periodStart, periodEnd),
   ]);
 
   return aggResult.rows.map((row) => {
     const idKaryawan = String(row.id_unik);
     // Tanpa jenjang HARI_LIBUR aktif, jam hari libur dibayar seperti hari
     // biasa. Cermin `apply_holiday_fallback` di rekap Rust.
+    const [cutiHari, cutiMenit] = cuti.get(idKaryawan) ?? [0, 0];
     const [jamKerjaMenit, lemburMenit, liburMenit] = applyHolidayFallback(
-      Number(row.total_jam_kerja_menit || 0),
+      Number(row.total_jam_kerja_menit || 0) + cutiMenit,
       Number(row.total_lembur_menit || 0),
       Number(row.total_libur_menit || 0),
       Number(row.total_libur_jam_kerja_menit || 0),
@@ -262,7 +271,7 @@ export async function computePayrollRecap(
 
     const salaryType = String(row.salary_type || "HOURLY");
     const dailyRate = Number(row.daily_rate || 0);
-    const daysPresent = Number(row.days_present || 0);
+    const daysPresent = Number(row.days_present || 0) + cutiHari;
 
     const regHours = jamKerjaMenit / 60;
     const otHours = lemburMenit / 60;
@@ -294,6 +303,7 @@ export async function computePayrollRecap(
       salary_type: salaryType,
       daily_rate: dailyRate,
       days_present: daysPresent,
+      cuti_dibayar: { hari: cutiHari, menit: cutiMenit },
       rate_per_hour: ratePerHour,
       regular_hours: regHours,
       overtime_hours: otHours,
@@ -334,6 +344,8 @@ export async function computePayrollRecap(
       salary_type: salaryType,
       daily_rate: dailyRate,
       days_present: daysPresent,
+      cuti_dibayar_hari: cutiHari,
+      cuti_dibayar_menit: cutiMenit,
       breakdown_snapshot: breakdownSnapshot,
       bpjs_company_total: pay.bpjsCompany,
     };

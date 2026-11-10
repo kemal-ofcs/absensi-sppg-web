@@ -289,6 +289,32 @@ export const PERMISSION_CATALOG = [
     name: "Kelola Dokumen Karyawan",
     group: "Kepegawaian",
   },
+  // HRIS fase 2 (v37). Sort order cermin seed `app_permission` Rust 1608+.
+  {
+    key: "hr.request.view",
+    name: "Lihat Pengajuan Cuti/Izin/Sakit",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.request.submit",
+    name: "Ajukan Cuti/Izin/Sakit",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.request.urgent",
+    name: "Ajukan dan Setujui Urgent",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.request.decide",
+    name: "Putuskan Pengajuan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.leave.adjust",
+    name: "Sesuaikan Jatah Cuti",
+    group: "Kepegawaian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -358,6 +384,11 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   "trip.pay",
   // Rekening bank menentukan ke mana gaji dikirim.
   "hr.finance.manage",
+  // Urgent dan memutus pengajuan menentukan hari yang tidak di-Alfa-kan dan
+  // dibayar; penyesuaian jatah menambah hak cuti atau menguangkannya.
+  "hr.request.urgent",
+  "hr.request.decide",
+  "hr.leave.adjust",
 ]);
 
 /**
@@ -409,8 +440,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
   // Hanya melapor perjalanan yang sedang ditugaskan kepadanya (cakupan
   // diperiksa backend terhadap `master_operator.id_karyawan`).
   driver: ["trip.report"],
-  // Cermin seed role HRD dan Atasan Rust (v36). Izin pengajuan Atasan
-  // ditambahkan di fase 2.
+  // Cermin seed role HRD dan Atasan Rust (v36, v37).
   hrd: [
     "home.view",
     "employees.view",
@@ -423,8 +453,17 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "hr.contract.manage",
     "hr.document.view",
     "hr.document.manage",
+    "hr.request.view",
+    "hr.request.submit",
+    "hr.request.decide",
   ],
-  atasan: ["home.view", "employees.view"],
+  atasan: [
+    "home.view",
+    "employees.view",
+    "hr.request.view",
+    "hr.request.submit",
+    "hr.request.urgent",
+  ],
 };
 
 export function normalizeRoleKey(value: string) {

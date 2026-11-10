@@ -1232,6 +1232,74 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_hr_kontrak_karyawan ON hr_kontrak(id_karyawan, tanggal_mulai);
+      -- HRIS fase 2 (v37): pengajuan cuti, izin, sakit. Status TIDAK disimpan:
+      -- diturunkan dari keputusan append-only yang sidiknya cocok dengan isi
+      -- pengajuan. Jatah cuti juga tidak disimpan. Lampiran khusus cloud.
+      -- DDL WAJIB identik dengan `turso.rs` dan `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS hr_jenis_pengajuan (
+        id_jenis TEXT PRIMARY KEY,
+        nama TEXT NOT NULL,
+        kelompok TEXT NOT NULL CHECK (kelompok IN ('Cuti', 'Izin', 'Sakit', 'Lembur', 'Tukar Shift', 'Dinas Luar', 'Reimburse')),
+        izin_pemutus TEXT NOT NULL DEFAULT 'hr.request.decide' CHECK (izin_pemutus IN ('hr.request.decide', 'reimburse.decide')),
+        boleh_urgent INTEGER NOT NULL DEFAULT 0 CHECK (boleh_urgent IN (0, 1)),
+        potong_jatah INTEGER NOT NULL DEFAULT 0 CHECK (potong_jatah IN (0, 1)),
+        dampak_gaji TEXT NOT NULL CHECK (dampak_gaji IN ('Dibayar', 'Potong Gaji', 'Tidak Berpengaruh')),
+        maks_hari INTEGER CHECK (maks_hari IS NULL OR maks_hari > 0),
+        satuan_maks TEXT NOT NULL DEFAULT 'Hari Kerja' CHECK (satuan_maks IN ('Hari Kerja', 'Hari Kalender')),
+        wajib_dokumen INTEGER NOT NULL DEFAULT 0 CHECK (wajib_dokumen IN (0, 1)),
+        is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (potong_jatah = 0 OR kelompok = 'Cuti')
+      );
+      CREATE TABLE IF NOT EXISTS hr_pengajuan (
+        id_pengajuan TEXT PRIMARY KEY,
+        id_karyawan TEXT NOT NULL,
+        id_jenis TEXT NOT NULL,
+        kelompok TEXT NOT NULL CHECK (kelompok IN ('Cuti', 'Izin', 'Sakit', 'Lembur', 'Tukar Shift', 'Dinas Luar', 'Reimburse')),
+        potong_jatah INTEGER NOT NULL DEFAULT 0 CHECK (potong_jatah IN (0, 1)),
+        dampak_gaji TEXT NOT NULL CHECK (dampak_gaji IN ('Dibayar', 'Potong Gaji', 'Tidak Berpengaruh')),
+        tanggal_mulai TEXT NOT NULL,
+        tanggal_selesai TEXT NOT NULL,
+        setengah_hari INTEGER NOT NULL DEFAULT 0 CHECK (setengah_hari IN (0, 1)),
+        alasan TEXT NOT NULL,
+        sidik TEXT NOT NULL,
+        diajukan_oleh TEXT NOT NULL,
+        waktu_perangkat TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (tanggal_selesai >= tanggal_mulai),
+        CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_karyawan ON hr_pengajuan(id_karyawan, tanggal_mulai);
+      CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tanggal ON hr_pengajuan(tanggal_mulai, tanggal_selesai);
+      -- Append-only. `diterima_cloud` kosong sampai barisnya tertarik dari cloud.
+      CREATE TABLE IF NOT EXISTS hr_pengajuan_keputusan (
+        id_keputusan TEXT PRIMARY KEY,
+        id_pengajuan TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Setujui', 'Tolak', 'Setujui Urgent', 'Diketahui', 'Batal')),
+        sidik TEXT NOT NULL,
+        alasan TEXT,
+        oleh TEXT NOT NULL,
+        waktu_perangkat TEXT NOT NULL,
+        diterima_cloud TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_keputusan_pengajuan ON hr_pengajuan_keputusan(id_pengajuan);
+      -- Append-only. Pembatalan `batal-<id>`, diuangkan `uang:<karyawan>:<periode>`.
+      CREATE TABLE IF NOT EXISTS hr_cuti_penyesuaian (
+        id_penyesuaian TEXT PRIMARY KEY,
+        id_karyawan TEXT NOT NULL,
+        periode TEXT NOT NULL,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Saldo Awal', 'Koreksi', 'Diuangkan', 'Pembatalan')),
+        id_ref TEXT,
+        hari INTEGER NOT NULL,
+        nominal INTEGER,
+        alasan TEXT NOT NULL,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_cuti_penyesuaian_karyawan ON hr_cuti_penyesuaian(id_karyawan, periode);
       -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
       -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
       -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
@@ -1255,6 +1323,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     seed_payroll_rate_tables(&connection)?;
     super::accounting::seed_akun_bawaan(&connection)
         .map_err(|_| "Bagan akun bawaan tidak dapat disiapkan.".to_owned())?;
+    super::hr_pengajuan::seed_jenis_bawaan(&connection)
+        .map_err(|_| "Jenis pengajuan bawaan tidak dapat disiapkan.".to_owned())?;
 
     // Vonis verifikasi wajah pada foto bukti (v19). NULL = scan itu tidak
     // diperiksa wajahnya (fitur mati, atau foto lama).
@@ -1633,6 +1703,11 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "hr_divisi_nama",
     "hr_jabatan",
     "hr_kontrak",
+    // v37: pengajuan dan jatah cuti. Lampirannya khusus cloud.
+    "hr_jenis_pengajuan",
+    "hr_pengajuan",
+    "hr_pengajuan_keputusan",
+    "hr_cuti_penyesuaian",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke
@@ -1719,6 +1794,9 @@ pub fn reset_cloud_linked_data(
     // Bagan akun bawaan sama halnya: seed aplikasi, bukan data database lama.
     super::accounting::seed_akun_bawaan(&transaction).map_err(|_| {
         CommandError::new("LOCAL_RESET_FAILED", "Bagan akun bawaan tidak dapat disiapkan.")
+    })?;
+    super::hr_pengajuan::seed_jenis_bawaan(&transaction).map_err(|_| {
+        CommandError::new("LOCAL_RESET_FAILED", "Jenis pengajuan bawaan tidak dapat disiapkan.")
     })?;
 
     transaction.commit().map_err(|_| CommandError::internal())?;

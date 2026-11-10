@@ -6,6 +6,11 @@ import {
 } from "@/lib/rbac/catalog";
 import { AKUN_BAWAAN, SEED_AKUN_SQL } from "@/lib/validations/accounting";
 import {
+  JENIS_BAWAAN,
+  SEED_JENIS_SQL,
+  seedJenisArgs,
+} from "@/lib/validations/hr-pengajuan";
+import {
   MIGRASI_ORGANISASI_SQL,
   SEED_JENIS_DOKUMEN_SQL,
 } from "@/lib/validations/hris";
@@ -46,6 +51,7 @@ const TELEGRAM_NOTIFICATION_MIGRATION_VERSION = 33;
 const DRIVER_TRIP_MIGRATION_VERSION = 34;
 const DRIVER_WAGE_MIGRATION_VERSION = 35;
 const HRIS_ORG_MIGRATION_VERSION = 36;
+const HRIS_REQUEST_MIGRATION_VERSION = 37;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2059,6 +2065,114 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-org', ?);`,
     args: [HRIS_ORG_MIGRATION_VERSION, now],
+  });
+
+  // v37: HRIS fase 2. Pengajuan dan jatah cuti tersinkron (DDL WAJIB identik
+  // dengan `storage.rs` dan `turso.rs`); lampiran KHUSUS CLOUD.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_jenis_pengajuan (
+      id_jenis TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      kelompok TEXT NOT NULL CHECK (kelompok IN ('Cuti', 'Izin', 'Sakit', 'Lembur', 'Tukar Shift', 'Dinas Luar', 'Reimburse')),
+      izin_pemutus TEXT NOT NULL DEFAULT 'hr.request.decide' CHECK (izin_pemutus IN ('hr.request.decide', 'reimburse.decide')),
+      boleh_urgent INTEGER NOT NULL DEFAULT 0 CHECK (boleh_urgent IN (0, 1)),
+      potong_jatah INTEGER NOT NULL DEFAULT 0 CHECK (potong_jatah IN (0, 1)),
+      dampak_gaji TEXT NOT NULL CHECK (dampak_gaji IN ('Dibayar', 'Potong Gaji', 'Tidak Berpengaruh')),
+      maks_hari INTEGER CHECK (maks_hari IS NULL OR maks_hari > 0),
+      satuan_maks TEXT NOT NULL DEFAULT 'Hari Kerja' CHECK (satuan_maks IN ('Hari Kerja', 'Hari Kalender')),
+      wajib_dokumen INTEGER NOT NULL DEFAULT 0 CHECK (wajib_dokumen IN (0, 1)),
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (potong_jatah = 0 OR kelompok = 'Cuti')
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pengajuan (
+      id_pengajuan TEXT PRIMARY KEY,
+      id_karyawan TEXT NOT NULL,
+      id_jenis TEXT NOT NULL,
+      kelompok TEXT NOT NULL CHECK (kelompok IN ('Cuti', 'Izin', 'Sakit', 'Lembur', 'Tukar Shift', 'Dinas Luar', 'Reimburse')),
+      potong_jatah INTEGER NOT NULL DEFAULT 0 CHECK (potong_jatah IN (0, 1)),
+      dampak_gaji TEXT NOT NULL CHECK (dampak_gaji IN ('Dibayar', 'Potong Gaji', 'Tidak Berpengaruh')),
+      tanggal_mulai TEXT NOT NULL,
+      tanggal_selesai TEXT NOT NULL,
+      setengah_hari INTEGER NOT NULL DEFAULT 0 CHECK (setengah_hari IN (0, 1)),
+      alasan TEXT NOT NULL,
+      sidik TEXT NOT NULL,
+      diajukan_oleh TEXT NOT NULL,
+      waktu_perangkat TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (tanggal_selesai >= tanggal_mulai),
+      CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_karyawan ON hr_pengajuan(id_karyawan, tanggal_mulai);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tanggal ON hr_pengajuan(tanggal_mulai, tanggal_selesai);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pengajuan_keputusan (
+      id_keputusan TEXT PRIMARY KEY,
+      id_pengajuan TEXT NOT NULL,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Setujui', 'Tolak', 'Setujui Urgent', 'Diketahui', 'Batal')),
+      sidik TEXT NOT NULL,
+      alasan TEXT,
+      oleh TEXT NOT NULL,
+      waktu_perangkat TEXT NOT NULL,
+      diterima_cloud TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_keputusan_pengajuan ON hr_pengajuan_keputusan(id_pengajuan);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_cuti_penyesuaian (
+      id_penyesuaian TEXT PRIMARY KEY,
+      id_karyawan TEXT NOT NULL,
+      periode TEXT NOT NULL,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Saldo Awal', 'Koreksi', 'Diuangkan', 'Pembatalan')),
+      id_ref TEXT,
+      hari INTEGER NOT NULL,
+      nominal INTEGER,
+      alasan TEXT NOT NULL,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_cuti_penyesuaian_karyawan ON hr_cuti_penyesuaian(id_karyawan, periode);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pengajuan_berkas (
+      id_berkas TEXT PRIMARY KEY,
+      id_pengajuan TEXT NOT NULL,
+      urutan INTEGER NOT NULL CHECK (urutan BETWEEN 1 AND 5),
+      nama_berkas TEXT,
+      mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
+      data_base64 TEXT NOT NULL,
+      diunggah_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_berkas_pengajuan ON hr_pengajuan_berkas(id_pengajuan);",
+  );
+  // Jenis bawaan dari berkas JSON yang sama dengan seed Rust.
+  await client.batch(
+    JENIS_BAWAAN.map((jenis) => ({
+      sql: SEED_JENIS_SQL,
+      args: seedJenisArgs(jenis),
+    })),
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-request', ?);`,
+    args: [HRIS_REQUEST_MIGRATION_VERSION, now],
   });
 
   await client.execute(

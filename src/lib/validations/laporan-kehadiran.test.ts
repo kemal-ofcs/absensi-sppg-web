@@ -95,6 +95,50 @@ const DATA: DataLaporanKehadiran = {
 describe("susunLaporanKehadiran", () => {
   const { tanggal, baris } = susunLaporanKehadiran(DATA);
 
+  test("pengajuan HRIS: kalah dari Hadir, menang atas koreksi dan Alfa", () => {
+    const hasil = susunLaporanKehadiran({
+      ...DATA,
+      pengajuan: [
+        {
+          id: "G1",
+          mulai: "2026-10-05",
+          selesai: "2026-10-06",
+          kelompok: "Cuti",
+        },
+        {
+          id: "P1",
+          mulai: "2026-10-05",
+          selesai: "2026-10-05",
+          kelompok: "Sakit",
+        },
+        {
+          id: "P1",
+          mulai: "2026-10-07",
+          selesai: "2026-10-07",
+          kelompok: "Cuti",
+        },
+        {
+          id: "K1",
+          mulai: "2026-10-08",
+          selesai: "2026-10-09",
+          kelompok: "Izin",
+        },
+      ],
+    }).baris;
+    expect(hasil.map((b) => b.sel.join(""))).toEqual([
+      "CC-DH-",
+      "--LII-",
+      "HTLS-M",
+    ]);
+    expect(hasil[0]).toMatchObject({
+      cuti: 2,
+      izin: 0,
+      alfa: 0,
+      wajibMasuk: 6,
+    });
+    expect(hasil[1]).toMatchObject({ izin: 2, tanpaData: 3 });
+  });
+
   test("tanggal inklusif, urut divisi lalu nama", () => {
     expect(tanggal).toHaveLength(7);
     expect(baris.map((b) => b.karyawan.id)).toEqual(["G1", "K1", "P1"]);

@@ -90,6 +90,12 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
         label: "HRIS",
         desktopSaja: true,
       },
+      {
+        area: "pengajuan",
+        href: "/pengajuan",
+        icon: "calendar",
+        label: "Cuti & Izin",
+      },
       { area: "idcards", href: "/id-cards", icon: "user", label: "ID Card" },
       { area: "shift", href: "/shift", icon: "clock", label: "Shift" },
       {

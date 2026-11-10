@@ -1995,16 +1995,20 @@ fn dashboard_metrics(connection: &rusqlite::Connection) -> Result<Value, Command
 }
 
 /// Cermin persis `REKAP_BULANAN_SQL` di `report.ts` (alasannya ditulis di sana).
-const REKAP_BULANAN_SQL: &str = r#"
+const REKAP_BULANAN_SQL: &str = concat!(
+    r#"
   SELECT id_karyawan, MAX(nama) AS nama, MAX(divisi) AS divisi,
     SUM(hadir) AS totalHadir,
     SUM(menit) AS totalTerlambat,
     SUM(CASE WHEN hadir = 1 AND telat > 0 THEN 1 ELSE 0 END) AS frekuensiTelat,
-    SUM(CASE WHEN hadir = 0 AND sakit = 1 THEN 1 ELSE 0 END) AS totalSakit,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 1 THEN 1 ELSE 0 END) AS totalIzin,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 0 AND dispen = 1
+    SUM(CASE WHEN hadir = 0 AND (ajuan = 'Sakit' OR (ajuan IS NULL AND sakit = 1))
+      THEN 1 ELSE 0 END) AS totalSakit,
+    SUM(CASE WHEN hadir = 0 AND (ajuan = 'Izin' OR (ajuan IS NULL AND sakit = 0 AND izin = 1))
+      THEN 1 ELSE 0 END) AS totalIzin,
+    SUM(CASE WHEN hadir = 0 AND ajuan = 'Cuti' THEN 1 ELSE 0 END) AS totalCuti,
+    SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 1
       THEN 1 ELSE 0 END) AS totalDispen,
-    SUM(CASE WHEN hadir = 0 AND sakit = 0 AND izin = 0 AND dispen = 0 AND alfa = 1
+    SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 0 AND alfa = 1
       THEN 1 ELSE 0 END) AS totalAlfa,
     ROUND(SUM(jam_kerja) / 60.0, 1) AS totalJamKerja,
     ROUND(SUM(lembur) / 60.0, 1) AS totalLembur
@@ -2022,6 +2026,9 @@ const REKAP_BULANAN_SQL: &str = r#"
       MAX(CASE WHEN status_kehadiran IN ('Dispen', 'Dispensasi')
         THEN 1 ELSE 0 END) AS dispen,
       MAX(CASE WHEN status_kehadiran = 'Alfa' THEN 1 ELSE 0 END) AS alfa,
+      MAX((SELECT p.kelompok FROM hr_pengajuan p WHERE p.id_karyawan = absensi_harian.id_karyawan AND absensi_harian.tanggal BETWEEN p.tanggal_mulai AND p.tanggal_selesai AND p.kelompok IN ('Cuti', 'Izin', 'Sakit') AND "#,
+    super::hr_pengajuan::berlaku_sql!(),
+    r#" ORDER BY p.tanggal_mulai, p.id_pengajuan LIMIT 1)) AS ajuan,
       SUM(COALESCE(jam_kerja, 0)) AS jam_kerja,
       SUM(COALESCE(lembur, 0)) AS lembur
     FROM absensi_harian
@@ -2030,7 +2037,8 @@ const REKAP_BULANAN_SQL: &str = r#"
   )
   GROUP BY id_karyawan
   ORDER BY nama, id_karyawan;
-"#;
+"#
+);
 
 fn rekap_bulanan(
     connection: &rusqlite::Connection,
@@ -2053,6 +2061,7 @@ fn rekap_bulanan(
                 "totalSakit": row.get::<_, i64>("totalSakit")?,
                 "totalIzin": row.get::<_, i64>("totalIzin")?,
                 "totalDispen": row.get::<_, i64>("totalDispen")?,
+                "totalCuti": row.get::<_, i64>("totalCuti")?,
                 "totalAlfa": row.get::<_, i64>("totalAlfa")?,
                 "totalJamKerja": row.get::<_, f64>("totalJamKerja")?,
                 "totalLembur": row.get::<_, f64>("totalLembur")?,
@@ -2205,7 +2214,11 @@ fn laporan_kehadiran(
         .query_row("SELECT date('now', '+7 hours');", [], |row| row.get(0))
         .map_err(|_| CommandError::internal())?;
     let mut hasil = json!({ "mulai": mulai, "selesai": selesai, "hari_ini": hari_ini });
-    for (kunci, sql) in LAPORAN_KEHADIRAN_SQL {
+    // Pengajuan cuti/izin/sakit berlaku (v37, A-3), cermin `getLaporanKehadiran`.
+    let semua = LAPORAN_KEHADIRAN_SQL
+        .into_iter()
+        .chain([("pengajuan", super::hr_pengajuan::LAPORAN_PENGAJUAN_SQL)]);
+    for (kunci, sql) in semua {
         let mut statement = connection
             .prepare(sql)
             .map_err(|_| CommandError::internal())?;
@@ -3570,7 +3583,7 @@ INSERT INTO absensi_harian (
         let baris = |id: &str, n: [i64; 7]| {
             json!({"idKaryawan": id, "nama": id, "divisi": "X", "totalHadir": n[0],
                 "totalTerlambat": n[1], "frekuensiTelat": n[2], "totalSakit": n[3],
-                "totalIzin": n[4], "totalDispen": n[5], "totalAlfa": n[6],
+                "totalIzin": n[4], "totalDispen": n[5], "totalAlfa": n[6], "totalCuti": 0,
                 "totalJamKerja": 0.0, "totalLembur": 0.0})
         };
         assert_eq!(
@@ -3590,6 +3603,43 @@ INSERT INTO absensi_harian (
             rekap_bulanan(&connection, "Oktober", 2026, "Y").expect("rekap bulanan"),
             json!([])
         );
+    }
+
+    /// Kembar tes "pengajuan berlaku menang atas Alfa dan koreksi" (`report.test.ts`).
+    #[test]
+    fn rekap_bulanan_pengajuan_menang_atas_alfa_dan_koreksi() {
+        let (_directory, connection) = database_laporan();
+        connection
+            .execute_batch(r#"INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat) VALUES
+  ('p-e', 'E', 'jns-sakit', 'Sakit', 0, 'Dibayar', '2026-10-05', '2026-10-05', 0, 'Demam', 's-e', 'hrd', '2026-10-05 01:00:00'),
+  ('p-d', 'D', 'jns-cuti-tahunan', 'Cuti', 1, 'Dibayar', '2026-10-05', '2026-10-06', 0, 'Mudik', 's-d', 'hrd', '2026-10-05 01:00:00'),
+  ('p-c', 'C', 'jns-izin-dibayar', 'Izin', 0, 'Dibayar', '2026-10-05', '2026-10-05', 0, 'Bank', 's-c', 'hrd', '2026-10-05 01:00:00');
+INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, oleh, waktu_perangkat) VALUES
+  ('k-e', 'p-e', 'Setujui', 's-e', 'hrd2', '2026-10-05 02:00:00'),
+  ('k-d', 'p-d', 'Setujui', 's-d', 'hrd2', '2026-10-05 02:00:00'),
+  ('k-c', 'p-c', 'Setujui', 'lama', 'hrd2', '2026-10-05 02:00:00');
+"#)
+            .expect("fixture pengajuan");
+        let hasil = rekap_bulanan(&connection, "Oktober", 2026, "").expect("rekap bulanan");
+        let cari = |id: &str| -> Value {
+            hasil
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["idKaryawan"] == id)
+                .cloned()
+                .unwrap()
+        };
+        let angka = |b: &Value| -> Vec<i64> {
+            ["totalSakit", "totalIzin", "totalDispen", "totalAlfa", "totalCuti"]
+                .iter()
+                .map(|k| b[*k].as_i64().unwrap())
+                .collect()
+        };
+        // C: keputusan bersidik lama gugur, koreksi Sakit tetap.
+        assert_eq!(angka(&cari("C")), vec![1, 0, 0, 0, 0]);
+        assert_eq!(angka(&cari("D")), vec![0, 0, 0, 0, 1]);
+        assert_eq!(angka(&cari("E")), vec![1, 0, 0, 0, 0]);
     }
 
     #[test]

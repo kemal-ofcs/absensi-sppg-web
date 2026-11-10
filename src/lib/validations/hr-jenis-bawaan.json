@@ -1,0 +1,134 @@
+[
+  {
+    "id_jenis": "jns-cuti-tahunan",
+    "nama": "Cuti Tahunan",
+    "kelompok": "Cuti",
+    "potong_jatah": true,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-menikah",
+    "nama": "Cuti Menikah",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": false,
+    "maks_hari": 3,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-acara-anak",
+    "nama": "Menikahkan / Khitan / Baptis Anak",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": false,
+    "maks_hari": 2,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-istri-melahirkan",
+    "nama": "Istri Melahirkan / Keguguran",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": 2,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-duka-inti",
+    "nama": "Duka Keluarga Inti",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": 2,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-duka-rumah",
+    "nama": "Duka Anggota Rumah",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": 1,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-melahirkan",
+    "nama": "Cuti Melahirkan",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": false,
+    "maks_hari": 90,
+    "satuan_maks": "Hari Kalender",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-cuti-keguguran",
+    "nama": "Keguguran",
+    "kelompok": "Cuti",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": 45,
+    "satuan_maks": "Hari Kalender",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-izin-haid",
+    "nama": "Haid Hari 1-2",
+    "kelompok": "Izin",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": 2,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-sakit",
+    "nama": "Sakit",
+    "kelompok": "Sakit",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true
+  },
+  {
+    "id_jenis": "jns-izin-dibayar",
+    "nama": "Izin Dibayar",
+    "kelompok": "Izin",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-izin-tanpa-upah",
+    "nama": "Izin Tidak Dibayar",
+    "kelompok": "Izin",
+    "potong_jatah": false,
+    "dampak_gaji": "Potong Gaji",
+    "boleh_urgent": true,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  }
+]

@@ -9,6 +9,7 @@ import {
   KONTRAK_BERBAYAR_MUTASI_SQL,
 } from "@/lib/services/cicilan";
 import { batasTutup } from "@/lib/services/tutup-buku";
+import { divisiKini } from "@/lib/validations/hris";
 import {
   ALASAN_FORMULIR,
   asciiLower,
@@ -1311,13 +1312,21 @@ async function jumlahKembali(tx: Executor, idPinjam: string): Promise<number> {
   return Number(result.rows[0]?.kembali ?? 0);
 }
 
+/**
+ * Cermin `penerima_kini`: penerima `Divisi` tampil dengan nama divisi kini;
+ * teks asli di baris mutasi tidak diubah.
+ */
+export function penerimaKini(alias: string): string {
+  return `CASE WHEN ${alias}.penerima_tipe = 'Divisi' THEN ${divisiKini(`${alias}.penerima_nama`)} ELSE ${alias}.penerima_nama END`;
+}
+
 /** Cermin `list_loans`: peminjaman yang belum kembali penuh. */
 export async function listLoans(client: Client): Promise<DaftarPinjaman> {
   const result = await client.execute(
     `SELECT * FROM (
        SELECT p.id_mutasi, p.id_barang, b.nama_barang, b.kode_barang, b.satuan, b.tipe,
               p.tanggal, p.jumlah, p.tempat_asal, p.kondisi_asal, p.id_batch,
-              p.penerima_tipe, p.penerima_nama, p.keperluan,
+              p.penerima_tipe, ${penerimaKini("p")} AS penerima_nama, p.keperluan,
               COALESCE((SELECT SUM(r.jumlah) FROM inventory_mutasi r
                         WHERE r.id_ref = p.id_mutasi AND r.alasan = 'Pengembalian'
                           AND NOT EXISTS (SELECT 1 FROM inventory_mutasi rb
@@ -1512,7 +1521,7 @@ export async function documentInventaris(
   const nomor = text(row.nomor_dokumen)?.trim() || null;
   const result = await client.execute({
     sql: `SELECT m.id_mutasi, m.tanggal, m.alasan, m.jumlah, m.tempat_asal, m.kondisi_asal,
-                 m.tempat_tujuan, m.kondisi_tujuan, bm.tanggal_expired, m.penerima_nama,
+                 m.tempat_tujuan, m.kondisi_tujuan, bm.tanggal_expired, ${penerimaKini("m")} AS penerima_nama,
                  m.keperluan, m.catatan, m.dicatat_oleh, b.nama_barang, b.kode_barang, b.satuan,
                  b.desimal
           FROM inventory_mutasi m
@@ -2366,7 +2375,7 @@ export async function stockCard(
     sql: `SELECT * FROM (
             SELECT m.id_mutasi, m.tanggal, m.jenis, m.alasan, m.jumlah, m.tempat_asal,
                    m.kondisi_asal, m.tempat_tujuan, m.kondisi_tujuan, m.id_batch,
-                   m.tanggal_expired, m.id_ref, m.penerima_tipe, m.penerima_nama, m.keperluan,
+                   m.tanggal_expired, m.id_ref, m.penerima_tipe, ${penerimaKini("m")} AS penerima_nama, m.keperluan,
                    m.sumber_dana, m.nomor_dokumen, m.harga_satuan, m.catatan, m.dicatat_oleh,
                    m.created_at,
                    CASE WHEN m.tempat_tujuan IS NOT NULL AND (?2 IS NULL OR LOWER(m.tempat_tujuan) = LOWER(?2)) THEN m.jumlah ELSE 0 END AS masuk,

@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 36;
+pub const CLIENT_SCHEMA_VERSION: i64 = 37;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -1285,6 +1285,96 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_kontrak",
         delete_missing: false,
     },
+    // HRIS fase 2 (v37): pengajuan dan jatah cuti. Tidak ada baris yang
+    // dihapus; status dan jatah diturunkan dari keputusan dan penyesuaian
+    // append-only. Lampiran khusus cloud, tidak di snapshot.
+    SnapshotTable {
+        payload_key: "hrRequestTypes",
+        domain: "hr-request-type",
+        table: "hr_jenis_pengajuan",
+        columns: &[
+            "id_jenis",
+            "nama",
+            "kelompok",
+            "izin_pemutus",
+            "boleh_urgent",
+            "potong_jatah",
+            "dampak_gaji",
+            "maks_hari",
+            "satuan_maks",
+            "wajib_dokumen",
+            "is_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_jenis",
+        entity_column: "id_jenis",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrRequests",
+        domain: "hr-request",
+        table: "hr_pengajuan",
+        columns: &[
+            "id_pengajuan",
+            "id_karyawan",
+            "id_jenis",
+            "kelompok",
+            "potong_jatah",
+            "dampak_gaji",
+            "tanggal_mulai",
+            "tanggal_selesai",
+            "setengah_hari",
+            "alasan",
+            "sidik",
+            "diajukan_oleh",
+            "waktu_perangkat",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_pengajuan",
+        entity_column: "id_pengajuan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrRequestDecisions",
+        domain: "hr-request-decision",
+        table: "hr_pengajuan_keputusan",
+        columns: &[
+            "id_keputusan",
+            "id_pengajuan",
+            "jenis",
+            "sidik",
+            "alasan",
+            "oleh",
+            "waktu_perangkat",
+            "diterima_cloud",
+            "created_at",
+        ],
+        conflict_column: "id_keputusan",
+        entity_column: "id_keputusan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrLeaveAdjustments",
+        domain: "hr-leave-adjustment",
+        table: "hr_cuti_penyesuaian",
+        columns: &[
+            "id_penyesuaian",
+            "id_karyawan",
+            "periode",
+            "jenis",
+            "id_ref",
+            "hari",
+            "nominal",
+            "alasan",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_penyesuaian",
+        entity_column: "id_penyesuaian",
+        delete_missing: false,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
@@ -1346,6 +1436,10 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("hr-division", "save"),
     ("hr-position", "save"),
     ("hr-contract", "create"),
+    ("hr-request-type", "save"),
+    ("hr-request", "save"),
+    ("hr-request-decision", "create"),
+    ("hr-leave-adjustment", "create"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),

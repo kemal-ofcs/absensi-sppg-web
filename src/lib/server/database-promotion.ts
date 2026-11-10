@@ -293,6 +293,29 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     dependsOn: ["master_data", "hr_dokumen_jenis"],
   },
   { table: "hr_dokumen_berkas", uniqueColumns: [], dependsOn: ["hr_dokumen"] },
+  // v37 — HRIS fase 2. Lampiran khusus cloud, jadi promosi adalah satu-satunya
+  // jalan ia pindah.
+  { table: "hr_jenis_pengajuan", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "hr_pengajuan",
+    uniqueColumns: [],
+    dependsOn: ["master_data", "hr_jenis_pengajuan"],
+  },
+  {
+    table: "hr_pengajuan_keputusan",
+    uniqueColumns: [],
+    dependsOn: ["hr_pengajuan"],
+  },
+  {
+    table: "hr_cuti_penyesuaian",
+    uniqueColumns: [],
+    dependsOn: ["master_data"],
+  },
+  {
+    table: "hr_pengajuan_berkas",
+    uniqueColumns: [],
+    dependsOn: ["hr_pengajuan"],
+  },
 ];
 
 /**

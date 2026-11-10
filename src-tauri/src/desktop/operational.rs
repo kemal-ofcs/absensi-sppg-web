@@ -2297,6 +2297,7 @@ pub fn generate_alfa_harian(
             "jumlahNonaktif": 0,
             "jumlahLibur": 0,
             "jumlahLaporPerjalanan": 0,
+            "jumlahPengajuan": 0,
             "jumlahShiftTidakValid": 0,
             "status": "NONAKTIF",
             "pesan": "Generate Alfa dimatikan melalui Pengaturan"
@@ -2370,6 +2371,9 @@ pub fn generate_alfa_harian(
     // dibaca sekali per tanggal kerja (paling banyak dua: hari ini dan kemarin).
     let mut lapor_perjalanan = 0;
     let mut pelapor: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    // Pengajuan cuti/izin/sakit yang berlaku (v37, A-3), dibaca per tanggal.
+    let mut jumlah_pengajuan = 0;
+    let mut pengaju: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
 
     let now_minute = parse_time_to_minutes(&now_moment.time);
 
@@ -2581,6 +2585,18 @@ pub fn generate_alfa_harian(
             lapor_perjalanan += 1;
             continue;
         }
+        // Cermin `generateAlfaHarian`: pengajuan berlaku menutup tanggal itu.
+        if !pengaju.contains_key(&work_date) {
+            let set = super::hr_pengajuan::pengaju_tanggal(&transaction, &work_date)?;
+            pengaju.insert(work_date.clone(), set);
+        }
+        if pengaju
+            .get(&work_date)
+            .is_some_and(|set| set.contains(&id_unik))
+        {
+            jumlah_pengajuan += 1;
+            continue;
+        }
 
         let month_idx = match work_date.get(5..7).and_then(|m| m.parse::<usize>().ok()) {
             Some(m) if m >= 1 && m <= 12 => m - 1,
@@ -2681,12 +2697,12 @@ pub fn generate_alfa_harian(
             if alfa_dibuat > 0 {
                 (
                     "SELESAI",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Shift Tidak Valid: {shift_tidak_valid}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Pengajuan: {jumlah_pengajuan}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             } else {
                 (
                     "IDLE",
-                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Shift Tidak Valid: {shift_tidak_valid}"),
+                    format!("Generate Alfa Selesai. Dibuat: {alfa_dibuat}, Sudah Ada: {sudah_ada}, Belum Waktunya: {belum_waktunya}, Fleksibel (dinilai): {fleksibel}, Libur: {libur}, Lapor Perjalanan: {lapor_perjalanan}, Pengajuan: {jumlah_pengajuan}, Shift Tidak Valid: {shift_tidak_valid}"),
                 )
             }
         }
@@ -2702,6 +2718,7 @@ pub fn generate_alfa_harian(
         "jumlahNonaktif": nonaktif_count,
         "jumlahLibur": libur,
         "jumlahLaporPerjalanan": lapor_perjalanan,
+        "jumlahPengajuan": jumlah_pengajuan,
         "jumlahShiftTidakValid": shift_tidak_valid,
         "status": status,
         "pesan": pesan
@@ -2950,6 +2967,8 @@ pub fn get_attendance_audit(
     // Driver tanpa terminal di pool (v34): yang melapor perjalanan pada
     // tanggal ini bekerja di jalan, jadi tidak dinilai. Cermin `auditAbsensi`.
     let pelapor = super::driver::pelapor_perjalanan(&connection, &tanggal_target)?;
+    // Pengajuan cuti/izin/sakit yang berlaku (v37, A-3): tidak dinilai.
+    let pengaju = super::hr_pengajuan::pengaju_tanggal(&connection, &tanggal_target)?;
 
     let total_aktif = employees.len() as i64;
     let mut wajib_absen = 0i64;
@@ -3028,7 +3047,7 @@ pub fn get_attendance_audit(
         if !super::hari_kerja::wajib_masuk(&tanggal_target, &hari_masuk, hari_libur.is_some(), false) {
             continue;
         }
-        if pelapor.contains(&id_unik) {
+        if pelapor.contains(&id_unik) || pengaju.contains(&id_unik) {
             continue;
         }
 

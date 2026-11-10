@@ -165,6 +165,33 @@ describe("service inventaris Web", () => {
       "Divisi tidak ditemukan.",
     );
     expect(await stok(idBarang)).toBe(9);
+
+    // Ganti nama divisi (v36): tampilan memakai nama kini, baris mutasi tetap
+    // menyimpan ejaan lama. Cermin tes Rust.
+    await client.executeMultiple(
+      `INSERT INTO hr_divisi (id_divisi, nama) VALUES ('div-keu', 'Finance');
+       INSERT INTO hr_divisi_nama (id_nama, id_divisi, nama, created_at)
+       VALUES ('div-keu:awal', 'div-keu', 'Keuangan', '2026-01-01 00:00:00'),
+              ('div-keu:2', 'div-keu', 'Finance', '2026-02-01 00:00:00');`,
+    );
+    const kartu = await stockCard(
+      client,
+      idBarang,
+      null,
+      "2000-01-01",
+      "2100-12-31",
+    );
+    expect(
+      kartu.baris.find((b) => b.id_mutasi === id_mutasi)?.penerima_nama,
+    ).toBe("Finance");
+    expect((await documentInventaris(client, id_mutasi)).penerima_nama).toBe(
+      "Finance",
+    );
+    const disimpan = await client.execute({
+      sql: "SELECT penerima_nama FROM inventory_mutasi WHERE id_mutasi = ?;",
+      args: [id_mutasi],
+    });
+    expect(disimpan.rows[0]?.penerima_nama).toBe("Keuangan");
   });
 
   test("dua perangkat offline mengeluarkan 2 dan 3 dari stok 10 menghasilkan 5", async () => {

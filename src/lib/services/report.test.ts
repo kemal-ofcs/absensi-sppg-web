@@ -166,6 +166,7 @@ describe("rekap bulanan per karyawan", () => {
     totalIzin: n[4],
     totalDispen: n[5],
     totalAlfa: n[6],
+    totalCuti: n[7] ?? 0,
     totalJamKerja: 0,
     totalLembur: 0,
   });
@@ -184,6 +185,28 @@ describe("rekap bulanan per karyawan", () => {
     expect(
       await getRekapBulanan({ bulan: "Oktober", tahun: 2026, divisi: "Y" }),
     ).toEqual([]);
+  });
+
+  // Kembar `rekap_bulanan_pengajuan_menang_atas_alfa_dan_koreksi` (Rust).
+  test("pengajuan berlaku menang atas Alfa dan koreksi, sama dengan Rust", async () => {
+    await client.executeMultiple(`INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat) VALUES
+  ('p-e', 'E', 'jns-sakit', 'Sakit', 0, 'Dibayar', '2026-10-05', '2026-10-05', 0, 'Demam', 's-e', 'hrd', '2026-10-05 01:00:00'),
+  ('p-d', 'D', 'jns-cuti-tahunan', 'Cuti', 1, 'Dibayar', '2026-10-05', '2026-10-06', 0, 'Mudik', 's-d', 'hrd', '2026-10-05 01:00:00'),
+  ('p-c', 'C', 'jns-izin-dibayar', 'Izin', 0, 'Dibayar', '2026-10-05', '2026-10-05', 0, 'Bank', 's-c', 'hrd', '2026-10-05 01:00:00');
+INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, oleh, waktu_perangkat) VALUES
+  ('k-e', 'p-e', 'Setujui', 's-e', 'hrd2', '2026-10-05 02:00:00'),
+  ('k-d', 'p-d', 'Setujui', 's-d', 'hrd2', '2026-10-05 02:00:00'),
+  ('k-c', 'p-c', 'Setujui', 'lama', 'hrd2', '2026-10-05 02:00:00');
+`);
+    const hasil = await getRekapBulanan({ bulan: "Oktober", tahun: 2026 });
+    const per = new Map(hasil.map((b) => [b.idKaryawan, b]));
+    // C: keputusan bersidik lama gugur, koreksi Sakit tetap.
+    expect(per.get("C")).toEqual(baris("C", [0, 0, 0, 1, 0, 0, 0, 0]));
+    expect(per.get("D")).toEqual(baris("D", [0, 0, 0, 0, 0, 0, 0, 1]));
+    expect(per.get("E")).toEqual(baris("E", [0, 0, 0, 1, 0, 0, 0, 0]));
+    await client.executeMultiple(
+      "DELETE FROM hr_pengajuan_keputusan; DELETE FROM hr_pengajuan;",
+    );
   });
 });
 

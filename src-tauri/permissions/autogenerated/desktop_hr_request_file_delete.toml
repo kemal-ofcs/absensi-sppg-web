@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-request-file-delete"
+description = "Enables the desktop_hr_request_file_delete command without any pre-configured scope."
+commands.allow = ["desktop_hr_request_file_delete"]
+
+[[permission]]
+identifier = "deny-desktop-hr-request-file-delete"
+description = "Denies the desktop_hr_request_file_delete command without any pre-configured scope."
+commands.deny = ["desktop_hr_request_file_delete"]

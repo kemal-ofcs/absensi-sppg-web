@@ -1046,6 +1046,9 @@ pub async fn desktop_get_payroll_recap(
     // periode (sama dengan penundaan dan bulan mulai potong).
     let kasbon_aktif =
         loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
+    // Pengajuan cuti/izin/sakit `Dibayar` (HRIS v37, A-4): hari hadir FLAT_DAILY
+    // dan menit reguler HOURLY. Cermin `cutiDibayar` di `computePayrollRecap`.
+    let cuti_dibayar = crate::desktop::hr_pengajuan::cuti_dibayar(&conn, &period_start, &period_end)?;
 
     let mut stmt = conn
         .prepare(&format!(
@@ -1148,9 +1151,12 @@ pub async fn desktop_get_payroll_recap(
         if let Ok(agg) = item {
             // Tanpa jenjang HARI_LIBUR aktif, jam hari libur dibayar seperti
             // hari biasa; menit yang sudah disesuaikan ini juga yang dibekukan.
+            let (cuti_hari, cuti_menit) =
+                cuti_dibayar.get(&agg.id_unik).copied().unwrap_or((0, 0));
+            let days_present = agg.days_present + cuti_hari;
             let (jam_kerja_menit, lembur_menit, libur_menit) =
                 PayrollCalculator::apply_holiday_fallback(
-                    agg.jam_kerja_menit,
+                    agg.jam_kerja_menit + cuti_menit,
                     agg.lembur_menit,
                     agg.libur_menit,
                     agg.libur_jam_kerja_menit,
@@ -1166,7 +1172,7 @@ pub async fn desktop_get_payroll_recap(
                     salary_type: &agg.salary_type,
                     rate_per_hour: agg.rate_per_hour,
                     daily_rate: agg.daily_rate,
-                    days_present: agg.days_present,
+                    days_present,
                     regular_minutes: jam_kerja_menit,
                     overtime_minutes: lembur_menit,
                     holiday_minutes: libur_menit,
@@ -1224,7 +1230,9 @@ pub async fn desktop_get_payroll_recap(
                 est_kasbon: kasbon,
                 salary_type: agg.salary_type,
                 daily_rate: agg.daily_rate,
-                days_present: agg.days_present,
+                days_present,
+                cuti_dibayar_hari: cuti_hari,
+                cuti_dibayar_menit: cuti_menit,
             });
         }
     }
@@ -1352,6 +1360,7 @@ pub async fn desktop_create_payroll_run(
             "salary_type": row.salary_type,
             "daily_rate": row.daily_rate,
             "days_present": row.days_present,
+            "cuti_dibayar": { "hari": row.cuti_dibayar_hari, "menit": row.cuti_dibayar_menit },
             "rate_per_hour": row.rate_per_hour,
             "regular_hours": row.total_regular_hours,
             "overtime_hours": row.total_overtime_hours,

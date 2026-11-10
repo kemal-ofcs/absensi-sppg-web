@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
+import { JatahCutiPanel } from "@/components/hris/JatahCutiPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -32,7 +33,7 @@ import {
   STATUS_NIKAH,
 } from "@/lib/validations/hris";
 
-type Tab = "kerja" | "pribadi" | "keuangan" | "kontrak" | "dokumen";
+type Tab = "kerja" | "pribadi" | "keuangan" | "kontrak" | "dokumen" | "cuti";
 type Isian = Record<string, string>;
 
 const KELAS =
@@ -152,6 +153,9 @@ export function RincianKaryawan({
     ...(boleh("hr.document.view")
       ? ([["dokumen", "Dokumen"]] as Array<[Tab, string]>)
       : []),
+    ...(boleh("hr.request.view")
+      ? ([["cuti", "Cuti"]] as Array<[Tab, string]>)
+      : []),
   ];
   return (
     <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -203,6 +207,9 @@ export function RincianKaryawan({
       ) : null}
       {tab === "dokumen" ? (
         <DokumenPanel id={id} bolehUbah={boleh("hr.document.manage")} />
+      ) : null}
+      {tab === "cuti" ? (
+        <JatahCutiPanel idKaryawan={id} bolehUbah={boleh("hr.leave.adjust")} />
       ) : null}
     </div>
   );

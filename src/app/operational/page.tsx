@@ -733,6 +733,13 @@ export default function OperationalPage() {
                 </option>
                 <option value="Terlambat">Terlambat (Disesuaikan)</option>
               </PilihCari>
+              {correction.jenis_koreksi === "Sakit" ||
+              correction.jenis_koreksi === "Izin" ? (
+                <p className="mt-1 text-xs text-amber-200">
+                  Untuk catatan baru, pakai Pengajuan di menu Cuti &amp; Izin
+                  supaya ada persetujuan HRD dan jejak jatah cuti.
+                </p>
+              ) : null}
             </div>
 
             {/* Jam Koreksi */}

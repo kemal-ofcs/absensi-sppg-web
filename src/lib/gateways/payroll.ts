@@ -94,6 +94,9 @@ export interface PayrollRecapRow {
   daily_rate: number;
   /** Tanggal unik berstatus Hadir (dasar upah `FLAT_DAILY`). */
   days_present: number;
+  /** Pengajuan cuti/izin/sakit `Dibayar` (HRIS v37), sudah termasuk di hari dan jam. */
+  cuti_dibayar_hari?: number;
+  cuti_dibayar_menit?: number;
 }
 
 export interface PayrollRunRow {

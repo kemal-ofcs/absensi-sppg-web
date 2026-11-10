@@ -12,6 +12,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { pengajuTanggal } from "@/lib/services/hr-pengajuan";
 import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 import {
@@ -32,6 +33,8 @@ export interface RingkasanAlfa {
   jumlahLibur: number;
   /** Dilewati karena melapor perjalanan pada tanggal itu (driver, v34). */
   jumlahLaporPerjalanan: number;
+  /** Dilewati karena pengajuan cuti/izin/sakit berlaku (v37, A-3). */
+  jumlahPengajuan: number;
   /** Karyawan yang dilewati karena shift-nya hilang / jam shift tidak terurai. */
   jumlahShiftTidakValid: number;
   status: string;
@@ -82,6 +85,7 @@ export async function generateAlfaHarian(
       jumlahNonaktif: 0,
       jumlahLibur: 0,
       jumlahLaporPerjalanan: 0,
+      jumlahPengajuan: 0,
       jumlahShiftTidakValid: 0,
       status: "NONAKTIF",
       pesan: "Generate Alfa dimatikan melalui Pengaturan",
@@ -163,6 +167,8 @@ export async function generateAlfaHarian(
   // dibaca sekali per tanggal. Cermin `generate_alfa_harian`.
   let jumlahLaporPerjalanan = 0;
   const pelapor = new Map<string, Set<string>>();
+  let jumlahPengajuan = 0;
+  const pengaju = new Map<string, Set<string>>();
 
   for (const row of empRes.rows) {
     const emp = row as Record<string, unknown>;
@@ -326,6 +332,16 @@ export async function generateAlfaHarian(
       jumlahLaporPerjalanan++;
       continue;
     }
+    // Cermin `generate_alfa_harian`: pengajuan berlaku menutup tanggal itu.
+    let pengajuTgl = pengaju.get(tanggalStr);
+    if (!pengajuTgl) {
+      pengajuTgl = await pengajuTanggal(targetDb, tanggalStr);
+      pengaju.set(tanggalStr, pengajuTgl);
+    }
+    if (pengajuTgl.has(idUnik)) {
+      jumlahPengajuan++;
+      continue;
+    }
 
     const [tY, tM] = tanggalStr.split("-").map(Number);
     const bulanStr = monthNames[tM - 1] || "Januari";
@@ -374,7 +390,7 @@ export async function generateAlfaHarian(
       : "IDLE";
   const pesan = todayHoliday
     ? `Hari ini Hari Libur (${String(todayHoliday.nama_libur || "")}). Generate Alfa dilewati untuk hari ini.`
-    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}, Fleksibel: ${jumlahFleksibel}, Libur: ${jumlahLibur}, Lapor Perjalanan: ${jumlahLaporPerjalanan}, Shift Tidak Valid: ${jumlahShiftTidakValid}`;
+    : `Generate Alfa Selesai. Dibuat: ${jumlahAlfaDibuat}, Sudah Ada: ${jumlahSudahAda}, Belum Waktunya: ${jumlahBelumWaktunya}, Fleksibel: ${jumlahFleksibel}, Libur: ${jumlahLibur}, Lapor Perjalanan: ${jumlahLaporPerjalanan}, Pengajuan: ${jumlahPengajuan}, Shift Tidak Valid: ${jumlahShiftTidakValid}`;
 
   return {
     jumlahAlfaDibuat,
@@ -384,6 +400,7 @@ export async function generateAlfaHarian(
     jumlahNonaktif,
     jumlahLibur,
     jumlahLaporPerjalanan,
+    jumlahPengajuan,
     jumlahShiftTidakValid,
     status: statusSummary,
     pesan,

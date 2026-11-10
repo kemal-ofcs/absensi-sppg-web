@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
+import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
 import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -178,7 +179,10 @@ export function HrisWorkspace() {
       {tab === "struktur" ? <Struktur karyawan={karyawan} org={org} /> : null}
 
       {tab === "organisasi" && bolehOrg ? (
-        <OrganisasiPanel org={org} onBerubah={muat} />
+        <>
+          <OrganisasiPanel org={org} onBerubah={muat} />
+          <PengaturanPengajuan />
+        </>
       ) : null}
     </div>
   );

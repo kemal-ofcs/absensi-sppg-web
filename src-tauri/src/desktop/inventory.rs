@@ -3047,15 +3047,25 @@ pub fn cancel_mutation(
     Ok(json!({ "sukses": true, "id_mutasi": kebalikan.id_mutasi }))
 }
 
+/// Nama penerima untuk tampilan: penerima `Divisi` memakai nama divisi kini
+/// (`DIVISI_KINI_SQL`); teks asli di baris mutasi tidak diubah. Cermin
+/// `penerimaKini`.
+pub fn penerima_kini(alias: &str) -> String {
+    format!(
+        "CASE WHEN {alias}.penerima_tipe = 'Divisi' THEN {} ELSE {alias}.penerima_nama END",
+        super::hris::divisi_kini(&format!("{alias}.penerima_nama"))
+    )
+}
+
 /// Peminjaman yang belum kembali penuh, tertua lebih dulu.
 pub fn list_loans(state: &DesktopState) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT * FROM (
                 SELECT p.id_mutasi, p.id_barang, b.nama_barang, b.kode_barang, b.satuan, b.tipe,
                        p.tanggal, p.jumlah, p.tempat_asal, p.kondisi_asal, p.id_batch,
-                       p.penerima_tipe, p.penerima_nama, p.keperluan,
+                       p.penerima_tipe, {penerima} AS penerima_nama, p.keperluan,
                        COALESCE((SELECT SUM(r.jumlah) FROM inventory_mutasi r
                                  WHERE r.id_ref = p.id_mutasi AND r.alasan = 'Pengembalian'
                                    AND NOT EXISTS (SELECT 1 FROM inventory_mutasi rb
@@ -3069,7 +3079,8 @@ pub fn list_loans(state: &DesktopState) -> Result<Value, CommandError> {
              ) WHERE jumlah > kembali
              ORDER BY tanggal, created_at, id_mutasi
              LIMIT 501;",
-        )
+            penerima = penerima_kini("p")
+        ))
         .map_err(|_| CommandError::internal())?;
     let mut baris: Vec<Value> = statement
         .query_map([], |row| {
@@ -3395,9 +3406,9 @@ pub fn document(state: &DesktopState, id_mutasi: &str) -> Result<Value, CommandE
     // berjenis lain dalam nomor yang sama tidak ikut dicetak.
     let nomor = nomor.filter(|n| !n.trim().is_empty());
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT m.id_mutasi, m.tanggal, m.alasan, m.jumlah, m.tempat_asal, m.kondisi_asal,
-                    m.tempat_tujuan, m.kondisi_tujuan, bm.tanggal_expired, m.penerima_nama,
+                    m.tempat_tujuan, m.kondisi_tujuan, bm.tanggal_expired, {penerima} AS penerima_nama,
                     m.keperluan, m.catatan, m.dicatat_oleh, b.nama_barang, b.kode_barang, b.satuan,
                     b.desimal
              FROM inventory_mutasi m
@@ -3407,7 +3418,8 @@ pub fn document(state: &DesktopState, id_mutasi: &str) -> Result<Value, CommandE
                AND NOT EXISTS (SELECT 1 FROM inventory_mutasi x WHERE x.id_mutasi = 'batal-' || m.id_mutasi)
              ORDER BY m.created_at, m.id_mutasi
              LIMIT 501;",
-        )
+            penerima = penerima_kini("m")
+        ))
         .map_err(|_| CommandError::internal())?;
     let mut baris: Vec<Value> = Vec::new();
     let mut terpotong = false;
@@ -4559,11 +4571,11 @@ pub fn stock_card(
         .map_err(|_| CommandError::internal())?;
 
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT * FROM (
                 SELECT m.id_mutasi, m.tanggal, m.jenis, m.alasan, m.jumlah, m.tempat_asal,
                        m.kondisi_asal, m.tempat_tujuan, m.kondisi_tujuan, m.id_batch,
-                       m.tanggal_expired, m.id_ref, m.penerima_tipe, m.penerima_nama, m.keperluan,
+                       m.tanggal_expired, m.id_ref, m.penerima_tipe, {penerima} AS penerima_nama, m.keperluan,
                        m.sumber_dana, m.nomor_dokumen, m.harga_satuan, m.catatan, m.dicatat_oleh,
                        m.created_at,
                        CASE WHEN m.tempat_tujuan IS NOT NULL AND (?2 IS NULL OR LOWER(m.tempat_tujuan) = LOWER(?2)) THEN m.jumlah ELSE 0 END AS masuk,
@@ -4574,7 +4586,8 @@ pub fn stock_card(
              ) WHERE masuk > 0 OR keluar > 0
              ORDER BY tanggal, created_at, id_mutasi
              LIMIT 1001;",
-        )
+            penerima = penerima_kini("m")
+        ))
         .map_err(|_| CommandError::internal())?;
     let mut saldo = saldo_awal;
     let mut baris: Vec<Value> = Vec::new();
@@ -5434,6 +5447,34 @@ mod tests {
         // Divisi yang hanya dimiliki personil nonaktif tidak bisa dipilih.
         assert_eq!(keluar("Gudang Lama").unwrap_err().message, "Divisi tidak ditemukan.");
         assert_eq!(stok(&state, &id_barang), 9);
+
+        // Ganti nama divisi (v36): tampilan memakai nama kini, baris mutasi
+        // tetap menyimpan ejaan lama. Cermin tes Web.
+        connection
+            .execute_batch(
+                "INSERT INTO hr_divisi (id_divisi, nama) VALUES ('div-keu', 'Finance');
+                 INSERT INTO hr_divisi_nama (id_nama, id_divisi, nama, created_at)
+                 VALUES ('div-keu:awal', 'div-keu', 'Keuangan', '2026-01-01 00:00:00'),
+                        ('div-keu:2', 'div-keu', 'Finance', '2026-02-01 00:00:00');",
+            )
+            .expect("divisi");
+        let kartu = stock_card(&state, &id_barang, None, "2000-01-01", "2100-12-31").expect("kartu");
+        let baris = kartu["baris"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id_mutasi"] == id_mutasi.as_str())
+            .expect("baris keluar");
+        assert_eq!(baris["penerima_nama"], "Finance");
+        assert_eq!(document(&state, &id_mutasi).expect("dokumen")["penerima_nama"], "Finance");
+        let disimpan: String = connection
+            .query_row(
+                "SELECT penerima_nama FROM inventory_mutasi WHERE id_mutasi = ?;",
+                [&id_mutasi],
+                |row| row.get(0),
+            )
+            .expect("mutasi");
+        assert_eq!(disimpan, "Keuangan");
     }
 
     fn pinjamkan(state: &DesktopState, id_barang: &str, jumlah: i64) -> String {
