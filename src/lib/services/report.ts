@@ -4,6 +4,7 @@ import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 import {
   LAPORAN_PENGAJUAN_SQL,
+  LAPORAN_TUKAR_SQL,
   PENGAJUAN_BERLAKU_SQL,
 } from "@/lib/validations/hr-pengajuan";
 import {
@@ -32,6 +33,7 @@ export interface RekapBulananItem {
   totalDispen: number;
   /** Hari tanpa hadir yang ditutup pengajuan Cuti berlaku (v37). */
   totalCuti: number;
+  totalDinas: number;
   totalAlfa: number;
   totalJamKerja: number; // Jam
   totalLembur: number; // Jam
@@ -260,6 +262,7 @@ export const REKAP_BULANAN_SQL = `
     SUM(CASE WHEN hadir = 0 AND (ajuan = 'Izin' OR (ajuan IS NULL AND sakit = 0 AND izin = 1))
       THEN 1 ELSE 0 END) AS totalIzin,
     SUM(CASE WHEN hadir = 0 AND ajuan = 'Cuti' THEN 1 ELSE 0 END) AS totalCuti,
+    SUM(CASE WHEN hadir = 0 AND ajuan = 'Dinas Luar' THEN 1 ELSE 0 END) AS totalDinas,
     SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 1
       THEN 1 ELSE 0 END) AS totalDispen,
     SUM(CASE WHEN hadir = 0 AND ajuan IS NULL AND sakit = 0 AND izin = 0 AND dispen = 0 AND alfa = 1
@@ -280,7 +283,7 @@ export const REKAP_BULANAN_SQL = `
       MAX(CASE WHEN status_kehadiran IN ('Dispen', 'Dispensasi')
         THEN 1 ELSE 0 END) AS dispen,
       MAX(CASE WHEN status_kehadiran = 'Alfa' THEN 1 ELSE 0 END) AS alfa,
-      MAX((SELECT p.kelompok FROM hr_pengajuan p WHERE p.id_karyawan = absensi_harian.id_karyawan AND absensi_harian.tanggal BETWEEN p.tanggal_mulai AND p.tanggal_selesai AND p.kelompok IN ('Cuti', 'Izin', 'Sakit') AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.tanggal_mulai, p.id_pengajuan LIMIT 1)) AS ajuan,
+      MAX((SELECT p.kelompok FROM hr_pengajuan p WHERE p.id_karyawan = absensi_harian.id_karyawan AND absensi_harian.tanggal BETWEEN p.tanggal_mulai AND p.tanggal_selesai AND p.kelompok IN ('Cuti', 'Izin', 'Sakit', 'Dinas Luar') AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.tanggal_mulai, p.id_pengajuan LIMIT 1)) AS ajuan,
       SUM(COALESCE(jam_kerja, 0)) AS jam_kerja,
       SUM(COALESCE(lembur, 0)) AS lembur
     FROM absensi_harian
@@ -337,6 +340,7 @@ export async function getRekapBulanan(filter?: {
       totalIzin: Number(row.totalIzin || 0),
       totalDispen: Number(row.totalDispen || 0),
       totalCuti: Number(row.totalCuti || 0),
+      totalDinas: Number(row.totalDinas || 0),
       totalAlfa: Number(row.totalAlfa || 0),
       totalJamKerja: Number(row.totalJamKerja || 0),
       totalLembur: Number(row.totalLembur || 0),
@@ -434,6 +438,7 @@ export async function getLaporanKehadiran(
     libur: await daftar(LAPORAN_KEHADIRAN_SQL.libur),
     whitelist: await daftar(LAPORAN_KEHADIRAN_SQL.whitelist),
     pengajuan: await daftar(LAPORAN_PENGAJUAN_SQL),
+    tukar: await daftar(LAPORAN_TUKAR_SQL),
   };
 }
 

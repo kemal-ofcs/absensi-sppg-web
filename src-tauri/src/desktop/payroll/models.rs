@@ -316,6 +316,15 @@ pub struct PayrollRecapRow {
     pub cuti_dibayar_hari: i64,
     #[serde(default)]
     pub cuti_dibayar_menit: i64,
+    /// Mode lembur saat rekap dihitung (`otomatis`/`spl`, HRIS v38).
+    #[serde(default)]
+    pub lembur_mode: String,
+    /// Mode `spl`: jam lembur di tanggal tanpa SPL (menit), tidak dibayar.
+    #[serde(default)]
+    pub lembur_tanpa_spl_menit: i64,
+    /// Mode `spl`: seluruh menit lembur/libur yang tidak dibayar.
+    #[serde(default)]
+    pub lembur_dipotong_menit: i64,
 }
 
 #[cfg(test)]

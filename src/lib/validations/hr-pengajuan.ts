@@ -6,7 +6,12 @@
  * `mod tests`). Status pengajuan dan jatah cuti TIDAK disimpan.
  */
 
-import { parseHariKerja, tanggalValid, wajibMasuk } from "./hari-kerja";
+import {
+  hariIso,
+  parseHariKerja,
+  tanggalValid,
+  wajibMasuk,
+} from "./hari-kerja";
 import {
   evaluateHolidayScan,
   type HolidayWhitelistEntry,
@@ -50,7 +55,23 @@ export function seedJenisArgs(jenis: JenisBawaan) {
 
 // ── Konstanta ──────────────────────────────────────────────────────────────
 
-export const KELOMPOK_AKTIF = ["Cuti", "Izin", "Sakit"] as const;
+export const KELOMPOK_AKTIF = [
+  "Cuti",
+  "Izin",
+  "Sakit",
+  "Lembur",
+  "Tukar Shift",
+  "Dinas Luar",
+] as const;
+/** Cermin `KELOMPOK_TIDAK_HADIR`: menutup hari kerja (§18.3). */
+export const KELOMPOK_TIDAK_HADIR = [
+  "Cuti",
+  "Izin",
+  "Sakit",
+  "Dinas Luar",
+] as const;
+/** Cermin `KELOMPOK_TANPA_GAJI`: tanpa dampak gaji dan jatah. */
+export const KELOMPOK_TANPA_GAJI = ["Lembur", "Tukar Shift"] as const;
 export const DAMPAK_GAJI = [
   "Dibayar",
   "Potong Gaji",
@@ -83,10 +104,29 @@ export const PENGAJUAN_BERLAKU_SQL =
   "NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan b WHERE b.id_pengajuan = p.id_pengajuan AND b.jenis = 'Batal') AND (SELECT k.jenis FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent') ORDER BY k.diterima_cloud IS NULL, k.diterima_cloud, k.waktu_perangkat, k.id_keputusan LIMIT 1) IN ('Setujui', 'Setujui Urgent')";
 
 /** Cermin `PENGAJUAN_RENTANG_SQL`: berlaku dan bertumpuk dengan `?1`..`?2`. */
-export const PENGAJUAN_RENTANG_SQL = `SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, p.tanggal_selesai, p.kelompok, p.dampak_gaji, p.potong_jatah, p.setengah_hari FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
+export const PENGAJUAN_RENTANG_SQL = `SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, p.tanggal_selesai, p.kelompok, p.dampak_gaji, p.potong_jatah, p.setengah_hari FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND p.kelompok IN ('Cuti', 'Izin', 'Sakit', 'Dinas Luar') AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
 
 /** Cermin `LAPORAN_PENGAJUAN_SQL`: pengajuan berlaku untuk laporan kehadiran. */
-export const LAPORAN_PENGAJUAN_SQL = `SELECT json_object('id', p.id_karyawan, 'mulai', p.tanggal_mulai, 'selesai', p.tanggal_selesai, 'kelompok', p.kelompok) FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
+export const LAPORAN_PENGAJUAN_SQL = `SELECT json_object('id', p.id_karyawan, 'mulai', p.tanggal_mulai, 'selesai', p.tanggal_selesai, 'kelompok', p.kelompok) FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND p.kelompok IN ('Cuti', 'Izin', 'Sakit', 'Dinas Luar') AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
+
+/** Cermin `SPL_RENTANG_SQL`: SPL berlaku, tanggal kerja dalam `?1`..`?2`. */
+export const SPL_RENTANG_SQL = `SELECT p.id_karyawan, p.tanggal_mulai, p.jam_mulai, p.jam_selesai FROM hr_pengajuan p WHERE p.kelompok = 'Lembur' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
+
+/** Cermin `TUKAR_RENTANG_SQL`: shift yang dipakai tiap karyawan di tanggal tukar. */
+export const TUKAR_RENTANG_SQL = `SELECT p.id_karyawan, p.tanggal_mulai, p.id_shift_tukar, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ${PENGAJUAN_BERLAKU_SQL} UNION ALL SELECT p.id_karyawan_tukar, p.tanggal_mulai, p.id_shift_asal, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY 1, 2, 4;`;
+
+/** Cermin `LAPORAN_TUKAR_SQL`: hari kerja dan kode shift tukar per karyawan. */
+export const LAPORAN_TUKAR_SQL = `SELECT json_object('id', t.id, 'tanggal', t.tanggal, 'hari_kerja', s.hari_kerja, 'kode_shift', s.kode_shift) FROM (SELECT p.id_karyawan AS id, p.tanggal_mulai AS tanggal, p.id_shift_tukar AS id_shift, p.id_pengajuan AS urut FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ${PENGAJUAN_BERLAKU_SQL} UNION ALL SELECT p.id_karyawan_tukar, p.tanggal_mulai, p.id_shift_asal, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ${PENGAJUAN_BERLAKU_SQL}) t JOIN tbl_shift s ON s.id_shift = t.id_shift WHERE t.id IS NOT NULL ORDER BY t.id, t.tanggal, t.urut;`;
+
+/** Cermin `BACKUP_TUKAR_SQL`. */
+export const BACKUP_TUKAR_SQL =
+  "SELECT id_backup FROM backup_karyawan WHERE status_tugas = 'Aktif' AND tanggal_tugas = ?1 AND (id_karyawan_asal IN (?2, ?3) OR id_karyawan_pengganti IN (?2, ?3)) LIMIT 1;";
+
+const LIBUR_BARIS_SQL =
+  "(hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)";
+
+/** Cermin `LEMBUR_HARIAN_SQL`: definisi libur sama dengan rekap gaji. */
+export const LEMBUR_HARIAN_SQL = `SELECT ah.id_karyawan, ah.tanggal, COALESCE(SUM(CASE WHEN ${LIBUR_BARIS_SQL} THEN 0 ELSE COALESCE(ah.lembur, 0) END), 0), COALESCE(SUM(CASE WHEN ${LIBUR_BARIS_SQL} THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0), COALESCE(SUM(CASE WHEN ${LIBUR_BARIS_SQL} THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) FROM absensi_harian ah LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1 LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift WHERE ah.tanggal >= ?1 AND ah.tanggal <= ?2 GROUP BY ah.id_karyawan, ah.tanggal;`;
 
 /** Cermin `TANGGAL_HADIR_SQL`: `(id_karyawan, tanggal)` hadir dalam `?1`..`?2`. */
 export const TANGGAL_HADIR_SQL =
@@ -166,9 +206,14 @@ export function validasiJenis(draft: Draft): Hasil<JenisPengajuan> {
   if (!nama.ok) return nama;
   const kelompok = teks(draft, "kelompok");
   if (!(KELOMPOK_AKTIF as readonly string[]).includes(kelompok)) {
-    return gagal("Kelompok harus Cuti, Izin, atau Sakit.");
+    return gagal(
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+    );
   }
-  const dampak = teks(draft, "dampak_gaji");
+  const tanpaGaji = (KELOMPOK_TANPA_GAJI as readonly string[]).includes(
+    kelompok,
+  );
+  const dampak = tanpaGaji ? "Tidak Berpengaruh" : teks(draft, "dampak_gaji");
   if (!(DAMPAK_GAJI as readonly string[]).includes(dampak)) {
     return gagal("Dampak gaji tidak dikenal.");
   }
@@ -183,6 +228,7 @@ export function validasiJenis(draft: Draft): Hasil<JenisPengajuan> {
   const mentah = draft.maks_hari;
   let maksHari: number | null = null;
   if (
+    !tanpaGaji &&
     !(
       mentah === undefined ||
       mentah === null ||
@@ -224,6 +270,11 @@ export interface PengajuanSah {
   setengah_hari: boolean;
   alasan: string;
   urgent: boolean;
+  /** Lembur: `HH:MM`, kosong untuk kelompok lain. */
+  jam_mulai: string;
+  jam_selesai: string;
+  /** Tukar Shift: karyawan kedua, kosong untuk kelompok lain. */
+  id_karyawan_tukar: string;
 }
 
 /** Cermin `validasi_pengajuan`: kelengkapan isian, tanpa data jenis. */
@@ -260,6 +311,9 @@ export function validasiPengajuan(draft: Draft): Hasil<PengajuanSah> {
     setengah_hari: setengah,
     alasan,
     urgent: bendera(draft, "urgent"),
+    jam_mulai: teks(draft, "jam_mulai"),
+    jam_selesai: teks(draft, "jam_selesai"),
+    id_karyawan_tukar: teks(draft, "id_karyawan_tukar"),
   });
 }
 
@@ -278,7 +332,173 @@ export function periksaJenis(
   if (p.urgent && !jenis.boleh_urgent) {
     return gagal("Jenis pengajuan ini tidak boleh urgent.");
   }
+  const satuTanggal = p.tanggal_mulai === p.tanggal_selesai;
+  if (jenis.kelompok === "Lembur") {
+    if (!satuTanggal) return gagal("Lembur diajukan per tanggal kerja.");
+    const durasi = durasiLembur(p.jam_mulai, p.jam_selesai);
+    if (!durasi.ok) return durasi;
+  } else if (jenis.kelompok === "Tukar Shift") {
+    if (!satuTanggal) return gagal("Tukar shift diajukan per tanggal.");
+    if (p.id_karyawan_tukar === "") {
+      return gagal("Pilih karyawan yang diajak bertukar.");
+    }
+    if (p.id_karyawan_tukar === p.id_karyawan) {
+      return gagal("Tukar shift harus dengan karyawan lain.");
+    }
+  }
   return ok(null);
+}
+
+/** Cermin `menit_jam`: menit dalam hari dari `HH:MM`. */
+export function menitJam(jam: string): number | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(jam);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const menit = Number(m[2]);
+  return h < 24 && menit < 60 ? h * 60 + menit : null;
+}
+
+/** Cermin `durasi_lembur`: menit SPL. Selesai ≤ mulai = lewat tengah malam. */
+export function durasiLembur(
+  jamMulai: string,
+  jamSelesai: string,
+): Hasil<number> {
+  const a = menitJam(jamMulai);
+  const b = menitJam(jamSelesai);
+  if (a === null || b === null) {
+    return gagal("Jam lembur harus berformat JJ:MM.");
+  }
+  if (a === b) return gagal("Jam mulai dan selesai lembur tidak boleh sama.");
+  return ok(b > a ? b - a : b + 1440 - a);
+}
+
+/** Cermin `Ringkas`. */
+export interface Ringkas {
+  kelompok: string;
+  id_karyawan: string;
+  id_karyawan_tukar: string | null;
+  tanggal_mulai: string;
+  tanggal_selesai: string;
+  setengah_hari: boolean;
+  jam_mulai: string | null;
+  jam_selesai: string | null;
+}
+
+const orangRingkas = (r: Ringkas) =>
+  r.id_karyawan_tukar === null
+    ? [r.id_karyawan]
+    : [r.id_karyawan, r.id_karyawan_tukar];
+
+function rentangJam(r: Ringkas): [number, number] | null {
+  if (r.jam_mulai === null || r.jam_selesai === null) return null;
+  const mulai = menitJam(r.jam_mulai);
+  const durasi = durasiLembur(r.jam_mulai, r.jam_selesai);
+  return mulai === null || !durasi.ok ? null : [mulai, mulai + durasi.nilai];
+}
+
+const tidakHadir = (kelompok: string) =>
+  (KELOMPOK_TIDAK_HADIR as readonly string[]).includes(kelompok);
+
+/** Cermin `bentrok_pengajuan`: matriks §18.3. */
+export function bentrokPengajuan(a: Ringkas, b: Ringkas): boolean {
+  const orangB = orangRingkas(b);
+  const orangSama = orangRingkas(a).some((x) => orangB.includes(x));
+  if (
+    !orangSama ||
+    a.tanggal_mulai > b.tanggal_selesai ||
+    b.tanggal_mulai > a.tanggal_selesai
+  ) {
+    return false;
+  }
+  const lemburA = a.kelompok === "Lembur";
+  const lemburB = b.kelompok === "Lembur";
+  if (lemburA && lemburB) {
+    if (a.id_karyawan !== b.id_karyawan) return false;
+    const ra = rentangJam(a);
+    const rb = rentangJam(b);
+    return ra === null || rb === null ? true : ra[0] < rb[1] && rb[0] < ra[1];
+  }
+  if (
+    (lemburA && b.kelompok === "Tukar Shift") ||
+    (lemburB && a.kelompok === "Tukar Shift")
+  ) {
+    return false;
+  }
+  if (lemburA) return !(b.kelompok === "Izin" && b.setengah_hari);
+  if (lemburB) return !(a.kelompok === "Izin" && a.setengah_hari);
+  return (
+    tidakHadir(a.kelompok) ||
+    tidakHadir(b.kelompok) ||
+    (a.kelompok === "Tukar Shift" && b.kelompok === "Tukar Shift")
+  );
+}
+
+/** Cermin `senin_dari`. */
+export function seninDari(tanggal: string): string | null {
+  const hari = hariIso(tanggal);
+  return hari === null ? null : tambahHari(tanggal, 1 - hari);
+}
+
+/** Cermin `lembur_lewat_batas`; batas dalam menit. */
+export function lemburLewatBatas(
+  spl: readonly (readonly [string, number])[],
+  maksHarian: number,
+  maksMingguan: number,
+): Set<string> {
+  const hari = new Map<string, number>();
+  const minggu = new Map<string, number>();
+  for (const [t, m] of spl) {
+    hari.set(t, (hari.get(t) ?? 0) + m);
+    const s = seninDari(t) ?? "";
+    minggu.set(s, (minggu.get(s) ?? 0) + m);
+  }
+  return new Set(
+    spl
+      .filter(
+        ([t]) =>
+          (hari.get(t) ?? 0) > maksHarian ||
+          (minggu.get(seninDari(t) ?? "") ?? 0) > maksMingguan,
+      )
+      .map(([t]) => t),
+  );
+}
+
+/** Cermin `HariLembur` (menit). */
+export interface HariLembur {
+  lembur: number;
+  libur_total: number;
+  libur_jam_kerja: number;
+  spl: number;
+}
+
+/** Cermin `PotongLembur` (menit). */
+export interface PotongLembur {
+  lembur: number;
+  libur_total: number;
+  libur_jam_kerja: number;
+  tanpa_spl: number;
+}
+
+/** Cermin `potong_lembur_spl`: dibayar `min(SPL, jam)` per tanggal (Q-56). */
+export function potongLemburSpl(hari: readonly HariLembur[]): PotongLembur {
+  const hasil: PotongLembur = {
+    lembur: 0,
+    libur_total: 0,
+    libur_jam_kerja: 0,
+    tanpa_spl: 0,
+  };
+  for (const h of hari) {
+    hasil.lembur += Math.max(0, h.lembur - h.spl);
+    const lebihLibur = Math.max(0, h.libur_total - h.spl);
+    const dariLembur = Math.min(
+      lebihLibur,
+      Math.max(0, h.libur_total - h.libur_jam_kerja),
+    );
+    hasil.libur_total += lebihLibur;
+    hasil.libur_jam_kerja += lebihLibur - dariLembur;
+    if (h.spl === 0) hasil.tanpa_spl += h.lembur + h.libur_total;
+  }
+  return hasil;
 }
 
 /** Cermin `periksa_maks`. */
@@ -308,11 +528,19 @@ export interface IsiPengajuan {
   tanggal_selesai: string;
   setengah_hari: boolean;
   alasan: string;
+  jam_mulai?: string | null;
+  jam_selesai?: string | null;
+  id_karyawan_tukar?: string | null;
+  id_shift_asal?: number | null;
+  id_shift_tukar?: number | null;
 }
 
-/** Teks kanonik sidik; SHA-256-nya dihitung `sidikPengajuan` di service. */
+/**
+ * Teks kanonik sidik; SHA-256-nya dihitung `sidikPengajuan` di service.
+ * Sembilan bagian fase 2 tetap; Lembur dan Tukar Shift menambah isiannya.
+ */
 export function kanonikPengajuan(isi: IsiPengajuan): string {
-  return [
+  const bagian = [
     isi.id_karyawan,
     isi.id_jenis,
     isi.kelompok,
@@ -322,7 +550,17 @@ export function kanonikPengajuan(isi: IsiPengajuan): string {
     isi.tanggal_selesai,
     isi.setengah_hari ? "1" : "0",
     isi.alasan,
-  ].join("\u001f");
+  ];
+  if (isi.kelompok === "Lembur") {
+    bagian.push(isi.jam_mulai ?? "", isi.jam_selesai ?? "");
+  } else if (isi.kelompok === "Tukar Shift") {
+    bagian.push(
+      isi.id_karyawan_tukar ?? "",
+      isi.id_shift_asal == null ? "" : String(isi.id_shift_asal),
+      isi.id_shift_tukar == null ? "" : String(isi.id_shift_tukar),
+    );
+  }
+  return bagian.join("\u001f");
 }
 
 // ── Status dan tanda ───────────────────────────────────────────────────────
@@ -437,6 +675,7 @@ export const LABEL_TANDA_PENGAJUAN: Record<string, string> = {
   tanpa_dokumen: "Dokumen pendukung belum dilampirkan",
   hadir_saat_cuti: "Hadir di tanggal pengajuan",
   jatah_minus: "Jatah cuti minus",
+  lembur_lewat_batas: "Lembur melewati batas harian atau mingguan",
 };
 
 // ── Aturan aksi (§17.4) ────────────────────────────────────────────────────
@@ -540,6 +779,7 @@ export function pesanBertumpuk(mulai: string, selesai: string): string {
 
 /** Cermin `kode_kelompok`: kode laporan kehadiran (§17.5). */
 export function kodeKelompok(kelompok: string): string | null {
+  if (kelompok === "Dinas Luar") return "DL";
   if (kelompok === "Cuti") return "C";
   if (kelompok === "Izin") return "I";
   if (kelompok === "Sakit") return "S";
@@ -749,6 +989,71 @@ export function validasiAturanCuti(
   return ok(hasil);
 }
 
+export const KUNCI_LEMBUR_MODE = "hr_lembur_mode";
+export const KUNCI_LEMBUR_MAKS_HARIAN = "hr_lembur_maks_harian";
+export const KUNCI_LEMBUR_MAKS_MINGGUAN = "hr_lembur_maks_mingguan";
+export const MODE_LEMBUR = ["otomatis", "spl"] as const;
+
+/** Cermin `BATAS_LEMBUR` (jam): [kunci, label, min, maks, bawaan]. */
+export const BATAS_LEMBUR = [
+  [KUNCI_LEMBUR_MAKS_HARIAN, "Batas lembur harian", 1, 12, 4],
+  [KUNCI_LEMBUR_MAKS_MINGGUAN, "Batas lembur mingguan", 1, 72, 18],
+] as const;
+
+export interface AturanLembur {
+  mode: string;
+  maks_harian: number;
+  maks_mingguan: number;
+}
+
+/** Cermin `AturanLembur::dari_peta`. Kosong atau di luar batas = bawaan. */
+export function aturanLemburDariPeta(
+  peta: ReadonlyMap<string, string> | Record<string, string>,
+): AturanLembur {
+  const baca = (kunci: string) =>
+    (peta instanceof Map
+      ? peta.get(kunci)
+      : (peta as Record<string, string>)[kunci]
+    )?.trim() ?? "";
+  const angka = (i: 0 | 1) => {
+    const [kunci, , min, maks, bawaan] = BATAS_LEMBUR[i];
+    const nilai = baca(kunci);
+    if (!/^-?\d+$/.test(nilai)) return bawaan;
+    const n = Number(nilai);
+    return n < min || n > maks ? bawaan : n;
+  };
+  const mode = baca(KUNCI_LEMBUR_MODE);
+  return {
+    mode: (MODE_LEMBUR as readonly string[]).includes(mode) ? mode : "otomatis",
+    maks_harian: angka(0),
+    maks_mingguan: angka(1),
+  };
+}
+
+/** Cermin `validasi_aturan_lembur`. */
+export function validasiAturanLembur(
+  draft: Draft,
+): Hasil<Array<[string, string]>> {
+  const mode = teks(draft, KUNCI_LEMBUR_MODE);
+  if (!(MODE_LEMBUR as readonly string[]).includes(mode)) {
+    return gagal("Mode lembur harus otomatis atau SPL.");
+  }
+  const hasil: Array<[string, string]> = [[KUNCI_LEMBUR_MODE, mode]];
+  for (const [kunci, label, min, maks] of BATAS_LEMBUR) {
+    const nilai = draft[kunci];
+    if (
+      typeof nilai !== "number" ||
+      !Number.isInteger(nilai) ||
+      nilai < min ||
+      nilai > maks
+    ) {
+      return gagal(`${label} harus ${min} sampai ${maks} jam.`);
+    }
+    hasil.push([kunci, String(nilai)]);
+  }
+  return ok(hasil);
+}
+
 export interface PeriodeCuti {
   mulai: string;
   selesai: string;
@@ -863,7 +1168,16 @@ export const UPSERT_JENIS_SQL =
   "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now')) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now');";
 
 export const UPSERT_PENGAJUAN_SQL =
-  "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now')) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now');";
+  "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar;";
+
+export const PESAN_TUKAR_NONAKTIF =
+  "Karyawan yang diajak bertukar tidak ditemukan atau nonaktif.";
+export const PESAN_TUKAR_SHIFT_SAMA =
+  "Kedua karyawan memakai shift yang sama; tidak ada yang ditukar.";
+export const PESAN_TUKAR_SHIFT_HILANG =
+  "Shift salah satu karyawan tidak ditemukan.";
+export const PESAN_TUKAR_BACKUP =
+  "Salah satu karyawan punya penugasan backup aktif di tanggal itu.";
 
 /** Web menulis langsung ke cloud: `diterima_cloud` jam database cloud. */
 export const CLOUD_INSERT_KEPUTUSAN_SQL =

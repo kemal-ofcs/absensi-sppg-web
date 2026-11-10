@@ -844,6 +844,35 @@ fn is_check_in_window_matched(time_str: &str, shift: &Shift) -> bool {
     )
 }
 
+/// Cermin `shiftTukarScan`: shift tukar berlaku karyawan ini di tanggal
+/// kalender scan atau sehari sebelumnya, bila tanggal kerja menurut shift
+/// tukarnya = tanggal tukar (pola asal di `find_effective_backup`). Selain itu
+/// shift dasar.
+fn shift_tukar_scan(
+    transaction: &Transaction<'_>,
+    employee_id: &str,
+    shift_dasar: i64,
+    moment: &LocalMoment,
+) -> Result<i64, CommandError> {
+    let previous_date = super::time_policy::add_days(&moment.date, -1).map_err(|_| CommandError::internal())?;
+    let tukar = super::hr_pengajuan::muat_tukar(transaction, &previous_date, &moment.date)?;
+    for tanggal in [&moment.date, &previous_date] {
+        let Some(shift_id) = tukar.get(&(employee_id.to_owned(), tanggal.clone())).copied() else {
+            continue;
+        };
+        let Some(shift) = load_shift(transaction, shift_id)? else {
+            continue;
+        };
+        let cocok = determine_work_date(moment, &shift.policy)
+            .map(|date| &date == tanggal)
+            .unwrap_or(*tanggal == moment.date);
+        if cocok {
+            return Ok(shift_id);
+        }
+    }
+    Ok(shift_dasar)
+}
+
 fn find_effective_backup(
     transaction: &Transaction<'_>,
     employee_id: &str,
@@ -1133,12 +1162,15 @@ fn submit_internal(
         )
         .optional()
         .map_err(|_| CommandError::internal())?;
-    let Some(employee) = employee else {
+    let Some(mut employee) = employee else {
         return Ok(failure(
             format!("Gagal: ID Karyawan '{}' tidak ditemukan.", parts[0]),
             None,
         ));
     };
+    // Tukar shift berlaku (HRIS v38) mengganti shift dasar di SATU titik ini;
+    // id sesi, whitelist libur, multi-sesi, dan jam kerja mengikutinya.
+    employee.shift_id = shift_tukar_scan(&transaction, &employee.id, employee.shift_id, &moment)?;
     let base_shift = load_shift(&transaction, employee.shift_id)?;
     let initial_work_date = base_shift
         .as_ref()
@@ -3452,6 +3484,61 @@ mod tests {
                 "2026-08-12".into()
             )
         );
+    }
+
+    /// Tukar shift berlaku (HRIS v38): scan memakai shift tukar sebagai shift
+    /// dasar, sesi NORMAL. Cermin "tukar shift" di `attendance-processor.test.ts`.
+    #[test]
+    fn tukar_shift_berlaku_mengganti_shift_dasar_scan() {
+        let (_directory, state) = fixture();
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                r#"
+        INSERT INTO tbl_shift (
+          id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+          awal_absen_menit, batas_masuk_menit, toleransi_masuk_menit,
+          jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+          offset_istirahat_mulai, buffer_shift_malam_menit
+        ) VALUES (2, 2, 'Shift Malam', '23:00', '07:00', 60, 15, 30,
+                  420, 60, 120, 240, 120);
+        INSERT INTO master_data (
+          id_unik, kode_karyawan, nama, divisi, id_shift, status_aktif,
+          token_absensi, qr_code
+        ) VALUES ('K002', 'K002', 'Karyawan Malam', 'Dapur', 2, 'Aktif',
+                  'TOKEN-002', 'K002|TOKEN-002');
+        INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji,
+          tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat,
+          id_karyawan_tukar, id_shift_asal, id_shift_tukar)
+        VALUES ('pgn-1', 'K001', 'jns-tukar-shift', 'Tukar Shift', 0, 'Tidak Berpengaruh',
+          '2026-08-12', '2026-08-12', 0, 'Tukar', 's1', 'hrd', '2026-08-10 01:00:00', 'K002', 1, 2);
+        "#,
+            )
+            .expect("seed tukar");
+        drop(connection);
+
+        // Menunggu: belum berlaku, scan 23:00 tidak memakai shift malam.
+        let menunggu = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "23:00:00"));
+        assert_ne!(menunggu["shiftEfektif"], 2);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        connection
+            .execute_batch(
+                "DELETE FROM absensi_harian; DELETE FROM log_scan;
+                 INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, oleh, waktu_perangkat)
+                 VALUES ('k1', 'pgn-1', 'Setujui', 's1', 'hrd2', '2026-08-10 02:00:00');",
+            )
+            .expect("setujui");
+        drop(connection);
+
+        let hasil = scan(&state, "K001", "TOKEN-TEST", moment("2026-08-12", "23:00:00"));
+        assert_eq!(hasil["sukses"], true);
+        assert_eq!(hasil["modeTugas"], "NORMAL");
+        assert_eq!(hasil["shiftEfektif"], 2);
+        assert_eq!(hasil["idSesi"], "NORMAL-20260812-K001-2");
+        // Pasangannya memakai shift pagi K001 di tanggal itu.
+        let pagi = scan(&state, "K002", "TOKEN-002", moment("2026-08-12", "07:00:00"));
+        assert_eq!(pagi["shiftEfektif"], 1);
     }
 
     #[test]

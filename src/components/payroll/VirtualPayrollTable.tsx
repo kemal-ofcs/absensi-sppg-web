@@ -156,6 +156,17 @@ export function VirtualPayrollTable({
                     {row.salary_type === "FLAT_DAILY"
                       ? "–"
                       : `${row.total_overtime_hours.toFixed(1)} j`}
+                    {row.salary_type !== "FLAT_DAILY" &&
+                    row.lembur_mode === "spl" &&
+                    (row.lembur_dipotong_menit ?? 0) > 0 ? (
+                      <div
+                        className="text-[11px] font-normal text-rose-300"
+                        title={`Lembur tanpa SPL ${((row.lembur_tanpa_spl_menit ?? 0) / 60).toFixed(1)} j; sisanya melebihi jam SPL.`}
+                      >
+                        {((row.lembur_dipotong_menit ?? 0) / 60).toFixed(1)} j
+                        tidak dibayar (SPL)
+                      </div>
+                    ) : null}
                   </td>
                   <td className="py-3 px-4 text-right font-mono text-slate-400">
                     {row.salary_type === "FLAT_DAILY" ? (

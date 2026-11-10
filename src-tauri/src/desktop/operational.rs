@@ -2392,7 +2392,21 @@ pub fn generate_alfa_harian(
         "Desember",
     ];
 
-    for (id_unik, nama, divisi, id_shift) in employees {
+    // Tukar shift berlaku kemarin dan hari ini (HRIS v38, §18.5). Cermin
+    // `generateAlfaHarian`.
+    let kemarin = super::time_policy::add_days(&now_moment.date, -1).map_err(|_| CommandError::internal())?;
+    let tukar = super::hr_pengajuan::muat_tukar(&transaction, &kemarin, &now_moment.date)?;
+
+    for (id_unik, nama, divisi, id_shift_dasar) in employees {
+    // Shift dasar dinilai seperti biasa; tanggal bertukar dinilai terpisah
+    // dengan shift tukarnya, supaya tukar ke shift malam tetap dinilai.
+    let mut penilaian: Vec<(i64, Option<String>)> = vec![(id_shift_dasar, None)];
+    for t in [&kemarin, &now_moment.date] {
+        if let Some(shift) = tukar.get(&(id_unik.clone(), t.clone())) {
+            penilaian.push((*shift, Some(t.clone())));
+        }
+    }
+    for (id_shift, tanggal_tukar) in penilaian {
         let shift_config: Option<(String, String, i64, i64, i64, i64, Option<String>)> = transaction
             .query_row(
                 r#"
@@ -2477,11 +2491,14 @@ pub fn generate_alfa_harian(
             is_overnight && now_minute < shift_in_min
         };
 
-        let mut work_date = now_moment.date.clone();
-        if masih_di_hari_sebelumnya {
+        let mut work_date = tanggal_tukar.clone().unwrap_or_else(|| now_moment.date.clone());
+        if tanggal_tukar.is_none() && masih_di_hari_sebelumnya {
             if let Ok(prev) = super::time_policy::add_days(&now_moment.date, -1) {
                 work_date = prev;
             }
+        }
+        if tanggal_tukar.is_none() && tukar.contains_key(&(id_unik.clone(), work_date.clone())) {
+            continue;
         }
 
         let holiday_check: bool = transaction
@@ -2677,6 +2694,7 @@ pub fn generate_alfa_harian(
         )?;
 
         alfa_dibuat += 1;
+    }
     }
 
     let today_holiday: Option<String> = transaction
@@ -2969,6 +2987,8 @@ pub fn get_attendance_audit(
     let pelapor = super::driver::pelapor_perjalanan(&connection, &tanggal_target)?;
     // Pengajuan cuti/izin/sakit yang berlaku (v37, A-3): tidak dinilai.
     let pengaju = super::hr_pengajuan::pengaju_tanggal(&connection, &tanggal_target)?;
+    // Tukar shift berlaku (v38): tanggal ini dinilai dengan shift tukarnya.
+    let tukar = super::hr_pengajuan::muat_tukar(&connection, &tanggal_target, &tanggal_target)?;
 
     let total_aktif = employees.len() as i64;
     let mut wajib_absen = 0i64;
@@ -2990,7 +3010,11 @@ pub fn get_attendance_audit(
     let mut karyawan_bermasalah = 0i64;
     let mut temuan: Vec<TemuanAudit> = Vec::new();
 
-    for (id_unik, nama, divisi, id_shift) in employees {
+    for (id_unik, nama, divisi, id_shift_dasar) in employees {
+        let id_shift = tukar
+            .get(&(id_unik.clone(), tanggal_target.clone()))
+            .copied()
+            .unwrap_or(id_shift_dasar);
         let Some((
             nama_shift,
             jam_masuk_shift,
@@ -4507,5 +4531,56 @@ mod tests_generate_alfa_hari_libur {
             generate_alfa_harian(&state, Some("2026-10-17 23:30:00".to_string())).expect("alfa");
         assert_eq!(alfa_pada(&conn, "2026-10-17"), vec!["EMP-SATPAM".to_string()]);
         assert_eq!(ringkasan["jumlahLibur"], 1);
+    }
+
+    /// Tukar shift berlaku (HRIS v38): tanggal itu dinilai dengan shift tukar;
+    /// SPL berlaku tidak menutup Alfa. Kembar `alfa-audit.test.ts`.
+    #[test]
+    fn tukar_shift_dan_lembur_saat_generate_alfa() {
+        let (_dir, state) = fixture();
+        let conn = storage::database(&state.data_dir).expect("db");
+        conn.execute_batch(
+            r#"
+            INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang,
+              jam_kerja_normal_menit, istirahat_menit, batas_pulang_menit,
+              buffer_shift_malam_menit, offset_generate_alfa, hari_kerja)
+            VALUES (1, 1, 'Kantor', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5'),
+                   (2, 2, 'Jaga', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5,6,7');
+            INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif)
+            VALUES ('EMP-STAF', 'Staf Kantor', 'Keuangan', 1, 'Aktif'),
+                   ('EMP-SATPAM', 'Satpam', 'Keamanan', 2, 'Aktif'),
+                   ('EMP-LEMBUR', 'Satpam Dua', 'Keamanan', 2, 'Aktif');
+            INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji,
+              tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat,
+              jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar)
+            VALUES ('pgn-t', 'EMP-STAF', 'jns-tukar-shift', 'Tukar Shift', 0, 'Tidak Berpengaruh', '2026-10-17',
+                      '2026-10-17', 0, 'Tukar', 's-t', 'hrd', '2026-10-10 01:00:00', NULL, NULL, 'EMP-SATPAM', 1, 2),
+                   ('pgn-l', 'EMP-LEMBUR', 'jns-lembur', 'Lembur', 0, 'Tidak Berpengaruh', '2026-10-17',
+                      '2026-10-17', 0, 'Jaga', 's-l', 'hrd', '2026-10-10 01:00:00', '15:00', '18:00', NULL, NULL, NULL);
+            INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, oleh, waktu_perangkat)
+            VALUES ('k-t', 'pgn-t', 'Setujui', 's-t', 'hrd2', '2026-10-10 02:00:00'),
+                   ('k-l', 'pgn-l', 'Setujui', 's-l', 'hrd2', '2026-10-10 02:00:00');
+            "#,
+        )
+        .expect("seed");
+        sync::ensure_client_id(&state).expect("identitas klien");
+
+        // Sabtu: staf kantor memakai shift Jaga, satpam memakai shift Kantor (libur).
+        generate_alfa_harian(&state, Some("2026-10-17 23:30:00".to_string())).expect("alfa");
+        assert_eq!(
+            alfa_pada(&conn, "2026-10-17"),
+            vec!["EMP-LEMBUR".to_string(), "EMP-STAF".to_string()]
+        );
+        let shift_alfa: i64 = conn
+            .query_row(
+                "SELECT id_shift FROM absensi_harian WHERE id_karyawan = 'EMP-STAF' AND tanggal = '2026-10-17';",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alfa staf");
+        assert_eq!(shift_alfa, 2);
+        // Dijalankan ulang: tidak menggandakan Alfa.
+        generate_alfa_harian(&state, Some("2026-10-17 23:45:00".to_string())).expect("alfa ulang");
+        assert_eq!(alfa_pada(&conn, "2026-10-17").len(), 2);
     }
 }

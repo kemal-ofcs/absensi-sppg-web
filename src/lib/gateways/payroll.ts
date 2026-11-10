@@ -97,6 +97,12 @@ export interface PayrollRecapRow {
   /** Pengajuan cuti/izin/sakit `Dibayar` (HRIS v37), sudah termasuk di hari dan jam. */
   cuti_dibayar_hari?: number;
   cuti_dibayar_menit?: number;
+  /** Mode lembur saat rekap dihitung (HRIS v38). */
+  lembur_mode?: string;
+  /** Mode `spl`: jam lembur di tanggal tanpa SPL (menit), tidak dibayar. */
+  lembur_tanpa_spl_menit?: number;
+  /** Mode `spl`: seluruh menit lembur/libur yang tidak dibayar. */
+  lembur_dipotong_menit?: number;
 }
 
 export interface PayrollRunRow {

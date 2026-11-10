@@ -82,9 +82,14 @@ pub fn seed_jenis_bawaan(connection: &Connection) -> rusqlite::Result<()> {
 
 // ── Konstanta ──────────────────────────────────────────────────────────────
 
-/// Kelompok yang bisa diajukan di fase 2. CHECK skema sudah memuat kelompok
-/// fase 3–4 supaya tidak perlu dibangun ulang nanti.
-pub const KELOMPOK_AKTIF: [&str; 3] = ["Cuti", "Izin", "Sakit"];
+/// Kelompok yang bisa diajukan (fase 2 + fase 3). CHECK skema sudah memuat
+/// `Reimburse` (fase 4) supaya tidak perlu dibangun ulang nanti.
+pub const KELOMPOK_AKTIF: [&str; 6] = ["Cuti", "Izin", "Sakit", "Lembur", "Tukar Shift", "Dinas Luar"];
+/// Kelompok yang menutup hari kerja (Alfa, audit, laporan, `cuti_dibayar`).
+/// Lembur dan Tukar Shift TIDAK: karyawannya tetap wajib masuk (§18.3).
+pub const KELOMPOK_TIDAK_HADIR: [&str; 4] = ["Cuti", "Izin", "Sakit", "Dinas Luar"];
+/// Kelompok tanpa dampak gaji dan tanpa jatah: dipaksa saat jenis disimpan.
+pub const KELOMPOK_TANPA_GAJI: [&str; 2] = ["Lembur", "Tukar Shift"];
 pub const DAMPAK_GAJI: [&str; 3] = ["Dibayar", "Potong Gaji", "Tidak Berpengaruh"];
 pub const SATUAN_MAKS: [&str; 2] = ["Hari Kerja", "Hari Kalender"];
 pub const IZIN_PEMUTUS_AKTIF: &str = "hr.request.decide";
@@ -108,18 +113,49 @@ macro_rules! berlaku_sql {
 pub(crate) use berlaku_sql;
 
 /// Pengajuan berlaku yang bertumpuk dengan rentang `?1`..`?2`.
+/// Hanya kelompok ketidakhadiran (`KELOMPOK_TIDAK_HADIR`).
 pub const PENGAJUAN_RENTANG_SQL: &str = concat!(
-    "SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, p.tanggal_selesai, p.kelompok, p.dampak_gaji, p.potong_jatah, p.setengah_hari FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND ",
+    "SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, p.tanggal_selesai, p.kelompok, p.dampak_gaji, p.potong_jatah, p.setengah_hari FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND p.kelompok IN ('Cuti', 'Izin', 'Sakit', 'Dinas Luar') AND ",
     berlaku_sql!(),
     " ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;"
 );
 
 /// Pengajuan berlaku untuk laporan kehadiran `?1`..`?2`, satu objek JSON per baris.
 pub const LAPORAN_PENGAJUAN_SQL: &str = concat!(
-    "SELECT json_object('id', p.id_karyawan, 'mulai', p.tanggal_mulai, 'selesai', p.tanggal_selesai, 'kelompok', p.kelompok) FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND ",
+    "SELECT json_object('id', p.id_karyawan, 'mulai', p.tanggal_mulai, 'selesai', p.tanggal_selesai, 'kelompok', p.kelompok) FROM hr_pengajuan p WHERE p.tanggal_mulai <= ?2 AND p.tanggal_selesai >= ?1 AND p.kelompok IN ('Cuti', 'Izin', 'Sakit', 'Dinas Luar') AND ",
     berlaku_sql!(),
     " ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;"
 );
+
+/// SPL berlaku dengan tanggal kerja dalam `?1`..`?2` (§18.4).
+pub const SPL_RENTANG_SQL: &str = concat!(
+    "SELECT p.id_karyawan, p.tanggal_mulai, p.jam_mulai, p.jam_selesai FROM hr_pengajuan p WHERE p.kelompok = 'Lembur' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ",
+    berlaku_sql!(),
+    " ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;"
+);
+
+/// Tukar shift berlaku dalam `?1`..`?2`, satu baris per karyawan: shift yang
+/// dipakai karyawan itu di tanggal tukar (§18.5).
+pub const TUKAR_RENTANG_SQL: &str = concat!(
+    "SELECT p.id_karyawan, p.tanggal_mulai, p.id_shift_tukar, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ",
+    berlaku_sql!(),
+    " UNION ALL SELECT p.id_karyawan_tukar, p.tanggal_mulai, p.id_shift_asal, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ",
+    berlaku_sql!(),
+    " ORDER BY 1, 2, 4;"
+);
+
+/// Tukar shift berlaku untuk laporan kehadiran `?1`..`?2`: hari kerja dan
+/// kode shift yang dipakai tiap karyawan di tanggal tukar.
+pub const LAPORAN_TUKAR_SQL: &str = concat!(
+    "SELECT json_object('id', t.id, 'tanggal', t.tanggal, 'hari_kerja', s.hari_kerja, 'kode_shift', s.kode_shift) FROM (SELECT p.id_karyawan AS id, p.tanggal_mulai AS tanggal, p.id_shift_tukar AS id_shift, p.id_pengajuan AS urut FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ",
+    berlaku_sql!(),
+    " UNION ALL SELECT p.id_karyawan_tukar, p.tanggal_mulai, p.id_shift_asal, p.id_pengajuan FROM hr_pengajuan p WHERE p.kelompok = 'Tukar Shift' AND p.tanggal_mulai >= ?1 AND p.tanggal_mulai <= ?2 AND ",
+    berlaku_sql!(),
+    ") t JOIN tbl_shift s ON s.id_shift = t.id_shift WHERE t.id IS NOT NULL ORDER BY t.id, t.tanggal, t.urut;"
+);
+
+/// Penugasan backup aktif salah satu dari dua karyawan di satu tanggal.
+pub const BACKUP_TUKAR_SQL: &str = "SELECT id_backup FROM backup_karyawan WHERE status_tugas = 'Aktif' AND tanggal_tugas = ?1 AND (id_karyawan_asal IN (?2, ?3) OR id_karyawan_pengganti IN (?2, ?3)) LIMIT 1;";
 
 /// Tanggal hadir `(id_karyawan, tanggal)` dalam `?1`..`?2`: definisi
 /// `HARI_HADIR_SQL` (scan Hadir atau laporan perjalanan), sebagai daftar.
@@ -194,9 +230,10 @@ pub fn validasi_jenis(draft: &Value) -> Result<JenisPengajuan, String> {
     let nama = hris::nama_master(&teks(draft, "nama"))?;
     let kelompok = teks(draft, "kelompok");
     if !KELOMPOK_AKTIF.contains(&kelompok.as_str()) {
-        return Err("Kelompok harus Cuti, Izin, atau Sakit.".into());
+        return Err("Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.".into());
     }
-    let dampak_gaji = teks(draft, "dampak_gaji");
+    let tanpa_gaji = KELOMPOK_TANPA_GAJI.contains(&kelompok.as_str());
+    let dampak_gaji = if tanpa_gaji { "Tidak Berpengaruh".to_owned() } else { teks(draft, "dampak_gaji") };
     if !DAMPAK_GAJI.contains(&dampak_gaji.as_str()) {
         return Err("Dampak gaji tidak dikenal.".into());
     }
@@ -210,6 +247,7 @@ pub fn validasi_jenis(draft: &Value) -> Result<JenisPengajuan, String> {
         return Err("Hanya kelompok Cuti yang bisa memotong jatah cuti.".into());
     }
     let maks_hari = match draft.get("maks_hari") {
+        _ if tanpa_gaji => None,
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if s.trim().is_empty() => None,
         Some(nilai) => match nilai.as_f64() {
@@ -245,6 +283,11 @@ pub struct PengajuanSah {
     pub setengah_hari: bool,
     pub alasan: String,
     pub urgent: bool,
+    /// Lembur: `HH:MM`, kosong untuk kelompok lain.
+    pub jam_mulai: String,
+    pub jam_selesai: String,
+    /// Tukar Shift: karyawan kedua, kosong untuk kelompok lain.
+    pub id_karyawan_tukar: String,
 }
 
 /// Cermin `validasiPengajuan`: kelengkapan isian, tanpa data jenis.
@@ -287,6 +330,9 @@ pub fn validasi_pengajuan(draft: &Value) -> Result<PengajuanSah, String> {
         setengah_hari,
         alasan,
         urgent: bendera(draft, "urgent"),
+        jam_mulai: teks(draft, "jam_mulai"),
+        jam_selesai: teks(draft, "jam_selesai"),
+        id_karyawan_tukar: teks(draft, "id_karyawan_tukar"),
     })
 }
 
@@ -304,7 +350,163 @@ pub fn periksa_jenis(p: &PengajuanSah, jenis: &JenisPengajuan) -> Result<(), Str
     if p.urgent && !jenis.boleh_urgent {
         return Err("Jenis pengajuan ini tidak boleh urgent.".into());
     }
+    let satu_tanggal = p.tanggal_mulai == p.tanggal_selesai;
+    match jenis.kelompok.as_str() {
+        "Lembur" => {
+            if !satu_tanggal {
+                return Err("Lembur diajukan per tanggal kerja.".into());
+            }
+            durasi_lembur(&p.jam_mulai, &p.jam_selesai)?;
+        }
+        "Tukar Shift" => {
+            if !satu_tanggal {
+                return Err("Tukar shift diajukan per tanggal.".into());
+            }
+            if p.id_karyawan_tukar.is_empty() {
+                return Err("Pilih karyawan yang diajak bertukar.".into());
+            }
+            if p.id_karyawan_tukar == p.id_karyawan {
+                return Err("Tukar shift harus dengan karyawan lain.".into());
+            }
+        }
+        _ => {}
+    }
     Ok(())
+}
+
+/// Menit dalam hari dari `HH:MM` (00:00–23:59).
+pub fn menit_jam(jam: &str) -> Option<i64> {
+    let (h, m) = jam.split_once(':')?;
+    if h.len() != 2 || m.len() != 2 || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m) = (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// Cermin `durasiLembur`: menit SPL. Selesai ≤ mulai = lewat tengah malam.
+pub fn durasi_lembur(jam_mulai: &str, jam_selesai: &str) -> Result<i64, String> {
+    let (Some(a), Some(b)) = (menit_jam(jam_mulai), menit_jam(jam_selesai)) else {
+        return Err("Jam lembur harus berformat JJ:MM.".into());
+    };
+    if a == b {
+        return Err("Jam mulai dan selesai lembur tidak boleh sama.".into());
+    }
+    Ok(if b > a { b - a } else { b + 1440 - a })
+}
+
+/// Ringkasan pengajuan untuk `bentrok_pengajuan`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ringkas<'a> {
+    pub kelompok: &'a str,
+    pub id_karyawan: &'a str,
+    pub id_karyawan_tukar: Option<&'a str>,
+    pub tanggal_mulai: &'a str,
+    pub tanggal_selesai: &'a str,
+    pub setengah_hari: bool,
+    pub jam_mulai: Option<&'a str>,
+    pub jam_selesai: Option<&'a str>,
+}
+
+impl Ringkas<'_> {
+    fn orang(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.id_karyawan).chain(self.id_karyawan_tukar)
+    }
+    fn tidak_hadir(&self) -> bool {
+        KELOMPOK_TIDAK_HADIR.contains(&self.kelompok)
+    }
+    /// `[mulai, akhir)` menit SPL di garis waktu tanggal kerjanya.
+    fn rentang_jam(&self) -> Option<(i64, i64)> {
+        let (a, b) = (self.jam_mulai?, self.jam_selesai?);
+        let mulai = menit_jam(a)?;
+        Some((mulai, mulai + durasi_lembur(a, b).ok()?))
+    }
+}
+
+/// Cermin `bentrokPengajuan`: matriks §18.3. Keduanya Menunggu atau berlaku.
+pub fn bentrok_pengajuan(a: &Ringkas<'_>, b: &Ringkas<'_>) -> bool {
+    let orang_sama = a.orang().any(|x| b.orang().any(|y| x == y));
+    if !orang_sama || a.tanggal_mulai > b.tanggal_selesai || b.tanggal_mulai > a.tanggal_selesai {
+        return false;
+    }
+    match (a.kelompok, b.kelompok) {
+        ("Lembur", "Lembur") => {
+            a.id_karyawan == b.id_karyawan
+                && match (a.rentang_jam(), b.rentang_jam()) {
+                    (Some((a0, a1)), Some((b0, b1))) => a0 < b1 && b0 < a1,
+                    _ => true,
+                }
+        }
+        ("Lembur", "Tukar Shift") | ("Tukar Shift", "Lembur") => false,
+        ("Lembur", _) => !(b.kelompok == "Izin" && b.setengah_hari),
+        (_, "Lembur") => !(a.kelompok == "Izin" && a.setengah_hari),
+        _ => a.tidak_hadir() || b.tidak_hadir() || (a.kelompok == "Tukar Shift" && b.kelompok == "Tukar Shift"),
+    }
+}
+
+/// Cermin `seninDari`: Senin minggu ISO tanggal itu.
+pub fn senin_dari(tanggal: &str) -> Option<String> {
+    tambah_hari(tanggal, 1 - hari_kerja::hari_iso(tanggal)?)
+}
+
+/// Cermin `lemburLewatBatas`: `spl` = (tanggal, menit) SPL Menunggu/berlaku
+/// satu karyawan; tanggal yang jumlah hariannya > batas harian atau minggunya
+/// > batas mingguan (menit).
+pub fn lembur_lewat_batas(spl: &[(String, i64)], maks_harian: i64, maks_mingguan: i64) -> HashSet<String> {
+    let mut hari: HashMap<&str, i64> = HashMap::new();
+    let mut minggu: HashMap<String, i64> = HashMap::new();
+    for (t, m) in spl {
+        *hari.entry(t.as_str()).or_default() += m;
+        *minggu.entry(senin_dari(t).unwrap_or_default()).or_default() += m;
+    }
+    spl.iter()
+        .filter(|(t, _)| {
+            hari.get(t.as_str()).copied().unwrap_or(0) > maks_harian
+                || minggu.get(&senin_dari(t).unwrap_or_default()).copied().unwrap_or(0) > maks_mingguan
+        })
+        .map(|(t, _)| t.clone())
+        .collect()
+}
+
+/// Satu tanggal kerja di rekap gaji mode `spl` (§18.4, Q-56), dalam menit.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HariLembur {
+    /// Lembur absensi di hari kerja biasa.
+    pub lembur: i64,
+    /// Seluruh jam (kerja + lembur) di tanggal libur.
+    pub libur_total: i64,
+    /// Bagian jam kerja dari `libur_total`.
+    pub libur_jam_kerja: i64,
+    /// Jumlah menit SPL berlaku tanggal itu.
+    pub spl: i64,
+}
+
+/// Potongan mode `spl` untuk satu karyawan, dalam menit.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+pub struct PotongLembur {
+    pub lembur: i64,
+    pub libur_total: i64,
+    pub libur_jam_kerja: i64,
+    /// Jam lembur (dan jam hari libur) di tanggal tanpa SPL sama sekali.
+    pub tanpa_spl: i64,
+}
+
+/// Cermin `potongLemburSpl`: dibayar `min(SPL, jam)` per tanggal. Di hari
+/// libur potongan diambil dari bagian lembur dulu, baru jam kerja, supaya
+/// `apply_holiday_fallback` tetap membayar sisa jam kerja sebagai reguler.
+pub fn potong_lembur_spl(hari: &[HariLembur]) -> PotongLembur {
+    let mut hasil = PotongLembur::default();
+    for h in hari {
+        hasil.lembur += (h.lembur - h.spl).max(0);
+        let lebih_libur = (h.libur_total - h.spl).max(0);
+        let dari_lembur = lebih_libur.min((h.libur_total - h.libur_jam_kerja).max(0));
+        hasil.libur_total += lebih_libur;
+        hasil.libur_jam_kerja += lebih_libur - dari_lembur;
+        if h.spl == 0 {
+            hasil.tanpa_spl += h.lembur + h.libur_total;
+        }
+    }
+    hasil
 }
 
 /// Cermin `periksaMaks`: `maks_hari` dibanding hari kerja atau hari kalender.
@@ -333,11 +535,20 @@ pub struct IsiPengajuan<'a> {
     pub tanggal_selesai: &'a str,
     pub setengah_hari: bool,
     pub alasan: &'a str,
+    pub jam_mulai: Option<&'a str>,
+    pub jam_selesai: Option<&'a str>,
+    pub id_karyawan_tukar: Option<&'a str>,
+    pub id_shift_asal: Option<i64>,
+    pub id_shift_tukar: Option<i64>,
 }
 
-/// Cermin `sidikPengajuan`: SHA-256 isi kanonik (§17.3).
+/// Cermin `sidikPengajuan`: SHA-256 isi kanonik (§17.3). Sembilan bagian fase
+/// 2 tidak berubah, jadi sidik dan keputusan lama tetap sah; Lembur dan Tukar
+/// Shift menambah isiannya sendiri (§18.3).
 pub fn sidik_pengajuan(isi: &IsiPengajuan<'_>) -> String {
-    let kanonik = [
+    let shift = |s: Option<i64>| s.map(|n| n.to_string()).unwrap_or_default();
+    let (asal, tukar) = (shift(isi.id_shift_asal), shift(isi.id_shift_tukar));
+    let mut kanonik = vec![
         isi.id_karyawan,
         isi.id_jenis,
         isi.kelompok,
@@ -347,8 +558,13 @@ pub fn sidik_pengajuan(isi: &IsiPengajuan<'_>) -> String {
         isi.tanggal_selesai,
         if isi.setengah_hari { "1" } else { "0" },
         isi.alasan,
-    ]
-    .join("\u{1f}");
+    ];
+    match isi.kelompok {
+        "Lembur" => kanonik.extend([isi.jam_mulai.unwrap_or(""), isi.jam_selesai.unwrap_or("")]),
+        "Tukar Shift" => kanonik.extend([isi.id_karyawan_tukar.unwrap_or(""), asal.as_str(), tukar.as_str()]),
+        _ => {}
+    }
+    let kanonik = kanonik.join("\u{1f}");
     hex::encode(Sha256::digest(kanonik.as_bytes()))
 }
 
@@ -712,6 +928,65 @@ pub fn validasi_aturan_cuti(draft: &Value) -> Result<Vec<(&'static str, String)>
     Ok(hasil)
 }
 
+pub const KUNCI_LEMBUR_MODE: &str = "hr_lembur_mode";
+pub const KUNCI_LEMBUR_MAKS_HARIAN: &str = "hr_lembur_maks_harian";
+pub const KUNCI_LEMBUR_MAKS_MINGGUAN: &str = "hr_lembur_maks_mingguan";
+pub const MODE_LEMBUR: [&str; 2] = ["otomatis", "spl"];
+
+/// Batas angka aturan lembur dalam JAM: (kunci, label, min, maks, bawaan).
+/// Bawaan PP 35/2021, bisa diubah perusahaan.
+pub const BATAS_LEMBUR: [(&str, &str, i64, i64, i64); 2] = [
+    (KUNCI_LEMBUR_MAKS_HARIAN, "Batas lembur harian", 1, 12, 4),
+    (KUNCI_LEMBUR_MAKS_MINGGUAN, "Batas lembur mingguan", 1, 72, 18),
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AturanLembur {
+    pub mode: String,
+    /// Jam.
+    pub maks_harian: i64,
+    /// Jam.
+    pub maks_mingguan: i64,
+}
+
+impl AturanLembur {
+    /// Cermin `aturanLemburDariPeta`. Kosong atau di luar batas = bawaan.
+    pub fn dari_peta(peta: &HashMap<String, String>) -> Self {
+        let angka = |i: usize| -> i64 {
+            let (kunci, _, min, maks, bawaan) = BATAS_LEMBUR[i];
+            peta.get(kunci)
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .filter(|n| (min..=maks).contains(n))
+                .unwrap_or(bawaan)
+        };
+        let mode = peta
+            .get(KUNCI_LEMBUR_MODE)
+            .map(|v| v.trim())
+            .filter(|v| MODE_LEMBUR.contains(v))
+            .unwrap_or("otomatis")
+            .to_owned();
+        Self { mode, maks_harian: angka(0), maks_mingguan: angka(1) }
+    }
+}
+
+/// Cermin `validasiAturanLembur`: pasangan kunci-nilai siap disimpan.
+pub fn validasi_aturan_lembur(draft: &Value) -> Result<Vec<(&'static str, String)>, String> {
+    let mode = teks(draft, KUNCI_LEMBUR_MODE);
+    if !MODE_LEMBUR.contains(&mode.as_str()) {
+        return Err("Mode lembur harus otomatis atau SPL.".into());
+    }
+    let mut hasil = vec![(KUNCI_LEMBUR_MODE, mode)];
+    for (kunci, label, min, maks, _) in BATAS_LEMBUR {
+        match draft.get(kunci).and_then(Value::as_f64) {
+            Some(n) if n.fract() == 0.0 && (min as f64..=maks as f64).contains(&n) => {
+                hasil.push((kunci, (n as i64).to_string()));
+            }
+            _ => return Err(format!("{label} harus {min} sampai {maks} jam.")),
+        }
+    }
+    Ok(hasil)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PeriodeCuti {
     /// Kunci periode (`hr_cuti_penyesuaian.periode`).
@@ -989,12 +1264,92 @@ pub fn cuti_dibayar(conn: &Connection, mulai: &str, akhir: &str) -> Result<HashM
         .collect())
 }
 
+/// Jam absensi per karyawan per tanggal kerja `?1`..`?2`: lembur hari biasa,
+/// jam total dan jam kerja di tanggal libur. Definisi libur SAMA dengan
+/// rekap gaji (`tbl_hari_libur` aktif atau di luar hari kerja shift baris).
+pub const LEMBUR_HARIAN_SQL: &str = "SELECT ah.id_karyawan, ah.tanggal, COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN 0 ELSE COALESCE(ah.lembur, 0) END), 0), COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN COALESCE(ah.jam_kerja, 0) + COALESCE(ah.lembur, 0) ELSE 0 END), 0), COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0) THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) FROM absensi_harian ah LEFT JOIN tbl_hari_libur hl ON hl.tanggal = ah.tanggal AND hl.status_aktif = 1 LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift WHERE ah.tanggal >= ?1 AND ah.tanggal <= ?2 GROUP BY ah.id_karyawan, ah.tanggal;";
+
+fn baca_aturan_lembur(conn: &Connection) -> Result<AturanLembur, CommandError> {
+    let mut st = conn
+        .prepare("SELECT key, value FROM setting_gex_system WHERE key LIKE 'hr\\_lembur\\_%' ESCAPE '\\';")
+        .map_err(internal)?;
+    let peta = st
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(internal)?
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(internal)?;
+    Ok(AturanLembur::dari_peta(&peta))
+}
+
+/// Menit SPL berlaku per `(karyawan, tanggal kerja)`.
+pub fn muat_spl(conn: &Connection, mulai: &str, akhir: &str) -> Result<HashMap<(String, String), i64>, CommandError> {
+    let mut st = conn.prepare(SPL_RENTANG_SQL).map_err(internal)?;
+    let mut hasil: HashMap<(String, String), i64> = HashMap::new();
+    for baris in st
+        .query_map(params![mulai, akhir], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            ))
+        })
+        .map_err(internal)?
+    {
+        let (id, tanggal, a, b) = baris.map_err(internal)?;
+        *hasil.entry((id, tanggal)).or_default() += durasi_lembur(&a, &b).unwrap_or(0);
+    }
+    Ok(hasil)
+}
+
+/// Kait rekap gaji (§18.4): mode lembur, dan potongan per karyawan bila mode
+/// `spl` (kosong untuk `otomatis`). Mode dibaca saat rekap dihitung (Q-57).
+pub fn lembur_spl(conn: &Connection, mulai: &str, akhir: &str) -> Result<(String, HashMap<String, PotongLembur>), CommandError> {
+    let aturan = baca_aturan_lembur(conn)?;
+    if aturan.mode != "spl" {
+        return Ok((aturan.mode, HashMap::new()));
+    }
+    let spl = muat_spl(conn, mulai, akhir)?;
+    let mut hari: HashMap<String, Vec<HariLembur>> = HashMap::new();
+    let mut st = conn.prepare(LEMBUR_HARIAN_SQL).map_err(internal)?;
+    for baris in st
+        .query_map(params![mulai, akhir], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
+        })
+        .map_err(internal)?
+    {
+        let (id, tanggal, lembur, libur_total, libur_jam_kerja) = baris.map_err(internal)?;
+        let menit_spl = spl.get(&(id.clone(), tanggal)).copied().unwrap_or(0);
+        hari.entry(id).or_default().push(HariLembur { lembur, libur_total, libur_jam_kerja, spl: menit_spl });
+    }
+    Ok((aturan.mode, hari.into_iter().map(|(id, h)| (id, potong_lembur_spl(&h))).collect()))
+}
+
+/// Shift tukar berlaku per `(karyawan, tanggal)` (`TUKAR_RENTANG_SQL`). Bila
+/// dua tukar berlaku lahir offline untuk orang dan tanggal yang sama, yang
+/// ber-id terkecil dipakai di semua perangkat.
+pub fn muat_tukar(conn: &Connection, mulai: &str, akhir: &str) -> Result<HashMap<(String, String), i64>, CommandError> {
+    let mut st = conn.prepare(TUKAR_RENTANG_SQL).map_err(internal)?;
+    let mut hasil: HashMap<(String, String), i64> = HashMap::new();
+    for baris in st
+        .query_map(params![mulai, akhir], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
+        })
+        .map_err(internal)?
+    {
+        if let (Some(id), tanggal, Some(shift)) = baris.map_err(internal)? {
+            hasil.entry((id, tanggal)).or_insert(shift);
+        }
+    }
+    Ok(hasil)
+}
+
 // ── SQL tulis (kembar `services/hr-pengajuan.ts`) ──────────────────────────
 
 pub const UPSERT_JENIS_SQL: &str = "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now')) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now');";
 
 /// Pengaju dan `created_at` tidak pernah ditimpa suntingan.
-pub const UPSERT_PENGAJUAN_SQL: &str = "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now')) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now');";
+pub const UPSERT_PENGAJUAN_SQL: &str = "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar;";
 
 /// Lokal: `diterima_cloud` kosong sampai tertarik dari cloud.
 pub const INSERT_KEPUTUSAN_SQL: &str = "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, COALESCE(?8, datetime('now'))) ON CONFLICT(id_keputusan) DO NOTHING;";
@@ -1075,9 +1430,29 @@ pub struct BarisPengajuan {
     pub diajukan_oleh: String,
     pub waktu_perangkat: String,
     pub created_at: String,
+    pub jam_mulai: Option<String>,
+    pub jam_selesai: Option<String>,
+    pub id_karyawan_tukar: Option<String>,
+    pub id_shift_asal: Option<i64>,
+    pub id_shift_tukar: Option<i64>,
 }
 
-const KOLOM_PENGAJUAN: &str = "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at";
+impl BarisPengajuan {
+    fn ringkas(&self) -> Ringkas<'_> {
+        Ringkas {
+            kelompok: &self.kelompok,
+            id_karyawan: &self.id_karyawan,
+            id_karyawan_tukar: self.id_karyawan_tukar.as_deref(),
+            tanggal_mulai: &self.tanggal_mulai,
+            tanggal_selesai: &self.tanggal_selesai,
+            setengah_hari: self.setengah_hari,
+            jam_mulai: self.jam_mulai.as_deref(),
+            jam_selesai: self.jam_selesai.as_deref(),
+        }
+    }
+}
+
+const KOLOM_PENGAJUAN: &str = "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar";
 
 fn baris_pengajuan(r: &rusqlite::Row<'_>) -> rusqlite::Result<BarisPengajuan> {
     Ok(BarisPengajuan {
@@ -1095,6 +1470,11 @@ fn baris_pengajuan(r: &rusqlite::Row<'_>) -> rusqlite::Result<BarisPengajuan> {
         diajukan_oleh: r.get(11)?,
         waktu_perangkat: r.get(12)?,
         created_at: r.get(13)?,
+        jam_mulai: r.get(14)?,
+        jam_selesai: r.get(15)?,
+        id_karyawan_tukar: r.get(16)?,
+        id_shift_asal: r.get(17)?,
+        id_shift_tukar: r.get(18)?,
     })
 }
 
@@ -1108,7 +1488,7 @@ fn baca_pengajuan(
     let mut st = conn
         .prepare(&format!(
             "SELECT {KOLOM_PENGAJUAN} FROM hr_pengajuan p
-             WHERE (?1 IS NULL OR p.id_karyawan = ?1) AND p.tanggal_mulai <= ?3 AND p.tanggal_selesai >= ?2
+             WHERE (?1 IS NULL OR p.id_karyawan = ?1 OR p.id_karyawan_tukar = ?1) AND p.tanggal_mulai <= ?3 AND p.tanggal_selesai >= ?2
              ORDER BY p.tanggal_mulai DESC, p.id_pengajuan LIMIT 2000;"
         ))
         .map_err(internal)?;
@@ -1300,12 +1680,50 @@ pub fn simpan_jenis(state: &DesktopState, draft: &Value) -> Result<Value, Comman
     })
 }
 
+pub const PESAN_TUKAR_NONAKTIF: &str = "Karyawan yang diajak bertukar tidak ditemukan atau nonaktif.";
+pub const PESAN_TUKAR_SHIFT_SAMA: &str = "Kedua karyawan memakai shift yang sama; tidak ada yang ditukar.";
+pub const PESAN_TUKAR_SHIFT_HILANG: &str = "Shift salah satu karyawan tidak ditemukan.";
+pub const PESAN_TUKAR_BACKUP: &str = "Salah satu karyawan punya penugasan backup aktif di tanggal itu.";
+
+/// Shift kedua karyawan tukar shift saat diajukan (§18.2), setelah memeriksa
+/// karyawan kedua aktif, shift keduanya ada dan berbeda, dan tidak ada backup.
+fn shift_tukar_baru(tx: &Connection, id_karyawan: &str, id_tukar: &str, tanggal: &str) -> Result<(i64, i64), CommandError> {
+    let shift = |id: &str, wajib_aktif: bool| -> Result<Option<i64>, CommandError> {
+        tx.query_row(
+            "SELECT id_shift FROM master_data WHERE id_unik = ?1 AND (?2 = 0 OR status_aktif = 'Aktif');",
+            params![id, i64::from(wajib_aktif)],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(internal)
+    };
+    let asal = shift(id_karyawan, false)?.ok_or_else(|| invalid(PESAN_TUKAR_SHIFT_HILANG))?;
+    let lain = shift(id_tukar, true)?.ok_or_else(|| invalid(PESAN_TUKAR_NONAKTIF))?;
+    if asal == lain {
+        return Err(invalid(PESAN_TUKAR_SHIFT_SAMA));
+    }
+    let ada: i64 = tx
+        .query_row("SELECT COUNT(*) FROM tbl_shift WHERE id_shift IN (?1, ?2);", params![asal, lain], |r| r.get(0))
+        .map_err(internal)?;
+    if ada != 2 {
+        return Err(invalid(PESAN_TUKAR_SHIFT_HILANG));
+    }
+    let backup: Option<String> = tx
+        .query_row(BACKUP_TUKAR_SQL, params![tanggal, id_karyawan, id_tukar], |r| r.get(0))
+        .optional()
+        .map_err(internal)?;
+    if backup.is_some() {
+        return Err(invalid(PESAN_TUKAR_BACKUP));
+    }
+    Ok((asal, lain))
+}
+
 /// Ajukan atau sunting pengajuan (§17.4). Urgent juga menulis keputusan
 /// `urgent-<id>` di transaksi yang sama.
 pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &Value) -> Result<Value, CommandError> {
     let sah = validasi_pengajuan(draft).map_err(invalid)?;
     let id_masuk = payload_text(draft, "id_pengajuan");
-    let sendiri = karyawan_sendiri(operator, &sah.id_karyawan);
     if sah.urgent {
         if id_masuk.is_some() {
             return Err(invalid("Pengajuan urgent hanya bisa dibuat baru."));
@@ -1313,7 +1731,6 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
         if !punya(operator, "hr.request.urgent") {
             return Err(ditolak("Kamu tidak punya izin mengajukan urgent."));
         }
-        periksa_urgent(sendiri).map_err(invalid)?;
     }
     hris::dalam_transaksi(state, |tx, client_id| {
         let ada: bool = tx
@@ -1331,14 +1748,35 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             .find(|j| j.id_jenis == sah.id_jenis)
             .ok_or_else(|| invalid("Jenis pengajuan tidak ditemukan."))?;
         periksa_jenis(&sah, &jenis).map_err(invalid)?;
+        let lembur = jenis.kelompok == "Lembur";
+        let (jam_mulai, jam_selesai) = if lembur {
+            (Some(sah.jam_mulai.as_str()), Some(sah.jam_selesai.as_str()))
+        } else {
+            (None, None)
+        };
+        let id_tukar = (jenis.kelompok == "Tukar Shift").then_some(sah.id_karyawan_tukar.as_str());
+        if sah.urgent {
+            let sendiri = karyawan_sendiri(operator, &sah.id_karyawan) || id_tukar.is_some_and(|t| karyawan_sendiri(operator, t));
+            periksa_urgent(sendiri).map_err(invalid)?;
+        }
+        let (id_shift_asal, id_shift_tukar) = match id_tukar {
+            Some(tukar) => {
+                let (asal, lain) = shift_tukar_baru(tx, &sah.id_karyawan, tukar, &sah.tanggal_mulai)?;
+                (Some(asal), Some(lain))
+            }
+            None => (None, None),
+        };
         let jadwal = jadwal_satu(tx, &sah.id_karyawan)?.ok_or_else(|| invalid("Karyawan tidak ditemukan."))?;
         let kalender = muat_kalender(tx, &sah.tanggal_mulai, &sah.tanggal_selesai)?;
         let wajib = tanggal_wajib(&jadwal, &kalender, &sah.tanggal_mulai, &sah.tanggal_selesai);
-        if wajib.is_empty() {
-            return Err(invalid(PESAN_TANPA_HARI_KERJA));
+        // Lembur dan tukar shift sah di hari libur karyawan itu.
+        if KELOMPOK_TIDAK_HADIR.contains(&jenis.kelompok.as_str()) {
+            if wajib.is_empty() {
+                return Err(invalid(PESAN_TANPA_HARI_KERJA));
+            }
+            let kalender_hari = selisih_hari(&sah.tanggal_mulai, &sah.tanggal_selesai) + 1;
+            periksa_maks(&jenis, wajib.len() as i64, kalender_hari).map_err(invalid)?;
         }
-        let kalender_hari = selisih_hari(&sah.tanggal_mulai, &sah.tanggal_selesai) + 1;
-        periksa_maks(&jenis, wajib.len() as i64, kalender_hari).map_err(invalid)?;
         tolak_bila_dibayar(tx, &sah.tanggal_mulai, &sah.tanggal_selesai)?;
 
         let mut pengaju = operator.username.clone();
@@ -1354,16 +1792,31 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             created_at = Some(lama.created_at);
         }
 
-        // Bertumpuk dengan pengajuan lain yang masih menunggu atau berlaku.
-        let lain: Vec<BarisPengajuan> = baca_pengajuan(tx, Some(&sah.id_karyawan), &sah.tanggal_mulai, &sah.tanggal_selesai)?
-            .into_iter()
-            .filter(|p| Some(&p.id_pengajuan) != id_masuk.as_ref())
-            .collect();
+        // Bertumpuk dengan pengajuan lain yang masih menunggu atau berlaku,
+        // menurut matriks §18.3 dan untuk kedua karyawan tukar shift.
+        let baru = Ringkas {
+            kelompok: &jenis.kelompok,
+            id_karyawan: &sah.id_karyawan,
+            id_karyawan_tukar: id_tukar,
+            tanggal_mulai: &sah.tanggal_mulai,
+            tanggal_selesai: &sah.tanggal_selesai,
+            setengah_hari: sah.setengah_hari,
+            jam_mulai,
+            jam_selesai,
+        };
+        let mut lain: Vec<BarisPengajuan> = Vec::new();
+        for orang in std::iter::once(sah.id_karyawan.as_str()).chain(id_tukar) {
+            for p in baca_pengajuan(tx, Some(orang), &sah.tanggal_mulai, &sah.tanggal_selesai)? {
+                if Some(&p.id_pengajuan) != id_masuk.as_ref() && !lain.iter().any(|q| q.id_pengajuan == p.id_pengajuan) {
+                    lain.push(p);
+                }
+            }
+        }
         let ids: Vec<&str> = lain.iter().map(|p| p.id_pengajuan.as_str()).collect();
         let keputusan_lain = baca_keputusan(tx, &ids)?;
         for p in &lain {
             let status = status_pengajuan(&p.sidik, keputusan_lain.get(&p.id_pengajuan).map(Vec::as_slice).unwrap_or(&[]));
-            if status == "Menunggu" || status_berlaku(status) {
+            if (status == "Menunggu" || status_berlaku(status)) && bentrok_pengajuan(&baru, &p.ringkas()) {
                 return Err(invalid(pesan_bertumpuk(&p.tanggal_mulai, &p.tanggal_selesai)));
             }
         }
@@ -1379,6 +1832,11 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             tanggal_selesai: &sah.tanggal_selesai,
             setengah_hari: sah.setengah_hari,
             alasan: &sah.alasan,
+            jam_mulai,
+            jam_selesai,
+            id_karyawan_tukar: id_tukar,
+            id_shift_asal,
+            id_shift_tukar,
         });
         let waktu = waktu_sekarang(tx)?;
         tx.execute(
@@ -1397,7 +1855,12 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
                 sidik,
                 pengaju,
                 waktu,
-                created_at
+                created_at,
+                jam_mulai,
+                jam_selesai,
+                id_tukar,
+                id_shift_asal,
+                id_shift_tukar
             ],
         )
         .map_err(internal)?;
@@ -1429,7 +1892,8 @@ pub fn putuskan(state: &DesktopState, operator: &OperatorUser, draft: &Value) ->
             sudah_diketahui: keputusan.iter().any(|k| k.jenis == "Diketahui"),
             pengaju_sendiri: sama_orang(&p.diajukan_oleh, &operator.username),
             superadmin: operator.is_superadmin,
-            karyawan_sendiri: karyawan_sendiri(operator, &p.id_karyawan),
+            karyawan_sendiri: karyawan_sendiri(operator, &p.id_karyawan)
+                || p.id_karyawan_tukar.as_deref().is_some_and(|t| karyawan_sendiri(operator, t)),
             boleh_putus: punya(operator, &izin_pemutus),
         };
         periksa_aksi(&aksi, &alasan, &keadaan).map_err(invalid)?;
@@ -1477,24 +1941,41 @@ pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandErro
         .iter()
         .map(|p| status_pengajuan(&p.sidik, keputusan.get(&p.id_pengajuan).unwrap_or(&kosong)))
         .collect();
+    let aktif = |s: &str| s == "Menunggu" || status_berlaku(s);
+    let aturan_lembur = baca_aturan_lembur(&conn)?;
+    let mut spl_aktif: HashMap<&str, Vec<(String, i64)>> = HashMap::new();
+    for (i, p) in baris.iter().enumerate() {
+        if p.kelompok == "Lembur" && aktif(status[i]) {
+            let menit = durasi_lembur(p.jam_mulai.as_deref().unwrap_or(""), p.jam_selesai.as_deref().unwrap_or("")).unwrap_or(0);
+            spl_aktif.entry(p.id_karyawan.as_str()).or_default().push((p.tanggal_mulai.clone(), menit));
+        }
+    }
+    let lewat_batas: HashMap<&str, HashSet<String>> = spl_aktif
+        .iter()
+        .map(|(id, spl)| (*id, lembur_lewat_batas(spl, aturan_lembur.maks_harian * 60, aturan_lembur.maks_mingguan * 60)))
+        .collect();
     let mut hasil = Vec::with_capacity(baris.len());
     for (i, p) in baris.iter().enumerate() {
         let kep = keputusan.get(&p.id_pengajuan).unwrap_or(&kosong);
         let mut tanda = tanda_keputusan(&p.sidik, &p.diajukan_oleh, kep);
-        let aktif = |s: &str| s == "Menunggu" || status_berlaku(s);
         if aktif(status[i])
-            && baris.iter().enumerate().any(|(j, q)| {
-                j != i
-                    && q.id_karyawan == p.id_karyawan
-                    && aktif(status[j])
-                    && q.tanggal_mulai <= p.tanggal_selesai
-                    && q.tanggal_selesai >= p.tanggal_mulai
-            })
+            && baris
+                .iter()
+                .enumerate()
+                .any(|(j, q)| j != i && aktif(status[j]) && bentrok_pengajuan(&p.ringkas(), &q.ringkas()))
         {
             tanda.push("bertumpuk");
         }
+        if p.kelompok == "Lembur"
+            && aktif(status[i])
+            && lewat_batas.get(p.id_karyawan.as_str()).is_some_and(|t| t.contains(&p.tanggal_mulai))
+        {
+            tanda.push("lembur_lewat_batas");
+        }
+        let tidak_hadir = KELOMPOK_TIDAK_HADIR.contains(&p.kelompok.as_str());
         let wajib = jadwal
             .get(&p.id_karyawan)
+            .filter(|_| tidak_hadir)
             .map(|j| tanggal_wajib(j, &kalender, &p.tanggal_mulai, &p.tanggal_selesai))
             .unwrap_or_default();
         if status_berlaku(status[i]) && !p.setengah_hari {
@@ -1508,6 +1989,8 @@ pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandErro
         hasil.push(json!({
             "pengajuan": p,
             "nama_karyawan": nama.get(&p.id_karyawan),
+            "nama_karyawan_tukar": p.id_karyawan_tukar.as_ref().and_then(|t| nama.get(t)),
+            "menit_lembur": durasi_lembur(p.jam_mulai.as_deref().unwrap_or(""), p.jam_selesai.as_deref().unwrap_or("")).ok(),
             "nama_jenis": jenis_ini.map(|j| j.nama.clone()),
             "izin_pemutus": jenis_ini.map(|j| j.izin_pemutus.clone()).unwrap_or_else(|| IZIN_PEMUTUS_AKTIF.to_owned()),
             "wajib_dokumen": jenis_ini.is_some_and(|j| j.wajib_dokumen),
@@ -1517,7 +2000,7 @@ pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandErro
             "sudah_diketahui": kep.iter().any(|k| k.jenis == "Diketahui"),
         }));
     }
-    Ok(json!({ "pengajuan": hasil, "jenis": jenis }))
+    Ok(json!({ "pengajuan": hasil, "jenis": jenis, "aturan_lembur": aturan_lembur }))
 }
 
 /// Riwayat keputusan satu pengajuan.
@@ -1757,12 +2240,14 @@ pub fn akhir_periode(state: &DesktopState) -> Result<Value, CommandError> {
             }
         }
     }
-    Ok(json!({ "aturan": aturan, "belum_diproses": belum, "diuangkan": uang }))
+    let aturan_lembur = baca_aturan_lembur(&conn)?;
+    Ok(json!({ "aturan": aturan, "aturan_lembur": aturan_lembur, "belum_diproses": belum, "diuangkan": uang }))
 }
 
-/// Simpan aturan cuti (`hr.org.manage`), pola `hris::simpan_pengaturan`.
+/// Simpan aturan cuti dan lembur (`hr.org.manage`), pola `hris::simpan_pengaturan`.
 pub fn simpan_aturan(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
-    let isian = validasi_aturan_cuti(draft).map_err(invalid)?;
+    let mut isian = validasi_aturan_cuti(draft).map_err(invalid)?;
+    isian.extend(validasi_aturan_lembur(draft).map_err(invalid)?);
     hris::dalam_transaksi(state, |tx, client_id| {
         for (kunci, nilai) in &isian {
             tx.execute(
@@ -1950,6 +2435,29 @@ pub fn cloud_pengajuan_statements(payload: &Value, entity_key: &str) -> Option<V
         return None;
     }
     let potong = angka01(payload, "potong_jatah")?;
+    // Isian fase 3 hanya untuk kelompoknya; bentuk salah = tanpa statement.
+    let satu_tanggal = mulai == selesai;
+    let (jam_mulai, jam_selesai) = if kelompok == "Lembur" {
+        let a = payload_text(payload, "jam_mulai")?;
+        let b = payload_text(payload, "jam_selesai")?;
+        if !satu_tanggal || durasi_lembur(&a, &b).is_err() {
+            return None;
+        }
+        (Some(a), Some(b))
+    } else {
+        (None, None)
+    };
+    let (id_tukar, shift_asal, shift_tukar) = if kelompok == "Tukar Shift" {
+        let tukar = payload_text(payload, "id_karyawan_tukar")?;
+        let asal = payload.get("id_shift_asal").and_then(Value::as_i64)?;
+        let lain = payload.get("id_shift_tukar").and_then(Value::as_i64)?;
+        if !satu_tanggal || asal == lain {
+            return None;
+        }
+        (Some(tukar), Some(asal), Some(lain))
+    } else {
+        (None, None, None)
+    };
     Some(vec![(
         UPSERT_PENGAJUAN_SQL,
         vec![
@@ -1967,6 +2475,11 @@ pub fn cloud_pengajuan_statements(payload: &Value, entity_key: &str) -> Option<V
             json!(payload_text(payload, "diajukan_oleh")?),
             json!(payload_text(payload, "waktu_perangkat")?),
             json!(payload_text(payload, "created_at")),
+            json!(jam_mulai),
+            json!(jam_selesai),
+            json!(id_tukar),
+            json!(shift_asal),
+            json!(shift_tukar),
         ],
     )])
 }
@@ -2175,6 +2688,162 @@ mod tests_alur {
         });
     }
 
+    /// Fase 3 (v38): tukar shift dan lembur lewat penulisan lokal + outbox,
+    /// pembaca baru, dan handler cloud. Cermin "fase 3" di tes Web.
+    #[test]
+    fn alur_fase3_tukar_dan_lembur() {
+        let (_dir, state) = state_uji();
+        let conn = storage::database(&state.data_dir).expect("db");
+        conn.execute_batch(
+            "INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit,
+               istirahat_menit, batas_pulang_menit, buffer_shift_malam_menit, offset_generate_alfa, hari_kerja)
+             VALUES (1, 1, 'Pagi', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5'),
+                    (2, 2, 'Malam', '22:00', '06:00', 480, 60, 240, 120, 180, '1,2,3,4,5,6,7');
+             INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif, tanggal_daftar) VALUES
+               ('K1', 'Ani', 'Gudang', 1, 'Aktif', '2024-01-02'),
+               ('K2', 'Budi', 'Gudang', 2, 'Aktif', '2024-01-02'),
+               ('K3', 'Cici', 'Gudang', 1, 'Aktif', '2024-01-02');",
+        )
+        .expect("data awal");
+        let hrd = operator("hrd", &["hr.request.submit"], None);
+        let pemutus = operator("hrd2", &["hr.request.decide"], Some("K3"));
+        let setujui = |id: &str| {
+            putuskan(&state, &pemutus, &json!({"id_pengajuan": id, "aksi": "Setujui"})).expect("setujui");
+        };
+        let ajukan = |draft: Value| -> String {
+            simpan_pengajuan(&state, &hrd, &draft).expect("ajukan")["id_pengajuan"].as_str().unwrap().to_owned()
+        };
+
+        // Tukar shift K1 (Pagi) ⇄ K2 (Malam) pada Selasa 2026-11-03.
+        let tukar = json!({"id_karyawan": "K1", "id_jenis": "jns-tukar-shift", "tanggal_mulai": "2026-11-03",
+                           "tanggal_selesai": "2026-11-03", "alasan": "Acara keluarga", "id_karyawan_tukar": "K2"});
+        let id_tukar = ajukan(tukar);
+        assert!(muat_tukar(&conn, "2026-11-03", "2026-11-03").unwrap().is_empty(), "Menunggu belum berlaku");
+        setujui(&id_tukar);
+        let peta = muat_tukar(&conn, "2026-11-02", "2026-11-04").unwrap();
+        assert_eq!(peta.get(&("K1".into(), "2026-11-03".into())), Some(&2));
+        assert_eq!(peta.get(&("K2".into(), "2026-11-03".into())), Some(&1));
+        assert_eq!(peta.len(), 2);
+        // Tukar tidak menutup tanggal itu dari Alfa.
+        assert!(pengaju_tanggal(&conn, "2026-11-03").unwrap().is_empty());
+        // Karyawan kedua tidak bisa memutus tukar yang memuat dirinya.
+        let k2 = operator("budi", &["hr.request.decide"], Some("K2"));
+        let tukar2 = ajukan(json!({"id_karyawan": "K2", "id_jenis": "jns-tukar-shift", "tanggal_mulai": "2026-11-05",
+                                   "tanggal_selesai": "2026-11-05", "alasan": "x", "id_karyawan_tukar": "K1"}));
+        assert_eq!(
+            putuskan(&state, &k2, &json!({"id_pengajuan": tukar2, "aksi": "Setujui"})).unwrap_err().message,
+            "Pengajuan untuk dirimu sendiri harus diputus orang lain."
+        );
+
+        let gagal = |draft: Value| simpan_pengajuan(&state, &hrd, &draft).unwrap_err().message;
+        assert_eq!(
+            gagal(json!({"id_karyawan": "K1", "id_jenis": "jns-tukar-shift", "tanggal_mulai": "2026-11-04",
+                         "tanggal_selesai": "2026-11-04", "alasan": "x", "id_karyawan_tukar": "K3"})),
+            PESAN_TUKAR_SHIFT_SAMA
+        );
+        // Cuti K2 di tanggal tukar: bertumpuk lewat `id_karyawan_tukar`.
+        assert_eq!(
+            gagal(json!({"id_karyawan": "K2", "id_jenis": "jns-cuti-tahunan", "tanggal_mulai": "2026-11-03",
+                         "tanggal_selesai": "2026-11-03", "alasan": "x"})),
+            pesan_bertumpuk("2026-11-03", "2026-11-03")
+        );
+        conn.execute_batch(
+            "INSERT INTO backup_karyawan (id_backup, tanggal_tugas, id_karyawan_asal, nama_karyawan_asal, divisi_asal,
+               id_shift_asal, id_karyawan_pengganti, nama_karyawan_pengganti, divisi_pengganti, id_shift_normal_pengganti,
+               id_shift_backup, status_tugas, kode_operator, waktu_input)
+             VALUES ('BCK-1', '2026-11-06', 'K3', 'Cici', 'Gudang', 1, 'K1', 'Ani', 'Gudang', 1, 1, 'Aktif', 'op', '2026-11-01');",
+        )
+        .unwrap();
+        assert_eq!(
+            gagal(json!({"id_karyawan": "K1", "id_jenis": "jns-tukar-shift", "tanggal_mulai": "2026-11-06",
+                         "tanggal_selesai": "2026-11-06", "alasan": "x", "id_karyawan_tukar": "K2"})),
+            PESAN_TUKAR_BACKUP
+        );
+
+        // Lembur: sah di hari libur mingguan (Sabtu), jam beririsan ditolak.
+        let lembur = |tanggal: &str, a: &str, b: &str| {
+            json!({"id_karyawan": "K1", "id_jenis": "jns-lembur", "tanggal_mulai": tanggal, "tanggal_selesai": tanggal,
+                   "alasan": "Opname", "jam_mulai": a, "jam_selesai": b})
+        };
+        let id_spl = ajukan(lembur("2026-11-03", "17:00", "19:00"));
+        setujui(&id_spl);
+        assert_eq!(gagal(lembur("2026-11-03", "18:00", "20:00")), pesan_bertumpuk("2026-11-03", "2026-11-03"));
+        ajukan(lembur("2026-11-03", "19:00", "20:00"));
+        let id_sabtu = ajukan(lembur("2026-11-07", "08:00", "12:00"));
+        setujui(&id_sabtu);
+        assert_eq!(
+            gagal(json!({"id_karyawan": "K1", "id_jenis": "jns-lembur", "tanggal_mulai": "2026-11-03",
+                         "tanggal_selesai": "2026-11-04", "alasan": "x", "jam_mulai": "17:00", "jam_selesai": "19:00"})),
+            "Lembur diajukan per tanggal kerja."
+        );
+        let spl = muat_spl(&conn, "2026-11-01", "2026-11-30").unwrap();
+        assert_eq!(spl.get(&("K1".into(), "2026-11-03".into())), Some(&120), "SPL Menunggu tidak dihitung");
+        assert_eq!(spl.get(&("K1".into(), "2026-11-07".into())), Some(&240));
+
+        // Rekap mode otomatis tidak memotong; mode spl memotong per tanggal.
+        conn.execute_batch(
+            "INSERT INTO absensi_harian (tanggal, id_karyawan, nama, kelas_divisi, status_kehadiran, status_absen, sumber,
+               update_terakhir, jam_kerja, lembur, id_shift, bulan, tahun, id_sesi) VALUES
+               ('2026-11-03', 'K1', 'Ani', 'Gudang', 'Hadir', 'Lengkap', 'Scanner', 'x', 480, 180, 2, 'November', 2026, 's1'),
+               ('2026-11-04', 'K1', 'Ani', 'Gudang', 'Hadir', 'Lengkap', 'Scanner', 'x', 480, 30, 1, 'November', 2026, 's2'),
+               ('2026-11-07', 'K1', 'Ani', 'Gudang', 'Hadir', 'Lengkap', 'Scanner', 'x', 300, 0, 1, 'November', 2026, 's3');",
+        )
+        .unwrap();
+        let (mode, potong) = lembur_spl(&conn, "2026-11-01", "2026-11-30").unwrap();
+        assert_eq!((mode.as_str(), potong.is_empty()), ("otomatis", true));
+        conn.execute_batch("INSERT INTO setting_gex_system (key, value) VALUES ('hr_lembur_mode', 'spl');").unwrap();
+        let (mode, potong) = lembur_spl(&conn, "2026-11-01", "2026-11-30").unwrap();
+        assert_eq!(mode, "spl");
+        // 11-03: 180 − 120 = 60; 11-04: tanpa SPL 30; Sabtu: 300 jam kerja ≤ 240 SPL → 60 dari jam kerja.
+        assert_eq!(potong["K1"], PotongLembur { lembur: 90, libur_total: 60, libur_jam_kerja: 60, tanpa_spl: 30 });
+
+        let d = daftar(&state, &json!({})).expect("daftar");
+        let baris = |id: &str| d["pengajuan"].as_array().unwrap().iter().find(|b| b["pengajuan"]["id_pengajuan"] == id).unwrap().clone();
+        assert_eq!(baris(&id_tukar)["nama_karyawan_tukar"], "Budi");
+        assert_eq!(baris(&id_tukar)["tanda"], json!([]));
+        assert_eq!(baris(&id_spl)["menit_lembur"], 120);
+
+        // Cloud: payload outbox apa adanya.
+        let outbox: Vec<(String, String, String)> = {
+            let mut st = conn
+                .prepare("SELECT domain, entity_key, payload_json FROM desktop_sync_outbox WHERE domain LIKE 'hr-request%' ORDER BY rowid;")
+                .unwrap();
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            let hub_dir = tempfile::tempdir().unwrap();
+            let hub = hub_dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                url::Url::parse("https://hr-fase3.sppg.invalid").unwrap(),
+                &hub,
+                reqwest::Client::new(),
+            );
+            client.ensure_schema().await.expect("skema cloud");
+            for (domain, key, payload) in &outbox {
+                let payload: Value = serde_json::from_str(payload).unwrap();
+                let statements = match domain.as_str() {
+                    "hr-request" => cloud_pengajuan_statements(&payload, key),
+                    _ => cloud_keputusan_statements(&payload, key),
+                }
+                .expect("payload sah");
+                for (sql, args) in statements {
+                    client.query_one(sql, args).await.expect("terapkan");
+                }
+            }
+            let hub = Connection::open(&hub).unwrap();
+            assert_eq!(muat_tukar(&hub, "2026-11-03", "2026-11-03").unwrap(), muat_tukar(&conn, "2026-11-03", "2026-11-03").unwrap());
+            assert_eq!(muat_spl(&hub, "2026-11-01", "2026-11-30").unwrap(), spl);
+            // Bentuk salah: tanpa statement (konflik), tidak pernah diterapkan.
+            let cacat = json!({"id_pengajuan": "x", "id_karyawan": "K1", "id_jenis": "jns-lembur", "kelompok": "Lembur",
+                               "potong_jatah": 0, "dampak_gaji": "Tidak Berpengaruh", "tanggal_mulai": "2026-11-03",
+                               "tanggal_selesai": "2026-11-03", "setengah_hari": 0, "alasan": "x", "sidik": "s",
+                               "diajukan_oleh": "hrd", "waktu_perangkat": "2026-11-01 00:00:00"});
+            assert!(cloud_pengajuan_statements(&cacat, "x").is_none());
+        });
+    }
+
     #[test]
     fn jatah_dan_penyesuaian() {
         let (_dir, state) = state_uji();
@@ -2250,6 +2919,11 @@ mod tests {
             tanggal_selesai: "2026-11-03",
             setengah_hari: false,
             alasan: "Demam",
+            jam_mulai: None,
+            jam_selesai: None,
+            id_karyawan_tukar: None,
+            id_shift_asal: None,
+            id_shift_tukar: None,
         };
         let kanonik = "K1\u{1f}jns-sakit\u{1f}Sakit\u{1f}0\u{1f}Dibayar\u{1f}2026-11-02\u{1f}2026-11-03\u{1f}0\u{1f}Demam";
         assert_eq!(sidik_pengajuan(&isi), hex::encode(Sha256::digest(kanonik.as_bytes())));
@@ -2394,8 +3068,8 @@ mod tests {
                                        "maks_hari": 5, "potong_jatah": 1})).unwrap();
         assert_eq!((j.nama.as_str(), j.maks_hari, j.satuan_maks.as_str(), j.is_aktif), ("Cuti Khusus", Some(5), "Hari Kerja", true));
         assert_eq!(
-            validasi_jenis(&json!({"nama": "Lembur", "kelompok": "Lembur", "dampak_gaji": "Dibayar"})).unwrap_err(),
-            "Kelompok harus Cuti, Izin, atau Sakit."
+            validasi_jenis(&json!({"nama": "Klaim", "kelompok": "Reimburse", "dampak_gaji": "Dibayar"})).unwrap_err(),
+            "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar."
         );
         assert_eq!(
             validasi_jenis(&json!({"nama": "X", "kelompok": "Izin", "dampak_gaji": "Dibayar", "potong_jatah": true})).unwrap_err(),
@@ -2526,5 +3200,158 @@ mod tests {
             vec![("2026-04-01", 12), ("2027-01-01", 12)]
         );
         assert!(periode_cuti(None, &tanpa, &[], &[], "2027-01-05").is_empty());
+    }
+
+    // ── Fase 3 (v38), vektor yang sama dengan `hr-pengajuan.test.ts` ───────
+
+    #[test]
+    fn fase3_durasi_lembur_dan_sidik() {
+        assert_eq!(durasi_lembur("17:00", "19:30"), Ok(150));
+        assert_eq!(durasi_lembur("22:00", "02:00"), Ok(240));
+        assert_eq!(durasi_lembur("17:00", "17:00").unwrap_err(), "Jam mulai dan selesai lembur tidak boleh sama.");
+        assert_eq!(durasi_lembur("7:00", "09:00").unwrap_err(), "Jam lembur harus berformat JJ:MM.");
+        assert_eq!(durasi_lembur("24:00", "01:00").unwrap_err(), "Jam lembur harus berformat JJ:MM.");
+        let isi = |kelompok: &'static str| IsiPengajuan {
+            id_karyawan: "K1",
+            id_jenis: "jns-x",
+            kelompok,
+            potong_jatah: false,
+            dampak_gaji: "Tidak Berpengaruh",
+            tanggal_mulai: "2026-11-02",
+            tanggal_selesai: "2026-11-02",
+            setengah_hari: false,
+            alasan: "Opname",
+            jam_mulai: Some("17:00"),
+            jam_selesai: Some("19:00"),
+            id_karyawan_tukar: Some("K2"),
+            id_shift_asal: Some(1),
+            id_shift_tukar: Some(2),
+        };
+        let awal = |k: &str| format!("K1\u{1f}jns-x\u{1f}{k}\u{1f}0\u{1f}Tidak Berpengaruh\u{1f}2026-11-02\u{1f}2026-11-02\u{1f}0\u{1f}Opname");
+        let hash = |t: String| hex::encode(Sha256::digest(t.as_bytes()));
+        assert_eq!(sidik_pengajuan(&isi("Lembur")), hash(format!("{}\u{1f}17:00\u{1f}19:00", awal("Lembur"))));
+        assert_eq!(sidik_pengajuan(&isi("Tukar Shift")), hash(format!("{}\u{1f}K2\u{1f}1\u{1f}2", awal("Tukar Shift"))));
+        assert_eq!(sidik_pengajuan(&isi("Dinas Luar")), hash(awal("Dinas Luar")));
+    }
+
+    #[test]
+    fn fase3_bentrok_pengajuan() {
+        let r = |kelompok: &'static str, id: &'static str, mulai: &'static str, selesai: &'static str| Ringkas {
+            kelompok,
+            id_karyawan: id,
+            id_karyawan_tukar: None,
+            tanggal_mulai: mulai,
+            tanggal_selesai: selesai,
+            setengah_hari: false,
+            jam_mulai: None,
+            jam_selesai: None,
+        };
+        let t = "2026-11-02";
+        let lembur = |id: &'static str, a: &'static str, b: &'static str| Ringkas {
+            jam_mulai: Some(a),
+            jam_selesai: Some(b),
+            ..r("Lembur", id, t, t)
+        };
+        let l1 = lembur("K1", "17:00", "19:00");
+        assert!(bentrok_pengajuan(&l1, &lembur("K1", "18:30", "20:00")));
+        assert!(!bentrok_pengajuan(&l1, &lembur("K1", "19:00", "21:00")));
+        assert!(!bentrok_pengajuan(&l1, &lembur("K2", "17:00", "19:00")));
+        assert!(bentrok_pengajuan(&l1, &r("Cuti", "K1", "2026-11-01", "2026-11-03")));
+        assert!(!bentrok_pengajuan(&l1, &Ringkas { setengah_hari: true, ..r("Izin", "K1", t, t) }));
+        let tukar = Ringkas { id_karyawan_tukar: Some("K1"), ..r("Tukar Shift", "K2", t, t) };
+        assert!(!bentrok_pengajuan(&l1, &tukar));
+        assert!(bentrok_pengajuan(&tukar, &r("Cuti", "K1", t, t)));
+        assert!(!bentrok_pengajuan(&tukar, &r("Dinas Luar", "K3", t, t)));
+        assert!(bentrok_pengajuan(&tukar, &Ringkas { id_karyawan_tukar: Some("K2"), ..r("Tukar Shift", "K3", t, t) }));
+        assert!(!bentrok_pengajuan(&tukar, &Ringkas { id_karyawan_tukar: Some("K4"), ..r("Tukar Shift", "K3", t, t) }));
+        assert!(!bentrok_pengajuan(&r("Cuti", "K1", t, t), &r("Cuti", "K2", t, t)));
+        assert!(bentrok_pengajuan(&r("Dinas Luar", "K1", t, t), &r("Sakit", "K1", t, "2026-11-04")));
+    }
+
+    #[test]
+    fn fase3_batas_lembur_dan_potongan_spl() {
+        assert_eq!(senin_dari("2026-11-08").as_deref(), Some("2026-11-02"));
+        assert_eq!(senin_dari("2026-11-09").as_deref(), Some("2026-11-09"));
+        let spl: Vec<(String, i64)> = [
+            ("2026-11-02", 180),
+            ("2026-11-02", 90),
+            ("2026-11-03", 60),
+            ("2026-11-09", 240),
+            ("2026-11-10", 240),
+            ("2026-11-11", 200),
+        ]
+        .iter()
+        .map(|(t, m)| ((*t).to_owned(), *m))
+        .collect();
+        let mut lewat: Vec<String> = lembur_lewat_batas(&spl, 240, 600).into_iter().collect();
+        lewat.sort();
+        assert_eq!(lewat, vec!["2026-11-02", "2026-11-09", "2026-11-10", "2026-11-11"]);
+        let h = |lembur, libur_total, libur_jam_kerja, spl| HariLembur { lembur, libur_total, libur_jam_kerja, spl };
+        assert_eq!(
+            potong_lembur_spl(&[h(120, 0, 0, 90), h(60, 0, 0, 0), h(0, 600, 480, 0), h(0, 600, 480, 300), h(30, 0, 0, 120)]),
+            PotongLembur { lembur: 90, libur_total: 900, libur_jam_kerja: 660, tanpa_spl: 660 }
+        );
+    }
+
+    #[test]
+    fn fase3_jenis_isian_dan_aturan_lembur() {
+        let jenis = validasi_jenis(&json!({"nama": "Lembur Gudang", "kelompok": "Lembur", "dampak_gaji": "Dibayar", "maks_hari": 5})).unwrap();
+        assert_eq!((jenis.dampak_gaji.as_str(), jenis.maks_hari), ("Tidak Berpengaruh", None));
+        let j = |kelompok: &str| JenisPengajuan {
+            id_jenis: "j".into(),
+            nama: "J".into(),
+            kelompok: kelompok.into(),
+            izin_pemutus: "hr.request.decide".into(),
+            boleh_urgent: true,
+            potong_jatah: false,
+            dampak_gaji: "Tidak Berpengaruh".into(),
+            maks_hari: None,
+            satuan_maks: "Hari Kerja".into(),
+            wajib_dokumen: false,
+            is_aktif: true,
+        };
+        let isian = |lain: Value| {
+            let mut d = json!({"id_karyawan": "K1", "id_jenis": "j", "tanggal_mulai": "2026-11-02", "tanggal_selesai": "2026-11-02", "alasan": "x"});
+            for (k, v) in lain.as_object().unwrap() {
+                d[k] = v.clone();
+            }
+            validasi_pengajuan(&d).unwrap()
+        };
+        assert_eq!(
+            periksa_jenis(&isian(json!({"tanggal_selesai": "2026-11-03", "jam_mulai": "17:00", "jam_selesai": "18:00"})), &j("Lembur")).unwrap_err(),
+            "Lembur diajukan per tanggal kerja."
+        );
+        assert_eq!(periksa_jenis(&isian(json!({"jam_mulai": "17:00"})), &j("Lembur")).unwrap_err(), "Jam lembur harus berformat JJ:MM.");
+        assert!(periksa_jenis(&isian(json!({"jam_mulai": "17:00", "jam_selesai": "18:00"})), &j("Lembur")).is_ok());
+        assert_eq!(periksa_jenis(&isian(json!({})), &j("Tukar Shift")).unwrap_err(), "Pilih karyawan yang diajak bertukar.");
+        assert_eq!(periksa_jenis(&isian(json!({"id_karyawan_tukar": "K1"})), &j("Tukar Shift")).unwrap_err(), "Tukar shift harus dengan karyawan lain.");
+        assert_eq!(
+            periksa_jenis(&isian(json!({"id_karyawan_tukar": "K2", "tanggal_selesai": "2026-11-03"})), &j("Tukar Shift")).unwrap_err(),
+            "Tukar shift diajukan per tanggal."
+        );
+        assert!(periksa_jenis(&isian(json!({"id_karyawan_tukar": "K2"})), &j("Tukar Shift")).is_ok());
+
+        assert_eq!(
+            AturanLembur::dari_peta(&HashMap::new()),
+            AturanLembur { mode: "otomatis".into(), maks_harian: 4, maks_mingguan: 18 }
+        );
+        let peta: HashMap<String, String> = [("hr_lembur_mode", "spl"), ("hr_lembur_maks_harian", "13")]
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        assert_eq!(AturanLembur::dari_peta(&peta), AturanLembur { mode: "spl".into(), maks_harian: 4, maks_mingguan: 18 });
+        assert_eq!(
+            validasi_aturan_lembur(&json!({"hr_lembur_mode": "spl", "hr_lembur_maks_harian": 3, "hr_lembur_maks_mingguan": 20})).unwrap(),
+            vec![
+                ("hr_lembur_mode", "spl".to_owned()),
+                ("hr_lembur_maks_harian", "3".to_owned()),
+                ("hr_lembur_maks_mingguan", "20".to_owned())
+            ]
+        );
+        assert_eq!(
+            validasi_aturan_lembur(&json!({"hr_lembur_mode": "spl", "hr_lembur_maks_harian": 0, "hr_lembur_maks_mingguan": 20})).unwrap_err(),
+            "Batas lembur harian harus 1 sampai 12 jam."
+        );
+        assert_eq!(validasi_aturan_lembur(&json!({"hr_lembur_mode": "x"})).unwrap_err(), "Mode lembur harus otomatis atau SPL.");
     }
 }

@@ -130,5 +130,38 @@
     "maks_hari": null,
     "satuan_maks": "Hari Kerja",
     "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-lembur",
+    "nama": "Lembur (SPL)",
+    "kelompok": "Lembur",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": true,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-tukar-shift",
+    "nama": "Tukar Shift",
+    "kelompok": "Tukar Shift",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-dinas-luar",
+    "nama": "Dinas Luar",
+    "kelompok": "Dinas Luar",
+    "potong_jatah": false,
+    "dampak_gaji": "Dibayar",
+    "boleh_urgent": true,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": false
   }
 ]

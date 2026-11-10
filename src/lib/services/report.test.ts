@@ -167,6 +167,7 @@ describe("rekap bulanan per karyawan", () => {
     totalDispen: n[5],
     totalAlfa: n[6],
     totalCuti: n[7] ?? 0,
+    totalDinas: 0,
     totalJamKerja: 0,
     totalLembur: 0,
   });

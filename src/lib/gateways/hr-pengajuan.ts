@@ -11,6 +11,7 @@ import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop, kickDesktopSync } from "@/lib/runtime/desktop-commands";
 import type {
   AturanCuti,
+  AturanLembur,
   JenisPengajuan,
   PeriodeCuti,
   StatusPengajuan,
@@ -34,11 +35,20 @@ export interface Pengajuan {
   diajukan_oleh: string;
   waktu_perangkat: string;
   created_at: string;
+  /** Lembur (v38). */
+  jam_mulai: string | null;
+  jam_selesai: string | null;
+  /** Tukar Shift (v38). */
+  id_karyawan_tukar: string | null;
+  id_shift_asal: number | null;
+  id_shift_tukar: number | null;
 }
 
 export interface BarisDaftarPengajuan {
   pengajuan: Pengajuan;
   nama_karyawan: string | null;
+  nama_karyawan_tukar: string | null;
+  menit_lembur: number | null;
   nama_jenis: string | null;
   izin_pemutus: string;
   wajib_dokumen: boolean;
@@ -51,6 +61,7 @@ export interface BarisDaftarPengajuan {
 export interface DaftarPengajuan {
   pengajuan: BarisDaftarPengajuan[];
   jenis: JenisPengajuan[];
+  aturan_lembur: AturanLembur;
 }
 
 export interface KeputusanRiwayat {
@@ -86,6 +97,7 @@ export interface JatahCuti {
 
 export interface AkhirPeriode {
   aturan: AturanCuti;
+  aturan_lembur: AturanLembur;
   belum_diproses: Array<{
     id_karyawan: string;
     nama: string;

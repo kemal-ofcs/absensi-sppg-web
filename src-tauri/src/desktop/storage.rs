@@ -1268,6 +1268,11 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         waktu_perangkat TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        jam_mulai TEXT,
+        jam_selesai TEXT,
+        id_karyawan_tukar TEXT,
+        id_shift_asal INTEGER,
+        id_shift_tukar INTEGER,
         CHECK (tanggal_selesai >= tanggal_mulai),
         CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
       );
@@ -1465,6 +1470,19 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     ] {
         ensure_column(&connection, "master_data", column, alter_sql)?;
     }
+    // Isian lembur dan tukar shift (v38), tanpa CHECK: ditegakkan aplikasi.
+    for (column, alter_sql) in [
+        ("jam_mulai", "ALTER TABLE hr_pengajuan ADD COLUMN jam_mulai TEXT;"),
+        ("jam_selesai", "ALTER TABLE hr_pengajuan ADD COLUMN jam_selesai TEXT;"),
+        ("id_karyawan_tukar", "ALTER TABLE hr_pengajuan ADD COLUMN id_karyawan_tukar TEXT;"),
+        ("id_shift_asal", "ALTER TABLE hr_pengajuan ADD COLUMN id_shift_asal INTEGER;"),
+        ("id_shift_tukar", "ALTER TABLE hr_pengajuan ADD COLUMN id_shift_tukar INTEGER;"),
+    ] {
+        ensure_column(&connection, "hr_pengajuan", column, alter_sql)?;
+    }
+    connection
+        .execute_batch("CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tukar ON hr_pengajuan(id_karyawan_tukar, tanggal_mulai);")
+        .map_err(|_| "Indeks tukar shift tidak dapat dibuat.".to_string())?;
     // Hapus barang (v32). NULL = belum dihapus.
     ensure_column(
         &connection,

@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 37;
+pub const CLIENT_SCHEMA_VERSION: i64 = 38;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -1331,6 +1331,11 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "waktu_perangkat",
             "created_at",
             "updated_at",
+            "jam_mulai",
+            "jam_selesai",
+            "id_karyawan_tukar",
+            "id_shift_asal",
+            "id_shift_tukar",
         ],
         conflict_column: "id_pengajuan",
         entity_column: "id_pengajuan",

@@ -139,6 +139,41 @@ describe("susunLaporanKehadiran", () => {
     expect(hasil[1]).toMatchObject({ izin: 2, tanpaData: 3 });
   });
 
+  test("HRIS v38: dinas luar DL ikut persen, tukar shift mengubah jadwal", () => {
+    const hasil = susunLaporanKehadiran({
+      ...DATA,
+      pengajuan: [
+        {
+          id: "K1",
+          mulai: "2026-10-08",
+          selesai: "2026-10-09",
+          kelompok: "Dinas Luar",
+        },
+      ],
+      // P1 (Senin-Jumat) bertukar dengan shift Senin-Sabtu pada Sabtu 10.
+      tukar: [
+        {
+          id: "P1",
+          tanggal: "2026-10-10",
+          hari_kerja: "1,2,3,4,5,6",
+          kode_shift: 2,
+        },
+      ],
+    }).baris;
+    expect(hasil.map((b) => b.sel.join(""))).toEqual([
+      "AI-DH-",
+      "--LDLDL-",
+      "HTLS--",
+    ]);
+    expect(hasil[1]).toMatchObject({
+      dinas: 2,
+      hadir: 0,
+      wajibMasuk: 5,
+      persen: 40,
+    });
+    expect(hasil[2]).toMatchObject({ libur: 1, tanpaData: 2 });
+  });
+
   test("tanggal inklusif, urut divisi lalu nama", () => {
     expect(tanggal).toHaveLength(7);
     expect(baris.map((b) => b.karyawan.id)).toEqual(["G1", "K1", "P1"]);

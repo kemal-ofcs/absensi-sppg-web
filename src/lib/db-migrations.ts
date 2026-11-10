@@ -52,6 +52,7 @@ const DRIVER_TRIP_MIGRATION_VERSION = 34;
 const DRIVER_WAGE_MIGRATION_VERSION = 35;
 const HRIS_ORG_MIGRATION_VERSION = 36;
 const HRIS_REQUEST_MIGRATION_VERSION = 37;
+const HRIS_REQUEST_V2_MIGRATION_VERSION = 38;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2104,6 +2105,11 @@ export async function runDatabaseMigrations(client: Client) {
       waktu_perangkat TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      jam_mulai TEXT,
+      jam_selesai TEXT,
+      id_karyawan_tukar TEXT,
+      id_shift_asal INTEGER,
+      id_shift_tukar INTEGER,
       CHECK (tanggal_selesai >= tanggal_mulai),
       CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
     );
@@ -2173,6 +2179,31 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-request', ?);`,
     args: [HRIS_REQUEST_MIGRATION_VERSION, now],
+  });
+
+  // v38: HRIS fase 3. Isian lembur dan tukar shift, cermin `ensure_column`
+  // `turso.rs`; indeks sesudah kolomnya pasti ada (aturan 20). Jenis bawaan
+  // fase 3 ikut seed `JENIS_BAWAAN` di atas.
+  for (const [kolom, tipe] of [
+    ["jam_mulai", "TEXT"],
+    ["jam_selesai", "TEXT"],
+    ["id_karyawan_tukar", "TEXT"],
+    ["id_shift_asal", "INTEGER"],
+    ["id_shift_tukar", "INTEGER"],
+  ] as const) {
+    if (!(await hasColumn(client, "hr_pengajuan", kolom))) {
+      await client.execute(
+        `ALTER TABLE hr_pengajuan ADD COLUMN ${kolom} ${tipe};`,
+      );
+    }
+  }
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tukar ON hr_pengajuan(id_karyawan_tukar, tanggal_mulai);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-request-v2', ?);`,
+    args: [HRIS_REQUEST_V2_MIGRATION_VERSION, now],
   });
 
   await client.execute(

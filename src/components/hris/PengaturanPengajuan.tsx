@@ -1,7 +1,8 @@
 "use client";
 
-// Jenis pengajuan dan aturan cuti tahunan (HRIS v37, prd-hris.md §17.2,
-// §17.7), di tab Organisasi `/hris` (Web/Desktop, `hr.org.manage`).
+// Jenis pengajuan, aturan cuti tahunan (HRIS v37, prd-hris.md §17.2, §17.7),
+// dan aturan lembur (v38, §18.2), di tab Organisasi `/hris` (Web/Desktop,
+// `hr.org.manage`).
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -21,9 +22,11 @@ import {
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import {
   type AturanCuti,
+  type AturanLembur,
   DAMPAK_GAJI,
   type JenisPengajuan,
   KELOMPOK_AKTIF,
+  KELOMPOK_TANPA_GAJI,
   SATUAN_MAKS,
 } from "@/lib/validations/hr-pengajuan";
 
@@ -53,6 +56,8 @@ export function PengaturanPengajuan() {
   const [isi, setIsi] = useState<IsianJenis>(JENIS_KOSONG);
   const [aturan, setAturan] = useState<AturanCuti | null>(null);
   const [aturanLama, setAturanLama] = useState<AturanCuti | null>(null);
+  const [lembur, setLembur] = useState<AturanLembur | null>(null);
+  const [lemburLama, setLemburLama] = useState<AturanLembur | null>(null);
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
 
@@ -65,6 +70,8 @@ export function PengaturanPengajuan() {
       .then((d) => {
         setAturan(d.aturan);
         setAturanLama(d.aturan);
+        setLembur(d.aturan_lembur);
+        setLemburLama(d.aturan_lembur);
       })
       .catch((error: unknown) => setPesan(pesanGalat(error, "Gagal memuat.")));
   }, []);
@@ -108,8 +115,9 @@ export function PengaturanPengajuan() {
   };
 
   const simpanAturan = async () => {
-    if (!aturan) return;
+    if (!aturan || !lembur) return;
     const gantiPeriode = aturanLama && aturanLama.periode !== aturan.periode;
+    const gantiMode = lemburLama && lemburLama.mode !== lembur.mode;
     const lanjut = await konfirmasiData([
       { label: "Periode", nilai: LABEL_PERIODE[aturan.periode] },
       { label: "Hak per periode", nilai: `${aturan.hak} hari` },
@@ -122,12 +130,32 @@ export function PengaturanPengajuan() {
             { label: "Dipakai dalam", nilai: `${aturan.bawa_bulan} bulan` },
           ]
         : []),
+      {
+        label: "Lembur dibayar",
+        nilai:
+          lembur.mode === "spl"
+            ? "Hanya dengan SPL disetujui"
+            : "Otomatis dari absensi",
+      },
+      {
+        label: "Batas lembur",
+        nilai: `${lembur.maks_harian} jam/hari, ${lembur.maks_mingguan} jam/minggu`,
+      },
       ...(gantiPeriode
         ? [
             {
               label: "Perhatian",
               nilai:
                 "Periode berubah: jatah dan sisa cuti semua karyawan dihitung ulang dengan aturan baru.",
+            },
+          ]
+        : []),
+      ...(gantiMode
+        ? [
+            {
+              label: "Perhatian",
+              nilai:
+                "Mode lembur berubah: rekap gaji yang belum dibekukan ikut dihitung ulang untuk seluruh periodenya.",
             },
           ]
         : []),
@@ -143,15 +171,23 @@ export function PengaturanPengajuan() {
         hr_cuti_sisa: aturan.sisa,
         hr_cuti_bawa_maks: aturan.bawa_maks,
         hr_cuti_bawa_bulan: aturan.bawa_bulan,
+        hr_lembur_mode: lembur.mode,
+        hr_lembur_maks_harian: lembur.maks_harian,
+        hr_lembur_maks_mingguan: lembur.maks_mingguan,
       });
-      setPesan("Aturan cuti tersimpan.");
+      setPesan("Aturan cuti dan lembur tersimpan.");
       setAturanLama(aturan);
+      setLemburLama(lembur);
     } catch (error) {
       setPesan(pesanGalat(error, "Gagal menyimpan."));
     } finally {
       setSibuk(false);
     }
   };
+
+  const tanpaGajiDipilih = (KELOMPOK_TANPA_GAJI as readonly string[]).includes(
+    isi.kelompok,
+  );
 
   const angka = (kunci: keyof AturanCuti, label: string) =>
     aturan ? (
@@ -228,13 +264,19 @@ export function PengaturanPengajuan() {
               id="jenis-kelompok"
               className={INPUT}
               value={isi.kelompok}
-              onChange={(e) =>
+              onChange={(e) => {
+                const tanpaGaji = (
+                  KELOMPOK_TANPA_GAJI as readonly string[]
+                ).includes(e.target.value);
                 setIsi({
                   ...isi,
                   kelompok: e.target.value,
                   potong_jatah: e.target.value === "Cuti" && isi.potong_jatah,
-                })
-              }
+                  ...(tanpaGaji
+                    ? { dampak_gaji: "Tidak Berpengaruh", maks_hari: "" }
+                    : {}),
+                });
+              }}
             >
               {KELOMPOK_AKTIF.map((k) => (
                 <option key={k} value={k}>
@@ -250,6 +292,7 @@ export function PengaturanPengajuan() {
             <select
               id="jenis-dampak"
               className={INPUT}
+              disabled={tanpaGajiDipilih}
               value={isi.dampak_gaji}
               onChange={(e) => setIsi({ ...isi, dampak_gaji: e.target.value })}
             >
@@ -269,6 +312,7 @@ export function PengaturanPengajuan() {
                 id="jenis-maks"
                 type="number"
                 min={1}
+                disabled={tanpaGajiDipilih}
                 className={INPUT}
                 value={isi.maks_hari}
                 onChange={(e) => setIsi({ ...isi, maks_hari: e.target.value })}
@@ -403,6 +447,73 @@ export function PengaturanPengajuan() {
               Prorata di tahun pertama berhak
             </label>
           ) : null}
+          {lembur ? (
+            <>
+              <h3 className="text-sm font-bold text-white sm:col-span-3">
+                Aturan lembur
+              </h3>
+              <div>
+                <label className={LABEL} htmlFor="lembur-aturan-mode">
+                  Lembur dibayar
+                </label>
+                <select
+                  id="lembur-aturan-mode"
+                  className={INPUT}
+                  value={lembur.mode}
+                  onChange={(e) =>
+                    setLembur({ ...lembur, mode: e.target.value })
+                  }
+                >
+                  <option value="otomatis">Otomatis dari absensi</option>
+                  <option value="spl">Hanya dengan SPL disetujui</option>
+                </select>
+              </div>
+              <div>
+                <label className={LABEL} htmlFor="lembur-aturan-harian">
+                  Batas per hari (jam)
+                </label>
+                <input
+                  id="lembur-aturan-harian"
+                  type="number"
+                  min={1}
+                  max={12}
+                  className={INPUT}
+                  value={String(lembur.maks_harian)}
+                  onChange={(e) =>
+                    setLembur({
+                      ...lembur,
+                      maks_harian: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className={LABEL} htmlFor="lembur-aturan-mingguan">
+                  Batas per minggu (jam)
+                </label>
+                <input
+                  id="lembur-aturan-mingguan"
+                  type="number"
+                  min={1}
+                  max={72}
+                  className={INPUT}
+                  value={String(lembur.maks_mingguan)}
+                  onChange={(e) =>
+                    setLembur({
+                      ...lembur,
+                      maks_mingguan: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <p className="text-xs text-slate-400 sm:col-span-3">
+                Mode SPL: per tanggal, lembur dibayar paling banyak sebesar jam
+                SPL yang disetujui, termasuk kerja di hari libur. Batas jam
+                hanya peringatan. Gaji harian tidak membayar lembur di kedua
+                mode.
+              </p>
+            </>
+          ) : null}
           <div className="sm:col-span-3">
             <button
               type="button"
@@ -411,7 +522,7 @@ export function PengaturanPengajuan() {
               disabled={sibuk}
               onClick={() => void simpanAturan()}
             >
-              Simpan aturan cuti
+              Simpan aturan cuti dan lembur
             </button>
           </div>
         </section>

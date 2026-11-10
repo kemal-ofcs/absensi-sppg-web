@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  mock,
   test,
 } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,10 +16,11 @@ import {
   FACE_MODEL_ID,
   quantizeFaceVector,
 } from "@/lib/validations/face-match";
-import {
-  processWebAttendanceScan,
-  type ScanPayload,
-} from "./attendance-processor";
+import type { ScanPayload } from "./attendance-processor";
+
+// Tukar shift (v38) dibaca lewat `services/hr-pengajuan` yang `server-only`.
+mock.module("server-only", () => ({}));
+const { processWebAttendanceScan } = await import("./attendance-processor");
 
 let client: Client;
 let testDirectory: string;
@@ -43,6 +45,8 @@ beforeEach(async () => {
       "DELETE FROM log_scan;",
       "DELETE FROM absensi_harian;",
       "DELETE FROM backup_karyawan;",
+      "DELETE FROM hr_pengajuan_keputusan;",
+      "DELETE FROM hr_pengajuan;",
       "DELETE FROM master_data;",
       // Pastikan shift tersedia secara eksplisit — tidak bergantung pada seed default
       // yang telah dihapus. INSERT OR REPLACE memastikan konfigurasi selalu segar.
@@ -474,6 +478,60 @@ describe("guard dan konsistensi integrasi Web", () => {
       id_backup: "BKP-WEB-01",
       id_karyawan_asal: "EMP_ASAL",
     });
+  });
+
+  test("tukar shift berlaku mengganti shift dasar scan (HRIS v38)", async () => {
+    await insertEmployee({
+      id: "EMP_MALAM",
+      code: "KW_MALAM",
+      token: "TOKEN-MALAM",
+      shift: 3,
+      name: "Karyawan Malam",
+    });
+    await client.batch(
+      [
+        {
+          sql: `INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji,
+                  tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat,
+                  id_karyawan_tukar, id_shift_asal, id_shift_tukar)
+                VALUES ('pgn-1', ?, 'jns-tukar-shift', 'Tukar Shift', 0, 'Tidak Berpengaruh',
+                  '2026-08-12', '2026-08-12', 0, 'Tukar', 's1', 'hrd', '2026-08-10 01:00:00', 'EMP_MALAM', 1, 3);`,
+          args: [EMPLOYEE.id],
+        },
+      ],
+      "write",
+    );
+
+    // Menunggu: belum berlaku.
+    const menunggu = await scanAt(jakarta("2026-08-12", "23:00"));
+    expect(menunggu.shiftEfektif).not.toBe(3);
+
+    await client.batch(
+      [
+        "DELETE FROM absensi_harian;",
+        "DELETE FROM log_scan;",
+        `INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, oleh, waktu_perangkat)
+         VALUES ('k1', 'pgn-1', 'Setujui', 's1', 'hrd2', '2026-08-10 02:00:00');`,
+      ],
+      "write",
+    );
+    const hasil = await scanAt(jakarta("2026-08-12", "23:00"));
+    expect(hasil).toMatchObject({
+      sukses: true,
+      modeTugas: "NORMAL",
+      shiftEfektif: 3,
+      idSesi: `NORMAL-20260812-${EMPLOYEE.id}-3`,
+    });
+    const pagi = await processWebAttendanceScan(
+      client,
+      {
+        qrText: "EMP_MALAM|TOKEN-MALAM",
+        sumberScan: "Scanner",
+        kodeOperator: "OP_WEB",
+      },
+      { waktuScan: jakarta("2026-08-12", "07:00"), actorOperatorId: 1 },
+    );
+    expect(pagi.shiftEfektif).toBe(1);
   });
 
   test("kegagalan ABSENSI_HARIAN menggulung balik LOG_SCAN dan revision", async () => {

@@ -8,7 +8,12 @@ import { newHexId, withTransaction } from "@/lib/services/inventory";
 import type { HolidayWhitelistEntry } from "@/lib/validations/holiday-whitelist";
 import {
   aturanCutiDariPeta,
+  aturanLemburDariPeta,
+  BACKUP_TUKAR_SQL,
+  bentrokPengajuan,
   CLOUD_INSERT_KEPUTUSAN_SQL,
+  durasiLembur,
+  type HariLembur,
   hariKalender,
   hitungCutiDibayar,
   INSERT_PENYESUAIAN_SQL,
@@ -19,13 +24,21 @@ import {
   type JenisPengajuan,
   jadwalDariBaris,
   type Kalender,
+  KELOMPOK_TIDAK_HADIR,
   type Keputusan,
   kanonikPengajuan,
+  LEMBUR_HARIAN_SQL,
+  lemburLewatBatas,
   MAKS_LAMPIRAN,
   PENGAJUAN_RENTANG_SQL,
   PERIODE_DIBAYAR_SQL,
   PESAN_TANPA_HARI_KERJA,
+  PESAN_TUKAR_BACKUP,
+  PESAN_TUKAR_NONAKTIF,
+  PESAN_TUKAR_SHIFT_HILANG,
+  PESAN_TUKAR_SHIFT_SAMA,
   type PeriodeCuti,
+  type PotongLembur,
   periksaAksi,
   periksaJenis,
   periksaMaks,
@@ -34,15 +47,20 @@ import {
   periodeCuti,
   pesanBertumpuk,
   pesanPeriodeDibayar,
+  potongLemburSpl,
+  type Ringkas,
+  SPL_RENTANG_SQL,
   statusBerlaku,
   statusPengajuan,
   TANGGAL_HADIR_SQL,
+  TUKAR_RENTANG_SQL,
   tandaKeputusan,
   tanggalWajib,
   UPSERT_JENIS_SQL,
   UPSERT_PENGAJUAN_SQL,
   upahHarian,
   validasiAturanCuti,
+  validasiAturanLembur,
   validasiJenis,
   validasiPengajuan,
   validasiPenyesuaian,
@@ -215,6 +233,79 @@ export async function cutiDibayar(
   return hasil;
 }
 
+async function bacaAturanLembur(db: Pembaca) {
+  const r = await db.execute(
+    "SELECT key, value FROM setting_gex_system WHERE key LIKE 'hr\\_lembur\\_%' ESCAPE '\\';",
+  );
+  return aturanLemburDariPeta(
+    new Map(r.rows.map((x) => [String(x.key), String(x.value)])),
+  );
+}
+
+/** Cermin `muat_spl`: menit SPL berlaku per `karyawan|tanggal`. */
+export async function muatSpl(
+  db: Pembaca,
+  mulai: string,
+  akhir: string,
+): Promise<Map<string, number>> {
+  const r = await db.execute({ sql: SPL_RENTANG_SQL, args: [mulai, akhir] });
+  const hasil = new Map<string, number>();
+  for (const x of r.rows) {
+    const kunci = `${String(x.id_karyawan)}|${String(x.tanggal_mulai)}`;
+    const d = durasiLembur(
+      String(x.jam_mulai ?? ""),
+      String(x.jam_selesai ?? ""),
+    );
+    hasil.set(kunci, (hasil.get(kunci) ?? 0) + (d.ok ? d.nilai : 0));
+  }
+  return hasil;
+}
+
+/** Cermin `lembur_spl`: mode dan potongan per karyawan bila mode `spl`. */
+export async function lemburSpl(
+  db: Pembaca,
+  mulai: string,
+  akhir: string,
+): Promise<{ mode: string; potong: Map<string, PotongLembur> }> {
+  const aturan = await bacaAturanLembur(db);
+  const potong = new Map<string, PotongLembur>();
+  if (aturan.mode !== "spl") return { mode: aturan.mode, potong };
+  const spl = await muatSpl(db, mulai, akhir);
+  const r = await db.execute({ sql: LEMBUR_HARIAN_SQL, args: [mulai, akhir] });
+  const hari = new Map<string, HariLembur[]>();
+  for (const x of r.rows) {
+    const nilai = Object.values(x);
+    const id = String(nilai[0]);
+    const daftar = hari.get(id) ?? [];
+    daftar.push({
+      lembur: Number(nilai[2]),
+      libur_total: Number(nilai[3]),
+      libur_jam_kerja: Number(nilai[4]),
+      spl: spl.get(`${id}|${String(nilai[1])}`) ?? 0,
+    });
+    hari.set(id, daftar);
+  }
+  for (const [id, daftar] of hari) potong.set(id, potongLemburSpl(daftar));
+  return { mode: aturan.mode, potong };
+}
+
+/** Cermin `muat_tukar`: shift tukar berlaku per `karyawan|tanggal`. */
+export async function muatTukar(
+  db: Pembaca,
+  mulai: string,
+  akhir: string,
+): Promise<Map<string, number>> {
+  const r = await db.execute({ sql: TUKAR_RENTANG_SQL, args: [mulai, akhir] });
+  const hasil = new Map<string, number>();
+  for (const x of r.rows) {
+    const [id, tanggal, shift] = Object.values(x);
+    if (id === null || shift === null) continue;
+    const kunci = `${String(id)}|${String(tanggal)}`;
+    if (!hasil.has(kunci)) hasil.set(kunci, Number(shift));
+  }
+  return hasil;
+}
+
 // ── Penulisan Web (langsung ke cloud), cermin `desktop/hr_pengajuan.rs` ─────
 
 type Baris = Record<string, unknown>;
@@ -250,10 +341,34 @@ export interface BarisPengajuan {
   diajukan_oleh: string;
   waktu_perangkat: string;
   created_at: string;
+  jam_mulai: string | null;
+  jam_selesai: string | null;
+  id_karyawan_tukar: string | null;
+  id_shift_asal: number | null;
+  id_shift_tukar: number | null;
 }
 
 const KOLOM_PENGAJUAN =
-  "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at";
+  "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar";
+
+const teksAtauNull = (nilai: unknown) =>
+  nilai === null || nilai === undefined ? null : String(nilai);
+const angkaAtauNull = (nilai: unknown) =>
+  nilai === null || nilai === undefined ? null : Number(nilai);
+
+/** Cermin `BarisPengajuan::ringkas`. */
+export function ringkasPengajuan(p: BarisPengajuan): Ringkas {
+  return {
+    kelompok: p.kelompok,
+    id_karyawan: p.id_karyawan,
+    id_karyawan_tukar: p.id_karyawan_tukar,
+    tanggal_mulai: p.tanggal_mulai,
+    tanggal_selesai: p.tanggal_selesai,
+    setengah_hari: p.setengah_hari,
+    jam_mulai: p.jam_mulai,
+    jam_selesai: p.jam_selesai,
+  };
+}
 
 function barisPengajuan(r: Baris): BarisPengajuan {
   return {
@@ -271,6 +386,11 @@ function barisPengajuan(r: Baris): BarisPengajuan {
     diajukan_oleh: String(r.diajukan_oleh),
     waktu_perangkat: String(r.waktu_perangkat),
     created_at: String(r.created_at),
+    jam_mulai: teksAtauNull(r.jam_mulai),
+    jam_selesai: teksAtauNull(r.jam_selesai),
+    id_karyawan_tukar: teksAtauNull(r.id_karyawan_tukar),
+    id_shift_asal: angkaAtauNull(r.id_shift_asal),
+    id_shift_tukar: angkaAtauNull(r.id_shift_tukar),
   };
 }
 
@@ -282,7 +402,7 @@ async function bacaPengajuan(
 ): Promise<BarisPengajuan[]> {
   const r = await db.execute({
     sql: `SELECT ${KOLOM_PENGAJUAN} FROM hr_pengajuan p
-          WHERE (?1 IS NULL OR p.id_karyawan = ?1) AND p.tanggal_mulai <= ?3 AND p.tanggal_selesai >= ?2
+          WHERE (?1 IS NULL OR p.id_karyawan = ?1 OR p.id_karyawan_tukar = ?1) AND p.tanggal_mulai <= ?3 AND p.tanggal_selesai >= ?2
           ORDER BY p.tanggal_mulai DESC, p.id_pengajuan LIMIT 2000;`,
     args: [idKaryawan, mulai, selesai],
   });
@@ -448,7 +568,7 @@ export async function simpanPengajuan(
   if (!sah.ok) throw new Error(sah.pesan);
   const v = sah.nilai;
   const idMasuk = teksId(draft.id_pengajuan);
-  const sendiri = (await karyawanAktor(client, actor)) === v.id_karyawan;
+  const karyawanSesi = await karyawanAktor(client, actor);
   if (v.urgent) {
     if (idMasuk) throw new Error("Pengajuan urgent hanya bisa dibuat baru.");
     if (!punya(actor, "hr.request.urgent")) {
@@ -457,8 +577,6 @@ export async function simpanPengajuan(
         403,
       );
     }
-    const u = periksaUrgent(sendiri);
-    if (!u.ok) throw new Error(u.pesan);
   }
   return withTransaction(client, async (tx) => {
     const ada = await tx.execute({
@@ -472,6 +590,22 @@ export async function simpanPengajuan(
     if (!jenis) throw new Error("Jenis pengajuan tidak ditemukan.");
     const cek = periksaJenis(v, jenis);
     if (!cek.ok) throw new Error(cek.pesan);
+    const lembur = jenis.kelompok === "Lembur";
+    const jamMulai = lembur ? v.jam_mulai : null;
+    const jamSelesai = lembur ? v.jam_selesai : null;
+    const idTukar =
+      jenis.kelompok === "Tukar Shift" ? v.id_karyawan_tukar : null;
+    if (v.urgent) {
+      const u = periksaUrgent(
+        karyawanSesi === v.id_karyawan ||
+          (idTukar !== null && karyawanSesi === idTukar),
+      );
+      if (!u.ok) throw new Error(u.pesan);
+    }
+    const [idShiftAsal, idShiftTukar] =
+      idTukar === null
+        ? [null, null]
+        : await shiftTukarBaru(tx, v.id_karyawan, idTukar, v.tanggal_mulai);
     const jadwal = (await muatJadwal(tx)).get(v.id_karyawan);
     if (!jadwal) throw new Error("Karyawan tidak ditemukan.");
     const kalender = await muatKalender(tx, v.tanggal_mulai, v.tanggal_selesai);
@@ -481,13 +615,16 @@ export async function simpanPengajuan(
       v.tanggal_mulai,
       v.tanggal_selesai,
     );
-    if (wajib.length === 0) throw new Error(PESAN_TANPA_HARI_KERJA);
-    const maks = periksaMaks(
-      jenis,
-      wajib.length,
-      hariKalender(v.tanggal_mulai, v.tanggal_selesai),
-    );
-    if (!maks.ok) throw new Error(maks.pesan);
+    // Lembur dan tukar shift sah di hari libur karyawan itu.
+    if ((KELOMPOK_TIDAK_HADIR as readonly string[]).includes(jenis.kelompok)) {
+      if (wajib.length === 0) throw new Error(PESAN_TANPA_HARI_KERJA);
+      const maks = periksaMaks(
+        jenis,
+        wajib.length,
+        hariKalender(v.tanggal_mulai, v.tanggal_selesai),
+      );
+      if (!maks.ok) throw new Error(maks.pesan);
+    }
     await tolakBilaDibayar(tx, v.tanggal_mulai, v.tanggal_selesai);
 
     let pengaju = actor.username;
@@ -507,9 +644,34 @@ export async function simpanPengajuan(
       createdAt = lama.created_at;
     }
 
-    const lain = (
-      await bacaPengajuan(tx, v.id_karyawan, v.tanggal_mulai, v.tanggal_selesai)
-    ).filter((p) => p.id_pengajuan !== idMasuk);
+    const baru: Ringkas = {
+      kelompok: jenis.kelompok,
+      id_karyawan: v.id_karyawan,
+      id_karyawan_tukar: idTukar,
+      tanggal_mulai: v.tanggal_mulai,
+      tanggal_selesai: v.tanggal_selesai,
+      setengah_hari: v.setengah_hari,
+      jam_mulai: jamMulai,
+      jam_selesai: jamSelesai,
+    };
+    const lain: BarisPengajuan[] = [];
+    for (const orang of idTukar === null
+      ? [v.id_karyawan]
+      : [v.id_karyawan, idTukar]) {
+      for (const p of await bacaPengajuan(
+        tx,
+        orang,
+        v.tanggal_mulai,
+        v.tanggal_selesai,
+      )) {
+        if (
+          p.id_pengajuan !== idMasuk &&
+          !lain.some((q) => q.id_pengajuan === p.id_pengajuan)
+        ) {
+          lain.push(p);
+        }
+      }
+    }
     const kepLain = await bacaKeputusan(
       tx,
       lain.map((p) => p.id_pengajuan),
@@ -519,7 +681,10 @@ export async function simpanPengajuan(
         p.sidik,
         kepLain.get(p.id_pengajuan) ?? [],
       );
-      if (status === "Menunggu" || statusBerlaku(status)) {
+      if (
+        (status === "Menunggu" || statusBerlaku(status)) &&
+        bentrokPengajuan(baru, ringkasPengajuan(p))
+      ) {
         throw new Error(pesanBertumpuk(p.tanggal_mulai, p.tanggal_selesai));
       }
     }
@@ -535,6 +700,11 @@ export async function simpanPengajuan(
       tanggal_selesai: v.tanggal_selesai,
       setengah_hari: v.setengah_hari,
       alasan: v.alasan,
+      jam_mulai: jamMulai,
+      jam_selesai: jamSelesai,
+      id_karyawan_tukar: idTukar,
+      id_shift_asal: idShiftAsal,
+      id_shift_tukar: idShiftTukar,
     });
     await tx.execute({
       sql: UPSERT_PENGAJUAN_SQL,
@@ -553,6 +723,11 @@ export async function simpanPengajuan(
         pengaju,
         await waktuSekarang(tx),
         createdAt,
+        jamMulai,
+        jamSelesai,
+        idTukar,
+        idShiftAsal,
+        idShiftTukar,
       ],
     });
     if (v.urgent) {
@@ -572,6 +747,39 @@ export async function simpanPengajuan(
       hari_kerja: wajib.length,
     };
   });
+}
+
+/** Cermin `shift_tukar_baru`. */
+async function shiftTukarBaru(
+  db: Pembaca,
+  idKaryawan: string,
+  idTukar: string,
+  tanggal: string,
+): Promise<[number, number]> {
+  const shift = async (id: string, wajibAktif: boolean) => {
+    const r = await db.execute({
+      sql: "SELECT id_shift FROM master_data WHERE id_unik = ?1 AND (?2 = 0 OR status_aktif = 'Aktif');",
+      args: [id, wajibAktif ? 1 : 0],
+    });
+    const nilai = r.rows[0]?.id_shift;
+    return nilai === null || nilai === undefined ? null : Number(nilai);
+  };
+  const asal = await shift(idKaryawan, false);
+  if (asal === null) throw new Error(PESAN_TUKAR_SHIFT_HILANG);
+  const lain = await shift(idTukar, true);
+  if (lain === null) throw new Error(PESAN_TUKAR_NONAKTIF);
+  if (asal === lain) throw new Error(PESAN_TUKAR_SHIFT_SAMA);
+  const ada = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM tbl_shift WHERE id_shift IN (?1, ?2);",
+    args: [asal, lain],
+  });
+  if (Number(ada.rows[0]?.n) !== 2) throw new Error(PESAN_TUKAR_SHIFT_HILANG);
+  const backup = await db.execute({
+    sql: BACKUP_TUKAR_SQL,
+    args: [tanggal, idKaryawan, idTukar],
+  });
+  if (backup.rows.length > 0) throw new Error(PESAN_TUKAR_BACKUP);
+  return [asal, lain];
 }
 
 /** Cermin `putuskan`. */
@@ -599,7 +807,10 @@ export async function putuskan(
       sudah_diketahui: kep.some((k) => k.jenis === "Diketahui"),
       pengaju_sendiri: samaOrang(p.diajukan_oleh, actor.username),
       superadmin: actor.isSuperadmin,
-      karyawan_sendiri: idKaryawanSesi === p.id_karyawan,
+      karyawan_sendiri:
+        idKaryawanSesi === p.id_karyawan ||
+        (p.id_karyawan_tukar !== null &&
+          idKaryawanSesi === p.id_karyawan_tukar),
       boleh_putus: punya(actor, izinPemutus),
     });
     if (!cek.ok) throw new Error(cek.pesan);
@@ -663,6 +874,29 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
     statusPengajuan(p.sidik, keputusan.get(p.id_pengajuan) ?? []),
   );
   const aktif = (s: string) => s === "Menunggu" || statusBerlaku(s);
+  const aturanLembur = await bacaAturanLembur(client);
+  const menitLembur = (p: BarisPengajuan) => {
+    const d = durasiLembur(p.jam_mulai ?? "", p.jam_selesai ?? "");
+    return d.ok ? d.nilai : null;
+  };
+  const splAktif = new Map<string, Array<[string, number]>>();
+  baris.forEach((p, i) => {
+    if (p.kelompok === "Lembur" && aktif(status[i] ?? "")) {
+      const daftar = splAktif.get(p.id_karyawan) ?? [];
+      daftar.push([p.tanggal_mulai, menitLembur(p) ?? 0]);
+      splAktif.set(p.id_karyawan, daftar);
+    }
+  });
+  const lewatBatas = new Map(
+    [...splAktif].map(([id, spl]) => [
+      id,
+      lemburLewatBatas(
+        spl,
+        aturanLembur.maks_harian * 60,
+        aturanLembur.maks_mingguan * 60,
+      ),
+    ]),
+  );
   const pengajuan = baris.map((p, i) => {
     const kep = keputusan.get(p.id_pengajuan) ?? [];
     const statusIni = status[i] ?? "Menunggu";
@@ -672,15 +906,22 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
       baris.some(
         (q, j) =>
           j !== i &&
-          q.id_karyawan === p.id_karyawan &&
           aktif(status[j] ?? "") &&
-          q.tanggal_mulai <= p.tanggal_selesai &&
-          q.tanggal_selesai >= p.tanggal_mulai,
+          bentrokPengajuan(ringkasPengajuan(p), ringkasPengajuan(q)),
       )
     ) {
       tanda.push("bertumpuk");
     }
-    const j = jadwal.get(p.id_karyawan);
+    if (
+      p.kelompok === "Lembur" &&
+      aktif(statusIni) &&
+      lewatBatas.get(p.id_karyawan)?.has(p.tanggal_mulai)
+    ) {
+      tanda.push("lembur_lewat_batas");
+    }
+    const j = (KELOMPOK_TIDAK_HADIR as readonly string[]).includes(p.kelompok)
+      ? jadwal.get(p.id_karyawan)
+      : undefined;
     const wajib = j
       ? tanggalWajib(j, kalender, p.tanggal_mulai, p.tanggal_selesai)
       : [];
@@ -692,6 +933,11 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
     return {
       pengajuan: p,
       nama_karyawan: nama.get(p.id_karyawan) ?? null,
+      nama_karyawan_tukar:
+        p.id_karyawan_tukar === null
+          ? null
+          : (nama.get(p.id_karyawan_tukar) ?? null),
+      menit_lembur: menitLembur(p),
       nama_jenis: jenisIni?.nama ?? null,
       izin_pemutus: jenisIni?.izin_pemutus ?? IZIN_PEMUTUS_AKTIF,
       wajib_dokumen: jenisIni?.wajib_dokumen ?? false,
@@ -701,7 +947,7 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
       sudah_diketahui: kep.some((k) => k.jenis === "Diketahui"),
     };
   });
-  return { pengajuan, jenis };
+  return { pengajuan, jenis, aturan_lembur: aturanLembur };
 }
 
 /** Cermin `rincian`. */
@@ -979,15 +1225,22 @@ export async function akhirPeriode(client: Client) {
       }
     }
   }
-  return { aturan, belum_diproses: belum, diuangkan };
+  return {
+    aturan,
+    aturan_lembur: await bacaAturanLembur(client),
+    belum_diproses: belum,
+    diuangkan,
+  };
 }
 
-/** Cermin `simpan_aturan`. */
+/** Cermin `simpan_aturan`: aturan cuti dan lembur. */
 export async function simpanAturanCuti(client: Client, raw: unknown) {
   const hasil = validasiAturanCuti((raw ?? {}) as Baris);
   if (!hasil.ok) throw new Error(hasil.pesan);
+  const lembur = validasiAturanLembur((raw ?? {}) as Baris);
+  if (!lembur.ok) throw new Error(lembur.pesan);
   await withTransaction(client, async (tx) => {
-    for (const [kunci, nilai] of hasil.nilai) {
+    for (const [kunci, nilai] of [...hasil.nilai, ...lembur.nilai]) {
       await tx.execute({
         sql: `INSERT INTO setting_gex_system (key, value) VALUES (?1, ?2)
               ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,

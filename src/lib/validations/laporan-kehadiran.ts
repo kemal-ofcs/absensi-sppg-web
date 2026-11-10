@@ -53,8 +53,17 @@ export interface DataLaporanKehadiran {
   hari: HariLaporan[];
   libur: { tanggal: string; nama: string }[];
   whitelist: HolidayWhitelistEntry[];
-  /** Pengajuan cuti/izin/sakit yang berlaku (HRIS v37). */
+  /** Pengajuan cuti/izin/sakit/dinas luar yang berlaku (HRIS v37, v38). */
   pengajuan?: PengajuanLaporan[];
+  /** Tukar shift berlaku (HRIS v38): jadwal tanggal itu dari shift tukar. */
+  tukar?: TukarLaporan[];
+}
+
+export interface TukarLaporan {
+  id: string;
+  tanggal: string;
+  hari_kerja: string | null;
+  kode_shift: number | string | null;
 }
 
 export interface PengajuanLaporan {
@@ -70,6 +79,7 @@ export const KODE_LAPORAN = [
   ["S", "Sakit"],
   ["I", "Izin"],
   ["C", "Cuti (pengajuan HRIS)"],
+  ["DL", "Dinas luar (pengajuan HRIS)"],
   ["D", "Dispensasi"],
   ["A", "Alfa (tidak hadir tanpa keterangan)"],
   ["L", "Hari libur dari halaman Hari Libur"],
@@ -87,12 +97,14 @@ export interface BarisLaporan {
   sakit: number;
   izin: number;
   cuti: number;
+  /** Dinas luar: hari wajib dan ikut persen kehadiran. */
+  dinas: number;
   dispensasi: number;
   alfa: number;
   tanpaData: number;
   libur: number;
   wajibMasuk: number;
-  /** Hadir ÷ hari wajib masuk, satu desimal; `null` bila tidak ada hari wajib. */
+  /** (Hadir + dinas) ÷ hari wajib masuk, satu desimal; `null` bila tidak ada hari wajib. */
   persen: number | null;
 }
 
@@ -169,10 +181,18 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
     }
   }
 
+  // Tukar pertama per karyawan per tanggal (urutan SQL), sama dengan Alfa.
+  const tukar = new Map<string, TukarLaporan>();
+  for (const x of data.tukar ?? []) {
+    const kunci = `${x.id}|${x.tanggal}`;
+    if (!tukar.has(kunci)) tukar.set(kunci, x);
+  }
+
   const baris = data.karyawan.map((karyawan): BarisLaporan => {
-    const hariMasuk = parseHariKerja(karyawan.hari_kerja);
-    const kodeShift = Number(karyawan.kode_shift);
     const dijadwalkanPada = (t: string) => {
+      const shiftTukar = tukar.get(`${karyawan.id}|${t}`);
+      const hariMasuk = parseHariKerja((shiftTukar ?? karyawan).hari_kerja);
+      const kodeShift = Number((shiftTukar ?? karyawan).kode_shift);
       const tanggalLibur = libur.has(t);
       return wajibMasuk({
         tanggal: t,
@@ -196,6 +216,7 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
       sakit: 0,
       izin: 0,
       cuti: 0,
+      dinas: 0,
       dispensasi: 0,
       alfa: 0,
       tanpaData: 0,
@@ -224,6 +245,7 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
         if (ajuan === "S") hasil.sakit++;
         if (ajuan === "I") hasil.izin++;
         if (ajuan === "C") hasil.cuti++;
+        if (ajuan === "DL") hasil.dinas++;
         continue;
       }
       if (kode) {
@@ -255,7 +277,9 @@ export function susunLaporanKehadiran(data: DataLaporanKehadiran): {
     }
 
     if (hasil.wajibMasuk > 0) {
-      hasil.persen = Math.round((hasil.hadir / hasil.wajibMasuk) * 1000) / 10;
+      hasil.persen =
+        Math.round(((hasil.hadir + hasil.dinas) / hasil.wajibMasuk) * 1000) /
+        10;
     }
     return hasil;
   });

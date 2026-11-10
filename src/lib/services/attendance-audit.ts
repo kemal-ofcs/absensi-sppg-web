@@ -11,7 +11,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
-import { pengajuTanggal } from "@/lib/services/hr-pengajuan";
+import { muatTukar, pengajuTanggal } from "@/lib/services/hr-pengajuan";
 import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 
@@ -159,6 +159,8 @@ export async function auditKualitasAbsensi(
   const pelapor = new Set(pelaporRes.rows.map((r) => String(r.id_karyawan)));
   // Pengajuan cuti/izin/sakit berlaku (v37, A-3): tidak dinilai.
   const pengaju = await pengajuTanggal(targetDb, tanggalTarget);
+  // Tukar shift berlaku (v38): tanggal ini dinilai dengan shift tukarnya.
+  const tukar = await muatTukar(targetDb, tanggalTarget, tanggalTarget);
 
   // ── Pre-load shift ────────────────────────────────────────────────────────
   const shiftRes = await targetDb.execute(
@@ -259,7 +261,8 @@ export async function auditKualitasAbsensi(
     const idUnik = String(row.id_unik);
     const nama = String(row.nama ?? "");
     const divisi = String(row.divisi ?? "");
-    const idShift = Number(row.id_shift ?? 1);
+    const idShift =
+      tukar.get(`${idUnik}|${tanggalTarget}`) ?? Number(row.id_shift ?? 1);
 
     const shift = shifts.get(idShift);
     if (!shift) {

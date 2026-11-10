@@ -14,6 +14,7 @@ import {
   tentukanTanggalKerja,
 } from "@/lib/attendance/time-policy";
 import type { AttendanceSource, ScanResult } from "@/lib/contracts/scanner";
+import { muatTukar } from "@/lib/services/hr-pengajuan";
 import {
   FACE_THRESHOLD_DEFAULT,
   type FaceVerdict,
@@ -226,7 +227,13 @@ async function processInTransaction(
     id: String(master.id_unik),
     nama: String(master.nama),
     divisi: String(master.divisi),
-    idShift: Number(master.id_shift),
+    // Tukar shift berlaku (HRIS v38) mengganti shift dasar di SATU titik ini.
+    idShift: await shiftTukarScan(
+      transaction,
+      String(master.id_unik),
+      Number(master.id_shift),
+      waktuScan,
+    ),
     row: master,
   };
   const baseShiftRow = await getShiftRow(transaction, employee.idShift);
@@ -902,6 +909,33 @@ function isCheckoutWindowExpired(
   const currentMinuteOnTimeline = diffDays * 1440 + currentMinuteOfDay;
 
   return currentMinuteOnTimeline > batasAkhirPulang;
+}
+
+/** Cermin `shift_tukar_scan` di `scanner.rs`. */
+async function shiftTukarScan(
+  transaction: Transaction,
+  employeeId: string,
+  shiftDasar: number,
+  waktuScan: Date,
+): Promise<number> {
+  const calendarDate = formatTanggalOperasional(waktuScan);
+  const previousDate = addDays(calendarDate, -1);
+  const tukar = await muatTukar(transaction, previousDate, calendarDate);
+  for (const tanggal of [calendarDate, previousDate]) {
+    const shiftId = tukar.get(`${employeeId}|${tanggal}`);
+    if (shiftId === undefined) continue;
+    const shiftRow = await getShiftRow(transaction, shiftId);
+    if (!shiftRow) continue;
+    let cocok: boolean;
+    try {
+      cocok =
+        tentukanTanggalKerja(waktuScan, mapShiftPolicy(shiftRow)) === tanggal;
+    } catch {
+      cocok = tanggal === calendarDate;
+    }
+    if (cocok) return shiftId;
+  }
+  return shiftDasar;
 }
 
 async function findEffectiveBackup(

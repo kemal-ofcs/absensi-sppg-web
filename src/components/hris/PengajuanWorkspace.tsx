@@ -1,7 +1,8 @@
 "use client";
 
-// Pengajuan cuti, izin, sakit (HRIS v37, prd-hris.md §17). Satu komponen untuk
-// Web/Desktop dan Mobile (Q-52). Tombol hanya disembunyikan bila jelas tidak
+// Pengajuan cuti, izin, sakit (HRIS v37, prd-hris.md §17) dan lembur, tukar
+// shift, dinas luar (v38, §18). Satu komponen untuk Web/Desktop dan Mobile
+// (Q-52). Tombol hanya disembunyikan bila jelas tidak
 // berhak; aturan sebenarnya (tidak untuk diri sendiri, pemutus per jenis,
 // periode gaji dibayar) dinilai backend (aturan 10).
 
@@ -39,9 +40,13 @@ import {
 import { SYNC_COMPLETED_EVENT, syncNow } from "@/lib/gateways/sync-status";
 import type { PermissionKey } from "@/lib/rbac/catalog";
 import {
+  type AturanLembur,
+  durasiLembur,
   type JenisPengajuan,
   KELOMPOK_AKTIF,
   LABEL_TANDA_PENGAJUAN,
+  seninDari,
+  statusBerlaku,
 } from "@/lib/validations/hr-pengajuan";
 
 type Saring = "menunggu" | "diketahui" | "tinjau" | "semua" | "diuangkan";
@@ -55,7 +60,21 @@ const ISIAN_KOSONG = {
   setengah_hari: false,
   alasan: "",
   urgent: false,
+  jam_mulai: "",
+  jam_selesai: "",
+  id_karyawan_tukar: "",
 };
+
+/** Isian per tanggal tunggal (§18.2). */
+const KELOMPOK_SATU_TANGGAL = ["Lembur", "Tukar Shift"];
+
+const LABEL_ALASAN: Record<string, string> = {
+  Lembur: "Pekerjaan",
+  "Dinas Luar": "Tujuan dan keperluan",
+};
+
+const jamTeks = (menit: number) =>
+  `${Math.floor(menit / 60)} j${menit % 60 ? ` ${menit % 60} m` : ""}`;
 
 const WARNA_STATUS: Record<string, string> = {
   Menunggu: "bg-amber-500/15 text-amber-200",
@@ -82,6 +101,7 @@ export function PengajuanWorkspace() {
   );
   const [daftar, setDaftar] = useState<BarisDaftarPengajuan[]>([]);
   const [jenis, setJenis] = useState<JenisPengajuan[]>([]);
+  const [aturanLembur, setAturanLembur] = useState<AturanLembur | null>(null);
   const [karyawan, setKaryawan] = useState<Record<string, unknown>[]>([]);
   const [saring, setSaring] = useState<Saring>("menunggu");
   const [dari, setDari] = useState("");
@@ -101,6 +121,7 @@ export function PengajuanWorkspace() {
       });
       setDaftar(hasil.pengajuan);
       setJenis(hasil.jenis);
+      setAturanLembur(hasil.aturan_lembur ?? null);
     } catch (error) {
       setPesan(pesanGalat(error, "Pengajuan gagal dimuat."));
     }
@@ -121,6 +142,43 @@ export function PengajuanWorkspace() {
   }, [formBuka, karyawan.length]);
 
   const jenisDipilih = jenis.find((j) => j.id_jenis === isi.id_jenis) ?? null;
+  const kelompok = jenisDipilih?.kelompok ?? "";
+  const satuTanggal = KELOMPOK_SATU_TANGGAL.includes(kelompok);
+  const durasi =
+    kelompok === "Lembur" ? durasiLembur(isi.jam_mulai, isi.jam_selesai) : null;
+  const namaKaryawanDari = (id: string) =>
+    karyawan.find((k) => String(k.id_unik) === id);
+  const shiftKaryawan = (id: string) => {
+    const k = namaKaryawanDari(id);
+    return k
+      ? String(k.nama_shift ?? `Shift ${String(k.id_shift ?? "-")}`)
+      : "";
+  };
+
+  // Lembur Menunggu/berlaku lain karyawan ini di tanggal dan minggu yang sama.
+  const ringkasLembur = useMemo(() => {
+    if (kelompok !== "Lembur" || !isi.id_karyawan || !isi.tanggal_mulai) {
+      return null;
+    }
+    const senin = seninDari(isi.tanggal_mulai);
+    let hari = 0;
+    let minggu = 0;
+    for (const b of daftar) {
+      const p = b.pengajuan;
+      if (
+        p.kelompok !== "Lembur" ||
+        p.id_karyawan !== isi.id_karyawan ||
+        p.id_pengajuan === isi.id_pengajuan ||
+        !(b.status === "Menunggu" || statusBerlaku(b.status))
+      ) {
+        continue;
+      }
+      const m = b.menit_lembur ?? 0;
+      if (p.tanggal_mulai === isi.tanggal_mulai) hari += m;
+      if (seninDari(p.tanggal_mulai) === senin) minggu += m;
+    }
+    return { hari, minggu };
+  }, [daftar, kelompok, isi.id_karyawan, isi.id_pengajuan, isi.tanggal_mulai]);
 
   // Sisa jatah periode berjalan, hanya untuk jenis yang memotong jatah.
   useEffect(() => {
@@ -165,21 +223,34 @@ export function PengajuanWorkspace() {
   };
 
   const ajukan = async () => {
-    const namaKaryawan = karyawan.find(
-      (k) => String(k.id_unik) === isi.id_karyawan,
-    )?.nama;
+    const namaKaryawan = namaKaryawanDari(isi.id_karyawan)?.nama;
+    const namaTukar = namaKaryawanDari(isi.id_karyawan_tukar)?.nama;
+    const tanggalSelesai = satuTanggal
+      ? isi.tanggal_mulai
+      : isi.tanggal_selesai;
     const lanjut = await konfirmasiData([
       { label: "Karyawan", nilai: namaKaryawan ? String(namaKaryawan) : "" },
       { label: "Jenis", nilai: jenisDipilih?.nama },
       {
         label: "Tanggal",
         nilai:
-          isi.tanggal_mulai === isi.tanggal_selesai
+          isi.tanggal_mulai === tanggalSelesai
             ? isi.tanggal_mulai
-            : `${isi.tanggal_mulai} s.d. ${isi.tanggal_selesai}`,
+            : `${isi.tanggal_mulai} s.d. ${tanggalSelesai}`,
       },
+      ...(kelompok === "Lembur"
+        ? [{ label: "Jam", nilai: `${isi.jam_mulai} - ${isi.jam_selesai}` }]
+        : []),
+      ...(kelompok === "Tukar Shift"
+        ? [
+            {
+              label: "Bertukar dengan",
+              nilai: namaTukar ? String(namaTukar) : "",
+            },
+          ]
+        : []),
       ...(isi.setengah_hari ? [{ label: "Setengah hari", nilai: "Ya" }] : []),
-      { label: "Alasan", nilai: isi.alasan },
+      { label: LABEL_ALASAN[kelompok] ?? "Alasan", nilai: isi.alasan },
       ...(isi.urgent
         ? [{ label: "Urgent", nilai: "Ya, langsung berlaku" }]
         : []),
@@ -190,6 +261,7 @@ export function PengajuanWorkspace() {
       () =>
         simpanPengajuan({
           ...sisa,
+          tanggal_selesai: tanggalSelesai,
           ...(id_pengajuan ? { id_pengajuan } : {}),
         }),
       "Pengajuan tersimpan.",
@@ -211,6 +283,9 @@ export function PengajuanWorkspace() {
       setengah_hari: p.setengah_hari,
       alasan: p.alasan,
       urgent: false,
+      jam_mulai: p.jam_mulai ?? "",
+      jam_selesai: p.jam_selesai ?? "",
+      id_karyawan_tukar: p.id_karyawan_tukar ?? "",
     });
     setFormBuka(true);
   };
@@ -357,7 +432,18 @@ export function PengajuanWorkspace() {
                   </option>
                 ))}
             </PilihCari>
-            {jenisDipilih ? (
+            {jenisDipilih && kelompok === "Lembur" ? (
+              <p className="mt-1 text-xs text-slate-400">
+                Satu SPL per tanggal kerja (shift malam ikut tanggal masuk).
+                {aturanLembur
+                  ? ` Batas ${aturanLembur.maks_harian} jam/hari dan ${aturanLembur.maks_mingguan} jam/minggu hanya peringatan.`
+                  : ""}
+              </p>
+            ) : jenisDipilih && kelompok === "Tukar Shift" ? (
+              <p className="mt-1 text-xs text-slate-400">
+                Di tanggal itu kedua karyawan memakai shift satu sama lain.
+              </p>
+            ) : jenisDipilih ? (
               <p className="mt-1 text-xs text-slate-400">
                 Gaji: {jenisDipilih.dampak_gaji}
                 {jenisDipilih.maks_hari
@@ -370,9 +456,9 @@ export function PengajuanWorkspace() {
               </p>
             ) : null}
           </div>
-          <div>
+          <div className={satuTanggal ? "sm:col-span-2" : undefined}>
             <label className={LABEL} htmlFor="pengajuan-mulai">
-              Tanggal mulai
+              {satuTanggal ? "Tanggal" : "Tanggal mulai"}
             </label>
             <input
               id="pengajuan-mulai"
@@ -391,21 +477,109 @@ export function PengajuanWorkspace() {
               }
             />
           </div>
-          <div>
-            <label className={LABEL} htmlFor="pengajuan-selesai">
-              Tanggal selesai
-            </label>
-            <input
-              id="pengajuan-selesai"
-              type="date"
-              className={INPUT}
-              value={isi.tanggal_selesai}
-              min={isi.tanggal_mulai || undefined}
-              onChange={(e) =>
-                setIsi({ ...isi, tanggal_selesai: e.target.value })
-              }
-            />
-          </div>
+          {satuTanggal ? null : (
+            <div>
+              <label className={LABEL} htmlFor="pengajuan-selesai">
+                Tanggal selesai
+              </label>
+              <input
+                id="pengajuan-selesai"
+                type="date"
+                className={INPUT}
+                value={isi.tanggal_selesai}
+                min={isi.tanggal_mulai || undefined}
+                onChange={(e) =>
+                  setIsi({ ...isi, tanggal_selesai: e.target.value })
+                }
+              />
+            </div>
+          )}
+          {kelompok === "Lembur" ? (
+            <>
+              <div>
+                <label className={LABEL} htmlFor="pengajuan-jam-mulai">
+                  Jam mulai
+                </label>
+                <input
+                  id="pengajuan-jam-mulai"
+                  type="time"
+                  className={INPUT}
+                  value={isi.jam_mulai}
+                  onChange={(e) =>
+                    setIsi({ ...isi, jam_mulai: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <label className={LABEL} htmlFor="pengajuan-jam-selesai">
+                  Jam selesai
+                </label>
+                <input
+                  id="pengajuan-jam-selesai"
+                  type="time"
+                  className={INPUT}
+                  value={isi.jam_selesai}
+                  onChange={(e) =>
+                    setIsi({ ...isi, jam_selesai: e.target.value })
+                  }
+                />
+              </div>
+              {durasi?.ok ? (
+                <p
+                  id="pengajuan-ringkas-lembur"
+                  className={`text-sm sm:col-span-2 ${
+                    aturanLembur &&
+                    ringkasLembur &&
+                    (
+                      ringkasLembur.hari + durasi.nilai >
+                        aturanLembur.maks_harian * 60 ||
+                        ringkasLembur.minggu + durasi.nilai >
+                          aturanLembur.maks_mingguan * 60
+                    )
+                      ? "text-amber-200"
+                      : "text-slate-300"
+                  }`}
+                >
+                  SPL ini {jamTeks(durasi.nilai)}
+                  {ringkasLembur
+                    ? `. Termasuk SPL lain: ${jamTeks(ringkasLembur.hari + durasi.nilai)} di tanggal ini, ${jamTeks(ringkasLembur.minggu + durasi.nilai)} di minggu ini.`
+                    : "."}
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          {kelompok === "Tukar Shift" ? (
+            <div className="sm:col-span-2">
+              <label className={LABEL} htmlFor="pengajuan-tukar">
+                Bertukar dengan
+              </label>
+              <PilihCari
+                id="pengajuan-tukar"
+                value={isi.id_karyawan_tukar}
+                onChange={(e) =>
+                  setIsi({ ...isi, id_karyawan_tukar: e.target.value })
+                }
+              >
+                <option value="">Pilih karyawan</option>
+                {karyawan
+                  .filter((k) => String(k.id_unik) !== isi.id_karyawan)
+                  .map((k) => (
+                    <option key={String(k.id_unik)} value={String(k.id_unik)}>
+                      {String(k.nama)} • {String(k.divisi || "-")}
+                    </option>
+                  ))}
+              </PilihCari>
+              {isi.id_karyawan && isi.id_karyawan_tukar ? (
+                <p className="mt-1 text-xs text-slate-400">
+                  {String(namaKaryawanDari(isi.id_karyawan)?.nama ?? "")}:{" "}
+                  {shiftKaryawan(isi.id_karyawan)} menjadi{" "}
+                  {shiftKaryawan(isi.id_karyawan_tukar)}.{" "}
+                  {String(namaKaryawanDari(isi.id_karyawan_tukar)?.nama ?? "")}:
+                  sebaliknya.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {jenisDipilih?.kelompok === "Izin" &&
           isi.tanggal_mulai &&
           isi.tanggal_mulai === isi.tanggal_selesai ? (
@@ -442,7 +616,7 @@ export function PengajuanWorkspace() {
           ) : null}
           <div className="sm:col-span-2">
             <label className={LABEL} htmlFor="pengajuan-alasan">
-              Alasan
+              {LABEL_ALASAN[kelompok] ?? "Alasan"}
             </label>
             <textarea
               id="pengajuan-alasan"
@@ -626,9 +800,13 @@ function BarisPengajuan({
             {p.tanggal_mulai === p.tanggal_selesai
               ? p.tanggal_mulai
               : `${p.tanggal_mulai} s.d. ${p.tanggal_selesai}`}
-            {p.setengah_hari
-              ? " (½ hari)"
-              : ` • ${baris.hari_kerja} hari kerja`}
+            {p.kelompok === "Lembur"
+              ? ` • ${p.jam_mulai ?? ""}-${p.jam_selesai ?? ""}${baris.menit_lembur ? ` (${jamTeks(baris.menit_lembur)})` : ""}`
+              : p.kelompok === "Tukar Shift"
+                ? ` • bertukar dengan ${baris.nama_karyawan_tukar ?? p.id_karyawan_tukar ?? "-"}`
+                : p.setengah_hari
+                  ? " (½ hari)"
+                  : ` • ${baris.hari_kerja} hari kerja`}
           </span>
           {baris.tanda.length > 0 ? (
             <span className="block truncate text-xs text-amber-200">

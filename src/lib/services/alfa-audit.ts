@@ -12,7 +12,7 @@ import {
   selisihHariKalender,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
-import { pengajuTanggal } from "@/lib/services/hr-pengajuan";
+import { muatTukar, pengajuTanggal } from "@/lib/services/hr-pengajuan";
 import { PELAPOR_PERJALANAN_SQL } from "@/lib/validations/driver";
 import { parseHariKerja, wajibMasuk } from "@/lib/validations/hari-kerja";
 import {
@@ -170,212 +170,231 @@ export async function generateAlfaHarian(
   let jumlahPengajuan = 0;
   const pengaju = new Map<string, Set<string>>();
 
+  // Tukar shift berlaku kemarin dan hari ini (HRIS v38, §18.5).
+  const kemarinStr = new Date(
+    Date.parse(`${tanggalOperasionalStr}T00:00:00Z`) - 86_400_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+  const tukar = await muatTukar(targetDb, kemarinStr, tanggalOperasionalStr);
+
   for (const row of empRes.rows) {
     const emp = row as Record<string, unknown>;
     const idUnik = String(emp.id_unik);
     const nama = String(emp.nama);
     const divisi = String(emp.divisi);
-    const idShift = Number(emp.id_shift || 1);
-
-    // Ambil Aturan Shift dari Map (bukan query ke DB). Shift yang tidak ada
-    // TIDAK boleh diganti default karangan — jalur Desktop melewatinya, dan
-    // menebak "07:00-15:00" di web membuat kedua jalur menghasilkan Alfa yang
-    // berbeda untuk karyawan yang sama.
-    const shift = shiftMap.get(idShift);
-    if (!shift) {
-      jumlahShiftTidakValid++;
-      await targetDb.execute({
-        sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
+    // Shift dasar dinilai seperti biasa; tanggal bertukar dinilai terpisah
+    // dengan shift tukarnya, supaya tukar ke shift malam tetap dinilai.
+    const penilaian: Array<[number, string | null]> = [
+      [Number(emp.id_shift || 1), null],
+    ];
+    for (const t of [kemarinStr, tanggalOperasionalStr]) {
+      const s = tukar.get(`${idUnik}|${t}`);
+      if (s !== undefined) penilaian.push([s, t]);
+    }
+    for (const [idShift, tanggalTukar] of penilaian) {
+      // Ambil Aturan Shift dari Map (bukan query ke DB). Shift yang tidak ada
+      // TIDAK boleh diganti default karangan — jalur Desktop melewatinya, dan
+      // menebak "07:00-15:00" di web membuat kedua jalur menghasilkan Alfa yang
+      // berbeda untuk karyawan yang sama.
+      const shift = shiftMap.get(idShift);
+      if (!shift) {
+        jumlahShiftTidakValid++;
+        await targetDb.execute({
+          sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
               VALUES (?, 'Skip Generate Alfa', ?, ?, ?, '', ?, 'Gagal');`,
-        args: [
-          nowStr,
-          tanggalOperasionalStr,
-          idUnik,
-          nama,
-          `Shift id ${idShift} tidak ditemukan di tbl_shift.`,
-        ],
+          args: [
+            nowStr,
+            tanggalOperasionalStr,
+            idUnik,
+            nama,
+            `Shift id ${idShift} tidak ditemukan di tbl_shift.`,
+          ],
+        });
+        continue;
+      }
+
+      const jamMasukStr = String(shift.jam_masuk ?? "");
+      const jamPulangStr = String(shift.jam_pulang ?? "");
+      const offsetAlfaMenit = Number(shift.offset_generate_alfa ?? 180);
+      const jamKerjaNormalMenit = Number(shift.jam_kerja_normal_menit ?? 0);
+
+      // Shift fleksibel tidak lagi dilewati. Karyawannya bebas absen jam berapa
+      // saja, jadi ketidakhadiran baru boleh dinilai setelah hari kalendernya
+      // habis — yang di-generate adalah hari kemarin, sama seperti shift malam
+      // yang diselesaikan pagi harinya.
+      const kindShift = jenisShift(
+        jamMasukStr,
+        jamPulangStr,
+        jamKerjaNormalMenit,
+      );
+      const isFleksibel = kindShift === "flexible";
+      if (isFleksibel) {
+        jumlahFleksibel++;
+      }
+
+      // Tentukan Tanggal Kerja berdasarkan Shift
+      const [hMasuk, mMasuk] = jamMasukStr.split(":").map(Number);
+      const [hPulang, mPulang] = jamPulangStr.split(":").map(Number);
+      const menitMasuk = hMasuk * 60 + mMasuk;
+      const menitPulang = hPulang * 60 + mPulang;
+      if (
+        !isFleksibel &&
+        (!Number.isFinite(menitMasuk) || !Number.isFinite(menitPulang))
+      ) {
+        jumlahShiftTidakValid++;
+        continue;
+      }
+
+      let tanggalStr = tanggalTukar ?? tanggalOperasionalStr;
+      const isOvernight = !isFleksibel && menitPulang < menitMasuk;
+
+      // Hari kerja yang dinilai mundur satu hari selama kita masih berada di
+      // dalam shift yang belum selesai: shift malam sebelum jam masuk berikutnya,
+      // shift fleksibel sepanjang harinya belum berganti tanggal.
+      const masihDiHariSebelumnya = isFleksibel
+        ? menitSekarang < MENIT_AKHIR_HARI
+        : isOvernight && menitSekarang < menitMasuk;
+
+      if (tanggalTukar === null && masihDiHariSebelumnya) {
+        const [y, m, d] = tanggalOperasionalStr.split("-").map(Number);
+        const prevDate = new Date(y, m - 1, d - 1);
+        tanggalStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-${String(prevDate.getDate()).padStart(2, "0")}`;
+      }
+      if (tanggalTukar === null && tukar.has(`${idUnik}|${tanggalStr}`))
+        continue;
+
+      // Dijadwalkan masuk? Libur mingguan lebih dulu (hari kerja shift), lalu
+      // tanggal libur aktif: pada tanggal itu hanya yang masuk whitelist yang
+      // dinilai. Aturannya sama dengan Desktop (`generate_alfa_harian`).
+      const libur = liburSet.has(tanggalStr);
+      const kodeShift = Number(shift.kode_shift);
+      const dijadwalkan = wajibMasuk({
+        tanggal: tanggalStr,
+        hariMasuk: parseHariKerja(
+          shift.hari_kerja == null ? null : String(shift.hari_kerja),
+        ),
+        libur,
+        masukSaatLibur:
+          libur &&
+          evaluateHolidayScan(whitelist, {
+            tanggal: tanggalStr,
+            divisi,
+            kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
+          }).allowed,
       });
-      continue;
-    }
+      if (!dijadwalkan) {
+        jumlahLibur++;
+        continue;
+      }
 
-    const jamMasukStr = String(shift.jam_masuk ?? "");
-    const jamPulangStr = String(shift.jam_pulang ?? "");
-    const offsetAlfaMenit = Number(shift.offset_generate_alfa ?? 180);
-    const jamKerjaNormalMenit = Number(shift.jam_kerja_normal_menit ?? 0);
+      // Alfa baru boleh dibuat setelah jendela scan pulang benar-benar tertutup
+      // (jam pulang + batas pulang + buffer shift malam), lalu ditambah
+      // offset_generate_alfa. Rumus lama "jam_pulang - offset" mengabaikan
+      // batas_pulang_menit dan membuat Alfa selagi karyawan masih berhak scan pulang.
+      const shiftPolicy: ShiftTimePolicy = {
+        kind: kindShift,
+        jamMasuk: jamMasukStr,
+        jamPulang: jamPulangStr,
+        awalAbsenMenit: 0,
+        batasMasukMenit: 0,
+        toleransiMasukMenit: 0,
+        batasPulangMenit: Number(shift.batas_pulang_menit ?? 240),
+        bufferShiftMalamMenit: Number(shift.buffer_shift_malam_menit ?? 120),
+        offsetIstirahatMulai: 0,
+        jamKerjaNormalMenit,
+        istirahatMenit: 0,
+      };
 
-    // Shift fleksibel tidak lagi dilewati. Karyawannya bebas absen jam berapa
-    // saja, jadi ketidakhadiran baru boleh dinilai setelah hari kalendernya
-    // habis — yang di-generate adalah hari kemarin, sama seperti shift malam
-    // yang diselesaikan pagi harinya.
-    const kindShift = jenisShift(
-      jamMasukStr,
-      jamPulangStr,
-      jamKerjaNormalMenit,
-    );
-    const isFleksibel = kindShift === "flexible";
-    if (isFleksibel) {
-      jumlahFleksibel++;
-    }
+      let cutoffTimelineMinute: number;
+      try {
+        cutoffTimelineMinute = menitGenerateAlfa(shiftPolicy, offsetAlfaMenit);
+      } catch {
+        jumlahShiftTidakValid++;
+        continue;
+      }
 
-    // Tentukan Tanggal Kerja berdasarkan Shift
-    const [hMasuk, mMasuk] = jamMasukStr.split(":").map(Number);
-    const [hPulang, mPulang] = jamPulangStr.split(":").map(Number);
-    const menitMasuk = hMasuk * 60 + mMasuk;
-    const menitPulang = hPulang * 60 + mPulang;
-    if (
-      !isFleksibel &&
-      (!Number.isFinite(menitMasuk) || !Number.isFinite(menitPulang))
-    ) {
-      jumlahShiftTidakValid++;
-      continue;
-    }
+      const currentTimelineMinute =
+        selisihHariKalender(tanggalStr, tanggalOperasionalStr) * 1440 +
+        menitSekarang;
 
-    let tanggalStr = tanggalOperasionalStr;
-    const isOvernight = !isFleksibel && menitPulang < menitMasuk;
+      if (currentTimelineMinute < cutoffTimelineMinute) {
+        jumlahBelumWaktunya++;
+        continue;
+      }
 
-    // Hari kerja yang dinilai mundur satu hari selama kita masih berada di
-    // dalam shift yang belum selesai: shift malam sebelum jam masuk berikutnya,
-    // shift fleksibel sepanjang harinya belum berganti tanggal.
-    const masihDiHariSebelumnya = isFleksibel
-      ? menitSekarang < MENIT_AKHIR_HARI
-      : isOvernight && menitSekarang < menitMasuk;
-
-    if (masihDiHariSebelumnya) {
-      const [y, m, d] = tanggalOperasionalStr.split("-").map(Number);
-      const prevDate = new Date(y, m - 1, d - 1);
-      tanggalStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}-${String(prevDate.getDate()).padStart(2, "0")}`;
-    }
-
-    // Dijadwalkan masuk? Libur mingguan lebih dulu (hari kerja shift), lalu
-    // tanggal libur aktif: pada tanggal itu hanya yang masuk whitelist yang
-    // dinilai. Aturannya sama dengan Desktop (`generate_alfa_harian`).
-    const libur = liburSet.has(tanggalStr);
-    const kodeShift = Number(shift.kode_shift);
-    const dijadwalkan = wajibMasuk({
-      tanggal: tanggalStr,
-      hariMasuk: parseHariKerja(
-        shift.hari_kerja == null ? null : String(shift.hari_kerja),
-      ),
-      libur,
-      masukSaatLibur:
-        libur &&
-        evaluateHolidayScan(whitelist, {
-          tanggal: tanggalStr,
-          divisi,
-          kodeShift: Number.isFinite(kodeShift) ? kodeShift : null,
-        }).allowed,
-    });
-    if (!dijadwalkan) {
-      jumlahLibur++;
-      continue;
-    }
-
-    // Alfa baru boleh dibuat setelah jendela scan pulang benar-benar tertutup
-    // (jam pulang + batas pulang + buffer shift malam), lalu ditambah
-    // offset_generate_alfa. Rumus lama "jam_pulang - offset" mengabaikan
-    // batas_pulang_menit dan membuat Alfa selagi karyawan masih berhak scan pulang.
-    const shiftPolicy: ShiftTimePolicy = {
-      kind: kindShift,
-      jamMasuk: jamMasukStr,
-      jamPulang: jamPulangStr,
-      awalAbsenMenit: 0,
-      batasMasukMenit: 0,
-      toleransiMasukMenit: 0,
-      batasPulangMenit: Number(shift.batas_pulang_menit ?? 240),
-      bufferShiftMalamMenit: Number(shift.buffer_shift_malam_menit ?? 120),
-      offsetIstirahatMulai: 0,
-      jamKerjaNormalMenit,
-      istirahatMenit: 0,
-    };
-
-    let cutoffTimelineMinute: number;
-    try {
-      cutoffTimelineMinute = menitGenerateAlfa(shiftPolicy, offsetAlfaMenit);
-    } catch {
-      jumlahShiftTidakValid++;
-      continue;
-    }
-
-    const currentTimelineMinute =
-      selisihHariKalender(tanggalStr, tanggalOperasionalStr) * 1440 +
-      menitSekarang;
-
-    if (currentTimelineMinute < cutoffTimelineMinute) {
-      jumlahBelumWaktunya++;
-      continue;
-    }
-
-    // Cek apakah sudah ada rekaman absensi sesi NORMAL atau koreksi prioritas
-    const idSesiNormal = `NORMAL-${tanggalStr.replace(/-/g, "")}-${idUnik}-${idShift}`;
-    const existRes = await targetDb.execute({
-      sql: `SELECT id_absensi, status_kehadiran FROM absensi_harian 
+      // Cek apakah sudah ada rekaman absensi sesi NORMAL atau koreksi prioritas
+      const idSesiNormal = `NORMAL-${tanggalStr.replace(/-/g, "")}-${idUnik}-${idShift}`;
+      const existRes = await targetDb.execute({
+        sql: `SELECT id_absensi, status_kehadiran FROM absensi_harian 
             WHERE id_karyawan = ? AND tanggal = ? AND (mode_tugas = 'NORMAL' OR mode_tugas IS NULL OR mode_tugas = '') 
             LIMIT 1;`,
-      args: [idUnik, tanggalStr],
-    });
-
-    if (existRes.rows.length > 0) {
-      jumlahSudahAda++;
-      continue;
-    }
-
-    let pelaporTanggal = pelapor.get(tanggalStr);
-    if (!pelaporTanggal) {
-      const hasil = await targetDb.execute({
-        sql: PELAPOR_PERJALANAN_SQL,
-        args: [tanggalStr],
+        args: [idUnik, tanggalStr],
       });
-      pelaporTanggal = new Set(hasil.rows.map((r) => String(r.id_karyawan)));
-      pelapor.set(tanggalStr, pelaporTanggal);
-    }
-    if (pelaporTanggal.has(idUnik)) {
-      jumlahLaporPerjalanan++;
-      continue;
-    }
-    // Cermin `generate_alfa_harian`: pengajuan berlaku menutup tanggal itu.
-    let pengajuTgl = pengaju.get(tanggalStr);
-    if (!pengajuTgl) {
-      pengajuTgl = await pengajuTanggal(targetDb, tanggalStr);
-      pengaju.set(tanggalStr, pengajuTgl);
-    }
-    if (pengajuTgl.has(idUnik)) {
-      jumlahPengajuan++;
-      continue;
-    }
 
-    const [tY, tM] = tanggalStr.split("-").map(Number);
-    const bulanStr = monthNames[tM - 1] || "Januari";
-    const tahunNum = tY;
+      if (existRes.rows.length > 0) {
+        jumlahSudahAda++;
+        continue;
+      }
 
-    // Buat Rekaman ALFA Otomatis
-    await targetDb.execute({
-      sql: `INSERT INTO absensi_harian (
+      let pelaporTanggal = pelapor.get(tanggalStr);
+      if (!pelaporTanggal) {
+        const hasil = await targetDb.execute({
+          sql: PELAPOR_PERJALANAN_SQL,
+          args: [tanggalStr],
+        });
+        pelaporTanggal = new Set(hasil.rows.map((r) => String(r.id_karyawan)));
+        pelapor.set(tanggalStr, pelaporTanggal);
+      }
+      if (pelaporTanggal.has(idUnik)) {
+        jumlahLaporPerjalanan++;
+        continue;
+      }
+      // Cermin `generate_alfa_harian`: pengajuan berlaku menutup tanggal itu.
+      let pengajuTgl = pengaju.get(tanggalStr);
+      if (!pengajuTgl) {
+        pengajuTgl = await pengajuTanggal(targetDb, tanggalStr);
+        pengaju.set(tanggalStr, pengajuTgl);
+      }
+      if (pengajuTgl.has(idUnik)) {
+        jumlahPengajuan++;
+        continue;
+      }
+
+      const [tY, tM] = tanggalStr.split("-").map(Number);
+      const bulanStr = monthNames[tM - 1] || "Januari";
+      const tahunNum = tY;
+
+      // Buat Rekaman ALFA Otomatis
+      await targetDb.execute({
+        sql: `INSERT INTO absensi_harian (
               tanggal, id_karyawan, nama, kelas_divisi, jam_masuk, jam_pulang,
               status_kehadiran, status_absen, keterangan, sumber, update_terakhir,
               menit_terlambat, menit_datang_awal, jam_kerja, lembur, jam_kerja_kurang,
               id_shift, bulan, tahun, id_sesi, mode_tugas
             ) VALUES (?, ?, ?, ?, '', '', 'Alfa', 'Tidak Hadir', 'Generate Alfa otomatis - belum ada absensi atau koreksi Sakit/Izin/Dispen', 'Generate Sistem', ?, 0, 0, 0, 0, 0, ?, ?, ?, ?, 'NORMAL');`,
-      args: [
-        tanggalStr,
-        idUnik,
-        nama,
-        divisi,
-        nowStr,
-        idShift,
-        bulanStr,
-        tahunNum,
-        idSesiNormal,
-      ],
-    });
+        args: [
+          tanggalStr,
+          idUnik,
+          nama,
+          divisi,
+          nowStr,
+          idShift,
+          bulanStr,
+          tahunNum,
+          idSesiNormal,
+        ],
+      });
 
-    // Catat Audit Absensi
-    await targetDb.execute({
-      sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
+      // Catat Audit Absensi
+      await targetDb.execute({
+        sql: `INSERT INTO audit_absensi (waktu, jenis, tanggal, id_karyawan, nama, baris_referensi, detail, status)
             VALUES (?, 'Generate Alfa', ?, ?, ?, ?, 'Alfa sesi NORMAL dibuat karena belum ada absensi atau koreksi Sakit/Izin/Dispen.', 'Selesai');`,
-      args: [nowStr, tanggalStr, idUnik, nama, idSesiNormal],
-    });
+        args: [nowStr, tanggalStr, idUnik, nama, idSesiNormal],
+      });
 
-    jumlahAlfaDibuat++;
+      jumlahAlfaDibuat++;
+    }
   }
 
   const todayHoliday = liburSet.has(tanggalOperasionalStr)

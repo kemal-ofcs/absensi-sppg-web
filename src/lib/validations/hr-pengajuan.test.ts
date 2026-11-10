@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   aturanCutiDariPeta,
+  aturanLemburDariPeta,
+  BACKUP_TUKAR_SQL,
+  bentrokPengajuan,
   CLOUD_INSERT_KEPUTUSAN_SQL,
+  durasiLembur,
   hitungCutiDibayar,
   INSERT_PENYESUAIAN_SQL,
   type JenisPengajuan,
@@ -11,26 +15,40 @@ import {
   type KeadaanAksi,
   type Keputusan,
   kanonikPengajuan,
+  kodeKelompok,
   LAPORAN_PENGAJUAN_SQL,
+  LAPORAN_TUKAR_SQL,
+  LEMBUR_HARIAN_SQL,
+  lemburLewatBatas,
   PENGAJUAN_BERLAKU_SQL,
   PENGAJUAN_RENTANG_SQL,
   PERIODE_DIBAYAR_SQL,
   PESAN_TANPA_HARI_KERJA,
+  PESAN_TUKAR_BACKUP,
+  PESAN_TUKAR_NONAKTIF,
+  PESAN_TUKAR_SHIFT_HILANG,
+  PESAN_TUKAR_SHIFT_SAMA,
   periksaAksi,
   periksaJenis,
   periksaMaks,
   periksaSunting,
   periksaUrgent,
   periodeCuti,
+  potongLemburSpl,
+  type Ringkas,
   SEED_JENIS_SQL,
+  SPL_RENTANG_SQL,
+  seninDari,
   statusPengajuan,
   TANGGAL_HADIR_SQL,
+  TUKAR_RENTANG_SQL,
   tandaKeputusan,
   tanggalWajib,
   UPSERT_JENIS_SQL,
   UPSERT_PENGAJUAN_SQL,
   upahHarian,
   validasiAturanCuti,
+  validasiAturanLembur,
   validasiJenis,
   validasiPengajuan,
   validasiPenyesuaian,
@@ -85,6 +103,15 @@ describe("hr-pengajuan", () => {
         CLOUD_INSERT_KEPUTUSAN_SQL,
         INSERT_PENYESUAIAN_SQL,
         PESAN_TANPA_HARI_KERJA,
+        ...SPL_RENTANG_SQL.split(PENGAJUAN_BERLAKU_SQL),
+        ...TUKAR_RENTANG_SQL.split(PENGAJUAN_BERLAKU_SQL),
+        ...LAPORAN_TUKAR_SQL.split(PENGAJUAN_BERLAKU_SQL),
+        BACKUP_TUKAR_SQL,
+        LEMBUR_HARIAN_SQL,
+        PESAN_TUKAR_NONAKTIF,
+        PESAN_TUKAR_SHIFT_SAMA,
+        PESAN_TUKAR_SHIFT_HILANG,
+        PESAN_TUKAR_BACKUP,
       ]) {
         expect(rust.includes(sql ?? "tidak ada")).toBe(true);
       }
@@ -106,6 +133,274 @@ describe("hr-pengajuan", () => {
       }),
     ).toBe(
       "K1\u001fjns-sakit\u001fSakit\u001f0\u001fDibayar\u001f2026-11-02\u001f2026-11-03\u001f0\u001fDemam",
+    );
+  });
+
+  test("fase 3: durasi lembur dan sidik isian baru", () => {
+    expect(durasiLembur("17:00", "19:30")).toEqual({ ok: true, nilai: 150 });
+    expect(durasiLembur("22:00", "02:00")).toEqual({ ok: true, nilai: 240 });
+    expect(gagalDengan(durasiLembur("17:00", "17:00"))).toBe(
+      "Jam mulai dan selesai lembur tidak boleh sama.",
+    );
+    expect(gagalDengan(durasiLembur("7:00", "09:00"))).toBe(
+      "Jam lembur harus berformat JJ:MM.",
+    );
+    expect(gagalDengan(durasiLembur("24:00", "01:00"))).toBe(
+      "Jam lembur harus berformat JJ:MM.",
+    );
+    const dasar = {
+      id_karyawan: "K1",
+      potong_jatah: false,
+      dampak_gaji: "Tidak Berpengaruh",
+      tanggal_mulai: "2026-11-02",
+      tanggal_selesai: "2026-11-02",
+      setengah_hari: false,
+      alasan: "Opname",
+      jam_mulai: "17:00",
+      jam_selesai: "19:00",
+      id_karyawan_tukar: "K2",
+      id_shift_asal: 1,
+      id_shift_tukar: 2,
+    };
+    const awal =
+      "K1\u001fjns-x\u001f{k}\u001f0\u001fTidak Berpengaruh\u001f2026-11-02\u001f2026-11-02\u001f0\u001fOpname";
+    expect(
+      kanonikPengajuan({ ...dasar, id_jenis: "jns-x", kelompok: "Lembur" }),
+    ).toBe(`${awal.replace("{k}", "Lembur")}\u001f17:00\u001f19:00`);
+    expect(
+      kanonikPengajuan({
+        ...dasar,
+        id_jenis: "jns-x",
+        kelompok: "Tukar Shift",
+      }),
+    ).toBe(`${awal.replace("{k}", "Tukar Shift")}\u001fK2\u001f1\u001f2`);
+    // Kelompok lain mengabaikan isian baru: sidik fase 2 tidak berubah.
+    expect(
+      kanonikPengajuan({ ...dasar, id_jenis: "jns-x", kelompok: "Dinas Luar" }),
+    ).toBe(awal.replace("{k}", "Dinas Luar"));
+    expect(kodeKelompok("Dinas Luar")).toBe("DL");
+    expect(kodeKelompok("Lembur")).toBeNull();
+  });
+
+  test("fase 3: bentrok pengajuan", () => {
+    const r = (
+      kelompok: string,
+      id: string,
+      mulai: string,
+      selesai: string,
+      lain: Partial<Ringkas> = {},
+    ): Ringkas => ({
+      kelompok,
+      id_karyawan: id,
+      id_karyawan_tukar: null,
+      tanggal_mulai: mulai,
+      tanggal_selesai: selesai,
+      setengah_hari: false,
+      jam_mulai: null,
+      jam_selesai: null,
+      ...lain,
+    });
+    const jam = (a: string, b: string) => ({ jam_mulai: a, jam_selesai: b });
+    const t = "2026-11-02";
+    const l1 = r("Lembur", "K1", t, t, jam("17:00", "19:00"));
+    expect(
+      bentrokPengajuan(l1, r("Lembur", "K1", t, t, jam("18:30", "20:00"))),
+    ).toBe(true);
+    expect(
+      bentrokPengajuan(l1, r("Lembur", "K1", t, t, jam("19:00", "21:00"))),
+    ).toBe(false);
+    expect(
+      bentrokPengajuan(l1, r("Lembur", "K2", t, t, jam("17:00", "19:00"))),
+    ).toBe(false);
+    expect(
+      bentrokPengajuan(l1, r("Cuti", "K1", "2026-11-01", "2026-11-03")),
+    ).toBe(true);
+    expect(
+      bentrokPengajuan(l1, r("Izin", "K1", t, t, { setengah_hari: true })),
+    ).toBe(false);
+    const tukar = r("Tukar Shift", "K2", t, t, { id_karyawan_tukar: "K1" });
+    expect(bentrokPengajuan(l1, tukar)).toBe(false);
+    expect(bentrokPengajuan(tukar, r("Cuti", "K1", t, t))).toBe(true);
+    expect(bentrokPengajuan(tukar, r("Dinas Luar", "K3", t, t))).toBe(false);
+    expect(
+      bentrokPengajuan(
+        tukar,
+        r("Tukar Shift", "K3", t, t, { id_karyawan_tukar: "K2" }),
+      ),
+    ).toBe(true);
+    expect(
+      bentrokPengajuan(
+        tukar,
+        r("Tukar Shift", "K3", t, t, { id_karyawan_tukar: "K4" }),
+      ),
+    ).toBe(false);
+    expect(bentrokPengajuan(r("Cuti", "K1", t, t), r("Cuti", "K2", t, t))).toBe(
+      false,
+    );
+    expect(
+      bentrokPengajuan(
+        r("Dinas Luar", "K1", t, t),
+        r("Sakit", "K1", t, "2026-11-04"),
+      ),
+    ).toBe(true);
+  });
+
+  test("fase 3: batas lembur dan potongan SPL", () => {
+    expect(seninDari("2026-11-08")).toBe("2026-11-02");
+    expect(seninDari("2026-11-09")).toBe("2026-11-09");
+    expect(
+      [
+        ...lemburLewatBatas(
+          [
+            ["2026-11-02", 180],
+            ["2026-11-02", 90],
+            ["2026-11-03", 60],
+            ["2026-11-09", 240],
+            ["2026-11-10", 240],
+            ["2026-11-11", 200],
+          ],
+          240,
+          600,
+        ),
+      ].sort(),
+    ).toEqual(["2026-11-02", "2026-11-09", "2026-11-10", "2026-11-11"]);
+    expect(
+      potongLemburSpl([
+        { lembur: 120, libur_total: 0, libur_jam_kerja: 0, spl: 90 },
+        { lembur: 60, libur_total: 0, libur_jam_kerja: 0, spl: 0 },
+        { lembur: 0, libur_total: 600, libur_jam_kerja: 480, spl: 0 },
+        { lembur: 0, libur_total: 600, libur_jam_kerja: 480, spl: 300 },
+        { lembur: 30, libur_total: 0, libur_jam_kerja: 0, spl: 120 },
+      ]),
+    ).toEqual({
+      lembur: 90,
+      libur_total: 900,
+      libur_jam_kerja: 660,
+      tanpa_spl: 660,
+    });
+  });
+
+  test("fase 3: jenis, isian, dan aturan lembur", () => {
+    const jenis = validasiJenis({
+      nama: "Lembur Gudang",
+      kelompok: "Lembur",
+      dampak_gaji: "Dibayar",
+      maks_hari: 5,
+    });
+    expect(jenis.ok && jenis.nilai.dampak_gaji).toBe("Tidak Berpengaruh");
+    expect(jenis.ok && jenis.nilai.maks_hari).toBeNull();
+    expect(
+      gagalDengan(
+        validasiJenis({
+          nama: "X",
+          kelompok: "Reimburse",
+          dampak_gaji: "Dibayar",
+        }),
+      ),
+    ).toBe(
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+    );
+    const j = (kelompok: string): JenisPengajuan => ({
+      id_jenis: "j",
+      nama: "J",
+      kelompok,
+      izin_pemutus: "hr.request.decide",
+      boleh_urgent: true,
+      potong_jatah: false,
+      dampak_gaji: "Tidak Berpengaruh",
+      maks_hari: null,
+      satuan_maks: "Hari Kerja",
+      wajib_dokumen: false,
+      is_aktif: true,
+    });
+    const isian = (lain: Record<string, unknown>) => {
+      const v = validasiPengajuan({
+        id_karyawan: "K1",
+        id_jenis: "j",
+        tanggal_mulai: "2026-11-02",
+        tanggal_selesai: "2026-11-02",
+        alasan: "x",
+        ...lain,
+      });
+      if (!v.ok) throw new Error(v.pesan);
+      return v.nilai;
+    };
+    expect(
+      gagalDengan(
+        periksaJenis(
+          isian({
+            tanggal_selesai: "2026-11-03",
+            jam_mulai: "17:00",
+            jam_selesai: "18:00",
+          }),
+          j("Lembur"),
+        ),
+      ),
+    ).toBe("Lembur diajukan per tanggal kerja.");
+    expect(
+      gagalDengan(periksaJenis(isian({ jam_mulai: "17:00" }), j("Lembur"))),
+    ).toBe("Jam lembur harus berformat JJ:MM.");
+    expect(
+      periksaJenis(
+        isian({ jam_mulai: "17:00", jam_selesai: "18:00" }),
+        j("Lembur"),
+      ).ok,
+    ).toBe(true);
+    expect(gagalDengan(periksaJenis(isian({}), j("Tukar Shift")))).toBe(
+      "Pilih karyawan yang diajak bertukar.",
+    );
+    expect(
+      gagalDengan(
+        periksaJenis(isian({ id_karyawan_tukar: "K1" }), j("Tukar Shift")),
+      ),
+    ).toBe("Tukar shift harus dengan karyawan lain.");
+    expect(
+      gagalDengan(
+        periksaJenis(
+          isian({ id_karyawan_tukar: "K2", tanggal_selesai: "2026-11-03" }),
+          j("Tukar Shift"),
+        ),
+      ),
+    ).toBe("Tukar shift diajukan per tanggal.");
+    expect(
+      periksaJenis(isian({ id_karyawan_tukar: "K2" }), j("Tukar Shift")).ok,
+    ).toBe(true);
+    expect(aturanLemburDariPeta({})).toEqual({
+      mode: "otomatis",
+      maks_harian: 4,
+      maks_mingguan: 18,
+    });
+    expect(
+      aturanLemburDariPeta({
+        hr_lembur_mode: "spl",
+        hr_lembur_maks_harian: "13",
+      }),
+    ).toEqual({ mode: "spl", maks_harian: 4, maks_mingguan: 18 });
+    expect(
+      validasiAturanLembur({
+        hr_lembur_mode: "spl",
+        hr_lembur_maks_harian: 3,
+        hr_lembur_maks_mingguan: 20,
+      }),
+    ).toEqual({
+      ok: true,
+      nilai: [
+        ["hr_lembur_mode", "spl"],
+        ["hr_lembur_maks_harian", "3"],
+        ["hr_lembur_maks_mingguan", "20"],
+      ],
+    });
+    expect(
+      gagalDengan(
+        validasiAturanLembur({
+          hr_lembur_mode: "spl",
+          hr_lembur_maks_harian: 0,
+          hr_lembur_maks_mingguan: 20,
+        }),
+      ),
+    ).toBe("Batas lembur harian harus 1 sampai 12 jam.");
+    expect(gagalDengan(validasiAturanLembur({ hr_lembur_mode: "x" }))).toBe(
+      "Mode lembur harus otomatis atau SPL.",
     );
   });
 
@@ -320,12 +615,14 @@ describe("hr-pengajuan", () => {
     expect(
       gagalDengan(
         validasiJenis({
-          nama: "Lembur",
-          kelompok: "Lembur",
+          nama: "Klaim",
+          kelompok: "Reimburse",
           dampak_gaji: "Dibayar",
         }),
       ),
-    ).toBe("Kelompok harus Cuti, Izin, atau Sakit.");
+    ).toBe(
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+    );
     expect(
       gagalDengan(
         validasiJenis({
