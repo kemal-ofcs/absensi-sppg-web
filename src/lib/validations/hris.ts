@@ -64,6 +64,8 @@ export const KUNCI_PERCOBAAN_MAKS_BULAN = "hr_percobaan_maks_bulan";
 export const KUNCI_PKWT_MAKS_BULAN = "hr_pkwt_maks_bulan";
 export const KUNCI_HARIAN_BATAS_HARI = "hr_harian_batas_hari";
 export const KUNCI_HARIAN_BATAS_BULAN = "hr_harian_batas_bulan";
+/** Masa berlaku SP dalam bulan (fase 5); dibekukan per SP saat dibuat. */
+export const KUNCI_SP_MASA_BULAN = "hr_sp_masa_bulan";
 
 export const KOLOM_PRIBADI = [
   "nik",
@@ -508,6 +510,7 @@ export interface PengaturanKontrak {
   hr_pkwt_maks_bulan: number;
   hr_harian_batas_hari: number;
   hr_harian_batas_bulan: number;
+  hr_sp_masa_bulan: number;
 }
 
 export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
@@ -515,6 +518,7 @@ export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
   hr_pkwt_maks_bulan: 60,
   hr_harian_batas_hari: 21,
   hr_harian_batas_bulan: 3,
+  hr_sp_masa_bulan: 6,
 };
 
 /** Cermin `BATAS_PENGATURAN`: [kunci, label, min, maks]. */
@@ -523,6 +527,7 @@ export const BATAS_PENGATURAN = [
   [KUNCI_PKWT_MAKS_BULAN, "Total PKWT maksimal", 1, 120],
   [KUNCI_HARIAN_BATAS_HARI, "Batas hari kerja harian lepas", 1, 31],
   [KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12],
+  [KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12],
 ] as const;
 
 /** Cermin `PengaturanKontrak::dari_peta`: kosong/rusak = bawaan. */

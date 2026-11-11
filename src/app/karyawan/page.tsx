@@ -901,7 +901,7 @@ export default function KaryawanPage() {
                       </td>
                       {/* 9. Status Aktif */}
                       <td className="p-3.5 whitespace-nowrap">
-                        {canManage ? (
+                        {canManage && !row.id_keluar ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -920,13 +920,20 @@ export default function KaryawanPage() {
                           </button>
                         ) : (
                           <span
+                            title={
+                              row.id_keluar
+                                ? "Karyawan sudah keluar. Batalkan proses keluarnya di HRIS untuk mengaktifkannya lagi."
+                                : undefined
+                            }
                             className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                               row.status_aktif === "Aktif"
                                 ? "text-emerald-400"
                                 : "text-rose-400"
                             }`}
                           >
-                            {String(row.status_aktif || "Aktif")}
+                            {row.id_keluar
+                              ? `Keluar ${String(row.tanggal_selesai_aktif || "")}`
+                              : String(row.status_aktif || "Aktif")}
                           </span>
                         )}
                       </td>

@@ -315,6 +315,38 @@ export const PERMISSION_CATALOG = [
     name: "Sesuaikan Jatah Cuti",
     group: "Kepegawaian",
   },
+  // HRIS fase 4 (v39). Sort order cermin seed `app_permission` Rust 1613.
+  {
+    key: "reimburse.decide",
+    name: "Putuskan & Bayar Reimbursement",
+    group: "Kepegawaian",
+  },
+  // HRIS fase 5 (v40). Sort order cermin seed `app_permission` Rust 1614–1618.
+  {
+    key: "hr.warning.view",
+    name: "Lihat Surat Peringatan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.warning.manage",
+    name: "Kelola Surat Peringatan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.warning.cancel",
+    name: "Cabut Surat Peringatan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.offboard.view",
+    name: "Lihat Karyawan Keluar",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.offboard.manage",
+    name: "Kelola Karyawan Keluar",
+    group: "Kepegawaian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -389,6 +421,13 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   "hr.request.urgent",
   "hr.request.decide",
   "hr.leave.adjust",
+  // Memutus klaim sekaligus membayarnya (pembayaran terpisah dan
+  // pembatalannya): uang keluar ke karyawan (§19.5).
+  "reimburse.decide",
+  // Mencabut SP menghapus dasar eskalasi; memberlakukan atau membatalkan
+  // karyawan keluar menonaktifkan orangnya, akunnya, dan menetapkan pesangon.
+  "hr.warning.cancel",
+  "hr.offboard.manage",
 ]);
 
 /**
@@ -403,6 +442,10 @@ export const CONFIDENTIAL_PERMISSIONS = new Set<PermissionKey>([
   "hr.finance.manage",
   "hr.document.view",
   "hr.document.manage",
+  // Isi SP dan alasan keluar/pesangon (Q-69).
+  "hr.warning.view",
+  "hr.warning.manage",
+  "hr.offboard.view",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
@@ -456,6 +499,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "hr.request.view",
     "hr.request.submit",
     "hr.request.decide",
+    "hr.warning.view",
+    "hr.warning.manage",
+    "hr.offboard.view",
   ],
   atasan: [
     "home.view",

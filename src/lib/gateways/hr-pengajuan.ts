@@ -12,8 +12,12 @@ import { invokeDesktop, kickDesktopSync } from "@/lib/runtime/desktop-commands";
 import type {
   AturanCuti,
   AturanLembur,
+  BarisReimburse,
+  BayarReimburse,
   JenisPengajuan,
+  Klaim,
   PeriodeCuti,
+  StatusBayar,
   StatusPengajuan,
 } from "@/lib/validations/hr-pengajuan";
 
@@ -42,6 +46,8 @@ export interface Pengajuan {
   id_karyawan_tukar: string | null;
   id_shift_asal: number | null;
   id_shift_tukar: number | null;
+  /** Reimburse (v39): rupiah yang diajukan. */
+  nominal: number | null;
 }
 
 export interface BarisDaftarPengajuan {
@@ -56,12 +62,18 @@ export interface BarisDaftarPengajuan {
   tanda: string[];
   hari_kerja: number;
   sudah_diketahui: boolean;
+  /** Reimburse berlaku: nominal disetujui (kosong = diajukan). */
+  nominal_berlaku: number | null;
+  /** Hanya Reimburse. */
+  status_bayar: StatusBayar | null;
+  batas_bulanan: number | null;
 }
 
 export interface DaftarPengajuan {
   pengajuan: BarisDaftarPengajuan[];
   jenis: JenisPengajuan[];
   aturan_lembur: AturanLembur;
+  mode_reimburse: string;
 }
 
 export interface KeputusanRiwayat {
@@ -72,6 +84,7 @@ export interface KeputusanRiwayat {
   oleh: string;
   waktu_perangkat: string;
   diterima_cloud: string | null;
+  nominal_disetujui: number | null;
 }
 
 export interface PenyesuaianCuti {
@@ -86,6 +99,8 @@ export interface PenyesuaianCuti {
     created_at: string;
   };
   dibatalkan: boolean;
+  /** Hanya `Diuangkan` (Q-62). */
+  status_bayar?: StatusBayar | null;
 }
 
 export interface JatahCuti {
@@ -98,12 +113,29 @@ export interface JatahCuti {
 export interface AkhirPeriode {
   aturan: AturanCuti;
   aturan_lembur: AturanLembur;
+  mode_reimburse: string;
   belum_diproses: Array<{
     id_karyawan: string;
     nama: string;
     periode: PeriodeCuti;
   }>;
-  diuangkan: Array<{ nama: string; baris: PenyesuaianCuti["baris"] }>;
+  diuangkan: Array<{
+    nama: string;
+    baris: PenyesuaianCuti["baris"];
+    status_bayar: StatusBayar | null;
+  }>;
+}
+
+export interface RingkasanReimburse {
+  mode: string;
+  belum_dibayar: Array<{ klaim: Klaim; nama: string | null }>;
+  proses_gaji: Array<{ klaim: Klaim; nama: string | null }>;
+  riwayat: Array<{
+    bayar: BayarReimburse;
+    nama: string | null;
+    batal: BayarReimburse | null;
+    baris: Array<{ baris: BarisReimburse; keterangan: string | null }>;
+  }>;
 }
 
 export interface LampiranRingkas {
@@ -252,4 +284,36 @@ export async function hapusLampiran(idBerkas: string): Promise<Hasil> {
     return invokeDesktop("desktop_hr_request_file_delete", { idBerkas });
   }
   return web("hapus-berkas", { id: idBerkas });
+}
+
+// ── HRIS fase 4 (v39): pembayaran terpisah reimbursement dan cuti diuangkan ──
+
+export async function ambilRingkasanReimburse(
+  dari: string,
+  sampai: string,
+): Promise<RingkasanReimburse> {
+  if (isDesktopRuntime()) {
+    return invokeDesktop("desktop_hr_reimburse_overview", { dari, sampai });
+  }
+  return web("bayar-ringkasan", { draft: { dari, sampai } });
+}
+
+export async function bayarReimburse(
+  draft: Isian,
+): Promise<Hasil<{ id_bayar: string; total: number }>> {
+  if (isDesktopRuntime()) {
+    return laluSinkron(invokeDesktop("desktop_hr_reimburse_pay", { draft }));
+  }
+  return web("bayar", { draft });
+}
+
+export async function batalkanBayarReimburse(
+  draft: Isian,
+): Promise<Hasil<{ id_bayar: string }>> {
+  if (isDesktopRuntime()) {
+    return laluSinkron(
+      invokeDesktop("desktop_hr_reimburse_pay_cancel", { draft }),
+    );
+  }
+  return web("batal-bayar", { draft });
 }

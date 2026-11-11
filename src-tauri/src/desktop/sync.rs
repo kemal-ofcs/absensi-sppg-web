@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 38;
+pub const CLIENT_SCHEMA_VERSION: i64 = 40;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -106,6 +106,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "id_divisi",
             "id_jabatan",
             "id_atasan",
+            "id_keluar",
         ],
         conflict_column: "id_unik",
         entity_column: "id_unik",
@@ -1306,6 +1307,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "is_aktif",
             "created_at",
             "updated_at",
+            "batas_bulanan",
         ],
         conflict_column: "id_jenis",
         entity_column: "id_jenis",
@@ -1336,6 +1338,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "id_karyawan_tukar",
             "id_shift_asal",
             "id_shift_tukar",
+            "nominal",
         ],
         conflict_column: "id_pengajuan",
         entity_column: "id_pengajuan",
@@ -1355,6 +1358,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "waktu_perangkat",
             "diterima_cloud",
             "created_at",
+            "nominal_disetujui",
         ],
         conflict_column: "id_keputusan",
         entity_column: "id_keputusan",
@@ -1378,6 +1382,37 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_penyesuaian",
         entity_column: "id_penyesuaian",
+        delete_missing: false,
+    },
+    // HRIS fase 4 (v39): pembayaran terpisah reimbursement dan cuti
+    // diuangkan, append-only. Pembatalan = baris `batal-<id_bayar>`.
+    SnapshotTable {
+        payload_key: "hrReimbursePayments",
+        domain: "hr-reimburse-payment",
+        table: "hr_reimburse_bayar",
+        columns: &[
+            "id_bayar",
+            "jenis",
+            "id_ref",
+            "id_karyawan",
+            "tanggal",
+            "total",
+            "keterangan",
+            "dicatat_oleh",
+            "created_at",
+        ],
+        conflict_column: "id_bayar",
+        entity_column: "id_bayar",
+        delete_missing: false,
+    },
+    // Append-only; menumpang event `hr-reimburse-payment`.
+    SnapshotTable {
+        payload_key: "hrReimbursePaymentLines",
+        domain: "hr-reimburse-payment-line",
+        table: "hr_reimburse_bayar_baris",
+        columns: &["id_baris", "id_bayar", "sumber", "id_klaim", "nominal"],
+        conflict_column: "id_baris",
+        entity_column: "id_baris",
         delete_missing: false,
     },
 ];
@@ -1445,6 +1480,7 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("hr-request", "save"),
     ("hr-request-decision", "create"),
     ("hr-leave-adjustment", "create"),
+    ("hr-reimburse-payment", "create"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),

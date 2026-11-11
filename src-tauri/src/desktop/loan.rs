@@ -43,6 +43,8 @@ pub const AKUN_UTANG_PPH21: &str = "akun-utang-pph21";
 pub const AKUN_UTANG_BPJS: &str = "akun-utang-bpjs";
 pub const AKUN_POTONGAN_GAJI: &str = "akun-potongan-gaji";
 pub const AKUN_KAS: &str = "akun-kas";
+/// Reimbursement yang dibayar lewat gaji (mode `gaji`, Q-61).
+pub const AKUN_BEBAN_REIMBURSE: &str = "akun-beban-reimburse";
 
 // ── Aturan murni ────────────────────────────────────────────────────────────
 
@@ -342,6 +344,8 @@ pub struct ItemPayroll {
     pub bpjs_karyawan: i64,
     pub bpjs_perusahaan: i64,
     pub kasbon: i64,
+    /// Reimbursement yang ikut gaji bersih, di luar bruto (v39).
+    pub reimburse: i64,
 }
 
 /// Cermin `susunJurnalPayroll`: `(id_akun, debit, kredit)`, baris nol dibuang.
@@ -353,11 +357,13 @@ pub fn susun_jurnal_payroll(items: &[ItemPayroll], id_akun_bayar: &str) -> Vec<(
     let bpjs_karyawan = jumlah(|item| item.bpjs_karyawan);
     let bpjs_perusahaan = jumlah(|item| item.bpjs_perusahaan);
     let kasbon = jumlah(|item| item.kasbon);
-    let potongan_lain = gross - net - pph21 - bpjs_karyawan - kasbon;
+    let reimburse = jumlah(|item| item.reimburse);
+    let potongan_lain = gross + reimburse - net - pph21 - bpjs_karyawan - kasbon;
 
     [
         (AKUN_BEBAN_GAJI, gross, 0),
         (AKUN_BEBAN_BPJS, bpjs_perusahaan, 0),
+        (AKUN_BEBAN_REIMBURSE, reimburse, 0),
         (id_akun_bayar, 0, net),
         (AKUN_UTANG_PPH21, 0, pph21),
         (AKUN_UTANG_BPJS, 0, bpjs_karyawan + bpjs_perusahaan),
@@ -1071,6 +1077,30 @@ pub fn undefer_loan(state: &DesktopState, id_tunda: &str) -> Result<Value, Comma
 /// SISA jatah bulan itu: proses gaji kedua di bulan yang sama hanya memotong
 /// kekurangan dari proses sebelumnya. Cermin `pinjamanAktif` di
 /// `services/loan.ts`.
+/// Kasbon `Disetujui` satu karyawan yang masih bersisa (checklist keluar,
+/// PRD HRIS §20.4). Sisa = sisa efektif. Cermin `sisaKasbonKaryawan`.
+pub fn sisa_kasbon_karyawan(connection: &Connection, id_karyawan: &str) -> Result<Vec<Value>, CommandError> {
+    let sql = format!(
+        "SELECT p.id_pinjaman, p.tanggal_cair, p.pokok, p.pokok - {BAYAR_SQL} - {PENDING_SQL} AS sisa
+         FROM keu_pinjaman p WHERE p.status = 'Disetujui' AND p.id_karyawan = ?1
+         ORDER BY p.tanggal_cair, p.created_at, p.id_pinjaman;"
+    );
+    let mut statement = connection.prepare(&sql).map_err(db_error)?;
+    let rows = statement
+        .query_map(params![id_karyawan], |row| {
+            Ok(json!({
+                "id_pinjaman": row.get::<_, String>(0)?,
+                "tanggal_cair": row.get::<_, Option<String>>(1)?,
+                "pokok": row.get::<_, i64>(2)?,
+                "sisa": row.get::<_, i64>(3)?,
+            }))
+        })
+        .map_err(db_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error)?;
+    Ok(rows.into_iter().filter(|r| r["sisa"].as_i64().unwrap_or(0) > 0).collect())
+}
+
 pub fn pinjaman_aktif(
     connection: &Connection,
     bulan: &str,
@@ -1161,19 +1191,26 @@ pub fn catat_pembayaran_payroll_tx(
     let id_jurnal = id_jurnal_payroll(run_id);
     let mut items = Vec::with_capacity(rows.len());
     let mut per_item: Vec<(String, Vec<(String, i64)>)> = Vec::with_capacity(rows.len());
+    let mut reimburse: Vec<(String, i64)> = Vec::new();
     for (id_item, gross, net, pph21, bpjs_k, bpjs_p, breakdown) in rows {
-        let kasbon: Vec<(String, i64)> = serde_json::from_str::<Value>(&breakdown)
-            .ok()
-            .and_then(|value| value.get("kasbon").and_then(Value::as_array).cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|entry| {
-                Some((
-                    entry.get("id_pinjaman")?.as_str()?.to_owned(),
-                    entry.get("jumlah")?.as_i64().filter(|jumlah| *jumlah > 0)?,
-                ))
-            })
-            .collect();
+        let breakdown = serde_json::from_str::<Value>(&breakdown).unwrap_or(Value::Null);
+        let entri = |kunci: &str, id: &str, nilai: &str| -> Vec<(String, i64)> {
+            breakdown
+                .get(kunci)
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|entry| {
+                    Some((
+                        entry.get(id)?.as_str()?.to_owned(),
+                        entry.get(nilai)?.as_i64().filter(|jumlah| *jumlah > 0)?,
+                    ))
+                })
+                .collect()
+        };
+        let kasbon = entri("kasbon", "id_pinjaman", "jumlah");
+        let klaim = entri("reimburse", "id_pengajuan", "nominal");
         items.push(ItemPayroll {
             gross,
             net,
@@ -1181,9 +1218,14 @@ pub fn catat_pembayaran_payroll_tx(
             bpjs_karyawan: bpjs_k,
             bpjs_perusahaan: bpjs_p,
             kasbon: kasbon.iter().map(|(_, jumlah)| jumlah).sum(),
+            reimburse: klaim.iter().map(|(_, nominal)| nominal).sum(),
         });
         per_item.push((id_item, kasbon));
+        reimburse.extend(klaim);
     }
+    // Klaim reimbursement di proses gaji ini harus masih berlaku, bernominal
+    // sama, dan belum dibayar di tempat lain (§19.4).
+    super::hr_pengajuan::periksa_reimburse_run(transaction, run_id, &reimburse)?;
 
     let potongan: Vec<(String, i64)> = per_item
         .iter()
@@ -1597,8 +1639,26 @@ mod tests {
             bpjs_karyawan,
             bpjs_perusahaan,
             kasbon,
+            reimburse: 0,
         };
         let baris = |akun: &str, debit: i64, kredit: i64| (akun.to_owned(), debit, kredit);
+        // Reimbursement mode `gaji` (Q-61), vektor sama dengan `loan.test.ts`:
+        // net = 5.000.000 − 150.000 − 200.000 − 500.000 + 750.000.
+        assert_eq!(
+            susun_jurnal_payroll(
+                &[ItemPayroll { reimburse: 750_000, ..item(5_000_000, 4_900_000, 150_000, 200_000, 300_000, 500_000) }],
+                "akun-kas"
+            ),
+            vec![
+                baris("akun-beban-gaji", 5_000_000, 0),
+                baris("akun-beban-bpjs", 300_000, 0),
+                baris("akun-beban-reimburse", 750_000, 0),
+                baris("akun-kas", 0, 4_900_000),
+                baris("akun-utang-pph21", 0, 150_000),
+                baris("akun-utang-bpjs", 0, 500_000),
+                baris("akun-piutang-karyawan", 0, 500_000),
+            ]
+        );
         assert_eq!(
             susun_jurnal_payroll(
                 &[

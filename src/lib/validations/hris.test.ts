@@ -272,6 +272,7 @@ describe("hris (cermin tes Rust)", () => {
         hr_pkwt_maks_bulan: 60,
         hr_harian_batas_hari: 21,
         hr_harian_batas_bulan: 3,
+        hr_sp_masa_bulan: 6,
       }).ok,
     ).toBe(true);
     expect(
@@ -280,6 +281,7 @@ describe("hris (cermin tes Rust)", () => {
         hr_pkwt_maks_bulan: 60,
         hr_harian_batas_hari: 21,
         hr_harian_batas_bulan: 3,
+        hr_sp_masa_bulan: 6,
       }),
     ).toEqual({
       ok: false,

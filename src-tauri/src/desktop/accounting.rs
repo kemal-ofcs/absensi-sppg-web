@@ -1761,10 +1761,10 @@ mod tests {
     #[test]
     fn bagan_akun_bawaan() {
         let akun = akun_bawaan();
-        assert_eq!(akun.len(), 27);
+        assert_eq!(akun.len(), 28);
         assert!(is_akun_sistem("akun-kas"));
         assert!(!is_akun_sistem("akun-peralatan"));
-        assert_eq!(akun.iter().filter(|a| a.sistem).count(), 8);
+        assert_eq!(akun.iter().filter(|a| a.sistem).count(), 9);
         for item in akun {
             assert_eq!(item.saldo_normal, saldo_normal_bawaan(&item.kelompok));
             assert!(KELOMPOK_AKUN.contains(&item.kelompok.as_str()));
@@ -2112,7 +2112,7 @@ mod tests {
     fn seed_akun_ditanam_tanpa_outbox() {
         let (_dir, state) = state_uji();
         let akun = list_accounts(&state).expect("daftar akun");
-        assert_eq!(akun["items"].as_array().expect("items").len(), 27);
+        assert_eq!(akun["items"].as_array().expect("items").len(), 28);
         assert!(outbox(&state, "accounting-account").is_empty());
     }
 

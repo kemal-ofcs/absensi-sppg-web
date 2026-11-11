@@ -1,8 +1,8 @@
 "use client";
 
 // Jenis pengajuan, aturan cuti tahunan (HRIS v37, prd-hris.md §17.2, §17.7),
-// dan aturan lembur (v38, §18.2), di tab Organisasi `/hris` (Web/Desktop,
-// `hr.org.manage`).
+// aturan lembur (v38, §18.2), dan cara bayar reimbursement (v39, §19.2), di
+// tab Organisasi `/hris` (Web/Desktop, `hr.org.manage`).
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -20,17 +20,27 @@ import {
   simpanJenisPengajuan,
 } from "@/lib/gateways/hr-pengajuan";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
+import { formatRupiah } from "@/lib/validations/accounting";
 import {
   type AturanCuti,
   type AturanLembur,
   DAMPAK_GAJI,
+  IZIN_PEMUTUS,
   type JenisPengajuan,
   KELOMPOK_AKTIF,
   KELOMPOK_TANPA_GAJI,
   SATUAN_MAKS,
 } from "@/lib/validations/hr-pengajuan";
 
-type IsianJenis = Omit<JenisPengajuan, "maks_hari"> & { maks_hari: string };
+type IsianJenis = Omit<JenisPengajuan, "maks_hari" | "batas_bulanan"> & {
+  maks_hari: string;
+  batas_bulanan: string;
+};
+
+const LABEL_PEMUTUS: Record<string, string> = {
+  "hr.request.decide": "HRD (Putuskan Pengajuan)",
+  "reimburse.decide": "Keuangan (Putuskan & Bayar Reimbursement)",
+};
 
 const JENIS_KOSONG: IsianJenis = {
   id_jenis: "",
@@ -44,6 +54,7 @@ const JENIS_KOSONG: IsianJenis = {
   satuan_maks: "Hari Kerja",
   wajib_dokumen: false,
   is_aktif: true,
+  batas_bulanan: "",
 };
 
 const LABEL_PERIODE: Record<string, string> = {
@@ -58,6 +69,8 @@ export function PengaturanPengajuan() {
   const [aturanLama, setAturanLama] = useState<AturanCuti | null>(null);
   const [lembur, setLembur] = useState<AturanLembur | null>(null);
   const [lemburLama, setLemburLama] = useState<AturanLembur | null>(null);
+  const [modeReimburse, setModeReimburse] = useState("terpisah");
+  const [modeReimburseLama, setModeReimburseLama] = useState("terpisah");
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
 
@@ -72,6 +85,8 @@ export function PengaturanPengajuan() {
         setAturanLama(d.aturan);
         setLembur(d.aturan_lembur);
         setLemburLama(d.aturan_lembur);
+        setModeReimburse(d.mode_reimburse);
+        setModeReimburseLama(d.mode_reimburse);
       })
       .catch((error: unknown) => setPesan(pesanGalat(error, "Gagal memuat.")));
   }, []);
@@ -93,16 +108,26 @@ export function PengaturanPengajuan() {
           : "Tanpa batas",
       },
       { label: "Urgent", nilai: isi.boleh_urgent ? "Boleh" : "Tidak" },
+      { label: "Pemutus", nilai: LABEL_PEMUTUS[isi.izin_pemutus] },
+      ...(isi.kelompok === "Reimburse"
+        ? [
+            {
+              label: "Batas bulanan",
+              nilai: batasBulanan ? formatRupiah(batasBulanan) : "Tanpa batas",
+            },
+          ]
+        : []),
       { label: "Status", nilai: isi.is_aktif ? "Aktif" : "Nonaktif" },
     ]);
     if (!lanjut) return;
     setSibuk(true);
     try {
-      const { id_jenis, maks_hari, ...sisa } = isi;
+      const { id_jenis, maks_hari, batas_bulanan: _batas, ...sisa } = isi;
       await simpanJenisPengajuan({
         ...sisa,
         ...(id_jenis ? { id_jenis } : {}),
         maks_hari: maks_hari === "" ? null : Number(maks_hari),
+        batas_bulanan: isi.kelompok === "Reimburse" ? batasBulanan : null,
       });
       setPesan("Jenis pengajuan tersimpan.");
       setIsi(JENIS_KOSONG);
@@ -118,6 +143,7 @@ export function PengaturanPengajuan() {
     if (!aturan || !lembur) return;
     const gantiPeriode = aturanLama && aturanLama.periode !== aturan.periode;
     const gantiMode = lemburLama && lemburLama.mode !== lembur.mode;
+    const gantiReimburse = modeReimburseLama !== modeReimburse;
     const lanjut = await konfirmasiData([
       { label: "Periode", nilai: LABEL_PERIODE[aturan.periode] },
       { label: "Hak per periode", nilai: `${aturan.hak} hari` },
@@ -150,12 +176,30 @@ export function PengaturanPengajuan() {
             },
           ]
         : []),
+      {
+        label: "Reimbursement dibayar",
+        nilai:
+          modeReimburse === "gaji"
+            ? "Ikut proses gaji"
+            : "Terpisah (Pembayaran)",
+      },
       ...(gantiMode
         ? [
             {
               label: "Perhatian",
               nilai:
                 "Mode lembur berubah: rekap gaji yang belum dibekukan ikut dihitung ulang untuk seluruh periodenya.",
+            },
+          ]
+        : []),
+      ...(gantiReimburse
+        ? [
+            {
+              label: "Perhatian",
+              nilai:
+                modeReimburse === "gaji"
+                  ? "Klaim disetujui yang belum dibayar ikut proses gaji berikutnya."
+                  : "Klaim yang sudah ada di proses gaji tetap ikut proses itu; sisanya menunggu dibayar terpisah.",
             },
           ]
         : []),
@@ -174,10 +218,12 @@ export function PengaturanPengajuan() {
         hr_lembur_mode: lembur.mode,
         hr_lembur_maks_harian: lembur.maks_harian,
         hr_lembur_maks_mingguan: lembur.maks_mingguan,
+        hr_reimburse_bayar: modeReimburse,
       });
-      setPesan("Aturan cuti dan lembur tersimpan.");
+      setPesan("Aturan cuti, lembur, dan reimbursement tersimpan.");
       setAturanLama(aturan);
       setLemburLama(lembur);
+      setModeReimburseLama(modeReimburse);
     } catch (error) {
       setPesan(pesanGalat(error, "Gagal menyimpan."));
     } finally {
@@ -188,6 +234,8 @@ export function PengaturanPengajuan() {
   const tanpaGajiDipilih = (KELOMPOK_TANPA_GAJI as readonly string[]).includes(
     isi.kelompok,
   );
+  const digit = isi.batas_bulanan.replace(/\D/g, "");
+  const batasBulanan = digit ? Number(digit) : null;
 
   const angka = (kunci: keyof AturanCuti, label: string) =>
     aturan ? (
@@ -223,6 +271,10 @@ export function PengaturanPengajuan() {
                   : ""}
                 {j.potong_jatah ? " • potong jatah" : ""}
                 {j.boleh_urgent ? " • urgent" : ""}
+                {j.izin_pemutus === "reimburse.decide" ? " • Keuangan" : ""}
+                {j.batas_bulanan
+                  ? ` • batas ${formatRupiah(j.batas_bulanan)}/bulan`
+                  : ""}
                 {j.is_aktif ? "" : " • nonaktif"}
               </span>
               {(KELOMPOK_AKTIF as readonly string[]).includes(j.kelompok) ? (
@@ -234,6 +286,8 @@ export function PengaturanPengajuan() {
                       ...j,
                       maks_hari:
                         j.maks_hari === null ? "" : String(j.maks_hari),
+                      batas_bulanan:
+                        j.batas_bulanan === null ? "" : String(j.batas_bulanan),
                     })
                   }
                 >
@@ -268,6 +322,7 @@ export function PengaturanPengajuan() {
                 const tanpaGaji = (
                   KELOMPOK_TANPA_GAJI as readonly string[]
                 ).includes(e.target.value);
+                const reimburse = e.target.value === "Reimburse";
                 setIsi({
                   ...isi,
                   kelompok: e.target.value,
@@ -275,6 +330,13 @@ export function PengaturanPengajuan() {
                   ...(tanpaGaji
                     ? { dampak_gaji: "Tidak Berpengaruh", maks_hari: "" }
                     : {}),
+                  ...(reimburse
+                    ? {
+                        boleh_urgent: false,
+                        izin_pemutus: "reimburse.decide",
+                        wajib_dokumen: true,
+                      }
+                    : { batas_bulanan: "" }),
                 });
               }}
             >
@@ -338,6 +400,43 @@ export function PengaturanPengajuan() {
               </select>
             </div>
           </div>
+          <div>
+            <label className={LABEL} htmlFor="jenis-pemutus">
+              Pemutus
+            </label>
+            <select
+              id="jenis-pemutus"
+              className={INPUT}
+              value={isi.izin_pemutus}
+              onChange={(e) => setIsi({ ...isi, izin_pemutus: e.target.value })}
+            >
+              {IZIN_PEMUTUS.map((izin) => (
+                <option key={izin} value={izin}>
+                  {LABEL_PEMUTUS[izin]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {isi.kelompok === "Reimburse" ? (
+            <div>
+              <label className={LABEL} htmlFor="jenis-batas-bulanan">
+                Batas per karyawan per bulan (rupiah, kosong = tanpa batas)
+              </label>
+              <input
+                id="jenis-batas-bulanan"
+                inputMode="numeric"
+                className={INPUT}
+                value={
+                  batasBulanan === null
+                    ? ""
+                    : batasBulanan.toLocaleString("id-ID")
+                }
+                onChange={(e) =>
+                  setIsi({ ...isi, batas_bulanan: e.target.value })
+                }
+              />
+            </div>
+          ) : null}
           {(
             [
               ["boleh_urgent", "Boleh urgent"],
@@ -346,7 +445,9 @@ export function PengaturanPengajuan() {
               ["is_aktif", "Aktif"],
             ] as const
           ).map(([kunci, label]) =>
-            kunci === "potong_jatah" && isi.kelompok !== "Cuti" ? null : (
+            (kunci === "potong_jatah" && isi.kelompok !== "Cuti") ||
+            (kunci === "boleh_urgent" &&
+              isi.kelompok === "Reimburse") ? null : (
               <label
                 key={kunci}
                 className="flex items-center gap-2 text-sm text-slate-200"
@@ -514,6 +615,28 @@ export function PengaturanPengajuan() {
               </p>
             </>
           ) : null}
+          <h3 className="text-sm font-bold text-white sm:col-span-3">
+            Reimbursement
+          </h3>
+          <div>
+            <label className={LABEL} htmlFor="reimburse-aturan-mode">
+              Klaim disetujui dibayar
+            </label>
+            <select
+              id="reimburse-aturan-mode"
+              className={INPUT}
+              value={modeReimburse}
+              onChange={(e) => setModeReimburse(e.target.value)}
+            >
+              <option value="terpisah">Terpisah (tab Pembayaran)</option>
+              <option value="gaji">Ikut proses gaji</option>
+            </select>
+          </div>
+          <p className="text-xs text-slate-400 sm:col-span-2">
+            Ikut gaji: ditambahkan ke gaji bersih sesudah kasbon, tidak kena
+            pajak dan BPJS. Pembayaran terpisah tetap tersedia di kedua mode,
+            dan cuti diuangkan selalu dibayar terpisah.
+          </p>
           <div className="sm:col-span-3">
             <button
               type="button"
@@ -522,7 +645,7 @@ export function PengaturanPengajuan() {
               disabled={sibuk}
               onClick={() => void simpanAturan()}
             >
-              Simpan aturan cuti dan lembur
+              Simpan aturan cuti, lembur, dan reimbursement
             </button>
           </div>
         </section>

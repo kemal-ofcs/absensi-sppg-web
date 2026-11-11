@@ -325,6 +325,10 @@ pub struct PayrollRecapRow {
     /// Mode `spl`: seluruh menit lembur/libur yang tidak dibayar.
     #[serde(default)]
     pub lembur_dipotong_menit: i64,
+    /// Mode `gaji` (HRIS v39): reimbursement yang ditambahkan ke gaji bersih
+    /// setelah kasbon; tidak ikut bruto, PPh 21, dan BPJS.
+    #[serde(default)]
+    pub est_reimburse: i64,
 }
 
 #[cfg(test)]

@@ -10,15 +10,24 @@ import {
   aturanCutiDariPeta,
   aturanLemburDariPeta,
   BACKUP_TUKAR_SQL,
+  type BarisReimburse,
+  type BayarReimburse,
   bentrokPengajuan,
+  CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+  CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
   CLOUD_INSERT_KEPUTUSAN_SQL,
+  dibayarGanda,
   durasiLembur,
+  GAJI_REIMBURSE_SQL,
+  type GajiReimburse,
   type HariLembur,
   hariKalender,
   hitungCutiDibayar,
   INSERT_PENYESUAIAN_SQL,
   type IsiPengajuan,
   IZIN_PEMUTUS_AKTIF,
+  idBarisReimburse,
+  idBatalReimburse,
   idUang,
   type Jadwal,
   type JenisPengajuan,
@@ -26,23 +35,37 @@ import {
   type Kalender,
   KELOMPOK_TIDAK_HADIR,
   type Keputusan,
+  KLAIM_BERLAKU_SQL,
+  type Klaim,
+  KUNCI_REIMBURSE_BAYAR,
   kanonikPengajuan,
+  keputusanBerlaku,
+  kunciBatas,
   LEMBUR_HARIAN_SQL,
   lemburLewatBatas,
+  lewatBatas,
   MAKS_LAMPIRAN,
+  modeReimburse,
+  nominalBerlaku,
   PENGAJUAN_RENTANG_SQL,
   PERIODE_DIBAYAR_SQL,
+  PESAN_KLAIM_DIBAYAR,
   PESAN_TANPA_HARI_KERJA,
   PESAN_TUKAR_BACKUP,
   PESAN_TUKAR_NONAKTIF,
   PESAN_TUKAR_SHIFT_HILANG,
   PESAN_TUKAR_SHIFT_SAMA,
+  PESAN_UANG_DIBAYAR,
   type PeriodeCuti,
   type PotongLembur,
   periksaAksi,
+  periksaBatalBayarReimburse,
+  periksaBayarReimburse,
   periksaJenis,
   periksaMaks,
+  periksaReimbursePayroll,
   periksaSunting,
+  periksaTanggalBiaya,
   periksaUrgent,
   periodeCuti,
   pesanBertumpuk,
@@ -50,17 +73,27 @@ import {
   potongLemburSpl,
   type Ringkas,
   SPL_RENTANG_SQL,
+  STATUS_BELUM_DIBAYAR,
+  STATUS_DIBAYAR,
+  STATUS_PROSES_GAJI,
+  type StatusBayar,
+  SUMBER_REIMBURSE,
+  SUMBER_UANG,
+  statusBayar,
   statusBerlaku,
   statusPengajuan,
   TANGGAL_HADIR_SQL,
   TUKAR_RENTANG_SQL,
   tandaKeputusan,
   tanggalWajib,
+  UANG_BERLAKU_SQL,
   UPSERT_JENIS_SQL,
   UPSERT_PENGAJUAN_SQL,
   upahHarian,
   validasiAturanCuti,
   validasiAturanLembur,
+  validasiAturanReimburse,
+  validasiBayarReimburse,
   validasiJenis,
   validasiPengajuan,
   validasiPenyesuaian,
@@ -306,6 +339,142 @@ export async function muatTukar(
   return hasil;
 }
 
+// ── Reimbursement dan pembayaran terpisah (§19.4), cermin Rust ─────────────
+
+/** Cermin `muat_klaim`. */
+export async function muatKlaim(db: Pembaca, sampai: string): Promise<Klaim[]> {
+  const hasil: Klaim[] = [];
+  for (const [sql, sumber, args] of [
+    [KLAIM_BERLAKU_SQL, SUMBER_REIMBURSE, [sampai]],
+    [UANG_BERLAKU_SQL, SUMBER_UANG, []],
+  ] as const) {
+    const r = await db.execute({ sql, args: [...args] });
+    for (const x of r.rows) {
+      const [id, karyawan, tanggal, nominal, keterangan] = Object.values(x);
+      hasil.push({
+        id_klaim: String(id),
+        sumber,
+        id_karyawan: String(karyawan),
+        tanggal: String(tanggal),
+        nominal: Number(nominal),
+        keterangan: String(keterangan),
+      });
+    }
+  }
+  return hasil;
+}
+
+/** Cermin `muat_bayar`. */
+// ponytail: dibaca utuh tiap kali; saring per karyawan bila tabelnya membesar.
+export async function muatBayar(db: Pembaca): Promise<{
+  pembayaran: BayarReimburse[];
+  baris: BarisReimburse[];
+}> {
+  const b = await db.execute(
+    `SELECT id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh, created_at
+     FROM hr_reimburse_bayar ORDER BY tanggal, created_at, id_bayar;`,
+  );
+  const r = await db.execute(
+    "SELECT id_baris, id_bayar, sumber, id_klaim, nominal FROM hr_reimburse_bayar_baris ORDER BY id_bayar, id_baris;",
+  );
+  return {
+    pembayaran: b.rows.map((x) => ({
+      id_bayar: String(x.id_bayar),
+      jenis: String(x.jenis),
+      id_ref: teksAtauNull(x.id_ref),
+      id_karyawan: String(x.id_karyawan),
+      tanggal: String(x.tanggal),
+      total: Number(x.total),
+      keterangan: teksAtauNull(x.keterangan),
+      dicatat_oleh: String(x.dicatat_oleh),
+      created_at: String(x.created_at),
+    })),
+    baris: r.rows.map((x) => ({
+      id_baris: String(x.id_baris),
+      id_bayar: String(x.id_bayar),
+      sumber: String(x.sumber),
+      id_klaim: String(x.id_klaim),
+      nominal: Number(x.nominal),
+    })),
+  };
+}
+
+/** Cermin `muat_gaji_reimburse`. */
+export async function muatGajiReimburse(db: Pembaca): Promise<GajiReimburse[]> {
+  const r = await db.execute(GAJI_REIMBURSE_SQL);
+  const hasil: GajiReimburse[] = [];
+  for (const x of r.rows) {
+    const [idRun, status, idKlaim, nominal] = Object.values(x);
+    if (idKlaim === null || idKlaim === undefined) continue;
+    hasil.push({
+      id_run: String(idRun),
+      status: String(status),
+      id_klaim: String(idKlaim),
+      nominal: Number(nominal ?? 0),
+    });
+  }
+  return hasil;
+}
+
+/** Cermin `baca_mode_reimburse`. */
+export async function bacaModeReimburse(db: Pembaca): Promise<string> {
+  const r = await db.execute({
+    sql: "SELECT value FROM setting_gex_system WHERE key = ?1;",
+    args: [KUNCI_REIMBURSE_BAYAR],
+  });
+  const nilai = r.rows[0]?.value;
+  return modeReimburse(
+    nilai === null || nilai === undefined ? null : String(nilai),
+  );
+}
+
+/**
+ * Cermin `reimburse_gaji`: kait rekap gaji mode `gaji` (§19.4), klaim
+ * Reimburse berlaku bertanggal ≤ `akhir` yang Belum dibayar, per karyawan.
+ */
+export async function reimburseGaji(
+  db: Pembaca,
+  akhir: string,
+): Promise<Map<string, Array<[string, number]>>> {
+  const hasil = new Map<string, Array<[string, number]>>();
+  if ((await bacaModeReimburse(db)) !== "gaji") return hasil;
+  const klaim = await muatKlaim(db, akhir);
+  const { pembayaran, baris } = await muatBayar(db);
+  const gaji = await muatGajiReimburse(db);
+  for (const k of klaim) {
+    if (k.sumber !== SUMBER_REIMBURSE) continue;
+    if (
+      statusBayar(k.id_klaim, pembayaran, baris, gaji) !== STATUS_BELUM_DIBAYAR
+    )
+      continue;
+    const daftar = hasil.get(k.id_karyawan) ?? [];
+    daftar.push([k.id_klaim, k.nominal]);
+    hasil.set(k.id_karyawan, daftar);
+  }
+  return hasil;
+}
+
+/** Cermin `periksa_reimburse_run`, dipanggil di transaksi transisi PAID. */
+export async function periksaReimburseRun(
+  db: Pembaca,
+  idRun: string,
+  entri: ReadonlyArray<readonly [string, number]>,
+): Promise<void> {
+  if (entri.length === 0) return;
+  const klaim = await muatKlaim(db, "9999-12-31");
+  const { pembayaran, baris } = await muatBayar(db);
+  const gaji = await muatGajiReimburse(db);
+  const cek = periksaReimbursePayroll(
+    idRun,
+    entri,
+    klaim,
+    pembayaran,
+    baris,
+    gaji,
+  );
+  if (!cek.ok) throw new Error(cek.pesan);
+}
+
 // ── Penulisan Web (langsung ke cloud), cermin `desktop/hr_pengajuan.rs` ─────
 
 type Baris = Record<string, unknown>;
@@ -318,7 +487,7 @@ const teksId = (nilai: unknown) =>
   typeof nilai === "string" && nilai.trim() !== "" ? nilai.trim() : null;
 
 /** `master_operator.id_karyawan` sesi Web (tidak dimuat sesi). */
-async function karyawanAktor(db: Pembaca, actor: OperatorUser) {
+export async function karyawanAktor(db: Pembaca, actor: OperatorUser) {
   const r = await db.execute({
     sql: "SELECT id_karyawan FROM master_operator WHERE id = ?1;",
     args: [actor.id],
@@ -346,10 +515,12 @@ export interface BarisPengajuan {
   id_karyawan_tukar: string | null;
   id_shift_asal: number | null;
   id_shift_tukar: number | null;
+  /** Reimburse (v39). */
+  nominal: number | null;
 }
 
 const KOLOM_PENGAJUAN =
-  "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar";
+  "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar, p.nominal";
 
 const teksAtauNull = (nilai: unknown) =>
   nilai === null || nilai === undefined ? null : String(nilai);
@@ -391,6 +562,7 @@ function barisPengajuan(r: Baris): BarisPengajuan {
     id_karyawan_tukar: teksAtauNull(r.id_karyawan_tukar),
     id_shift_asal: angkaAtauNull(r.id_shift_asal),
     id_shift_tukar: angkaAtauNull(r.id_shift_tukar),
+    nominal: angkaAtauNull(r.nominal),
   };
 }
 
@@ -424,7 +596,7 @@ async function bacaKeputusan(
   const hasil = new Map<string, Keputusan[]>();
   if (ids.length === 0) return hasil;
   const r = await db.execute({
-    sql: `SELECT id_pengajuan, id_keputusan, jenis, sidik, oleh, waktu_perangkat, diterima_cloud
+    sql: `SELECT id_pengajuan, id_keputusan, jenis, sidik, oleh, waktu_perangkat, diterima_cloud, nominal_disetujui
           FROM hr_pengajuan_keputusan
           WHERE id_pengajuan IN (SELECT value FROM json_each(?1))
           ORDER BY id_pengajuan, id_keputusan;`,
@@ -441,6 +613,7 @@ async function bacaKeputusan(
       waktu_perangkat: String(x.waktu_perangkat),
       diterima_cloud:
         x.diterima_cloud === null ? null : String(x.diterima_cloud),
+      nominal_disetujui: angkaAtauNull(x.nominal_disetujui),
     });
     hasil.set(id, daftar);
   }
@@ -449,7 +622,7 @@ async function bacaKeputusan(
 
 async function bacaJenisSemua(db: Pembaca): Promise<JenisPengajuan[]> {
   const r = await db.execute(
-    `SELECT id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif
+    `SELECT id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, batas_bulanan
      FROM hr_jenis_pengajuan ORDER BY kelompok, nama, id_jenis;`,
   );
   return r.rows.map((x) => ({
@@ -464,6 +637,7 @@ async function bacaJenisSemua(db: Pembaca): Promise<JenisPengajuan[]> {
     satuan_maks: String(x.satuan_maks),
     wajib_dokumen: Number(x.wajib_dokumen) === 1,
     is_aktif: Number(x.is_aktif) === 1,
+    batas_bulanan: angkaAtauNull(x.batas_bulanan),
   }));
 }
 
@@ -498,6 +672,7 @@ async function tulisKeputusan(
   sidik: string,
   alasan: string | null,
   oleh: string,
+  nominalDisetujui: number | null = null,
 ) {
   await db.execute({
     sql: CLOUD_INSERT_KEPUTUSAN_SQL,
@@ -510,6 +685,7 @@ async function tulisKeputusan(
       oleh,
       await waktuSekarang(db),
       null,
+      nominalDisetujui,
     ],
   });
 }
@@ -551,6 +727,8 @@ export async function simpanJenis(client: Client, raw: unknown) {
         jenis.wajib_dokumen ? 1 : 0,
         jenis.is_aktif ? 1 : 0,
         null,
+        jenis.batas_bulanan,
+        1,
       ],
     });
     return { sukses: true as const, id_jenis: id };
@@ -590,6 +768,12 @@ export async function simpanPengajuan(
     if (!jenis) throw new Error("Jenis pengajuan tidak ditemukan.");
     const cek = periksaJenis(v, jenis);
     if (!cek.ok) throw new Error(cek.pesan);
+    const reimburse = jenis.kelompok === "Reimburse";
+    if (reimburse) {
+      const t = periksaTanggalBiaya(v.tanggal_mulai, await hariIniWib(tx));
+      if (!t.ok) throw new Error(t.pesan);
+    }
+    const nominal = reimburse ? v.nominal : null;
     const lembur = jenis.kelompok === "Lembur";
     const jamMulai = lembur ? v.jam_mulai : null;
     const jamSelesai = lembur ? v.jam_selesai : null;
@@ -625,7 +809,10 @@ export async function simpanPengajuan(
       );
       if (!maks.ok) throw new Error(maks.pesan);
     }
-    await tolakBilaDibayar(tx, v.tanggal_mulai, v.tanggal_selesai);
+    // Nota bulan lalu yang gajinya sudah dibayar adalah kasus biasa (§19.3).
+    if (!reimburse) {
+      await tolakBilaDibayar(tx, v.tanggal_mulai, v.tanggal_selesai);
+    }
 
     let pengaju = actor.username;
     let createdAt: string | null = null;
@@ -639,7 +826,9 @@ export async function simpanPengajuan(
         actor.isSuperadmin,
       );
       if (!sunting.ok) throw new Error(sunting.pesan);
-      await tolakBilaDibayar(tx, lama.tanggal_mulai, lama.tanggal_selesai);
+      if (lama.kelompok !== "Reimburse") {
+        await tolakBilaDibayar(tx, lama.tanggal_mulai, lama.tanggal_selesai);
+      }
       pengaju = lama.diajukan_oleh;
       createdAt = lama.created_at;
     }
@@ -705,6 +894,7 @@ export async function simpanPengajuan(
       id_karyawan_tukar: idTukar,
       id_shift_asal: idShiftAsal,
       id_shift_tukar: idShiftTukar,
+      nominal,
     });
     await tx.execute({
       sql: UPSERT_PENGAJUAN_SQL,
@@ -728,6 +918,7 @@ export async function simpanPengajuan(
         idTukar,
         idShiftAsal,
         idShiftTukar,
+        nominal,
       ],
     });
     if (v.urgent) {
@@ -793,16 +984,23 @@ export async function putuskan(
   if (!id) throw new Error("Pengajuan tidak ditemukan.");
   const aksi = typeof draft.aksi === "string" ? draft.aksi.trim() : "";
   const alasan = typeof draft.alasan === "string" ? draft.alasan.trim() : "";
+  const mentah = draft.nominal_disetujui;
+  const nominalDisetujui =
+    mentah === undefined || mentah === null || mentah === "" ? null : mentah;
+  if (nominalDisetujui !== null && !Number.isInteger(nominalDisetujui)) {
+    throw new Error("Nominal disetujui harus bilangan bulat rupiah.");
+  }
   const idKaryawanSesi = await karyawanAktor(client, actor);
   return withTransaction(client, async (tx) => {
     const p = await bacaSatuPengajuan(tx, id);
     if (!p) throw new Error("Pengajuan tidak ditemukan.");
+    const reimburse = p.kelompok === "Reimburse";
     const kep = (await bacaKeputusan(tx, [id])).get(id) ?? [];
     const status = statusPengajuan(p.sidik, kep);
     const izinPemutus =
       (await bacaJenisSemua(tx)).find((j) => j.id_jenis === p.id_jenis)
         ?.izin_pemutus ?? IZIN_PEMUTUS_AKTIF;
-    const cek = periksaAksi(aksi, alasan, {
+    const cek = periksaAksi(aksi, alasan, nominalDisetujui as number | null, {
       status,
       sudah_diketahui: kep.some((k) => k.jenis === "Diketahui"),
       pengaju_sendiri: samaOrang(p.diajukan_oleh, actor.username),
@@ -812,9 +1010,20 @@ export async function putuskan(
         (p.id_karyawan_tukar !== null &&
           idKaryawanSesi === p.id_karyawan_tukar),
       boleh_putus: punya(actor, izinPemutus),
+      reimburse,
+      nominal: p.nominal ?? 0,
     });
     if (!cek.ok) throw new Error(cek.pesan);
-    if (aksi === "Setujui" || aksi === "Batal") {
+    if (reimburse) {
+      // Klaim yang sudah dibayar atau ada di proses gaji tidak dibatalkan (§19.3).
+      if (aksi === "Batal") {
+        const { pembayaran, baris } = await muatBayar(tx);
+        const gaji = await muatGajiReimburse(tx);
+        if (statusBayar(id, pembayaran, baris, gaji) !== STATUS_BELUM_DIBAYAR) {
+          throw new Error(PESAN_KLAIM_DIBAYAR);
+        }
+      }
+    } else if (aksi === "Setujui" || aksi === "Batal") {
       await tolakBilaDibayar(tx, p.tanggal_mulai, p.tanggal_selesai);
     }
     const idKeputusan =
@@ -831,6 +1040,7 @@ export async function putuskan(
       p.sidik,
       alasan || null,
       actor.username,
+      nominalDisetujui as number | null,
     );
     return { sukses: true as const, id_keputusan: idKeputusan };
   });
@@ -841,20 +1051,88 @@ const tanggalAtau = (nilai: unknown, bawaan: string) =>
     ? nilai
     : bawaan;
 
-/** Cermin `daftar`. */
-export async function daftarPengajuan(client: Client, raw: unknown) {
-  const filter = (raw ?? {}) as Baris;
-  const baris = await bacaPengajuan(
-    client,
-    teksId(filter.id_karyawan),
-    tanggalAtau(filter.dari, "0000-01-01"),
-    tanggalAtau(filter.sampai, "9999-12-31"),
+/** Cermin `info_klaim`: status bayar, dibayar ganda, dan lewat batas. */
+async function infoKlaim(
+  db: Pembaca,
+  baris: readonly BarisPengajuan[],
+  jenis: readonly JenisPengajuan[],
+) {
+  const info = {
+    statusBayar: new Map<string, StatusBayar>(),
+    ganda: new Set<string>(),
+    lewatBatas: new Set<string>(),
+  };
+  const klaim = baris.filter((p) => p.kelompok === "Reimburse");
+  if (klaim.length === 0) return info;
+  const tanggal = klaim.map((p) => p.tanggal_mulai).sort();
+  const { pembayaran, baris: barisBayar } = await muatBayar(db);
+  const gaji = await muatGajiReimburse(db);
+  for (const p of klaim) {
+    const id = p.id_pengajuan;
+    info.statusBayar.set(id, statusBayar(id, pembayaran, barisBayar, gaji));
+    if (dibayarGanda(id, pembayaran, barisBayar, gaji)) info.ganda.add(id);
+  }
+  // Batas dihitung atas seluruh klaim di bulan-bulan itu, bukan hanya yang tersaring.
+  const sebulan = (
+    await bacaPengajuan(
+      db,
+      null,
+      `${(tanggal[0] ?? "").slice(0, 7)}-01`,
+      `${(tanggal.at(-1) ?? "").slice(0, 7)}-31`,
+    )
+  ).filter((p) => p.kelompok === "Reimburse");
+  const keputusan = await bacaKeputusan(
+    db,
+    sebulan.map((p) => p.id_pengajuan),
   );
+  const hitung: Array<[string, string, string, number]> = [];
+  for (const p of sebulan) {
+    const kep = keputusan.get(p.id_pengajuan) ?? [];
+    const status = statusPengajuan(p.sidik, kep);
+    const nominal = p.nominal ?? 0;
+    if (status === "Menunggu") {
+      hitung.push([p.id_karyawan, p.id_jenis, p.tanggal_mulai, nominal]);
+    } else if (statusBerlaku(status)) {
+      hitung.push([
+        p.id_karyawan,
+        p.id_jenis,
+        p.tanggal_mulai,
+        nominalBerlaku(nominal, keputusanBerlaku(p.sidik, kep)),
+      ]);
+    }
+  }
+  const batas = new Map<string, number>();
+  for (const j of jenis) {
+    if (j.batas_bulanan !== null) batas.set(j.id_jenis, j.batas_bulanan);
+  }
+  info.lewatBatas = lewatBatas(hitung, batas);
+  return info;
+}
+
+/**
+ * Cermin `daftar`. Tanpa `hr.request.view`, hanya klaim Reimburse yang
+ * dikembalikan (§19.5).
+ */
+export async function daftarPengajuan(
+  client: Client,
+  raw: unknown,
+  hanyaReimburse = false,
+) {
+  const filter = (raw ?? {}) as Baris;
+  const baris = (
+    await bacaPengajuan(
+      client,
+      teksId(filter.id_karyawan),
+      tanggalAtau(filter.dari, "0000-01-01"),
+      tanggalAtau(filter.sampai, "9999-12-31"),
+    )
+  ).filter((p) => !hanyaReimburse || p.kelompok === "Reimburse");
   const keputusan = await bacaKeputusan(
     client,
     baris.map((p) => p.id_pengajuan),
   );
   const jenis = await bacaJenisSemua(client);
+  const info = await infoKlaim(client, baris, jenis);
   const namaRes = await client.execute(
     "SELECT id_unik, nama FROM master_data;",
   );
@@ -930,8 +1208,30 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
       if (h && wajib.some((t) => h.has(t))) tanda.push("hadir_saat_cuti");
     }
     const jenisIni = jenis.find((x) => x.id_jenis === p.id_jenis);
+    const reimburse = p.kelompok === "Reimburse";
+    const statusBayarIni = info.statusBayar.get(p.id_pengajuan) ?? null;
+    if (reimburse) {
+      if (
+        aktif(statusIni) &&
+        info.lewatBatas.has(
+          kunciBatas(p.id_karyawan, p.id_jenis, p.tanggal_mulai),
+        )
+      ) {
+        tanda.push("lewat_batas");
+      }
+      if (info.ganda.has(p.id_pengajuan)) tanda.push("dibayar_ganda");
+      if (!statusBerlaku(statusIni) && statusBayarIni === STATUS_DIBAYAR) {
+        tanda.push("dibayar_batal");
+      }
+    }
     return {
       pengajuan: p,
+      nominal_berlaku:
+        reimburse && p.nominal !== null && statusBerlaku(statusIni)
+          ? nominalBerlaku(p.nominal, keputusanBerlaku(p.sidik, kep))
+          : null,
+      status_bayar: statusBayarIni,
+      batas_bulanan: jenisIni?.batas_bulanan ?? null,
       nama_karyawan: nama.get(p.id_karyawan) ?? null,
       nama_karyawan_tukar:
         p.id_karyawan_tukar === null
@@ -947,13 +1247,31 @@ export async function daftarPengajuan(client: Client, raw: unknown) {
       sudah_diketahui: kep.some((k) => k.jenis === "Diketahui"),
     };
   });
-  return { pengajuan, jenis, aturan_lembur: aturanLembur };
+  return {
+    pengajuan,
+    jenis,
+    aturan_lembur: aturanLembur,
+    mode_reimburse: await bacaModeReimburse(client),
+  };
 }
 
 /** Cermin `rincian`. */
-export async function rincianPengajuan(client: Client, id: string) {
+export async function rincianPengajuan(
+  client: Client,
+  id: string,
+  hanyaReimburse = false,
+) {
+  if (
+    hanyaReimburse &&
+    (await bacaSatuPengajuan(client, id))?.kelompok !== "Reimburse"
+  ) {
+    throw new AuthorizationError(
+      "Kamu hanya bisa melihat klaim reimbursement.",
+      403,
+    );
+  }
   const r = await client.execute({
-    sql: `SELECT id_keputusan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud
+    sql: `SELECT id_keputusan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, nominal_disetujui
           FROM hr_pengajuan_keputusan WHERE id_pengajuan = ?1
           ORDER BY diterima_cloud IS NULL, diterima_cloud, waktu_perangkat, id_keputusan;`,
     args: [id],
@@ -1039,9 +1357,62 @@ async function hitungJatah(db: Pembaca, idKaryawan: string) {
   return { aturan, tanggal_masuk: masuk, periode, penyesuaian };
 }
 
+/** Cermin `status_bayar_uang`: status bayar setiap penyesuaian `Diuangkan`. */
+async function statusBayarUang(
+  db: Pembaca,
+  penyesuaian: ReadonlyArray<{ baris: Baris }>,
+): Promise<Map<string, StatusBayar>> {
+  const hasil = new Map<string, StatusBayar>();
+  const uang = penyesuaian.filter((x) => x.baris.jenis === "Diuangkan");
+  if (uang.length === 0) return hasil;
+  const { pembayaran, baris } = await muatBayar(db);
+  for (const x of uang) {
+    const id = String(x.baris.id_penyesuaian);
+    hasil.set(id, statusBayar(id, pembayaran, baris, []));
+  }
+  return hasil;
+}
+
+/**
+ * Sisa cuti periode yang memuat `tanggal` dan upah harian pada tanggal itu:
+ * dasar baris UPH Cuti saat karyawan keluar (§20.5). Cermin `sisa_cuti_keluar`.
+ */
+export async function sisaCutiKeluar(
+  db: Pembaca,
+  idKaryawan: string,
+  tanggal: string,
+): Promise<{ sisa: number; upah_harian: number }> {
+  const { periode } = await hitungJatah(db, idKaryawan);
+  const p = periode.find(
+    (x) => !x.sebelum_berhak && x.mulai <= tanggal && tanggal <= x.selesai,
+  );
+  const g = await db.execute({
+    sql: `SELECT COALESCE(salary_type, 'HOURLY') AS t, COALESCE(daily_rate, 0) AS d, COALESCE(rate_per_hour, 0) AS r
+          FROM salary_configs WHERE id_karyawan = ?1 AND effective_date <= ?2
+          ORDER BY effective_date DESC LIMIT 1;`,
+    args: [idKaryawan, tanggal],
+  });
+  const gaji = g.rows[0];
+  const normal = (await muatJadwal(db)).get(idKaryawan)?.jam_normal_menit ?? 0;
+  return {
+    sisa: Math.max(p?.sisa ?? 0, 0),
+    upah_harian: gaji
+      ? upahHarian(String(gaji.t), Number(gaji.d), Number(gaji.r), normal)
+      : 0,
+  };
+}
+
 /** Cermin `jatah`. */
 export async function jatahCuti(client: Client, idKaryawan: string) {
-  return hitungJatah(client, idKaryawan);
+  const jatah = await hitungJatah(client, idKaryawan);
+  const bayar = await statusBayarUang(client, jatah.penyesuaian);
+  return {
+    ...jatah,
+    penyesuaian: jatah.penyesuaian.map((x) => ({
+      ...x,
+      status_bayar: bayar.get(String(x.baris.id_penyesuaian)) ?? null,
+    })),
+  };
 }
 
 /** Cermin `simpan_penyesuaian`. */
@@ -1106,6 +1477,12 @@ export async function batalPenyesuaian(
     });
     if (row.jenis === "Pembatalan" || sudah.rows.length > 0) {
       throw new Error("Penyesuaian ini sudah dibatalkan.");
+    }
+    if (row.jenis === "Diuangkan") {
+      const { pembayaran, baris } = await muatBayar(tx);
+      if (statusBayar(id, pembayaran, baris, []) === STATUS_DIBAYAR) {
+        throw new Error(PESAN_UANG_DIBAYAR);
+      }
     }
     await tx.execute({
       sql: INSERT_PENYESUAIAN_SQL,
@@ -1201,7 +1578,11 @@ export async function akhirPeriode(client: Client) {
     nama: string;
     periode: PeriodeCuti;
   }> = [];
-  const diuangkan: Array<{ nama: string; baris: Baris }> = [];
+  const diuangkan: Array<{
+    nama: string;
+    baris: Baris;
+    status_bayar: StatusBayar | null;
+  }> = [];
   if (aturan.sisa === "diuangkan") {
     const hariIni = await hariIniWib(client);
     const k = await client.execute(
@@ -1218,9 +1599,14 @@ export async function akhirPeriode(client: Client) {
           belum.push({ id_karyawan: id, nama, periode: p });
         }
       }
+      const bayar = await statusBayarUang(client, penyesuaian);
       for (const x of penyesuaian) {
         if (x.baris.jenis === "Diuangkan" && !x.dibatalkan) {
-          diuangkan.push({ nama, baris: x.baris });
+          diuangkan.push({
+            nama,
+            baris: x.baris,
+            status_bayar: bayar.get(String(x.baris.id_penyesuaian)) ?? null,
+          });
         }
       }
     }
@@ -1228,6 +1614,7 @@ export async function akhirPeriode(client: Client) {
   return {
     aturan,
     aturan_lembur: await bacaAturanLembur(client),
+    mode_reimburse: await bacaModeReimburse(client),
     belum_diproses: belum,
     diuangkan,
   };
@@ -1239,8 +1626,14 @@ export async function simpanAturanCuti(client: Client, raw: unknown) {
   if (!hasil.ok) throw new Error(hasil.pesan);
   const lembur = validasiAturanLembur((raw ?? {}) as Baris);
   if (!lembur.ok) throw new Error(lembur.pesan);
+  const reimburse = validasiAturanReimburse((raw ?? {}) as Baris);
+  if (!reimburse.ok) throw new Error(reimburse.pesan);
   await withTransaction(client, async (tx) => {
-    for (const [kunci, nilai] of [...hasil.nilai, ...lembur.nilai]) {
+    for (const [kunci, nilai] of [
+      ...hasil.nilai,
+      ...lembur.nilai,
+      ...reimburse.nilai,
+    ]) {
       await tx.execute({
         sql: `INSERT INTO setting_gex_system (key, value) VALUES (?1, ?2)
               ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
@@ -1251,29 +1644,217 @@ export async function simpanAturanCuti(client: Client, raw: unknown) {
   return { sukses: true as const };
 }
 
-// ── Lampiran khusus cloud (Q-51), cermin `lampiran`/`tambah_lampiran` ──────
+// ── Pembayaran terpisah (§19.4), cermin `catat_bayar_reimburse` dkk. ───────
 
-async function pengajuCloud(db: Pembaca, idPengajuan: string) {
-  const r = await db.execute({
-    sql: "SELECT diajukan_oleh FROM hr_pengajuan WHERE id_pengajuan = ?1;",
-    args: [idPengajuan],
+/** Cermin `catat_bayar_reimburse`. */
+export async function catatBayarReimburse(
+  client: Client,
+  oleh: string,
+  raw: unknown,
+) {
+  return withTransaction(client, async (tx) => {
+    const valid = validasiBayarReimburse(
+      (raw ?? {}) as Baris,
+      await hariIniWib(tx),
+    );
+    if (!valid.ok) throw new Error(valid.pesan);
+    const klaim = await muatKlaim(tx, "9999-12-31");
+    const { pembayaran, baris } = await muatBayar(tx);
+    const gaji = await muatGajiReimburse(tx);
+    const dibayar = periksaBayarReimburse(
+      valid.nilai,
+      klaim,
+      pembayaran,
+      baris,
+      gaji,
+    );
+    if (!dibayar.ok) throw new Error(dibayar.pesan);
+    const total = dibayar.nilai.reduce((n, k) => n + k.nominal, 0);
+    const idBayar = newHexId("rbb-");
+    await tx.execute({
+      sql: CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+      args: [
+        idBayar,
+        "Bayar",
+        null,
+        valid.nilai.id_karyawan,
+        valid.nilai.tanggal,
+        total,
+        valid.nilai.keterangan,
+        oleh,
+        null,
+      ],
+    });
+    for (const k of dibayar.nilai) {
+      await tx.execute({
+        sql: CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+        args: [
+          idBarisReimburse(idBayar, k.id_klaim),
+          idBayar,
+          k.sumber,
+          k.id_klaim,
+          k.nominal,
+        ],
+      });
+    }
+    return { sukses: true as const, id_bayar: idBayar, total };
   });
-  return r.rows[0] ? String(r.rows[0].diajukan_oleh) : null;
 }
 
-function bolehUbahLampiran(actor: OperatorUser, pengaju: string) {
+/** Cermin `batal_bayar_reimburse`. */
+export async function batalBayarReimburse(
+  client: Client,
+  oleh: string,
+  raw: unknown,
+) {
+  const draft = (raw ?? {}) as Baris;
+  const idBayar = teksId(draft.id_bayar);
+  if (!idBayar) throw new Error("Pembayaran tidak ditemukan.");
+  const alasan = typeof draft.alasan === "string" ? draft.alasan.trim() : "";
+  if (alasan === "") throw new Error("Alasan pembatalan wajib diisi.");
+  if ([...alasan].length > 500) {
+    throw new Error("Alasan maksimal 500 karakter.");
+  }
+  return withTransaction(client, async (tx) => {
+    const { pembayaran } = await muatBayar(tx);
+    const cek = periksaBatalBayarReimburse(pembayaran, idBayar);
+    if (!cek.ok) throw new Error(cek.pesan);
+    const asal = pembayaran.find((p) => p.id_bayar === idBayar);
+    const id = idBatalReimburse(idBayar);
+    await tx.execute({
+      sql: CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+      args: [
+        id,
+        "Pembatalan",
+        idBayar,
+        asal?.id_karyawan ?? "",
+        await hariIniWib(tx),
+        asal?.total ?? 0,
+        alasan,
+        oleh,
+        null,
+      ],
+    });
+    return { sukses: true as const, id_bayar: id };
+  });
+}
+
+/** Cermin `ringkasan_reimburse`. */
+export async function ringkasanReimburse(client: Client, raw: unknown) {
+  const draft = (raw ?? {}) as Baris;
+  const dari = typeof draft.dari === "string" ? draft.dari.trim() : "";
+  const sampai = typeof draft.sampai === "string" ? draft.sampai.trim() : "";
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(dari) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(sampai) ||
+    dari > sampai
+  ) {
+    throw new Error("Rentang tanggal tidak valid.");
+  }
+  const namaRes = await client.execute(
+    "SELECT id_unik, nama FROM master_data;",
+  );
+  const nama = new Map(
+    namaRes.rows.map((r) => [String(r.id_unik), String(r.nama)]),
+  );
+  const klaim = await muatKlaim(client, "9999-12-31");
+  const { pembayaran, baris } = await muatBayar(client);
+  const gaji = await muatGajiReimburse(client);
+  const belum: Array<{ klaim: Klaim; nama: string | null }> = [];
+  const prosesGaji: Array<{ klaim: Klaim; nama: string | null }> = [];
+  for (const k of klaim) {
+    const item = { klaim: k, nama: nama.get(k.id_karyawan) ?? null };
+    const status = statusBayar(k.id_klaim, pembayaran, baris, gaji);
+    if (status === STATUS_BELUM_DIBAYAR) belum.push(item);
+    else if (status === STATUS_PROSES_GAJI) prosesGaji.push(item);
+  }
+  const riwayat = pembayaran
+    .filter(
+      (p) => p.jenis === "Bayar" && p.tanggal >= dari && p.tanggal <= sampai,
+    )
+    .reverse()
+    .map((p) => ({
+      bayar: p,
+      nama: nama.get(p.id_karyawan) ?? null,
+      batal:
+        pembayaran.find(
+          (x) => x.jenis === "Pembatalan" && x.id_ref === p.id_bayar,
+        ) ?? null,
+      baris: baris
+        .filter((b) => b.id_bayar === p.id_bayar)
+        .map((b) => ({
+          baris: b,
+          keterangan:
+            klaim.find((k) => k.id_klaim === b.id_klaim)?.keterangan ?? null,
+        })),
+    }));
+  return {
+    mode: await bacaModeReimburse(client),
+    belum_dibayar: belum,
+    proses_gaji: prosesGaji,
+    riwayat,
+  };
+}
+
+// ── Lampiran khusus cloud (Q-51), cermin `lampiran`/`tambah_lampiran` ──────
+
+/** Cermin `PENGAJU_CLOUD_SQL`. */
+async function pengajuCloud(db: Pembaca, idPengajuan: string) {
+  const r = await db.execute({
+    sql: "SELECT p.diajukan_oleh, p.kelompok, COALESCE((SELECT j.izin_pemutus FROM hr_jenis_pengajuan j WHERE j.id_jenis = p.id_jenis), 'hr.request.decide') AS izin_pemutus FROM hr_pengajuan p WHERE p.id_pengajuan = ?1;",
+    args: [idPengajuan],
+  });
+  const x = r.rows[0];
+  return x
+    ? {
+        pengaju: String(x.diajukan_oleh),
+        kelompok: String(x.kelompok),
+        izin_pemutus: String(x.izin_pemutus),
+      }
+    : null;
+}
+
+/** Pengaju, HRD, atau pemegang pemutus jenisnya (nota reimbursement). */
+function bolehUbahLampiran(
+  actor: OperatorUser,
+  pengaju: string,
+  izinPemutus: string,
+) {
   if (
     !samaOrang(pengaju, actor.username) &&
-    !punya(actor, "hr.request.decide")
+    !punya(actor, "hr.request.decide") &&
+    !punya(actor, izinPemutus)
   ) {
     throw new AuthorizationError(
-      "Hanya pengaju atau HRD yang bisa mengubah lampiran pengajuan ini.",
+      "Hanya pengaju atau pemutusnya yang bisa mengubah lampiran pengajuan ini.",
       403,
     );
   }
 }
 
-export async function lampiran(client: Client, idPengajuan: string) {
+/** Tanpa `hr.request.view`, lampiran hanya terbaca untuk klaim Reimburse. */
+async function bolehBacaLampiran(
+  db: Pembaca,
+  idPengajuan: string,
+  hanyaReimburse: boolean,
+) {
+  if (
+    hanyaReimburse &&
+    (await pengajuCloud(db, idPengajuan))?.kelompok !== "Reimburse"
+  ) {
+    throw new AuthorizationError(
+      "Kamu hanya bisa melihat nota reimbursement.",
+      403,
+    );
+  }
+}
+
+export async function lampiran(
+  client: Client,
+  idPengajuan: string,
+  hanyaReimburse = false,
+) {
+  await bolehBacaLampiran(client, idPengajuan, hanyaReimburse);
   const r = await client.execute({
     sql: "SELECT id_berkas, urutan, nama_berkas, mime_type, diunggah_oleh, created_at FROM hr_pengajuan_berkas WHERE id_pengajuan = ?1 ORDER BY urutan;",
     args: [idPengajuan],
@@ -1281,12 +1862,21 @@ export async function lampiran(client: Client, idPengajuan: string) {
   return { berkas: r.rows.map((x) => ({ ...x })) };
 }
 
-export async function isiLampiran(client: Client, idBerkas: string) {
+export async function isiLampiran(
+  client: Client,
+  idBerkas: string,
+  hanyaReimburse = false,
+) {
   const r = await client.execute({
-    sql: "SELECT id_berkas, nama_berkas, mime_type, data_base64 FROM hr_pengajuan_berkas WHERE id_berkas = ?1;",
+    sql: "SELECT id_berkas, id_pengajuan, nama_berkas, mime_type, data_base64 FROM hr_pengajuan_berkas WHERE id_berkas = ?1;",
     args: [idBerkas],
   });
   if (!r.rows[0]) throw new Error("Berkas tidak ditemukan.");
+  await bolehBacaLampiran(
+    client,
+    String(r.rows[0].id_pengajuan),
+    hanyaReimburse,
+  );
   return { ...r.rows[0] };
 }
 
@@ -1304,13 +1894,13 @@ export async function tambahLampiran(
   const salah = validasiBerkas(mime, data);
   if (salah) throw new Error(salah);
   const namaBerkas = teksId(draft.nama_berkas)?.slice(0, 255) ?? null;
-  const pengaju = await pengajuCloud(client, idPengajuan);
-  if (pengaju === null) {
+  const asal = await pengajuCloud(client, idPengajuan);
+  if (asal === null) {
     throw new Error(
       "Pengajuan belum sampai ke database. Sinkronkan dulu, lalu coba lagi.",
     );
   }
-  bolehUbahLampiran(actor, pengaju);
+  bolehUbahLampiran(actor, asal.pengaju, asal.izin_pemutus);
   const r = await client.execute({
     sql: "SELECT urutan FROM hr_pengajuan_berkas WHERE id_pengajuan = ?1;",
     args: [idPengajuan],
@@ -1340,9 +1930,11 @@ export async function hapusLampiran(
     args: [idBerkas],
   });
   if (!r.rows[0]) throw new Error("Berkas tidak ditemukan.");
+  const asal = await pengajuCloud(client, String(r.rows[0].id_pengajuan));
   bolehUbahLampiran(
     actor,
-    (await pengajuCloud(client, String(r.rows[0].id_pengajuan))) ?? "",
+    asal?.pengaju ?? "",
+    asal?.izin_pemutus ?? "hr.request.decide",
   );
   await client.execute({
     sql: "DELETE FROM hr_pengajuan_berkas WHERE id_berkas = ?1;",

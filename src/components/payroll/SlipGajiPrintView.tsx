@@ -40,6 +40,8 @@ interface BreakdownSnapshot {
   overtime_salary?: number;
   components?: ComponentItem[];
   bpjs?: BpjsItem[];
+  /** Reimbursement mode `gaji` (HRIS v39): di luar bruto dan pajak. */
+  reimburse?: Array<{ id_pengajuan: string; nominal: number }>;
   tax?: {
     method?: string;
     category?: string;
@@ -79,6 +81,10 @@ export function SlipGajiPrintView({
     (b) => b.is_employee,
   );
   const isFlatDaily = item.salary_type === "FLAT_DAILY";
+  const reimburse = (breakdown.reimburse ?? []).filter(
+    (r) => Number.isInteger(r.nominal) && r.nominal > 0,
+  );
+  const totalReimburse = reimburse.reduce((n, r) => n + r.nominal, 0);
 
   return (
     <div className="bg-white text-slate-900 p-8 max-w-2xl mx-auto border border-slate-300 rounded-lg shadow-sm print:border-none print:shadow-none print:p-0 print:m-0 print:max-w-full font-sans text-sm">
@@ -257,6 +263,17 @@ export function SlipGajiPrintView({
           </table>
         </div>
       </div>
+
+      {totalReimburse > 0 ? (
+        <div className="mb-4 flex justify-between border-t border-slate-300 pt-2">
+          <span className="font-bold text-slate-800">
+            Reimbursement (tidak kena pajak) • {reimburse.length} klaim
+          </span>
+          <span className="font-mono font-bold text-emerald-700">
+            {IDR.format(totalReimburse)}
+          </span>
+        </div>
+      ) : null}
 
       {/* Total Bersih (Take Home Pay) */}
       <div className="bg-slate-900 text-white p-4 rounded-lg flex justify-between items-center mb-8 print:bg-slate-100 print:text-slate-900 print:border-2 print:border-slate-800">

@@ -47,6 +47,8 @@ pub const KUNCI_PERCOBAAN_MAKS_BULAN: &str = "hr_percobaan_maks_bulan";
 pub const KUNCI_PKWT_MAKS_BULAN: &str = "hr_pkwt_maks_bulan";
 pub const KUNCI_HARIAN_BATAS_HARI: &str = "hr_harian_batas_hari";
 pub const KUNCI_HARIAN_BATAS_BULAN: &str = "hr_harian_batas_bulan";
+/// Masa berlaku SP dalam bulan (fase 5); dibekukan per SP saat dibuat.
+pub const KUNCI_SP_MASA_BULAN: &str = "hr_sp_masa_bulan";
 
 /// Kolom kelompok pribadi `hr_profil`, urutan tetap.
 pub const KOLOM_PRIBADI: [&str; 12] = [
@@ -496,6 +498,7 @@ pub struct PengaturanKontrak {
     pub pkwt_maks_bulan: i64,
     pub harian_batas_hari: i64,
     pub harian_batas_bulan: i64,
+    pub sp_masa_bulan: i64,
 }
 
 impl Default for PengaturanKontrak {
@@ -505,16 +508,18 @@ impl Default for PengaturanKontrak {
             pkwt_maks_bulan: 60,
             harian_batas_hari: 21,
             harian_batas_bulan: 3,
+            sp_masa_bulan: 6,
         }
     }
 }
 
 /// Batas setiap angka: (kunci, label, min, maks).
-pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 4] = [
+pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 5] = [
     (KUNCI_PERCOBAAN_MAKS_BULAN, "Masa percobaan maksimal", 1, 12),
     (KUNCI_PKWT_MAKS_BULAN, "Total PKWT maksimal", 1, 120),
     (KUNCI_HARIAN_BATAS_HARI, "Batas hari kerja harian lepas", 1, 31),
     (KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12),
+    (KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12),
 ];
 
 impl PengaturanKontrak {
@@ -536,6 +541,7 @@ impl PengaturanKontrak {
             pkwt_maks_bulan: angka(KUNCI_PKWT_MAKS_BULAN, bawaan.pkwt_maks_bulan),
             harian_batas_hari: angka(KUNCI_HARIAN_BATAS_HARI, bawaan.harian_batas_hari),
             harian_batas_bulan: angka(KUNCI_HARIAN_BATAS_BULAN, bawaan.harian_batas_bulan),
+            sp_masa_bulan: angka(KUNCI_SP_MASA_BULAN, bawaan.sp_masa_bulan),
         }
     }
 
@@ -545,6 +551,7 @@ impl PengaturanKontrak {
             KUNCI_PKWT_MAKS_BULAN: self.pkwt_maks_bulan,
             KUNCI_HARIAN_BATAS_HARI: self.harian_batas_hari,
             KUNCI_HARIAN_BATAS_BULAN: self.harian_batas_bulan,
+            KUNCI_SP_MASA_BULAN: self.sp_masa_bulan,
         })
     }
 }
@@ -951,7 +958,7 @@ pub fn simpan_master(state: &DesktopState, master: &Master, draft: &Value) -> Re
     })
 }
 
-fn baca_kontrak(conn: &Connection, id_karyawan: Option<&str>) -> Result<Vec<(String, Kontrak, Value)>, CommandError> {
+pub(super) fn baca_kontrak(conn: &Connection, id_karyawan: Option<&str>) -> Result<Vec<(String, Kontrak, Value)>, CommandError> {
     let sql = "SELECT id_kontrak, id_karyawan, jenis, id_ref, nomor, tanggal_mulai, tanggal_selesai, percobaan_selesai, catatan, dicatat_oleh, created_at FROM hr_kontrak WHERE (?1 IS NULL OR id_karyawan = ?1) ORDER BY id_karyawan, tanggal_mulai, id_kontrak;";
     let mut statement = conn.prepare(sql).map_err(internal)?;
     let baris = statement
@@ -2032,12 +2039,12 @@ mod tests {
         let p = PengaturanKontrak::dari_peta(&peta);
         assert_eq!((p.pkwt_maks_bulan, p.harian_batas_hari), (36, 21));
         assert!(validasi_pengaturan(&json!({
-            "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3
+            "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6
         }))
         .is_ok());
         assert_eq!(
             validasi_pengaturan(&json!({
-                "hr_percobaan_maks_bulan": 0, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3
+                "hr_percobaan_maks_bulan": 0, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6
             })),
             Err("Masa percobaan maksimal harus bilangan bulat 1–12.".into())
         );

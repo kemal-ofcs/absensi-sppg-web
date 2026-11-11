@@ -187,6 +187,11 @@ export function VirtualPayrollTable({
                   </td>
                   <td className="py-3 px-4 text-right font-mono font-bold text-emerald-400">
                     {IDR.format(row.est_net_salary)}
+                    {(row.est_reimburse ?? 0) > 0 ? (
+                      <span className="block text-xs font-normal text-slate-400">
+                        Reimburse {IDR.format(row.est_reimburse ?? 0)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="py-3 px-4 text-center">
                     <button

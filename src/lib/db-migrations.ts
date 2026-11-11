@@ -6,6 +6,11 @@ import {
 } from "@/lib/rbac/catalog";
 import { AKUN_BAWAAN, SEED_AKUN_SQL } from "@/lib/validations/accounting";
 import {
+  ALASAN_BAWAAN,
+  SEED_ALASAN_SQL,
+  seedAlasanArgs,
+} from "@/lib/validations/hr-keluar";
+import {
   JENIS_BAWAAN,
   SEED_JENIS_SQL,
   seedJenisArgs,
@@ -53,6 +58,8 @@ const DRIVER_WAGE_MIGRATION_VERSION = 35;
 const HRIS_ORG_MIGRATION_VERSION = 36;
 const HRIS_REQUEST_MIGRATION_VERSION = 37;
 const HRIS_REQUEST_V2_MIGRATION_VERSION = 38;
+const HRIS_REIMBURSE_MIGRATION_VERSION = 39;
+const HRIS_KELUAR_MIGRATION_VERSION = 40;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2085,6 +2092,7 @@ export async function runDatabaseMigrations(client: Client) {
       is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      batas_bulanan INTEGER,
       CHECK (potong_jatah = 0 OR kelompok = 'Cuti')
     );
   `);
@@ -2110,6 +2118,7 @@ export async function runDatabaseMigrations(client: Client) {
       id_karyawan_tukar TEXT,
       id_shift_asal INTEGER,
       id_shift_tukar INTEGER,
+      nominal INTEGER,
       CHECK (tanggal_selesai >= tanggal_mulai),
       CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
     );
@@ -2130,7 +2139,8 @@ export async function runDatabaseMigrations(client: Client) {
       oleh TEXT NOT NULL,
       waktu_perangkat TEXT NOT NULL,
       diterima_cloud TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      nominal_disetujui INTEGER
     );
   `);
   await client.execute(
@@ -2168,6 +2178,17 @@ export async function runDatabaseMigrations(client: Client) {
   await client.execute(
     "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_berkas_pengajuan ON hr_pengajuan_berkas(id_pengajuan);",
   );
+  // v39: kolom reimbursement, cermin `ensure_column` `turso.rs`. WAJIB sebelum
+  // seed jenis di bawah, karena seed menulis `batas_bulanan`.
+  for (const [tabel, kolom] of [
+    ["hr_jenis_pengajuan", "batas_bulanan"],
+    ["hr_pengajuan", "nominal"],
+    ["hr_pengajuan_keputusan", "nominal_disetujui"],
+  ] as const) {
+    if (!(await hasColumn(client, tabel, kolom))) {
+      await client.execute(`ALTER TABLE ${tabel} ADD COLUMN ${kolom} INTEGER;`);
+    }
+  }
   // Jenis bawaan dari berkas JSON yang sama dengan seed Rust.
   await client.batch(
     JENIS_BAWAAN.map((jenis) => ({
@@ -2204,6 +2225,160 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-request-v2', ?);`,
     args: [HRIS_REQUEST_V2_MIGRATION_VERSION, now],
+  });
+
+  // v39: HRIS fase 4. Pembayaran terpisah reimbursement dan cuti diuangkan,
+  // append-only (pembatalan `batal-<id_bayar>`). DDL WAJIB identik dengan
+  // `storage.rs` dan `turso.rs`. Kolom nominal ditambahkan sebelum seed jenis.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_reimburse_bayar (
+      id_bayar TEXT PRIMARY KEY,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Pembatalan')),
+      id_ref TEXT,
+      id_karyawan TEXT NOT NULL,
+      tanggal TEXT NOT NULL,
+      total INTEGER NOT NULL CHECK (total >= 0),
+      keterangan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_karyawan ON hr_reimburse_bayar(id_karyawan, tanggal);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_reimburse_bayar_baris (
+      id_baris TEXT PRIMARY KEY,
+      id_bayar TEXT NOT NULL,
+      sumber TEXT NOT NULL CHECK (sumber IN ('Reimburse', 'Cuti Diuangkan')),
+      id_klaim TEXT NOT NULL,
+      nominal INTEGER NOT NULL CHECK (nominal >= 0)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_baris_bayar ON hr_reimburse_bayar_baris(id_bayar);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_baris_klaim ON hr_reimburse_bayar_baris(id_klaim);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-reimburse', ?);`,
+    args: [HRIS_REIMBURSE_MIGRATION_VERSION, now],
+  });
+
+  // v40: HRIS fase 5. SP dan karyawan keluar KHUSUS CLOUD (Q-63); DDL WAJIB
+  // identik dengan `turso.rs`. Yang tersinkron hanya `master_data.id_keluar`,
+  // ditulis transaksi Berlakukan/Batal.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_sp (
+      id_sp TEXT PRIMARY KEY,
+      id_karyawan TEXT NOT NULL,
+      tingkat TEXT NOT NULL CHECK (tingkat IN ('SP1', 'SP2', 'SP3')),
+      tanggal TEXT NOT NULL,
+      masa_bulan INTEGER NOT NULL CHECK (masa_bulan BETWEEN 1 AND 12),
+      berlaku_sampai TEXT NOT NULL,
+      nomor TEXT,
+      pelanggaran TEXT NOT NULL,
+      harapan TEXT,
+      usulan_tingkat TEXT NOT NULL CHECK (usulan_tingkat IN ('SP1', 'SP2', 'SP3')),
+      alasan_tingkat TEXT,
+      penanda_nama TEXT NOT NULL,
+      penanda_jabatan TEXT NOT NULL,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT,
+      dicabut_oleh TEXT,
+      dicabut_pada TEXT,
+      alasan_cabut TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_sp_karyawan ON hr_sp(id_karyawan, tanggal);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_sp_berlaku ON hr_sp(berlaku_sampai);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_keluar_alasan (
+      id_alasan TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      pengali_up INTEGER NOT NULL DEFAULT 0 CHECK (pengali_up BETWEEN 0 AND 1000),
+      pengali_upmk INTEGER NOT NULL DEFAULT 0 CHECK (pengali_upmk BETWEEN 0 AND 1000),
+      uph INTEGER NOT NULL DEFAULT 1 CHECK (uph IN (0, 1)),
+      kompensasi_pkwt INTEGER NOT NULL DEFAULT 0 CHECK (kompensasi_pkwt IN (0, 1)),
+      uang_pisah INTEGER NOT NULL DEFAULT 0 CHECK (uang_pisah IN (0, 1)),
+      dasar_hukum TEXT,
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_keluar (
+      id_keluar TEXT PRIMARY KEY,
+      id_karyawan TEXT NOT NULL,
+      id_alasan TEXT NOT NULL,
+      alasan_nama TEXT NOT NULL,
+      id_sp TEXT,
+      tanggal_pemberitahuan TEXT,
+      tanggal_terakhir TEXT NOT NULL,
+      keterangan TEXT,
+      masa_kerja_mulai TEXT,
+      upah_pokok INTEGER NOT NULL DEFAULT 0 CHECK (upah_pokok >= 0),
+      usulan_upah_pokok INTEGER NOT NULL DEFAULT 0 CHECK (usulan_upah_pokok >= 0),
+      alasan_upah TEXT,
+      tunjangan_tetap INTEGER NOT NULL DEFAULT 0 CHECK (tunjangan_tetap >= 0),
+      kartu_ditarik INTEGER NOT NULL DEFAULT 0 CHECK (kartu_ditarik IN (0, 1)),
+      catatan_checklist TEXT,
+      checklist_saat_berlaku TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT,
+      berlaku_oleh TEXT,
+      berlaku_pada TEXT,
+      dibatalkan_oleh TEXT,
+      dibatalkan_pada TEXT,
+      alasan_batal TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_keluar_karyawan ON hr_keluar(id_karyawan);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_keluar_tanggal ON hr_keluar(tanggal_terakhir);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_keluar_rincian (
+      id_rincian TEXT PRIMARY KEY,
+      id_keluar TEXT NOT NULL,
+      komponen TEXT NOT NULL CHECK (komponen IN ('UP', 'UPMK', 'UPH Cuti', 'UPH Ongkos Pulang', 'UPH Lainnya', 'Kompensasi PKWT', 'Uang Pisah', 'Lainnya')),
+      dasar TEXT,
+      usulan INTEGER NOT NULL DEFAULT 0 CHECK (usulan >= 0),
+      nominal INTEGER NOT NULL DEFAULT 0 CHECK (nominal >= 0),
+      alasan_ubah TEXT,
+      urutan INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_keluar_rincian_keluar ON hr_keluar_rincian(id_keluar);",
+  );
+  // Alasan bawaan dari berkas JSON yang sama dengan seed Rust.
+  await client.batch(
+    ALASAN_BAWAAN.map((alasan) => ({
+      sql: SEED_ALASAN_SQL,
+      args: seedAlasanArgs(alasan),
+    })),
+  );
+  if (!(await hasColumn(client, "master_data", "id_keluar"))) {
+    await client.execute("ALTER TABLE master_data ADD COLUMN id_keluar TEXT;");
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-keluar', ?);`,
+    args: [HRIS_KELUAR_MIGRATION_VERSION, now],
   });
 
   await client.execute(

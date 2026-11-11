@@ -8,6 +8,7 @@ import {
   balikJurnalTx,
   tulisJurnalTx,
 } from "@/lib/services/accounting";
+import { periksaReimburseRun } from "@/lib/services/hr-pengajuan";
 import { idPembalik } from "@/lib/validations/accounting";
 import {
   AKUN_KAS,
@@ -118,6 +119,30 @@ const KASBON_TERCATAT_SQL = `SELECT p.status, p.nama_karyawan,
      FROM keu_pinjaman p WHERE p.id_pinjaman = ?2`;
 
 // ── Pembacaan ───────────────────────────────────────────────────────────────
+
+/**
+ * Kasbon `Disetujui` satu karyawan yang masih bersisa (checklist keluar, PRD
+ * HRIS §20.4). Sisa = sisa efektif. Cermin `sisa_kasbon_karyawan`.
+ */
+export async function sisaKasbonKaryawan(
+  client: Pick<Client, "execute">,
+  idKaryawan: string,
+) {
+  const result = await client.execute({
+    sql: `SELECT p.id_pinjaman, p.tanggal_cair, p.pokok, p.pokok - ${BAYAR_SQL} - ${PENDING_SQL} AS sisa
+          FROM keu_pinjaman p WHERE p.status = 'Disetujui' AND p.id_karyawan = ?1
+          ORDER BY p.tanggal_cair, p.created_at, p.id_pinjaman;`,
+    args: [idKaryawan],
+  });
+  return result.rows
+    .map((row) => ({
+      id_pinjaman: String(row.id_pinjaman),
+      tanggal_cair: row.tanggal_cair === null ? null : String(row.tanggal_cair),
+      pokok: Number(row.pokok),
+      sisa: Number(row.sisa),
+    }))
+    .filter((row) => row.sisa > 0);
+}
 
 export async function listLoans(
   client: Client,
@@ -630,11 +655,26 @@ export async function catatPembayaranPayrollTx(
     idItem: string;
     kasbon: Array<{ id_pinjaman: string; jumlah: number }>;
   }> = [];
+  const reimburse: Array<[string, number]> = [];
   for (const row of rows.rows) {
     const idItem = String(row.id);
     let kasbon: Array<{ id_pinjaman: string; jumlah: number }> = [];
+    let klaim: Array<[string, number]> = [];
     try {
       const breakdown = JSON.parse(String(row.breakdown_snapshot ?? "{}"));
+      if (Array.isArray(breakdown?.reimburse)) {
+        klaim = breakdown.reimburse
+          .filter(
+            (entri: { id_pengajuan?: unknown; nominal?: unknown }) =>
+              typeof entri?.id_pengajuan === "string" &&
+              Number.isInteger(entri?.nominal) &&
+              Number(entri.nominal) > 0,
+          )
+          .map(
+            (entri: { id_pengajuan: string; nominal: number }) =>
+              [entri.id_pengajuan, entri.nominal] as [string, number],
+          );
+      }
       if (Array.isArray(breakdown?.kasbon)) {
         kasbon = breakdown.kasbon
           .filter(
@@ -650,8 +690,10 @@ export async function catatPembayaranPayrollTx(
       }
     } catch {
       kasbon = [];
+      klaim = [];
     }
     perItem.push({ idItem, kasbon });
+    reimburse.push(...klaim);
     items.push({
       gross: Number(row.gross_salary),
       net: Number(row.net_salary),
@@ -659,8 +701,12 @@ export async function catatPembayaranPayrollTx(
       bpjs_karyawan: Number(row.bpjs_employee_total),
       bpjs_perusahaan: Number(row.bpjs_company_total),
       kasbon: kasbon.reduce((sum, entri) => sum + entri.jumlah, 0),
+      reimburse: klaim.reduce((sum, [, nominal]) => sum + nominal, 0),
     });
   }
+  // Klaim reimbursement di proses gaji ini harus masih berlaku, bernominal
+  // sama, dan belum dibayar di tempat lain (§19.4).
+  await periksaReimburseRun(tx, runId, reimburse);
 
   const potongan = perItem.flatMap((item) => item.kasbon);
   const tercatat = new Map<string, KasbonTercatat>();

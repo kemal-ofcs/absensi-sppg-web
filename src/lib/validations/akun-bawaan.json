@@ -192,6 +192,14 @@
     "sistem": false
   },
   {
+    "id_akun": "akun-beban-reimburse",
+    "kode": "5-1650",
+    "nama": "Beban Reimbursement Karyawan",
+    "kelompok": "Beban",
+    "saldo_normal": "Debit",
+    "sistem": true
+  },
+  {
     "id_akun": "akun-beban-bunga",
     "kode": "5-1700",
     "nama": "Beban Bunga",

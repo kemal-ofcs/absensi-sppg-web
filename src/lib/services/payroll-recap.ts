@@ -1,7 +1,11 @@
 import "server-only";
 
 import type { Client } from "@libsql/client";
-import { cutiDibayar, lemburSpl } from "@/lib/services/hr-pengajuan";
+import {
+  cutiDibayar,
+  lemburSpl,
+  reimburseGaji,
+} from "@/lib/services/hr-pengajuan";
 import { pinjamanAktif } from "@/lib/services/loan";
 import {
   applyHolidayFallback,
@@ -12,6 +16,7 @@ import {
   type TaxRule,
 } from "@/lib/services/payroll-calculator";
 import { HARI_HADIR_SQL } from "@/lib/validations/driver";
+import { karyawanRekap } from "@/lib/validations/hr-keluar";
 import { komponenKasbon, potongKasbon } from "@/lib/validations/loan";
 
 export interface PayrollRecapRow {
@@ -63,6 +68,11 @@ export interface PayrollRecapRow {
   lembur_tanpa_spl_menit: number;
   /** Mode `spl`: seluruh menit lembur/libur yang tidak dibayar. */
   lembur_dipotong_menit: number;
+  /**
+   * Mode `gaji` (HRIS v39): reimbursement yang ditambahkan ke gaji bersih
+   * setelah kasbon; tidak ikut bruto, PPh 21, dan BPJS.
+   */
+  est_reimburse: number;
   // Extra fields (not part of the Rust PayrollRecapRow response shape, but
   // needed by run creation to build payroll_items without recomputing).
   breakdown_snapshot: string;
@@ -196,6 +206,7 @@ export async function computePayrollRecap(
     kasbonAktif,
     cuti,
     spl,
+    reimburse,
   ] = await Promise.all([
     loadOvertimeTiers(client, "HARI_KERJA"),
     // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
@@ -246,7 +257,9 @@ export async function computePayrollRecap(
           -- dengan hari libur resmi untuk lembur). replace() mengubah 0
           -- (Minggu) dari strftime('%w') menjadi 7; hari_kerja kosong = 7 hari.
           LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift
-          WHERE md.status_aktif = 'Aktif'
+          -- Karyawan aktif, dan yang keluar di dalam periode ini supaya gaji
+          -- terakhirnya tetap terhitung (PRD HRIS §20.6).
+          WHERE ${karyawanRekap("?1")}
           GROUP BY md.id_unik
           ORDER BY md.nama ASC;
         `,
@@ -261,6 +274,8 @@ export async function computePayrollRecap(
     cutiDibayar(client, periodStart, periodEnd),
     // Mode SPL (Q-56, Q-57): cermin `hr_pengajuan::lembur_spl` di rekap Rust.
     lemburSpl(client, periodStart, periodEnd),
+    // Reimbursement mode `gaji` (§19.4): cermin `hr_pengajuan::reimburse_gaji`.
+    reimburseGaji(client, periodEnd),
   ]);
 
   return aggResult.rows.map((row) => {
@@ -312,7 +327,13 @@ export async function computePayrollRecap(
     // Kasbon dipotong TERAKHIR dari gaji bersih yang tersisa, aturan yang sama
     // persis dengan `loan::potong_kasbon` di pratinjau dan pembekuan Rust.
     const kasbon = potongKasbon(pay.net, kasbonAktif.get(idKaryawan) ?? []);
-    const net = pay.net - kasbon.total;
+    // Reimbursement SESUDAH kasbon, jadi tidak bisa termakan kasbon.
+    const klaimReimburse = reimburse.get(idKaryawan) ?? [];
+    const estReimburse = klaimReimburse.reduce(
+      (n, [, nominal]) => n + nominal,
+      0,
+    );
+    const net = pay.net - kasbon.total + estReimburse;
 
     const breakdownSnapshot = JSON.stringify({
       salary_type: salaryType,
@@ -336,6 +357,10 @@ export async function computePayrollRecap(
       bpjs: pay.bpjs,
       tax: pay.tax,
       kasbon: kasbon.rincian,
+      reimburse: klaimReimburse.map(([id, nominal]) => ({
+        id_pengajuan: id,
+        nominal,
+      })),
       calculated_at: new Date().toISOString(),
     });
 
@@ -369,6 +394,7 @@ export async function computePayrollRecap(
       lembur_mode: spl.mode,
       lembur_tanpa_spl_menit: lemburTanpaSpl,
       lembur_dipotong_menit: lemburDipotong,
+      est_reimburse: estReimburse,
       breakdown_snapshot: breakdownSnapshot,
       bpjs_company_total: pay.bpjsCompany,
     };

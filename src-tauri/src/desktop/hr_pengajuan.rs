@@ -27,6 +27,11 @@ pub struct JenisBawaan {
     pub maks_hari: Option<i64>,
     pub satuan_maks: String,
     pub wajib_dokumen: bool,
+    /// Kosong = `hr.request.decide` (v39).
+    #[serde(default)]
+    pub izin_pemutus: Option<String>,
+    #[serde(default)]
+    pub batas_bulanan: Option<i64>,
 }
 
 /// Jenis pengajuan bawaan (§6.3) dari berkas JSON yang SAMA dengan yang
@@ -42,7 +47,13 @@ pub fn jenis_bawaan() -> &'static [JenisBawaan] {
 }
 
 /// Cermin `SEED_JENIS_SQL`. Idempoten: jenis yang sudah disunting tidak ditimpa.
-pub const SEED_JENIS_SQL: &str = "INSERT OR IGNORE INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif) VALUES (?1, ?2, ?3, 'hr.request.decide', ?4, ?5, ?6, ?7, ?8, ?9, 1);";
+pub const SEED_JENIS_SQL: &str = "INSERT OR IGNORE INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, batas_bulanan) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11);";
+
+impl JenisBawaan {
+    fn pemutus(&self) -> &str {
+        self.izin_pemutus.as_deref().unwrap_or(IZIN_PEMUTUS_AKTIF)
+    }
+}
 
 /// Argumen `SEED_JENIS_SQL` untuk satu jenis, dipakai seed lokal dan cloud.
 pub fn seed_jenis_args(jenis: &JenisBawaan) -> Vec<Value> {
@@ -50,12 +61,14 @@ pub fn seed_jenis_args(jenis: &JenisBawaan) -> Vec<Value> {
         json!(jenis.id_jenis),
         json!(jenis.nama),
         json!(jenis.kelompok),
+        json!(jenis.pemutus()),
         json!(i64::from(jenis.boleh_urgent)),
         json!(i64::from(jenis.potong_jatah)),
         json!(jenis.dampak_gaji),
         json!(jenis.maks_hari),
         json!(jenis.satuan_maks),
         json!(i64::from(jenis.wajib_dokumen)),
+        json!(jenis.batas_bulanan),
     ]
 }
 
@@ -69,12 +82,14 @@ pub fn seed_jenis_bawaan(connection: &Connection) -> rusqlite::Result<()> {
             jenis.id_jenis,
             jenis.nama,
             jenis.kelompok,
+            jenis.pemutus(),
             i64::from(jenis.boleh_urgent),
             i64::from(jenis.potong_jatah),
             jenis.dampak_gaji,
             jenis.maks_hari,
             jenis.satuan_maks,
             i64::from(jenis.wajib_dokumen),
+            jenis.batas_bulanan,
         ])?;
     }
     Ok(())
@@ -82,17 +97,22 @@ pub fn seed_jenis_bawaan(connection: &Connection) -> rusqlite::Result<()> {
 
 // ── Konstanta ──────────────────────────────────────────────────────────────
 
-/// Kelompok yang bisa diajukan (fase 2 + fase 3). CHECK skema sudah memuat
-/// `Reimburse` (fase 4) supaya tidak perlu dibangun ulang nanti.
-pub const KELOMPOK_AKTIF: [&str; 6] = ["Cuti", "Izin", "Sakit", "Lembur", "Tukar Shift", "Dinas Luar"];
+/// Kelompok yang bisa diajukan (fase 2–4).
+pub const KELOMPOK_AKTIF: [&str; 7] = ["Cuti", "Izin", "Sakit", "Lembur", "Tukar Shift", "Dinas Luar", "Reimburse"];
 /// Kelompok yang menutup hari kerja (Alfa, audit, laporan, `cuti_dibayar`).
-/// Lembur dan Tukar Shift TIDAK: karyawannya tetap wajib masuk (§18.3).
+/// Lembur, Tukar Shift, dan Reimburse TIDAK: karyawannya tetap wajib masuk (§18.3).
 pub const KELOMPOK_TIDAK_HADIR: [&str; 4] = ["Cuti", "Izin", "Sakit", "Dinas Luar"];
 /// Kelompok tanpa dampak gaji dan tanpa jatah: dipaksa saat jenis disimpan.
-pub const KELOMPOK_TANPA_GAJI: [&str; 2] = ["Lembur", "Tukar Shift"];
+pub const KELOMPOK_TANPA_GAJI: [&str; 3] = ["Lembur", "Tukar Shift", "Reimburse"];
 pub const DAMPAK_GAJI: [&str; 3] = ["Dibayar", "Potong Gaji", "Tidak Berpengaruh"];
 pub const SATUAN_MAKS: [&str; 2] = ["Hari Kerja", "Hari Kalender"];
+/// Pemutus bawaan; jenis boleh memilih salah satu dari `IZIN_PEMUTUS` (Q-2).
 pub const IZIN_PEMUTUS_AKTIF: &str = "hr.request.decide";
+pub const IZIN_REIMBURSE: &str = "reimburse.decide";
+pub const IZIN_PEMUTUS: [&str; 2] = [IZIN_PEMUTUS_AKTIF, IZIN_REIMBURSE];
+/// Nominal klaim dan batas bulanan reimbursement, rupiah (aturan 13).
+pub const MAKS_NOMINAL: i64 = 1_000_000_000;
+pub const PESAN_NOMINAL: &str = "Nominal harus 1 sampai 1.000.000.000 rupiah.";
 pub const KEPUTUSAN_FINAL: [&str; 3] = ["Setujui", "Tolak", "Setujui Urgent"];
 pub const AKSI_KEPUTUSAN: [&str; 4] = ["Setujui", "Tolak", "Diketahui", "Batal"];
 pub const MAKS_ALASAN: usize = 500;
@@ -164,6 +184,21 @@ pub const TANGGAL_HADIR_SQL: &str = "SELECT a.id_karyawan, a.tanggal FROM absens
 /// Proses gaji `PAID` yang periodenya menyentuh `?1`..`?2`.
 pub const PERIODE_DIBAYAR_SQL: &str = "SELECT period_start, period_end FROM payroll_runs WHERE status = 'PAID' AND period_start <= ?2 AND period_end >= ?1 ORDER BY period_start LIMIT 1;";
 
+/// Klaim Reimburse berlaku bertanggal ≤ `?1` + nominal berlakunya (§19.3):
+/// `nominal_disetujui` keputusan yang berlaku (urutan sama dengan
+/// `berlaku_sql!`), kosong = nominal diajukan.
+pub const KLAIM_BERLAKU_SQL: &str = concat!(
+    "SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, COALESCE((SELECT k.nominal_disetujui FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent') ORDER BY k.diterima_cloud IS NULL, k.diterima_cloud, k.waktu_perangkat, k.id_keputusan LIMIT 1), p.nominal, 0), COALESCE((SELECT j.nama FROM hr_jenis_pengajuan j WHERE j.id_jenis = p.id_jenis), p.id_jenis) || ': ' || p.alasan FROM hr_pengajuan p WHERE p.kelompok = 'Reimburse' AND p.tanggal_mulai <= ?1 AND ",
+    berlaku_sql!(),
+    " ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;"
+);
+
+/// Cuti diuangkan yang tidak dibatalkan (Q-62), dibayar lewat pembayaran terpisah.
+pub const UANG_BERLAKU_SQL: &str = "SELECT u.id_penyesuaian, u.id_karyawan, u.periode, COALESCE(u.nominal, 0), 'Cuti diuangkan periode ' || u.periode FROM hr_cuti_penyesuaian u WHERE u.jenis = 'Diuangkan' AND NOT EXISTS (SELECT 1 FROM hr_cuti_penyesuaian b WHERE b.jenis = 'Pembatalan' AND b.id_ref = u.id_penyesuaian) ORDER BY u.id_karyawan, u.periode, u.id_penyesuaian;";
+
+/// Klaim di `breakdown_snapshot.reimburse` proses gaji yang tidak ditolak.
+pub const GAJI_REIMBURSE_SQL: &str = "SELECT r.id, r.status, json_extract(k.value, '$.id_pengajuan'), CAST(json_extract(k.value, '$.nominal') AS INTEGER) FROM payroll_items i JOIN payroll_runs r ON r.id = i.payroll_run_id, json_each(i.breakdown_snapshot, '$.reimburse') k WHERE r.status <> 'REJECTED' ORDER BY r.id;";
+
 // ── Pembantu isian ─────────────────────────────────────────────────────────
 
 fn teks(draft: &Value, kunci: &str) -> String {
@@ -223,6 +258,21 @@ pub struct JenisPengajuan {
     pub satuan_maks: String,
     pub wajib_dokumen: bool,
     pub is_aktif: bool,
+    /// Rupiah per karyawan per bulan, hanya Reimburse; peringatan saja (v39).
+    pub batas_bulanan: Option<i64>,
+}
+
+/// Bilangan bulat opsional dari isian: kosong = `None`, selain bilangan bulat
+/// dalam `min..=maks` = `Err(())`.
+fn angka_opsional(draft: &Value, kunci: &str, min: i64, maks: i64) -> Result<Option<i64>, ()> {
+    match draft.get(kunci) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(nilai) => match nilai.as_f64() {
+            Some(n) if n.fract() == 0.0 && (min as f64..=maks as f64).contains(&n) => Ok(Some(n as i64)),
+            _ => Err(()),
+        },
+    }
 }
 
 /// Cermin `validasiJenis`. `id_jenis` diisi pemanggil.
@@ -230,8 +280,20 @@ pub fn validasi_jenis(draft: &Value) -> Result<JenisPengajuan, String> {
     let nama = hris::nama_master(&teks(draft, "nama"))?;
     let kelompok = teks(draft, "kelompok");
     if !KELOMPOK_AKTIF.contains(&kelompok.as_str()) {
-        return Err("Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.".into());
+        return Err("Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse.".into());
     }
+    let reimburse = kelompok == "Reimburse";
+    let pemutus = teks(draft, "izin_pemutus");
+    let izin_pemutus = if pemutus.is_empty() { IZIN_PEMUTUS_AKTIF.to_owned() } else { pemutus };
+    if !IZIN_PEMUTUS.contains(&izin_pemutus.as_str()) {
+        return Err("Pemutus pengajuan tidak dikenal.".into());
+    }
+    let batas_bulanan = if reimburse {
+        angka_opsional(draft, "batas_bulanan", 1, MAKS_NOMINAL)
+            .map_err(|_| "Batas bulanan harus 1 sampai 1.000.000.000 rupiah.".to_owned())?
+    } else {
+        None
+    };
     let tanpa_gaji = KELOMPOK_TANPA_GAJI.contains(&kelompok.as_str());
     let dampak_gaji = if tanpa_gaji { "Tidak Berpengaruh".to_owned() } else { teks(draft, "dampak_gaji") };
     if !DAMPAK_GAJI.contains(&dampak_gaji.as_str()) {
@@ -261,14 +323,16 @@ pub fn validasi_jenis(draft: &Value) -> Result<JenisPengajuan, String> {
         id_jenis: String::new(),
         nama,
         kelompok,
-        izin_pemutus: IZIN_PEMUTUS_AKTIF.to_owned(),
-        boleh_urgent: bendera(draft, "boleh_urgent"),
+        izin_pemutus,
+        // Urgent = atasan menyetujui sendiri, melewati Keuangan (§19.3).
+        boleh_urgent: !reimburse && bendera(draft, "boleh_urgent"),
         potong_jatah,
         dampak_gaji,
         maks_hari,
         satuan_maks,
         wajib_dokumen: bendera(draft, "wajib_dokumen"),
         is_aktif: draft.get("is_aktif").is_none() || bendera(draft, "is_aktif"),
+        batas_bulanan,
     })
 }
 
@@ -288,6 +352,8 @@ pub struct PengajuanSah {
     pub jam_selesai: String,
     /// Tukar Shift: karyawan kedua, kosong untuk kelompok lain.
     pub id_karyawan_tukar: String,
+    /// Reimburse: rupiah yang diajukan.
+    pub nominal: Option<i64>,
 }
 
 /// Cermin `validasiPengajuan`: kelengkapan isian, tanpa data jenis.
@@ -322,6 +388,8 @@ pub fn validasi_pengajuan(draft: &Value) -> Result<PengajuanSah, String> {
     if panjang(&alasan) > MAKS_ALASAN {
         return Err(format!("Alasan maksimal {MAKS_ALASAN} karakter."));
     }
+    let nominal = angka_opsional(draft, "nominal", i64::MIN, i64::MAX)
+        .map_err(|_| "Nominal harus bilangan bulat rupiah.".to_owned())?;
     Ok(PengajuanSah {
         id_karyawan,
         id_jenis,
@@ -333,7 +401,16 @@ pub fn validasi_pengajuan(draft: &Value) -> Result<PengajuanSah, String> {
         jam_mulai: teks(draft, "jam_mulai"),
         jam_selesai: teks(draft, "jam_selesai"),
         id_karyawan_tukar: teks(draft, "id_karyawan_tukar"),
+        nominal,
     })
+}
+
+/// Cermin `periksaTanggalBiaya`: nota tidak boleh bertanggal di masa depan.
+pub fn periksa_tanggal_biaya(tanggal: &str, hari_ini: &str) -> Result<(), String> {
+    if tanggal > hari_ini {
+        return Err("Tanggal biaya tidak boleh setelah hari ini.".into());
+    }
+    Ok(())
 }
 
 /// Cermin `periksaJenis`: isian dibanding jenisnya.
@@ -367,6 +444,14 @@ pub fn periksa_jenis(p: &PengajuanSah, jenis: &JenisPengajuan) -> Result<(), Str
             }
             if p.id_karyawan_tukar == p.id_karyawan {
                 return Err("Tukar shift harus dengan karyawan lain.".into());
+            }
+        }
+        "Reimburse" => {
+            if !satu_tanggal {
+                return Err("Reimburse diajukan per nota, satu tanggal biaya.".into());
+            }
+            if !p.nominal.is_some_and(|n| (1..=MAKS_NOMINAL).contains(&n)) {
+                return Err(PESAN_NOMINAL.into());
             }
         }
         _ => {}
@@ -425,6 +510,10 @@ impl Ringkas<'_> {
 
 /// Cermin `bentrokPengajuan`: matriks §18.3. Keduanya Menunggu atau berlaku.
 pub fn bentrok_pengajuan(a: &Ringkas<'_>, b: &Ringkas<'_>) -> bool {
+    // Klaim biaya tidak pernah bertumpuk: nota di hari cuti atau lembur sah (§19.3).
+    if a.kelompok == "Reimburse" || b.kelompok == "Reimburse" {
+        return false;
+    }
     let orang_sama = a.orang().any(|x| b.orang().any(|y| x == y));
     if !orang_sama || a.tanggal_mulai > b.tanggal_selesai || b.tanggal_mulai > a.tanggal_selesai {
         return false;
@@ -540,14 +629,15 @@ pub struct IsiPengajuan<'a> {
     pub id_karyawan_tukar: Option<&'a str>,
     pub id_shift_asal: Option<i64>,
     pub id_shift_tukar: Option<i64>,
+    pub nominal: Option<i64>,
 }
 
 /// Cermin `sidikPengajuan`: SHA-256 isi kanonik (§17.3). Sembilan bagian fase
-/// 2 tidak berubah, jadi sidik dan keputusan lama tetap sah; Lembur dan Tukar
-/// Shift menambah isiannya sendiri (§18.3).
+/// 2 tidak berubah, jadi sidik dan keputusan lama tetap sah; Lembur, Tukar
+/// Shift, dan Reimburse menambah isiannya sendiri (§18.3, §19.3).
 pub fn sidik_pengajuan(isi: &IsiPengajuan<'_>) -> String {
-    let shift = |s: Option<i64>| s.map(|n| n.to_string()).unwrap_or_default();
-    let (asal, tukar) = (shift(isi.id_shift_asal), shift(isi.id_shift_tukar));
+    let angka = |s: Option<i64>| s.map(|n| n.to_string()).unwrap_or_default();
+    let (asal, tukar, nominal) = (angka(isi.id_shift_asal), angka(isi.id_shift_tukar), angka(isi.nominal));
     let mut kanonik = vec![
         isi.id_karyawan,
         isi.id_jenis,
@@ -562,6 +652,7 @@ pub fn sidik_pengajuan(isi: &IsiPengajuan<'_>) -> String {
     match isi.kelompok {
         "Lembur" => kanonik.extend([isi.jam_mulai.unwrap_or(""), isi.jam_selesai.unwrap_or("")]),
         "Tukar Shift" => kanonik.extend([isi.id_karyawan_tukar.unwrap_or(""), asal.as_str(), tukar.as_str()]),
+        "Reimburse" => kanonik.push(nominal.as_str()),
         _ => {}
     }
     let kanonik = kanonik.join("\u{1f}");
@@ -578,6 +669,15 @@ pub struct Keputusan {
     pub oleh: String,
     pub waktu_perangkat: String,
     pub diterima_cloud: Option<String>,
+    /// Hanya `Setujui` atas Reimburse (v39).
+    #[serde(default)]
+    pub nominal_disetujui: Option<i64>,
+}
+
+/// Cermin `nominalBerlaku`: nominal disetujui keputusan yang berlaku; kosong
+/// (keputusan dari perangkat v38) = nominal diajukan.
+pub fn nominal_berlaku(nominal: i64, berlaku: Option<&Keputusan>) -> i64 {
+    berlaku.and_then(|k| k.nominal_disetujui).unwrap_or(nominal)
 }
 
 /// Cermin `urutKeputusan`, sama dengan ORDER BY `PENGAJUAN_BERLAKU_SQL`.
@@ -664,13 +764,16 @@ pub struct KeadaanAksi {
     pub karyawan_sendiri: bool,
     /// Sesi memegang `izin_pemutus` jenisnya.
     pub boleh_putus: bool,
+    /// Kelompok Reimburse dan nominal yang diajukan (v39).
+    pub reimburse: bool,
+    pub nominal: i64,
 }
 
 const PESAN_IZIN_PUTUS: &str = "Kamu tidak punya izin memutus jenis pengajuan ini.";
 const PESAN_DIRI_SENDIRI: &str = "Pengajuan untuk dirimu sendiri harus diputus orang lain.";
 
-/// Cermin `periksaAksi`.
-pub fn periksa_aksi(aksi: &str, alasan: &str, k: &KeadaanAksi) -> Result<(), String> {
+/// Cermin `periksaAksi`. `nominal_disetujui` hanya untuk `Setujui` Reimburse.
+pub fn periksa_aksi(aksi: &str, alasan: &str, nominal_disetujui: Option<i64>, k: &KeadaanAksi) -> Result<(), String> {
     if !AKSI_KEPUTUSAN.contains(&aksi) {
         return Err("Keputusan tidak dikenal.".into());
     }
@@ -678,6 +781,9 @@ pub fn periksa_aksi(aksi: &str, alasan: &str, k: &KeadaanAksi) -> Result<(), Str
         return Err(format!("Alasan maksimal {MAKS_ALASAN} karakter."));
     }
     let tanpa_alasan = alasan.trim().is_empty();
+    if nominal_disetujui.is_some() && !(aksi == "Setujui" && k.reimburse) {
+        return Err("Nominal disetujui hanya untuk menyetujui reimbursement.".into());
+    }
     match aksi {
         "Setujui" | "Tolak" => {
             if k.status != "Menunggu" {
@@ -691,6 +797,21 @@ pub fn periksa_aksi(aksi: &str, alasan: &str, k: &KeadaanAksi) -> Result<(), Str
             }
             if aksi == "Tolak" && tanpa_alasan {
                 return Err("Alasan penolakan wajib diisi.".into());
+            }
+            if aksi == "Setujui" && k.reimburse {
+                match nominal_disetujui {
+                    Some(n) if n >= 1 && n <= k.nominal => {
+                        if n < k.nominal && tanpa_alasan {
+                            return Err("Alasan wajib diisi bila nominal disetujui lebih kecil dari yang diajukan.".into());
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Nominal disetujui harus 1 sampai {}.",
+                            super::accounting::format_rupiah(k.nominal)
+                        ))
+                    }
+                }
             }
         }
         "Diketahui" => {
@@ -755,6 +876,283 @@ pub fn pesan_periode_dibayar(mulai: &str, selesai: &str) -> String {
 pub fn pesan_bertumpuk(mulai: &str, selesai: &str) -> String {
     format!("Tanggal itu bertumpuk dengan pengajuan lain karyawan ini ({mulai} s.d. {selesai}).")
 }
+
+// ── Reimbursement dan pembayaran terpisah (§19.3, §19.4) ───────────────────
+
+pub const KUNCI_REIMBURSE_BAYAR: &str = "hr_reimburse_bayar";
+pub const MODE_REIMBURSE: [&str; 2] = ["gaji", "terpisah"];
+/// Bawaan `terpisah`: gaji tidak berubah sampai pemilik memilih (§19.8).
+pub const MODE_REIMBURSE_BAWAAN: &str = "terpisah";
+pub const SUMBER_REIMBURSE: &str = "Reimburse";
+pub const SUMBER_UANG: &str = "Cuti Diuangkan";
+pub const MAKS_KLAIM_PER_BAYAR: usize = 200;
+pub const STATUS_DIBAYAR: &str = "Dibayar";
+pub const STATUS_PROSES_GAJI: &str = "Dalam proses gaji";
+pub const STATUS_BELUM_DIBAYAR: &str = "Belum dibayar";
+pub const PESAN_KLAIM_DIBAYAR: &str =
+    "Klaim ini sudah dibayar atau masih ada di proses gaji. Batalkan pembayarannya atau tolak proses gaji itu dulu.";
+pub const PESAN_UANG_DIBAYAR: &str = "Cuti diuangkan ini sudah dibayar. Batalkan pembayarannya dulu.";
+
+/// Cermin `modeReimburseDariTeks`: kosong atau tidak dikenal = bawaan.
+pub fn mode_reimburse(nilai: Option<&str>) -> &'static str {
+    match nilai.map(str::trim) {
+        Some("gaji") => "gaji",
+        _ => MODE_REIMBURSE_BAWAAN,
+    }
+}
+
+/// Cermin `validasiAturanReimburse`: kunci absen = tidak disimpan.
+pub fn validasi_aturan_reimburse(draft: &Value) -> Result<Vec<(&'static str, String)>, String> {
+    if draft.get(KUNCI_REIMBURSE_BAYAR).is_none() {
+        return Ok(Vec::new());
+    }
+    let mode = teks(draft, KUNCI_REIMBURSE_BAYAR);
+    if !MODE_REIMBURSE.contains(&mode.as_str()) {
+        return Err("Cara bayar reimbursement harus gaji atau terpisah.".into());
+    }
+    Ok(vec![(KUNCI_REIMBURSE_BAYAR, mode)])
+}
+
+/// Satu klaim yang bisa dibayar: Reimburse berlaku atau cuti diuangkan.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Klaim {
+    pub id_klaim: String,
+    pub sumber: String,
+    pub id_karyawan: String,
+    pub tanggal: String,
+    /// Nominal berlaku (Reimburse) atau nominal beku (cuti diuangkan).
+    pub nominal: i64,
+    pub keterangan: String,
+}
+
+/// Satu baris `hr_reimburse_bayar`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BayarReimburse {
+    pub id_bayar: String,
+    pub jenis: String,
+    pub id_ref: Option<String>,
+    pub id_karyawan: String,
+    pub tanggal: String,
+    pub total: i64,
+    pub keterangan: Option<String>,
+    pub dicatat_oleh: String,
+    pub created_at: String,
+}
+
+/// Satu baris `hr_reimburse_bayar_baris`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BarisReimburse {
+    pub id_baris: String,
+    pub id_bayar: String,
+    pub sumber: String,
+    pub id_klaim: String,
+    pub nominal: i64,
+}
+
+/// Satu entri `breakdown_snapshot.reimburse` proses gaji yang tidak ditolak.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GajiReimburse {
+    pub id_run: String,
+    pub status: String,
+    pub id_klaim: String,
+    pub nominal: i64,
+}
+
+/// Cermin `bayarAktifReimburse`: id pembayaran terpisah `Bayar` yang memuat
+/// klaim ini dan belum dibatalkan, terurut.
+pub fn bayar_aktif_reimburse<'a>(id_klaim: &str, pembayaran: &'a [BayarReimburse], baris: &[BarisReimburse]) -> Vec<&'a str> {
+    let mut aktif: Vec<&'a str> = pembayaran
+        .iter()
+        .filter(|p| p.jenis == "Bayar")
+        .filter(|p| baris.iter().any(|b| b.id_bayar == p.id_bayar && b.id_klaim == id_klaim))
+        .filter(|p| !pembayaran.iter().any(|x| x.jenis == "Pembatalan" && x.id_ref.as_deref() == Some(p.id_bayar.as_str())))
+        .map(|p| p.id_bayar.as_str())
+        .collect();
+    aktif.sort_unstable();
+    aktif.dedup();
+    aktif
+}
+
+/// Cermin `statusBayar` (§19.4).
+pub fn status_bayar(id_klaim: &str, pembayaran: &[BayarReimburse], baris: &[BarisReimburse], gaji: &[GajiReimburse]) -> &'static str {
+    let di_gaji = |paid: bool| gaji.iter().any(|g| g.id_klaim == id_klaim && (g.status == "PAID") == paid);
+    if !bayar_aktif_reimburse(id_klaim, pembayaran, baris).is_empty() || di_gaji(true) {
+        STATUS_DIBAYAR
+    } else if di_gaji(false) {
+        STATUS_PROSES_GAJI
+    } else {
+        STATUS_BELUM_DIBAYAR
+    }
+}
+
+/// Cermin `dibayarGanda`: lebih dari satu pembayaran aktif (dua terpisah, atau
+/// terpisah + proses gaji tidak ditolak).
+pub fn dibayar_ganda(id_klaim: &str, pembayaran: &[BayarReimburse], baris: &[BarisReimburse], gaji: &[GajiReimburse]) -> bool {
+    bayar_aktif_reimburse(id_klaim, pembayaran, baris).len() + gaji.iter().filter(|g| g.id_klaim == id_klaim).count() > 1
+}
+
+/// Cermin `kunciBatas`: karyawan, jenis, dan bulan tanggal biaya.
+pub fn kunci_batas(id_karyawan: &str, id_jenis: &str, tanggal: &str) -> String {
+    format!("{id_karyawan}|{id_jenis}|{}", tanggal.chars().take(7).collect::<String>())
+}
+
+/// Cermin `lewatBatas`: kunci (`kunci_batas`) yang jumlah klaimnya melewati
+/// `batas_bulanan` jenisnya. `klaim` = (karyawan, jenis, tanggal, nominal)
+/// klaim Menunggu (nominal diajukan) dan berlaku (nominal berlaku).
+pub fn lewat_batas(klaim: &[(&str, &str, &str, i64)], batas: &HashMap<String, i64>) -> HashSet<String> {
+    let mut jumlah: HashMap<String, i64> = HashMap::new();
+    for (karyawan, jenis, tanggal, nominal) in klaim {
+        *jumlah.entry(kunci_batas(karyawan, jenis, tanggal)).or_default() += nominal;
+    }
+    jumlah
+        .into_iter()
+        .filter(|(kunci, total)| {
+            let jenis = kunci.split('|').nth(1).unwrap_or_default();
+            batas.get(jenis).is_some_and(|b| total > b)
+        })
+        .map(|(kunci, _)| kunci)
+        .collect()
+}
+
+/// Isian pembayaran terpisah yang sudah divalidasi.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BayarReimburseValid {
+    pub id_karyawan: String,
+    pub id_klaim: Vec<String>,
+    pub tanggal: String,
+    pub keterangan: Option<String>,
+}
+
+/// Cermin `validasiBayarReimburse`. Tanggal kosong = hari ini (WIB).
+pub fn validasi_bayar_reimburse(draft: &Value, hari_ini: &str) -> Result<BayarReimburseValid, String> {
+    let id_karyawan = teks(draft, "id_karyawan");
+    if id_karyawan.is_empty() {
+        return Err("Pilih karyawan.".into());
+    }
+    let mut id_klaim: Vec<String> = Vec::new();
+    for nilai in draft.get("id_klaim").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let id = nilai.as_str().map(str::trim).unwrap_or_default();
+        if id.is_empty() {
+            return Err("Klaim yang dipilih tidak valid.".into());
+        }
+        if id_klaim.iter().any(|x| x == id) {
+            return Err("Klaim yang sama terpilih dua kali.".into());
+        }
+        id_klaim.push(id.to_owned());
+    }
+    if id_klaim.is_empty() {
+        return Err("Pilih klaim yang dibayar.".into());
+    }
+    if id_klaim.len() > MAKS_KLAIM_PER_BAYAR {
+        return Err(format!("Satu pembayaran paling banyak {MAKS_KLAIM_PER_BAYAR} klaim."));
+    }
+    let tanggal = match teks(draft, "tanggal") {
+        t if t.is_empty() => hari_ini.to_owned(),
+        t => t,
+    };
+    if !hari_kerja::tanggal_valid(&tanggal) {
+        return Err("Tanggal bayar tidak valid.".into());
+    }
+    if tanggal.as_str() > hari_ini {
+        return Err("Tanggal bayar tidak boleh setelah hari ini.".into());
+    }
+    let keterangan = Some(teks(draft, "keterangan")).filter(|k| !k.is_empty());
+    if keterangan.as_deref().is_some_and(|k| panjang(k) > MAKS_ALASAN) {
+        return Err(format!("Keterangan maksimal {MAKS_ALASAN} karakter."));
+    }
+    Ok(BayarReimburseValid { id_karyawan, id_klaim, tanggal, keterangan })
+}
+
+/// Cermin `periksaBayarReimburse`. Hanya di perangkat; mengembalikan klaim
+/// sesuai urutan isian (totalnya = jumlah nominal berlakunya saat ini).
+pub fn periksa_bayar_reimburse<'a>(
+    valid: &BayarReimburseValid,
+    klaim: &'a [Klaim],
+    pembayaran: &[BayarReimburse],
+    baris: &[BarisReimburse],
+    gaji: &[GajiReimburse],
+) -> Result<Vec<&'a Klaim>, String> {
+    let mut hasil = Vec::with_capacity(valid.id_klaim.len());
+    for id in &valid.id_klaim {
+        let k = klaim
+            .iter()
+            .find(|k| &k.id_klaim == id)
+            .ok_or("Klaim tidak ditemukan atau belum disetujui.")?;
+        if k.id_karyawan != valid.id_karyawan {
+            return Err("Klaim itu bukan milik karyawan ini.".into());
+        }
+        let status = status_bayar(id, pembayaran, baris, gaji);
+        if status != STATUS_BELUM_DIBAYAR {
+            return Err(format!("Klaim tanggal {} berstatus {}.", k.tanggal, status.to_lowercase()));
+        }
+        hasil.push(k);
+    }
+    Ok(hasil)
+}
+
+/// Cermin `periksaBatalBayarReimburse`. Hanya di perangkat.
+pub fn periksa_batal_bayar_reimburse(pembayaran: &[BayarReimburse], id_bayar: &str) -> Result<(), String> {
+    if !pembayaran.iter().any(|p| p.id_bayar == id_bayar && p.jenis == "Bayar") {
+        return Err("Pembayaran tidak ditemukan.".into());
+    }
+    if pembayaran
+        .iter()
+        .any(|p| p.jenis == "Pembatalan" && p.id_ref.as_deref() == Some(id_bayar))
+    {
+        return Err("Pembayaran ini sudah dibatalkan.".into());
+    }
+    Ok(())
+}
+
+/// Cermin `periksaReimbursePayroll`: saat proses gaji `id_run` ditandai PAID,
+/// setiap klaim di `breakdown_snapshot.reimburse`-nya harus masih berlaku
+/// dengan nominal yang sama, dan belum dibayar di tempat lain.
+pub fn periksa_reimburse_payroll(
+    id_run: &str,
+    entri: &[(String, i64)],
+    klaim: &[Klaim],
+    pembayaran: &[BayarReimburse],
+    baris: &[BarisReimburse],
+    gaji: &[GajiReimburse],
+) -> Result<(), String> {
+    for (id, nominal) in entri {
+        let Some(k) = klaim.iter().find(|k| &k.id_klaim == id && k.sumber == SUMBER_REIMBURSE) else {
+            return Err(format!(
+                "Klaim reimbursement {id} sudah tidak berlaku. Tolak proses gaji ini lalu buat ulang."
+            ));
+        };
+        if k.nominal != *nominal {
+            return Err(format!(
+                "Nominal klaim reimbursement tanggal {} berubah. Tolak proses gaji ini lalu buat ulang.",
+                k.tanggal
+            ));
+        }
+        let paid_lain = gaji
+            .iter()
+            .any(|g| &g.id_klaim == id && g.status == "PAID" && g.id_run != id_run);
+        if paid_lain || !bayar_aktif_reimburse(id, pembayaran, baris).is_empty() {
+            return Err(format!(
+                "Klaim reimbursement tanggal {} sudah dibayar. Tolak proses gaji ini lalu buat ulang.",
+                k.tanggal
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Id pembayaran baru, baris, dan pembatalannya (dua perangkat yang
+/// membatalkan pembayaran yang sama menghasilkan PK yang sama).
+pub fn id_baris_reimburse(id_bayar: &str, id_klaim: &str) -> String {
+    format!("{id_bayar}:{id_klaim}")
+}
+
+pub fn id_batal_reimburse(id_bayar: &str) -> String {
+    format!("batal-{id_bayar}")
+}
+
+pub const CLOUD_INSERT_BAYAR_REIMBURSE_SQL: &str = "INSERT INTO hr_reimburse_bayar (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(?9, datetime('now'))) ON CONFLICT(id_bayar) DO NOTHING;";
+
+pub const CLOUD_INSERT_BARIS_REIMBURSE_SQL: &str = "INSERT INTO hr_reimburse_bayar_baris (id_baris, id_bayar, sumber, id_klaim, nominal) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id_baris) DO NOTHING;";
 
 // ── Hari wajib (§17.5) ─────────────────────────────────────────────────────
 
@@ -1344,18 +1742,156 @@ pub fn muat_tukar(conn: &Connection, mulai: &str, akhir: &str) -> Result<HashMap
     Ok(hasil)
 }
 
+/// Klaim yang bisa dibayar: Reimburse berlaku bertanggal ≤ `sampai`
+/// (`KLAIM_BERLAKU_SQL`) lalu cuti diuangkan (`UANG_BERLAKU_SQL`).
+pub fn muat_klaim(conn: &Connection, sampai: &str) -> Result<Vec<Klaim>, CommandError> {
+    let mut hasil = Vec::new();
+    for (sql, sumber) in [(KLAIM_BERLAKU_SQL, SUMBER_REIMBURSE), (UANG_BERLAKU_SQL, SUMBER_UANG)] {
+        let mut st = conn.prepare(sql).map_err(internal)?;
+        let ubah = |r: &rusqlite::Row<'_>| {
+            Ok(Klaim {
+                id_klaim: r.get(0)?,
+                sumber: sumber.to_owned(),
+                id_karyawan: r.get(1)?,
+                tanggal: r.get(2)?,
+                nominal: r.get(3)?,
+                keterangan: r.get(4)?,
+            })
+        };
+        let baris = if sumber == SUMBER_REIMBURSE {
+            st.query_map(params![sampai], ubah)
+        } else {
+            st.query_map([], ubah)
+        }
+        .map_err(internal)?;
+        for k in baris {
+            hasil.push(k.map_err(internal)?);
+        }
+    }
+    Ok(hasil)
+}
+
+/// Seluruh pembayaran terpisah dan barisnya.
+// ponytail: dibaca utuh tiap kali; saring per karyawan bila tabelnya membesar.
+pub fn muat_bayar(conn: &Connection) -> Result<(Vec<BayarReimburse>, Vec<BarisReimburse>), CommandError> {
+    let mut st = conn
+        .prepare(
+            "SELECT id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh, created_at
+             FROM hr_reimburse_bayar ORDER BY tanggal, created_at, id_bayar;",
+        )
+        .map_err(internal)?;
+    let bayar = st
+        .query_map([], |r| {
+            Ok(BayarReimburse {
+                id_bayar: r.get(0)?,
+                jenis: r.get(1)?,
+                id_ref: r.get(2)?,
+                id_karyawan: r.get(3)?,
+                tanggal: r.get(4)?,
+                total: r.get(5)?,
+                keterangan: r.get(6)?,
+                dicatat_oleh: r.get(7)?,
+                created_at: r.get(8)?,
+            })
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let mut st = conn
+        .prepare("SELECT id_baris, id_bayar, sumber, id_klaim, nominal FROM hr_reimburse_bayar_baris ORDER BY id_bayar, id_baris;")
+        .map_err(internal)?;
+    let baris = st
+        .query_map([], |r| {
+            Ok(BarisReimburse {
+                id_baris: r.get(0)?,
+                id_bayar: r.get(1)?,
+                sumber: r.get(2)?,
+                id_klaim: r.get(3)?,
+                nominal: r.get(4)?,
+            })
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    Ok((bayar, baris))
+}
+
+/// Klaim di proses gaji yang tidak ditolak (`GAJI_REIMBURSE_SQL`).
+pub fn muat_gaji_reimburse(conn: &Connection) -> Result<Vec<GajiReimburse>, CommandError> {
+    let mut st = conn.prepare(GAJI_REIMBURSE_SQL).map_err(internal)?;
+    let baris = st
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<i64>>(3)?))
+        })
+        .map_err(internal)?;
+    let mut hasil = Vec::new();
+    for b in baris {
+        if let (id_run, status, Some(id_klaim), nominal) = b.map_err(internal)? {
+            hasil.push(GajiReimburse { id_run, status, id_klaim, nominal: nominal.unwrap_or(0) });
+        }
+    }
+    Ok(hasil)
+}
+
+pub fn baca_mode_reimburse(conn: &Connection) -> Result<&'static str, CommandError> {
+    let nilai: Option<String> = conn
+        .query_row("SELECT value FROM setting_gex_system WHERE key = ?1;", params![KUNCI_REIMBURSE_BAYAR], |r| r.get(0))
+        .optional()
+        .map_err(internal)?;
+    Ok(mode_reimburse(nilai.as_deref()))
+}
+
+/// Kait rekap gaji mode `gaji` (§19.4): per karyawan, klaim Reimburse berlaku
+/// bertanggal ≤ `akhir` yang Belum dibayar. Kosong di mode `terpisah`; mode
+/// dibaca saat rekap dihitung, termasuk pembekuan (pola Q-57).
+pub fn reimburse_gaji(conn: &Connection, akhir: &str) -> Result<HashMap<String, Vec<(String, i64)>>, CommandError> {
+    let mut hasil: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+    if baca_mode_reimburse(conn)? != "gaji" {
+        return Ok(hasil);
+    }
+    let klaim = muat_klaim(conn, akhir)?;
+    let (pembayaran, baris) = muat_bayar(conn)?;
+    let gaji = muat_gaji_reimburse(conn)?;
+    for k in klaim.into_iter().filter(|k| k.sumber == SUMBER_REIMBURSE) {
+        if status_bayar(&k.id_klaim, &pembayaran, &baris, &gaji) == STATUS_BELUM_DIBAYAR {
+            hasil.entry(k.id_karyawan).or_default().push((k.id_klaim, k.nominal));
+        }
+    }
+    Ok(hasil)
+}
+
+/// `breakdown_snapshot.reimburse`: yang dibaca saat proses gaji dibayar.
+pub fn rincian_reimburse_json(klaim: &[(String, i64)]) -> Vec<Value> {
+    klaim
+        .iter()
+        .map(|(id, nominal)| json!({ "id_pengajuan": id, "nominal": nominal }))
+        .collect()
+}
+
+/// Pemeriksaan `periksa_reimburse_payroll` atas data lokal, dipanggil di
+/// transaksi transisi PAID.
+pub fn periksa_reimburse_run(conn: &Connection, id_run: &str, entri: &[(String, i64)]) -> Result<(), CommandError> {
+    if entri.is_empty() {
+        return Ok(());
+    }
+    let klaim = muat_klaim(conn, "9999-12-31")?;
+    let (pembayaran, baris) = muat_bayar(conn)?;
+    let gaji = muat_gaji_reimburse(conn)?;
+    periksa_reimburse_payroll(id_run, entri, &klaim, &pembayaran, &baris, &gaji).map_err(invalid)
+}
+
 // ── SQL tulis (kembar `services/hr-pengajuan.ts`) ──────────────────────────
 
-pub const UPSERT_JENIS_SQL: &str = "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now')) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now');";
+pub const UPSERT_JENIS_SQL: &str = "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at, batas_bulanan) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now'), ?13) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now'), batas_bulanan = CASE WHEN ?14 = 1 THEN excluded.batas_bulanan ELSE hr_jenis_pengajuan.batas_bulanan END;";
 
 /// Pengaju dan `created_at` tidak pernah ditimpa suntingan.
-pub const UPSERT_PENGAJUAN_SQL: &str = "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar;";
+pub const UPSERT_PENGAJUAN_SQL: &str = "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar, nominal) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19, ?20) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar, nominal = excluded.nominal;";
 
 /// Lokal: `diterima_cloud` kosong sampai tertarik dari cloud.
-pub const INSERT_KEPUTUSAN_SQL: &str = "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, COALESCE(?8, datetime('now'))) ON CONFLICT(id_keputusan) DO NOTHING;";
+pub const INSERT_KEPUTUSAN_SQL: &str = "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at, nominal_disetujui) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, COALESCE(?8, datetime('now')), ?9) ON CONFLICT(id_keputusan) DO NOTHING;";
 
 /// Cloud dan Web: `diterima_cloud` selalu jam database cloud (aturan 19).
-pub const CLOUD_INSERT_KEPUTUSAN_SQL: &str = "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), COALESCE(?8, datetime('now'))) ON CONFLICT(id_keputusan) DO NOTHING;";
+pub const CLOUD_INSERT_KEPUTUSAN_SQL: &str = "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at, nominal_disetujui) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), COALESCE(?8, datetime('now')), ?9) ON CONFLICT(id_keputusan) DO NOTHING;";
 
 pub const INSERT_PENYESUAIAN_SQL: &str = "INSERT INTO hr_cuti_penyesuaian (id_penyesuaian, id_karyawan, periode, jenis, id_ref, hari, nominal, alasan, dicatat_oleh, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, datetime('now'))) ON CONFLICT(id_penyesuaian) DO NOTHING;";
 
@@ -1435,6 +1971,8 @@ pub struct BarisPengajuan {
     pub id_karyawan_tukar: Option<String>,
     pub id_shift_asal: Option<i64>,
     pub id_shift_tukar: Option<i64>,
+    /// Reimburse (v39).
+    pub nominal: Option<i64>,
 }
 
 impl BarisPengajuan {
@@ -1452,7 +1990,7 @@ impl BarisPengajuan {
     }
 }
 
-const KOLOM_PENGAJUAN: &str = "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar";
+const KOLOM_PENGAJUAN: &str = "p.id_pengajuan, p.id_karyawan, p.id_jenis, p.kelompok, p.potong_jatah, p.dampak_gaji, p.tanggal_mulai, p.tanggal_selesai, p.setengah_hari, p.alasan, p.sidik, p.diajukan_oleh, p.waktu_perangkat, p.created_at, p.jam_mulai, p.jam_selesai, p.id_karyawan_tukar, p.id_shift_asal, p.id_shift_tukar, p.nominal";
 
 fn baris_pengajuan(r: &rusqlite::Row<'_>) -> rusqlite::Result<BarisPengajuan> {
     Ok(BarisPengajuan {
@@ -1475,6 +2013,7 @@ fn baris_pengajuan(r: &rusqlite::Row<'_>) -> rusqlite::Result<BarisPengajuan> {
         id_karyawan_tukar: r.get(16)?,
         id_shift_asal: r.get(17)?,
         id_shift_tukar: r.get(18)?,
+        nominal: r.get(19)?,
     })
 }
 
@@ -1516,7 +2055,7 @@ fn baca_keputusan(conn: &Connection, ids: &[&str]) -> Result<HashMap<String, Vec
     }
     let mut st = conn
         .prepare(
-            "SELECT id_pengajuan, id_keputusan, jenis, sidik, oleh, waktu_perangkat, diterima_cloud, alasan
+            "SELECT id_pengajuan, id_keputusan, jenis, sidik, oleh, waktu_perangkat, diterima_cloud, alasan, nominal_disetujui
              FROM hr_pengajuan_keputusan
              WHERE id_pengajuan IN (SELECT value FROM json_each(?1))
              ORDER BY id_pengajuan, id_keputusan;",
@@ -1534,6 +2073,7 @@ fn baca_keputusan(conn: &Connection, ids: &[&str]) -> Result<HashMap<String, Vec
                     oleh: r.get(4)?,
                     waktu_perangkat: r.get(5)?,
                     diterima_cloud: r.get(6)?,
+                    nominal_disetujui: r.get(8)?,
                 },
                 r.get::<_, Option<String>>(7)?,
             ))
@@ -1550,7 +2090,7 @@ fn baca_keputusan(conn: &Connection, ids: &[&str]) -> Result<HashMap<String, Vec
 fn riwayat_keputusan(conn: &Connection, id: &str) -> Result<Vec<Value>, CommandError> {
     let mut st = conn
         .prepare(
-            "SELECT id_keputusan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud
+            "SELECT id_keputusan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, nominal_disetujui
              FROM hr_pengajuan_keputusan WHERE id_pengajuan = ?1
              ORDER BY diterima_cloud IS NULL, diterima_cloud, waktu_perangkat, id_keputusan;",
         )
@@ -1565,6 +2105,7 @@ fn riwayat_keputusan(conn: &Connection, id: &str) -> Result<Vec<Value>, CommandE
                 "oleh": r.get::<_, String>(4)?,
                 "waktu_perangkat": r.get::<_, String>(5)?,
                 "diterima_cloud": r.get::<_, Option<String>>(6)?,
+                "nominal_disetujui": r.get::<_, Option<i64>>(7)?,
             }))
         })
         .map_err(internal)?;
@@ -1574,7 +2115,7 @@ fn riwayat_keputusan(conn: &Connection, id: &str) -> Result<Vec<Value>, CommandE
 fn baca_jenis_semua(conn: &Connection) -> Result<Vec<JenisPengajuan>, CommandError> {
     let mut st = conn
         .prepare(
-            "SELECT id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif
+            "SELECT id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, batas_bulanan
              FROM hr_jenis_pengajuan ORDER BY kelompok, nama, id_jenis;",
         )
         .map_err(internal)?;
@@ -1592,6 +2133,7 @@ fn baca_jenis_semua(conn: &Connection) -> Result<Vec<JenisPengajuan>, CommandErr
                 satuan_maks: r.get(8)?,
                 wajib_dokumen: r.get::<_, i64>(9)? == 1,
                 is_aktif: r.get::<_, i64>(10)? == 1,
+                batas_bulanan: r.get(11)?,
             })
         })
         .map_err(internal)?;
@@ -1628,11 +2170,12 @@ fn tulis_keputusan(
     sidik: &str,
     alasan: Option<&str>,
     oleh: &str,
+    nominal_disetujui: Option<i64>,
 ) -> Result<(), CommandError> {
     let waktu = waktu_sekarang(tx)?;
     tx.execute(
         INSERT_KEPUTUSAN_SQL,
-        params![id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu, Option::<String>::None],
+        params![id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu, Option::<String>::None, nominal_disetujui],
     )
     .map_err(internal)?;
     let baris = hris::satu_baris(tx, "SELECT * FROM hr_pengajuan_keputusan WHERE id_keputusan = ?1;", id_keputusan)?;
@@ -1670,7 +2213,9 @@ pub fn simpan_jenis(state: &DesktopState, draft: &Value) -> Result<Value, Comman
                 jenis.satuan_maks,
                 i64::from(jenis.wajib_dokumen),
                 i64::from(jenis.is_aktif),
-                Option::<String>::None
+                Option::<String>::None,
+                jenis.batas_bulanan,
+                1
             ],
         )
         .map_err(internal)?;
@@ -1748,6 +2293,11 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             .find(|j| j.id_jenis == sah.id_jenis)
             .ok_or_else(|| invalid("Jenis pengajuan tidak ditemukan."))?;
         periksa_jenis(&sah, &jenis).map_err(invalid)?;
+        let reimburse = jenis.kelompok == "Reimburse";
+        if reimburse {
+            periksa_tanggal_biaya(&sah.tanggal_mulai, &hris::hari_ini_wib(tx)?).map_err(invalid)?;
+        }
+        let nominal = if reimburse { sah.nominal } else { None };
         let lembur = jenis.kelompok == "Lembur";
         let (jam_mulai, jam_selesai) = if lembur {
             (Some(sah.jam_mulai.as_str()), Some(sah.jam_selesai.as_str()))
@@ -1777,7 +2327,10 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             let kalender_hari = selisih_hari(&sah.tanggal_mulai, &sah.tanggal_selesai) + 1;
             periksa_maks(&jenis, wajib.len() as i64, kalender_hari).map_err(invalid)?;
         }
-        tolak_bila_dibayar(tx, &sah.tanggal_mulai, &sah.tanggal_selesai)?;
+        // Nota bulan lalu yang gajinya sudah dibayar adalah kasus biasa (§19.3).
+        if !reimburse {
+            tolak_bila_dibayar(tx, &sah.tanggal_mulai, &sah.tanggal_selesai)?;
+        }
 
         let mut pengaju = operator.username.clone();
         let mut created_at: Option<String> = None;
@@ -1787,7 +2340,9 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             let status = status_pengajuan(&lama.sidik, &keputusan);
             periksa_sunting(status, sama_orang(&lama.diajukan_oleh, &operator.username), operator.is_superadmin)
                 .map_err(invalid)?;
-            tolak_bila_dibayar(tx, &lama.tanggal_mulai, &lama.tanggal_selesai)?;
+            if lama.kelompok != "Reimburse" {
+                tolak_bila_dibayar(tx, &lama.tanggal_mulai, &lama.tanggal_selesai)?;
+            }
             pengaju = lama.diajukan_oleh;
             created_at = Some(lama.created_at);
         }
@@ -1837,6 +2392,7 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
             id_karyawan_tukar: id_tukar,
             id_shift_asal,
             id_shift_tukar,
+            nominal,
         });
         let waktu = waktu_sekarang(tx)?;
         tx.execute(
@@ -1860,14 +2416,15 @@ pub fn simpan_pengajuan(state: &DesktopState, operator: &OperatorUser, draft: &V
                 jam_selesai,
                 id_tukar,
                 id_shift_asal,
-                id_shift_tukar
+                id_shift_tukar,
+                nominal
             ],
         )
         .map_err(internal)?;
         let baris = hris::satu_baris(tx, "SELECT * FROM hr_pengajuan WHERE id_pengajuan = ?1;", &id)?;
         sync::enqueue(tx, client_id, "hr-request", "save", &id, &baris, None)?;
         if sah.urgent {
-            tulis_keputusan(tx, client_id, &format!("urgent-{id}"), &id, "Setujui Urgent", &sidik, None, &operator.username)?;
+            tulis_keputusan(tx, client_id, &format!("urgent-{id}"), &id, "Setujui Urgent", &sidik, None, &operator.username, None)?;
         }
         Ok(json!({ "sukses": true, "id_pengajuan": id, "hari_kerja": wajib.len() }))
     })
@@ -1878,8 +2435,11 @@ pub fn putuskan(state: &DesktopState, operator: &OperatorUser, draft: &Value) ->
     let id = payload_text(draft, "id_pengajuan").ok_or_else(|| invalid("Pengajuan tidak ditemukan."))?;
     let aksi = teks(draft, "aksi");
     let alasan = teks(draft, "alasan");
+    let nominal_disetujui = angka_opsional(draft, "nominal_disetujui", i64::MIN, i64::MAX)
+        .map_err(|_| invalid("Nominal disetujui harus bilangan bulat rupiah."))?;
     hris::dalam_transaksi(state, |tx, client_id| {
         let p = baca_satu_pengajuan(tx, &id)?.ok_or_else(|| invalid("Pengajuan tidak ditemukan."))?;
+        let reimburse = p.kelompok == "Reimburse";
         let keputusan = baca_keputusan(tx, &[id.as_str()])?.remove(&id).unwrap_or_default();
         let status = status_pengajuan(&p.sidik, &keputusan);
         let izin_pemutus = baca_jenis_semua(tx)?
@@ -1895,9 +2455,19 @@ pub fn putuskan(state: &DesktopState, operator: &OperatorUser, draft: &Value) ->
             karyawan_sendiri: karyawan_sendiri(operator, &p.id_karyawan)
                 || p.id_karyawan_tukar.as_deref().is_some_and(|t| karyawan_sendiri(operator, t)),
             boleh_putus: punya(operator, &izin_pemutus),
+            reimburse,
+            nominal: p.nominal.unwrap_or(0),
         };
-        periksa_aksi(&aksi, &alasan, &keadaan).map_err(invalid)?;
-        if aksi == "Setujui" || aksi == "Batal" {
+        periksa_aksi(&aksi, &alasan, nominal_disetujui, &keadaan).map_err(invalid)?;
+        if reimburse {
+            // Klaim yang sudah dibayar atau ada di proses gaji tidak dibatalkan (§19.3).
+            if aksi == "Batal" {
+                let (pembayaran, baris) = muat_bayar(tx)?;
+                if status_bayar(&id, &pembayaran, &baris, &muat_gaji_reimburse(tx)?) != STATUS_BELUM_DIBAYAR {
+                    return Err(invalid(PESAN_KLAIM_DIBAYAR));
+                }
+            }
+        } else if aksi == "Setujui" || aksi == "Batal" {
             tolak_bila_dibayar(tx, &p.tanggal_mulai, &p.tanggal_selesai)?;
         }
         let id_keputusan = match aksi.as_str() {
@@ -1906,21 +2476,78 @@ pub fn putuskan(state: &DesktopState, operator: &OperatorUser, draft: &Value) ->
             _ => new_hex_id("kpt-"),
         };
         let alasan_simpan = Some(alasan.as_str()).filter(|a| !a.is_empty());
-        tulis_keputusan(tx, client_id, &id_keputusan, &id, &aksi, &p.sidik, alasan_simpan, &operator.username)?;
+        tulis_keputusan(tx, client_id, &id_keputusan, &id, &aksi, &p.sidik, alasan_simpan, &operator.username, nominal_disetujui)?;
         Ok(json!({ "sukses": true, "id_keputusan": id_keputusan }))
     })
 }
 
-/// Daftar pengajuan + status + tanda (§17.3), dan semua jenis.
-pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandError> {
+/// Status bayar, dibayar ganda, dan lewat batas klaim Reimburse di `baris`.
+struct InfoKlaim {
+    status_bayar: HashMap<String, &'static str>,
+    ganda: HashSet<String>,
+    lewat_batas: HashSet<String>,
+}
+
+fn info_klaim(conn: &Connection, baris: &[BarisPengajuan], jenis: &[JenisPengajuan]) -> Result<InfoKlaim, CommandError> {
+    let mut info = InfoKlaim { status_bayar: HashMap::new(), ganda: HashSet::new(), lewat_batas: HashSet::new() };
+    let klaim: Vec<&BarisPengajuan> = baris.iter().filter(|p| p.kelompok == "Reimburse").collect();
+    let (Some(awal), Some(akhir)) = (
+        klaim.iter().map(|p| p.tanggal_mulai.as_str()).min(),
+        klaim.iter().map(|p| p.tanggal_mulai.as_str()).max(),
+    ) else {
+        return Ok(info);
+    };
+    let (pembayaran, baris_bayar) = muat_bayar(conn)?;
+    let gaji = muat_gaji_reimburse(conn)?;
+    for p in &klaim {
+        let id = p.id_pengajuan.as_str();
+        info.status_bayar.insert(id.to_owned(), status_bayar(id, &pembayaran, &baris_bayar, &gaji));
+        if dibayar_ganda(id, &pembayaran, &baris_bayar, &gaji) {
+            info.ganda.insert(id.to_owned());
+        }
+    }
+    // Batas dihitung atas seluruh klaim di bulan-bulan itu, bukan hanya yang tersaring.
+    let bulan = |t: &str, akhir: &str| format!("{}-{akhir}", t.chars().take(7).collect::<String>());
+    let sebulan: Vec<BarisPengajuan> = baca_pengajuan(conn, None, &bulan(awal, "01"), &bulan(akhir, "31"))?
+        .into_iter()
+        .filter(|p| p.kelompok == "Reimburse")
+        .collect();
+    let ids: Vec<&str> = sebulan.iter().map(|p| p.id_pengajuan.as_str()).collect();
+    let keputusan = baca_keputusan(conn, &ids)?;
+    let mut hitung: Vec<(&str, &str, &str, i64)> = Vec::new();
+    for p in &sebulan {
+        let kep = keputusan.get(&p.id_pengajuan).map(Vec::as_slice).unwrap_or(&[]);
+        let status = status_pengajuan(&p.sidik, kep);
+        let nominal = p.nominal.unwrap_or(0);
+        if status == "Menunggu" {
+            hitung.push((&p.id_karyawan, &p.id_jenis, &p.tanggal_mulai, nominal));
+        } else if status_berlaku(status) {
+            hitung.push((&p.id_karyawan, &p.id_jenis, &p.tanggal_mulai, nominal_berlaku(nominal, keputusan_berlaku(&p.sidik, kep))));
+        }
+    }
+    let batas: HashMap<String, i64> = jenis
+        .iter()
+        .filter_map(|j| j.batas_bulanan.map(|b| (j.id_jenis.clone(), b)))
+        .collect();
+    info.lewat_batas = lewat_batas(&hitung, &batas);
+    Ok(info)
+}
+
+/// Daftar pengajuan + status + tanda (§17.3), dan semua jenis. Tanpa
+/// `hr.request.view`, hanya klaim Reimburse yang dikembalikan (§19.5).
+pub fn daftar(state: &DesktopState, filter: &Value, hanya_reimburse: bool) -> Result<Value, CommandError> {
     let conn = super::storage::database(&state.data_dir)?;
     let id_karyawan = payload_text(filter, "id_karyawan");
     let mulai = payload_text(filter, "dari").filter(|t| hari_kerja::tanggal_valid(t)).unwrap_or_else(|| "0000-01-01".into());
     let selesai = payload_text(filter, "sampai").filter(|t| hari_kerja::tanggal_valid(t)).unwrap_or_else(|| "9999-12-31".into());
-    let baris = baca_pengajuan(&conn, id_karyawan.as_deref(), &mulai, &selesai)?;
+    let mut baris = baca_pengajuan(&conn, id_karyawan.as_deref(), &mulai, &selesai)?;
+    if hanya_reimburse {
+        baris.retain(|p| p.kelompok == "Reimburse");
+    }
     let ids: Vec<&str> = baris.iter().map(|p| p.id_pengajuan.as_str()).collect();
     let keputusan = baca_keputusan(&conn, &ids)?;
     let jenis = baca_jenis_semua(&conn)?;
+    let info = info_klaim(&conn, &baris, &jenis)?;
     let nama: HashMap<String, String> = {
         let mut st = conn.prepare("SELECT id_unik, nama FROM master_data;").map_err(internal)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(internal)?;
@@ -1986,8 +2613,25 @@ pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandErro
             }
         }
         let jenis_ini = jenis.iter().find(|j| j.id_jenis == p.id_jenis);
+        let reimburse = p.kelompok == "Reimburse";
+        let status_bayar_ini = info.status_bayar.get(&p.id_pengajuan).copied();
+        let nominal_ini = p.nominal.map(|n| nominal_berlaku(n, keputusan_berlaku(&p.sidik, kep)));
+        if reimburse {
+            if aktif(status[i]) && info.lewat_batas.contains(&kunci_batas(&p.id_karyawan, &p.id_jenis, &p.tanggal_mulai)) {
+                tanda.push("lewat_batas");
+            }
+            if info.ganda.contains(&p.id_pengajuan) {
+                tanda.push("dibayar_ganda");
+            }
+            if !status_berlaku(status[i]) && status_bayar_ini == Some(STATUS_DIBAYAR) {
+                tanda.push("dibayar_batal");
+            }
+        }
         hasil.push(json!({
             "pengajuan": p,
+            "nominal_berlaku": if reimburse && status_berlaku(status[i]) { nominal_ini } else { None },
+            "status_bayar": status_bayar_ini,
+            "batas_bulanan": jenis_ini.and_then(|j| j.batas_bulanan),
             "nama_karyawan": nama.get(&p.id_karyawan),
             "nama_karyawan_tukar": p.id_karyawan_tukar.as_ref().and_then(|t| nama.get(t)),
             "menit_lembur": durasi_lembur(p.jam_mulai.as_deref().unwrap_or(""), p.jam_selesai.as_deref().unwrap_or("")).ok(),
@@ -2000,13 +2644,37 @@ pub fn daftar(state: &DesktopState, filter: &Value) -> Result<Value, CommandErro
             "sudah_diketahui": kep.iter().any(|k| k.jenis == "Diketahui"),
         }));
     }
-    Ok(json!({ "pengajuan": hasil, "jenis": jenis, "aturan_lembur": aturan_lembur }))
+    Ok(json!({
+        "pengajuan": hasil,
+        "jenis": jenis,
+        "aturan_lembur": aturan_lembur,
+        "mode_reimburse": baca_mode_reimburse(&conn)?,
+    }))
 }
 
-/// Riwayat keputusan satu pengajuan.
-pub fn rincian(state: &DesktopState, id: &str) -> Result<Value, CommandError> {
+/// Riwayat keputusan satu pengajuan. Tanpa `hr.request.view` hanya klaim
+/// Reimburse (§19.5).
+pub fn rincian(state: &DesktopState, id: &str, hanya_reimburse: bool) -> Result<Value, CommandError> {
     let conn = super::storage::database(&state.data_dir)?;
+    if hanya_reimburse && !baca_satu_pengajuan(&conn, id)?.is_some_and(|p| p.kelompok == "Reimburse") {
+        return Err(ditolak("Kamu hanya bisa melihat klaim reimbursement."));
+    }
     Ok(json!({ "keputusan": riwayat_keputusan(&conn, id)? }))
+}
+
+/// Status bayar setiap penyesuaian `Diuangkan` (Q-62).
+fn status_bayar_uang(conn: &Connection, penyesuaian: &[(Value, bool)]) -> Result<HashMap<String, &'static str>, CommandError> {
+    let mut hasil = HashMap::new();
+    if !penyesuaian.iter().any(|(b, _)| b["jenis"] == "Diuangkan") {
+        return Ok(hasil);
+    }
+    let (pembayaran, baris) = muat_bayar(conn)?;
+    for (b, _) in penyesuaian.iter().filter(|(b, _)| b["jenis"] == "Diuangkan") {
+        if let Some(id) = b["id_penyesuaian"].as_str() {
+            hasil.insert(id.to_owned(), status_bayar(id, &pembayaran, &baris, &[]));
+        }
+    }
+    Ok(hasil)
 }
 
 fn baca_aturan(conn: &Connection) -> Result<AturanCuti, CommandError> {
@@ -2091,14 +2759,44 @@ fn hitung_jatah(conn: &Connection, id_karyawan: &str) -> Result<(AturanCuti, Opt
     Ok((aturan, masuk, periode, penyesuaian))
 }
 
+/// Sisa cuti periode yang memuat `tanggal` dan upah harian pada tanggal itu:
+/// dasar baris UPH Cuti saat karyawan keluar (§20.5). Cermin `sisaCutiKeluar`.
+pub fn sisa_cuti_keluar(conn: &Connection, id_karyawan: &str, tanggal: &str) -> Result<(i64, i64), CommandError> {
+    let (_, _, periode, _) = hitung_jatah(conn, id_karyawan)?;
+    let sisa = periode
+        .iter()
+        .find(|p| !p.sebelum_berhak && p.mulai.as_str() <= tanggal && tanggal <= p.selesai.as_str())
+        .map(|p| p.sisa.max(0))
+        .unwrap_or(0);
+    let gaji: Option<(String, i64, i64)> = conn
+        .query_row(
+            "SELECT COALESCE(salary_type, 'HOURLY'), COALESCE(daily_rate, 0), COALESCE(rate_per_hour, 0) FROM salary_configs
+             WHERE id_karyawan = ?1 AND effective_date <= ?2 ORDER BY effective_date DESC LIMIT 1;",
+            params![id_karyawan, tanggal],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(internal)?;
+    let normal = jadwal_satu(conn, id_karyawan)?.map(|j| j.jam_normal_menit).unwrap_or(0);
+    let harian = gaji.map(|(t, d, r)| upah_harian(&t, d, r, normal)).unwrap_or(0);
+    Ok((sisa, harian))
+}
+
 pub fn jatah(state: &DesktopState, id_karyawan: &str) -> Result<Value, CommandError> {
     let conn = super::storage::database(&state.data_dir)?;
     let (aturan, masuk, periode, penyesuaian) = hitung_jatah(&conn, id_karyawan)?;
+    let bayar = status_bayar_uang(&conn, &penyesuaian)?;
     Ok(json!({
         "aturan": aturan,
         "tanggal_masuk": masuk,
         "periode": periode,
-        "penyesuaian": penyesuaian.into_iter().map(|(b, batal)| json!({ "baris": b, "dibatalkan": batal })).collect::<Vec<_>>(),
+        "penyesuaian": penyesuaian
+            .into_iter()
+            .map(|(b, batal)| {
+                let status_bayar = b["id_penyesuaian"].as_str().and_then(|id| bayar.get(id)).copied();
+                json!({ "baris": b, "dibatalkan": batal, "status_bayar": status_bayar })
+            })
+            .collect::<Vec<_>>(),
     }))
 }
 
@@ -2158,6 +2856,12 @@ pub fn batal_penyesuaian(state: &DesktopState, oleh: &str, draft: &Value) -> Res
             .map_err(internal)?;
         if jenis == "Pembatalan" || sudah {
             return Err(invalid("Penyesuaian ini sudah dibatalkan."));
+        }
+        if jenis == "Diuangkan" {
+            let (pembayaran, baris) = muat_bayar(tx)?;
+            if status_bayar(&id, &pembayaran, &baris, &[]) == STATUS_DIBAYAR {
+                return Err(invalid(PESAN_UANG_DIBAYAR));
+            }
         }
         tulis_penyesuaian(tx, client_id, (&id_batal, &id_karyawan, &periode, "Pembatalan", Some(&id), 0, None, &alasan, oleh))?;
         Ok(json!({ "sukses": true, "id_penyesuaian": id_batal }))
@@ -2233,21 +2937,30 @@ pub fn akhir_periode(state: &DesktopState) -> Result<Value, CommandError> {
                     belum.push(json!({ "id_karyawan": id, "nama": nama, "periode": p }));
                 }
             }
+            let bayar = status_bayar_uang(&conn, &penyesuaian)?;
             for (b, batal) in &penyesuaian {
                 if b["jenis"] == "Diuangkan" && !batal {
-                    uang.push(json!({ "nama": nama, "baris": b }));
+                    let status_bayar = b["id_penyesuaian"].as_str().and_then(|id| bayar.get(id)).copied();
+                    uang.push(json!({ "nama": nama, "baris": b, "status_bayar": status_bayar }));
                 }
             }
         }
     }
     let aturan_lembur = baca_aturan_lembur(&conn)?;
-    Ok(json!({ "aturan": aturan, "aturan_lembur": aturan_lembur, "belum_diproses": belum, "diuangkan": uang }))
+    Ok(json!({
+        "aturan": aturan,
+        "aturan_lembur": aturan_lembur,
+        "mode_reimburse": baca_mode_reimburse(&conn)?,
+        "belum_diproses": belum,
+        "diuangkan": uang,
+    }))
 }
 
 /// Simpan aturan cuti dan lembur (`hr.org.manage`), pola `hris::simpan_pengaturan`.
 pub fn simpan_aturan(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
     let mut isian = validasi_aturan_cuti(draft).map_err(invalid)?;
     isian.extend(validasi_aturan_lembur(draft).map_err(invalid)?);
+    isian.extend(validasi_aturan_reimburse(draft).map_err(invalid)?);
     hris::dalam_transaksi(state, |tx, client_id| {
         for (kunci, nilai) in &isian {
             tx.execute(
@@ -2268,36 +2981,166 @@ pub fn simpan_aturan(state: &DesktopState, draft: &Value) -> Result<Value, Comma
     })
 }
 
+// ── Pembayaran terpisah reimbursement dan cuti diuangkan (§19.4) ───────────
+
+fn enqueue_bayar_reimburse(tx: &Transaction<'_>, client_id: &str, id_bayar: &str) -> Result<(), CommandError> {
+    let payload = json!({
+        "bayar": hris::satu_baris(tx, "SELECT * FROM hr_reimburse_bayar WHERE id_bayar = ?1;", id_bayar)?,
+        "baris": hris::baris_json(tx, "SELECT * FROM hr_reimburse_bayar_baris WHERE id_bayar = ?1 ORDER BY id_baris;", Some(id_bayar))?,
+    });
+    sync::enqueue(tx, client_id, "hr-reimburse-payment", "create", id_bayar, &payload, None)?;
+    Ok(())
+}
+
+/// Cermin `catatBayarReimburse`: satu karyawan, klaim dan cuti diuangkan
+/// miliknya yang Belum dibayar. Total = jumlah nominal berlaku saat dicatat.
+pub fn catat_bayar_reimburse(state: &DesktopState, oleh: &str, draft: &Value) -> Result<Value, CommandError> {
+    hris::dalam_transaksi(state, |tx, client_id| {
+        let valid = validasi_bayar_reimburse(draft, &hris::hari_ini_wib(tx)?).map_err(invalid)?;
+        let klaim = muat_klaim(tx, "9999-12-31")?;
+        let (pembayaran, baris) = muat_bayar(tx)?;
+        let gaji = muat_gaji_reimburse(tx)?;
+        let dibayar = periksa_bayar_reimburse(&valid, &klaim, &pembayaran, &baris, &gaji).map_err(invalid)?;
+        let total: i64 = dibayar.iter().map(|k| k.nominal).sum();
+        let id_bayar = new_hex_id("rbb-");
+        tx.execute(
+            CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+            params![id_bayar, "Bayar", Option::<String>::None, valid.id_karyawan, valid.tanggal, total, valid.keterangan, oleh, Option::<String>::None],
+        )
+        .map_err(internal)?;
+        for k in &dibayar {
+            tx.execute(
+                CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+                params![id_baris_reimburse(&id_bayar, &k.id_klaim), id_bayar, k.sumber, k.id_klaim, k.nominal],
+            )
+            .map_err(internal)?;
+        }
+        enqueue_bayar_reimburse(tx, client_id, &id_bayar)?;
+        Ok(json!({ "sukses": true, "id_bayar": id_bayar, "total": total }))
+    })
+}
+
+/// Cermin `batalBayarReimburse`: baris `Pembatalan` berid `batal-<id_bayar>`
+/// yang menyalin karyawan dan totalnya, bertanggal WIB hari ini.
+pub fn batal_bayar_reimburse(state: &DesktopState, oleh: &str, draft: &Value) -> Result<Value, CommandError> {
+    let id_bayar = payload_text(draft, "id_bayar").ok_or_else(|| invalid("Pembayaran tidak ditemukan."))?;
+    let alasan = teks(draft, "alasan");
+    if alasan.is_empty() {
+        return Err(invalid("Alasan pembatalan wajib diisi."));
+    }
+    if panjang(&alasan) > MAKS_ALASAN {
+        return Err(invalid(format!("Alasan maksimal {MAKS_ALASAN} karakter.")));
+    }
+    hris::dalam_transaksi(state, |tx, client_id| {
+        let (pembayaran, _) = muat_bayar(tx)?;
+        periksa_batal_bayar_reimburse(&pembayaran, &id_bayar).map_err(invalid)?;
+        let asal = pembayaran.iter().find(|p| p.id_bayar == id_bayar).ok_or_else(CommandError::internal)?;
+        let id = id_batal_reimburse(&id_bayar);
+        tx.execute(
+            CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+            params![id, "Pembatalan", id_bayar, asal.id_karyawan, hris::hari_ini_wib(tx)?, asal.total, alasan, oleh, Option::<String>::None],
+        )
+        .map_err(internal)?;
+        enqueue_bayar_reimburse(tx, client_id, &id)?;
+        Ok(json!({ "sukses": true, "id_bayar": id }))
+    })
+}
+
+/// Cermin `ringkasanReimburse`: klaim Belum dibayar dan Dalam proses gaji, dan
+/// riwayat pembayaran bertanggal `dari`..`sampai` beserta pembatalannya.
+pub fn ringkasan_reimburse(state: &DesktopState, dari: &str, sampai: &str) -> Result<Value, CommandError> {
+    let (dari, sampai) = (dari.trim(), sampai.trim());
+    if !hari_kerja::tanggal_valid(dari) || !hari_kerja::tanggal_valid(sampai) || dari > sampai {
+        return Err(invalid("Rentang tanggal tidak valid."));
+    }
+    let conn = super::storage::database(&state.data_dir)?;
+    let nama: HashMap<String, String> = {
+        let mut st = conn.prepare("SELECT id_unik, nama FROM master_data;").map_err(internal)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(internal)?;
+        rows.collect::<Result<_, _>>().map_err(internal)?
+    };
+    let klaim = muat_klaim(&conn, "9999-12-31")?;
+    let (pembayaran, baris) = muat_bayar(&conn)?;
+    let gaji = muat_gaji_reimburse(&conn)?;
+    let mut belum = Vec::new();
+    let mut proses_gaji = Vec::new();
+    for k in &klaim {
+        let item = json!({ "klaim": k, "nama": nama.get(&k.id_karyawan) });
+        match status_bayar(&k.id_klaim, &pembayaran, &baris, &gaji) {
+            STATUS_BELUM_DIBAYAR => belum.push(item),
+            STATUS_PROSES_GAJI => proses_gaji.push(item),
+            _ => {}
+        }
+    }
+    let riwayat: Vec<Value> = pembayaran
+        .iter()
+        .filter(|p| p.jenis == "Bayar" && p.tanggal.as_str() >= dari && p.tanggal.as_str() <= sampai)
+        .rev()
+        .map(|p| {
+            let batal = pembayaran
+                .iter()
+                .find(|x| x.jenis == "Pembatalan" && x.id_ref.as_deref() == Some(p.id_bayar.as_str()));
+            let isi: Vec<Value> = baris
+                .iter()
+                .filter(|b| b.id_bayar == p.id_bayar)
+                .map(|b| {
+                    let keterangan = klaim.iter().find(|k| k.id_klaim == b.id_klaim).map(|k| k.keterangan.clone());
+                    json!({ "baris": b, "keterangan": keterangan })
+                })
+                .collect();
+            json!({ "bayar": p, "nama": nama.get(&p.id_karyawan), "batal": batal, "baris": isi })
+        })
+        .collect();
+    Ok(json!({
+        "mode": baca_mode_reimburse(&conn)?,
+        "belum_dibayar": belum,
+        "proses_gaji": proses_gaji,
+        "riwayat": riwayat,
+    }))
+}
+
 // ── Lampiran KHUSUS CLOUD (Q-51, pola `hr_dokumen_berkas`) ─────────────────
 
 use super::turso::TursoClient;
 
 pub const MAKS_LAMPIRAN: i64 = 5;
 
-/// Pengaju pengajuan di cloud; `None` bila belum sampai di cloud.
-async fn pengaju_cloud(turso: &TursoClient, id_pengajuan: &str) -> Result<Option<String>, CommandError> {
-    Ok(hris::objek(
-        turso,
-        "SELECT diajukan_oleh FROM hr_pengajuan WHERE id_pengajuan = ?1;",
-        vec![json!(id_pengajuan)],
-    )
-    .await?
-    .into_iter()
-    .next()
-    .and_then(|b| b.get("diajukan_oleh").and_then(Value::as_str).map(str::to_owned)))
+/// Pengaju, kelompok, dan pemutus jenis pengajuan di cloud; `None` bila
+/// belum sampai di cloud.
+const PENGAJU_CLOUD_SQL: &str = "SELECT p.diajukan_oleh, p.kelompok, COALESCE((SELECT j.izin_pemutus FROM hr_jenis_pengajuan j WHERE j.id_jenis = p.id_jenis), 'hr.request.decide') AS izin_pemutus FROM hr_pengajuan p WHERE p.id_pengajuan = ?1;";
+
+async fn pengaju_cloud(turso: &TursoClient, id_pengajuan: &str) -> Result<Option<(String, String, String)>, CommandError> {
+    Ok(hris::objek(turso, PENGAJU_CLOUD_SQL, vec![json!(id_pengajuan)])
+        .await?
+        .into_iter()
+        .next()
+        .map(|b| {
+            let teks = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+            (teks("diajukan_oleh"), teks("kelompok"), teks("izin_pemutus"))
+        }))
 }
 
-/// Hanya pengaju atau pemegang `hr.request.decide` yang mengubah lampiran.
-fn boleh_ubah_lampiran(operator: &OperatorUser, pengaju: &str) -> Result<(), CommandError> {
-    if sama_orang(pengaju, &operator.username) || punya(operator, "hr.request.decide") {
+/// Pengaju, pemegang `hr.request.decide`, atau pemegang pemutus jenisnya
+/// (nota reimbursement, §19.5) yang mengubah lampiran.
+fn boleh_ubah_lampiran(operator: &OperatorUser, pengaju: &str, izin_pemutus: &str) -> Result<(), CommandError> {
+    if sama_orang(pengaju, &operator.username) || punya(operator, "hr.request.decide") || punya(operator, izin_pemutus) {
         Ok(())
     } else {
-        Err(ditolak("Hanya pengaju atau HRD yang bisa mengubah lampiran pengajuan ini."))
+        Err(ditolak("Hanya pengaju atau pemutusnya yang bisa mengubah lampiran pengajuan ini."))
     }
 }
 
-pub async fn lampiran(turso: &TursoClient, id_pengajuan: &str) -> Result<Value, CommandError> {
+/// Tanpa `hr.request.view`, lampiran hanya terbaca untuk klaim Reimburse.
+async fn boleh_baca_lampiran(turso: &TursoClient, id_pengajuan: &str, hanya_reimburse: bool) -> Result<(), CommandError> {
+    if hanya_reimburse && !pengaju_cloud(turso, id_pengajuan).await?.is_some_and(|(_, k, _)| k == "Reimburse") {
+        return Err(ditolak("Kamu hanya bisa melihat nota reimbursement."));
+    }
+    Ok(())
+}
+
+pub async fn lampiran(turso: &TursoClient, id_pengajuan: &str, hanya_reimburse: bool) -> Result<Value, CommandError> {
     hris::siap(turso).await?;
+    boleh_baca_lampiran(turso, id_pengajuan, hanya_reimburse).await?;
     let baris = hris::objek(
         turso,
         "SELECT id_berkas, urutan, nama_berkas, mime_type, diunggah_oleh, created_at FROM hr_pengajuan_berkas WHERE id_pengajuan = ?1 ORDER BY urutan;",
@@ -2307,18 +3150,20 @@ pub async fn lampiran(turso: &TursoClient, id_pengajuan: &str) -> Result<Value, 
     Ok(json!({ "berkas": baris }))
 }
 
-pub async fn isi_lampiran(turso: &TursoClient, id_berkas: &str) -> Result<Value, CommandError> {
+pub async fn isi_lampiran(turso: &TursoClient, id_berkas: &str, hanya_reimburse: bool) -> Result<Value, CommandError> {
     hris::siap(turso).await?;
-    hris::objek(
+    let berkas = hris::objek(
         turso,
-        "SELECT id_berkas, nama_berkas, mime_type, data_base64 FROM hr_pengajuan_berkas WHERE id_berkas = ?1;",
+        "SELECT id_berkas, id_pengajuan, nama_berkas, mime_type, data_base64 FROM hr_pengajuan_berkas WHERE id_berkas = ?1;",
         vec![json!(id_berkas)],
     )
     .await?
     .into_iter()
     .next()
-    .map(|b| json!(b))
-    .ok_or_else(|| invalid("Berkas tidak ditemukan."))
+    .ok_or_else(|| invalid("Berkas tidak ditemukan."))?;
+    let id_pengajuan = berkas.get("id_pengajuan").and_then(Value::as_str).unwrap_or_default();
+    boleh_baca_lampiran(turso, id_pengajuan, hanya_reimburse).await?;
+    Ok(json!(berkas))
 }
 
 pub async fn tambah_lampiran(turso: &TursoClient, operator: &OperatorUser, draft: &Value) -> Result<Value, CommandError> {
@@ -2328,10 +3173,10 @@ pub async fn tambah_lampiran(turso: &TursoClient, operator: &OperatorUser, draft
     hris::validasi_berkas(&mime, data).map_err(invalid)?;
     let nama_berkas = payload_text(draft, "nama_berkas").map(|n| n.chars().take(255).collect::<String>());
     hris::siap(turso).await?;
-    let pengaju = pengaju_cloud(turso, &id_pengajuan)
+    let (pengaju, _, izin_pemutus) = pengaju_cloud(turso, &id_pengajuan)
         .await?
         .ok_or_else(|| invalid("Pengajuan belum sampai ke database. Sinkronkan dulu, lalu coba lagi."))?;
-    boleh_ubah_lampiran(operator, &pengaju)?;
+    boleh_ubah_lampiran(operator, &pengaju, &izin_pemutus)?;
     let terpakai: HashSet<i64> = hris::objek(
         turso,
         "SELECT urutan FROM hr_pengajuan_berkas WHERE id_pengajuan = ?1;",
@@ -2367,8 +3212,8 @@ pub async fn hapus_lampiran(turso: &TursoClient, operator: &OperatorUser, id_ber
     .next()
     .and_then(|b| b.get("id_pengajuan").and_then(Value::as_str).map(str::to_owned))
     .ok_or_else(|| invalid("Berkas tidak ditemukan."))?;
-    let pengaju = pengaju_cloud(turso, &id_pengajuan).await?.unwrap_or_default();
-    boleh_ubah_lampiran(operator, &pengaju)?;
+    let (pengaju, _, izin_pemutus) = pengaju_cloud(turso, &id_pengajuan).await?.unwrap_or_default();
+    boleh_ubah_lampiran(operator, &pengaju, &izin_pemutus)?;
     turso
         .query_one("DELETE FROM hr_pengajuan_berkas WHERE id_berkas = ?1;", vec![json!(id_berkas)])
         .await
@@ -2401,6 +3246,12 @@ pub fn cloud_jenis_statements(payload: &Value, entity_key: &str) -> Option<Vec<(
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_i64().filter(|n| *n > 0)?),
     };
+    // Perangkat v38 tidak mengenal `batas_bulanan`: kunci absen = pertahankan.
+    let (batas, bawa_batas) = match payload.get("batas_bulanan") {
+        None => (None, 0),
+        Some(Value::Null) => (None, 1),
+        Some(v) => (Some(v.as_i64().filter(|n| *n > 0)?), 1),
+    };
     Some(vec![(
         UPSERT_JENIS_SQL,
         vec![
@@ -2416,6 +3267,8 @@ pub fn cloud_jenis_statements(payload: &Value, entity_key: &str) -> Option<Vec<(
             json!(angka01(payload, "wajib_dokumen")?),
             json!(angka01(payload, "is_aktif")?),
             json!(payload_text(payload, "created_at")),
+            json!(batas),
+            json!(bawa_batas),
         ],
     )])
 }
@@ -2446,6 +3299,15 @@ pub fn cloud_pengajuan_statements(payload: &Value, entity_key: &str) -> Option<V
         (Some(a), Some(b))
     } else {
         (None, None)
+    };
+    let nominal = if kelompok == "Reimburse" {
+        let n = payload.get("nominal").and_then(Value::as_i64).filter(|n| *n > 0)?;
+        if !satu_tanggal {
+            return None;
+        }
+        Some(n)
+    } else {
+        None
     };
     let (id_tukar, shift_asal, shift_tukar) = if kelompok == "Tukar Shift" {
         let tukar = payload_text(payload, "id_karyawan_tukar")?;
@@ -2480,6 +3342,7 @@ pub fn cloud_pengajuan_statements(payload: &Value, entity_key: &str) -> Option<V
             json!(id_tukar),
             json!(shift_asal),
             json!(shift_tukar),
+            json!(nominal),
         ],
     )])
 }
@@ -2490,6 +3353,10 @@ pub fn cloud_keputusan_statements(payload: &Value, entity_key: &str) -> Option<V
     let jenis = payload_text(payload, "jenis").filter(|j| {
         ["Setujui", "Tolak", "Setujui Urgent", "Diketahui", "Batal"].contains(&j.as_str())
     })?;
+    let nominal_disetujui = match payload.get("nominal_disetujui") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_i64().filter(|n| *n > 0)?),
+    };
     Some(vec![(
         CLOUD_INSERT_KEPUTUSAN_SQL,
         vec![
@@ -2501,8 +3368,60 @@ pub fn cloud_keputusan_statements(payload: &Value, entity_key: &str) -> Option<V
             json!(payload_text(payload, "oleh")?),
             json!(payload_text(payload, "waktu_perangkat")?),
             json!(payload_text(payload, "created_at")),
+            json!(nominal_disetujui),
         ],
     )])
+}
+
+/// `hr-reimburse-payment/create`: append-only, kiriman ulang berhenti di PK.
+/// Hanya bentuk dan CHECK; bayar ganda dari perangkat offline TIDAK ditolak
+/// (outbox macet), melainkan menjadi tanda `dibayar_ganda`.
+pub fn cloud_bayar_reimburse_statements(payload: &Value, entity_key: &str) -> Option<Vec<(&'static str, Vec<Value>)>> {
+    let row = payload.get("bayar")?;
+    let id = hris::id_dari(row, "id_bayar", entity_key)?;
+    let jenis = payload_text(row, "jenis").filter(|j| j == "Bayar" || j == "Pembatalan")?;
+    let id_ref = payload_text(row, "id_ref");
+    let tanggal = payload_text(row, "tanggal").filter(|t| hari_kerja::tanggal_valid(t))?;
+    let total = row.get("total")?.as_i64().filter(|n| *n >= 0)?;
+    let baris = match payload.get("baris") {
+        None | Some(Value::Null) => &[][..],
+        Some(nilai) => nilai.as_array()?.as_slice(),
+    };
+    let bentuk_sah = if jenis == "Bayar" {
+        !baris.is_empty() && baris.len() <= MAKS_KLAIM_PER_BAYAR
+    } else {
+        id_ref.is_some() && baris.is_empty()
+    };
+    if !bentuk_sah {
+        return None;
+    }
+    let mut statements = vec![(
+        CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+        vec![
+            json!(id),
+            json!(jenis),
+            json!(id_ref),
+            json!(payload_text(row, "id_karyawan")?),
+            json!(tanggal),
+            json!(total),
+            json!(payload_text(row, "keterangan")),
+            json!(payload_text(row, "dicatat_oleh")?),
+            json!(payload_text(row, "created_at")),
+        ],
+    )];
+    for b in baris {
+        statements.push((
+            CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+            vec![
+                json!(payload_text(b, "id_baris")?),
+                json!(id),
+                json!(payload_text(b, "sumber").filter(|s| s == SUMBER_REIMBURSE || s == SUMBER_UANG)?),
+                json!(payload_text(b, "id_klaim")?),
+                json!(b.get("nominal")?.as_i64().filter(|n| *n >= 0)?),
+            ],
+        ));
+    }
+    Some(statements)
 }
 
 /// `hr-leave-adjustment/create`: append-only.
@@ -2614,7 +3533,7 @@ mod tests_alur {
                            "tanggal_selesai": "2026-11-15", "alasan": "Sabtu"});
         assert_eq!(simpan_pengajuan(&state, &hrd, &libur).unwrap_err().message, PESAN_TANPA_HARI_KERJA);
 
-        let d = daftar(&state, &json!({})).expect("daftar");
+        let d = daftar(&state, &json!({}), false).expect("daftar");
         assert_eq!(d["pengajuan"][0]["status"], "Disetujui (urgent)");
         assert_eq!(d["pengajuan"][0]["tanda"], json!(["perlu_diketahui"]));
         putuskan(&state, &hrd, &json!({"id_pengajuan": id, "aksi": "Diketahui"})).expect("diketahui");
@@ -2797,7 +3716,7 @@ mod tests_alur {
         // 11-03: 180 − 120 = 60; 11-04: tanpa SPL 30; Sabtu: 300 jam kerja ≤ 240 SPL → 60 dari jam kerja.
         assert_eq!(potong["K1"], PotongLembur { lembur: 90, libur_total: 60, libur_jam_kerja: 60, tanpa_spl: 30 });
 
-        let d = daftar(&state, &json!({})).expect("daftar");
+        let d = daftar(&state, &json!({}), false).expect("daftar");
         let baris = |id: &str| d["pengajuan"].as_array().unwrap().iter().find(|b| b["pengajuan"]["id_pengajuan"] == id).unwrap().clone();
         assert_eq!(baris(&id_tukar)["nama_karyawan_tukar"], "Budi");
         assert_eq!(baris(&id_tukar)["tanda"], json!([]));
@@ -2844,6 +3763,157 @@ mod tests_alur {
         });
     }
 
+    /// Fase 4 (v39): klaim, nominal disetujui, pembayaran terpisah, kait gaji
+    /// mode `gaji`, pemeriksaan PAID, dan handler cloud. Cermin "fase 4" Web.
+    #[test]
+    fn alur_fase4_reimburse() {
+        let (_dir, state) = state_uji();
+        let conn = storage::database(&state.data_dir).expect("db");
+        conn.execute_batch(
+            "INSERT INTO tbl_shift (id_shift, kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit,
+               istirahat_menit, batas_pulang_menit, buffer_shift_malam_menit, offset_generate_alfa, hari_kerja)
+             VALUES (1, 1, 'Pagi', '07:00', '15:00', 480, 60, 240, 120, 180, '1,2,3,4,5');
+             INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif, tanggal_daftar) VALUES
+               ('K1', 'Ani', 'Gudang', 1, 'Aktif', '2024-01-02');",
+        )
+        .expect("data awal");
+        let pengaju = operator("ani", &["hr.request.submit"], Some("K1"));
+        let hrd = operator("hrd", &["hr.request.submit", "hr.request.decide"], None);
+        let keuangan = operator("keu", &["reimburse.decide"], None);
+        let klaim = |nominal: i64| {
+            json!({"id_karyawan": "K1", "id_jenis": "jns-rmb-transport", "tanggal_mulai": "2026-01-05",
+                   "tanggal_selesai": "2026-01-05", "alasan": "Taksi ke klien", "nominal": nominal})
+        };
+        let gagal = |op: &OperatorUser, draft: Value| simpan_pengajuan(&state, op, &draft).unwrap_err().message;
+        assert_eq!(gagal(&pengaju, klaim(0)), PESAN_NOMINAL);
+        let mut besok = klaim(1000);
+        besok["tanggal_mulai"] = json!("2999-01-01");
+        besok["tanggal_selesai"] = json!("2999-01-01");
+        assert_eq!(gagal(&pengaju, besok), "Tanggal biaya tidak boleh setelah hari ini.");
+        let id = simpan_pengajuan(&state, &pengaju, &klaim(100_000)).expect("ajukan")["id_pengajuan"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // Cuti di tanggal yang sama tidak bertumpuk dengan klaim.
+        let cuti = json!({"id_karyawan": "K1", "id_jenis": "jns-cuti-tahunan", "tanggal_mulai": "2026-01-05",
+                          "tanggal_selesai": "2026-01-05", "alasan": "Mudik"});
+        let id_cuti = simpan_pengajuan(&state, &pengaju, &cuti).expect("cuti tidak bertumpuk dengan klaim")["id_pengajuan"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let putus = |op: &OperatorUser, d: Value| putuskan(&state, op, &d);
+        assert_eq!(
+            putus(&hrd, json!({"id_pengajuan": id, "aksi": "Setujui", "nominal_disetujui": 100_000})).unwrap_err().message,
+            PESAN_IZIN_PUTUS
+        );
+        assert_eq!(
+            putus(&keuangan, json!({"id_pengajuan": id, "aksi": "Setujui", "nominal_disetujui": 75_000})).unwrap_err().message,
+            "Alasan wajib diisi bila nominal disetujui lebih kecil dari yang diajukan."
+        );
+        putus(&keuangan, json!({"id_pengajuan": id, "aksi": "Setujui", "nominal_disetujui": 75_000, "alasan": "Tarif wajar"}))
+            .expect("setujui");
+
+        let d = daftar(&state, &json!({}), true).expect("daftar keuangan");
+        assert_eq!(d["pengajuan"].as_array().unwrap().len(), 1, "keuangan tidak melihat cuti");
+        assert_eq!(d["pengajuan"][0]["nominal_berlaku"], 75_000);
+        assert_eq!(d["pengajuan"][0]["status_bayar"], STATUS_BELUM_DIBAYAR);
+        assert_eq!(d["mode_reimburse"], "terpisah");
+        assert_eq!(rincian(&state, &id_cuti, true).unwrap_err().code, "DESKTOP_ACCESS_DENIED");
+        assert!(rincian(&state, &id, true).is_ok());
+
+        // Mode `terpisah`: gaji tidak berubah. Mode `gaji`: klaim ikut rekap.
+        assert!(reimburse_gaji(&conn, "2026-01-31").unwrap().is_empty());
+        simpan_aturan(&state, &json!({"hr_cuti_periode": "ulang_tahun_kerja", "hr_cuti_sisa": "hangus", "hr_cuti_hak": 12,
+            "hr_cuti_syarat_bulan": 12, "hr_cuti_prorata": 0, "hr_cuti_bawa_maks": 6, "hr_cuti_bawa_bulan": 3,
+            "hr_lembur_mode": "otomatis", "hr_lembur_maks_harian": 4, "hr_lembur_maks_mingguan": 18,
+            "hr_reimburse_bayar": "gaji"}))
+        .expect("aturan");
+        assert!(reimburse_gaji(&conn, "2026-01-04").unwrap().is_empty(), "tanggal biaya sesudah akhir periode");
+        assert_eq!(reimburse_gaji(&conn, "2026-01-31").unwrap()["K1"], vec![(id.clone(), 75_000)]);
+
+        // PAID: nominal di proses gaji harus sama dengan nominal berlaku.
+        assert!(periksa_reimburse_run(&conn, "run-1", &[(id.clone(), 75_000)]).is_ok());
+        assert!(periksa_reimburse_run(&conn, "run-1", &[(id.clone(), 70_000)]).unwrap_err().message.contains("berubah"));
+
+        // Pembayaran terpisah, lalu klaim tidak bisa dibayar atau dibatalkan lagi.
+        let bayar = catat_bayar_reimburse(&state, "keu", &json!({"id_karyawan": "K1", "id_klaim": [id]})).expect("bayar");
+        assert_eq!(bayar["total"], 75_000);
+        assert!(catat_bayar_reimburse(&state, "keu", &json!({"id_karyawan": "K1", "id_klaim": [id]}))
+            .unwrap_err()
+            .message
+            .contains("dibayar"));
+        assert!(reimburse_gaji(&conn, "2026-01-31").unwrap().is_empty(), "sudah dibayar terpisah");
+        assert!(periksa_reimburse_run(&conn, "run-1", &[(id.clone(), 75_000)]).unwrap_err().message.contains("sudah dibayar"));
+        assert_eq!(
+            putus(&keuangan, json!({"id_pengajuan": id, "aksi": "Batal", "alasan": "Salah"})).unwrap_err().message,
+            PESAN_KLAIM_DIBAYAR
+        );
+        let id_bayar = bayar["id_bayar"].as_str().unwrap().to_owned();
+        batal_bayar_reimburse(&state, "keu", &json!({"id_bayar": id_bayar, "alasan": "Salah karyawan"})).expect("batal bayar");
+        assert_eq!(
+            batal_bayar_reimburse(&state, "keu", &json!({"id_bayar": id_bayar, "alasan": "x"})).unwrap_err().message,
+            "Pembayaran ini sudah dibatalkan."
+        );
+        let r = ringkasan_reimburse(&state, "2000-01-01", "2999-12-31").expect("ringkasan");
+        assert_eq!(r["belum_dibayar"].as_array().unwrap().len(), 1);
+        assert_eq!(r["riwayat"][0]["batal"]["id_bayar"], format!("batal-{id_bayar}"));
+
+        // Cloud: payload outbox apa adanya.
+        let outbox: Vec<(String, String, String)> = {
+            let mut st = conn
+                .prepare("SELECT domain, entity_key, payload_json FROM desktop_sync_outbox WHERE domain LIKE 'hr-%' ORDER BY rowid;")
+                .unwrap();
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            let hub_dir = tempfile::tempdir().unwrap();
+            let hub = hub_dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                url::Url::parse("https://hr-fase4.sppg.invalid").unwrap(),
+                &hub,
+                reqwest::Client::new(),
+            );
+            client.ensure_schema().await.expect("skema cloud");
+            for (domain, key, payload) in &outbox {
+                let payload: Value = serde_json::from_str(payload).unwrap();
+                let statements = match domain.as_str() {
+                    "hr-request" => cloud_pengajuan_statements(&payload, key),
+                    "hr-request-decision" => cloud_keputusan_statements(&payload, key),
+                    _ => cloud_bayar_reimburse_statements(&payload, key),
+                }
+                .expect("payload sah");
+                for (sql, args) in statements {
+                    client.query_one(sql, args).await.expect("terapkan");
+                }
+            }
+            let hub = Connection::open(&hub).unwrap();
+            assert_eq!(muat_klaim(&hub, "9999-12-31").unwrap(), muat_klaim(&conn, "9999-12-31").unwrap());
+            assert_eq!(muat_bayar(&hub).unwrap(), muat_bayar(&conn).unwrap());
+            let jenis: i64 = hub
+                .query_row("SELECT COUNT(*) FROM hr_jenis_pengajuan WHERE kelompok = 'Reimburse' AND izin_pemutus = 'reimburse.decide';", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(jenis, 5);
+            // Kunci `batas_bulanan` absen (perangkat v38) = batas lama dipertahankan.
+            hub.execute("UPDATE hr_jenis_pengajuan SET batas_bulanan = 500000 WHERE id_jenis = 'jns-rmb-makan';", []).unwrap();
+            let lama = json!({"id_jenis": "jns-rmb-makan", "nama": "Reimburse Makan", "kelompok": "Reimburse",
+                              "izin_pemutus": "reimburse.decide", "boleh_urgent": 0, "potong_jatah": 0,
+                              "dampak_gaji": "Tidak Berpengaruh", "satuan_maks": "Hari Kerja", "wajib_dokumen": 1, "is_aktif": 1});
+            for (sql, args) in cloud_jenis_statements(&lama, "jns-rmb-makan").unwrap() {
+                client.query_one(sql, args).await.unwrap();
+            }
+            let batas: Option<i64> = hub
+                .query_row("SELECT batas_bulanan FROM hr_jenis_pengajuan WHERE id_jenis = 'jns-rmb-makan';", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(batas, Some(500_000));
+            // Bentuk salah: tanpa statement (konflik).
+            assert!(cloud_bayar_reimburse_statements(&json!({"bayar": {"id_bayar": "x", "jenis": "Bayar", "id_karyawan": "K1",
+                "tanggal": "2026-01-05", "total": 1, "dicatat_oleh": "keu"}, "baris": []}), "x").is_none());
+        });
+    }
+
     #[test]
     fn jatah_dan_penyesuaian() {
         let (_dir, state) = state_uji();
@@ -2867,7 +3937,7 @@ mod tests_alur {
         assert_eq!((tahun_ini["terpakai"].as_i64(), tahun_ini["sisa"].as_i64()), (Some(0), Some(12)));
         // Pengaju yang sama boleh memutus (Q-28), ditandai.
         putuskan(&state, &hrd, &json!({"id_pengajuan": id, "aksi": "Setujui"})).unwrap();
-        let d = daftar(&state, &json!({"id_karyawan": "K1"})).unwrap();
+        let d = daftar(&state, &json!({"id_karyawan": "K1"}), false).unwrap();
         assert_eq!(d["pengajuan"][0]["tanda"], json!(["diputus_sendiri"]));
         simpan_penyesuaian(&state, "hrd", &json!({"id_karyawan": "K1", "periode": "2026-01-01", "jenis": "Saldo Awal",
                                                  "hari": -4, "alasan": "Dipakai sebelum aplikasi"})).unwrap();
@@ -2903,6 +3973,7 @@ mod tests {
             oleh: oleh.into(),
             waktu_perangkat: waktu.into(),
             diterima_cloud: cloud.map(str::to_owned),
+            nominal_disetujui: None,
         }
     }
 
@@ -2924,6 +3995,7 @@ mod tests {
             id_karyawan_tukar: None,
             id_shift_asal: None,
             id_shift_tukar: None,
+            nominal: None,
         };
         let kanonik = "K1\u{1f}jns-sakit\u{1f}Sakit\u{1f}0\u{1f}Dibayar\u{1f}2026-11-02\u{1f}2026-11-03\u{1f}0\u{1f}Demam";
         assert_eq!(sidik_pengajuan(&isi), hex::encode(Sha256::digest(kanonik.as_bytes())));
@@ -2969,41 +4041,41 @@ mod tests {
             boleh_putus: true,
             ..Default::default()
         };
-        assert_eq!(periksa_aksi("Hapus", "", &k("Menunggu")).unwrap_err(), "Keputusan tidak dikenal.");
-        assert!(periksa_aksi("Setujui", "", &k("Menunggu")).is_ok());
-        assert_eq!(periksa_aksi("Tolak", " ", &k("Menunggu")).unwrap_err(), "Alasan penolakan wajib diisi.");
+        assert_eq!(periksa_aksi("Hapus", "", None, &k("Menunggu")).unwrap_err(), "Keputusan tidak dikenal.");
+        assert!(periksa_aksi("Setujui", "", None, &k("Menunggu")).is_ok());
+        assert_eq!(periksa_aksi("Tolak", " ", None, &k("Menunggu")).unwrap_err(), "Alasan penolakan wajib diisi.");
         assert_eq!(
-            periksa_aksi("Setujui", "", &k("Disetujui")).unwrap_err(),
+            periksa_aksi("Setujui", "", None, &k("Disetujui")).unwrap_err(),
             "Pengajuan ini tidak lagi menunggu keputusan."
         );
         let mut tanpa_izin = k("Menunggu");
         tanpa_izin.boleh_putus = false;
-        assert_eq!(periksa_aksi("Setujui", "", &tanpa_izin).unwrap_err(), PESAN_IZIN_PUTUS);
+        assert_eq!(periksa_aksi("Setujui", "", None, &tanpa_izin).unwrap_err(), PESAN_IZIN_PUTUS);
         let mut sendiri = k("Menunggu");
         sendiri.karyawan_sendiri = true;
         sendiri.superadmin = true;
-        assert_eq!(periksa_aksi("Setujui", "", &sendiri).unwrap_err(), PESAN_DIRI_SENDIRI);
+        assert_eq!(periksa_aksi("Setujui", "", None, &sendiri).unwrap_err(), PESAN_DIRI_SENDIRI);
         assert_eq!(
-            periksa_aksi("Diketahui", "", &k("Disetujui")).unwrap_err(),
+            periksa_aksi("Diketahui", "", None, &k("Disetujui")).unwrap_err(),
             "Hanya pengajuan urgent yang belum diketahui yang bisa ditandai."
         );
-        assert!(periksa_aksi("Diketahui", "", &k("Disetujui (urgent)")).is_ok());
-        assert_eq!(periksa_aksi("Batal", "", &k("Menunggu")).unwrap_err(), "Alasan pembatalan wajib diisi.");
+        assert!(periksa_aksi("Diketahui", "", None, &k("Disetujui (urgent)")).is_ok());
+        assert_eq!(periksa_aksi("Batal", "", None, &k("Menunggu")).unwrap_err(), "Alasan pembatalan wajib diisi.");
         assert_eq!(
-            periksa_aksi("Batal", "Salah", &k("Menunggu")).unwrap_err(),
+            periksa_aksi("Batal", "Salah", None, &k("Menunggu")).unwrap_err(),
             "Hanya pengaju yang bisa membatalkan pengajuan yang masih menunggu."
         );
         let mut pengaju = k("Menunggu");
         pengaju.pengaju_sendiri = true;
         pengaju.boleh_putus = false;
-        assert!(periksa_aksi("Batal", "Salah", &pengaju).is_ok());
-        assert!(periksa_aksi("Batal", "Ternyata masuk", &k("Disetujui (urgent)")).is_ok());
+        assert!(periksa_aksi("Batal", "Salah", None, &pengaju).is_ok());
+        assert!(periksa_aksi("Batal", "Ternyata masuk", None, &k("Disetujui (urgent)")).is_ok());
         assert_eq!(
-            periksa_aksi("Batal", "x", &k("Ditolak")).unwrap_err(),
+            periksa_aksi("Batal", "x", None, &k("Ditolak")).unwrap_err(),
             "Pengajuan yang ditolak atau dibatalkan tidak bisa dibatalkan lagi."
         );
         assert_eq!(
-            periksa_aksi("Setujui", &"a".repeat(501), &k("Menunggu")).unwrap_err(),
+            periksa_aksi("Setujui", &"a".repeat(501), None, &k("Menunggu")).unwrap_err(),
             "Alasan maksimal 500 karakter."
         );
         assert_eq!(periksa_sunting("Disetujui", true, false).unwrap_err(), "Pengajuan yang sudah diputus tidak bisa disunting.");
@@ -3052,6 +4124,7 @@ mod tests {
             satuan_maks: "Hari Kerja".into(),
             wajib_dokumen: false,
             is_aktif: true,
+            batas_bulanan: None,
         };
         assert_eq!(periksa_jenis(&sah, &jenis).unwrap_err(), "Setengah hari hanya untuk kelompok Izin.");
         let mut urgent = sah.clone();
@@ -3068,8 +4141,8 @@ mod tests {
                                        "maks_hari": 5, "potong_jatah": 1})).unwrap();
         assert_eq!((j.nama.as_str(), j.maks_hari, j.satuan_maks.as_str(), j.is_aktif), ("Cuti Khusus", Some(5), "Hari Kerja", true));
         assert_eq!(
-            validasi_jenis(&json!({"nama": "Klaim", "kelompok": "Reimburse", "dampak_gaji": "Dibayar"})).unwrap_err(),
-            "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar."
+            validasi_jenis(&json!({"nama": "Klaim", "kelompok": "Bonus", "dampak_gaji": "Dibayar"})).unwrap_err(),
+            "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse."
         );
         assert_eq!(
             validasi_jenis(&json!({"nama": "X", "kelompok": "Izin", "dampak_gaji": "Dibayar", "potong_jatah": true})).unwrap_err(),
@@ -3226,6 +4299,7 @@ mod tests {
             id_karyawan_tukar: Some("K2"),
             id_shift_asal: Some(1),
             id_shift_tukar: Some(2),
+            nominal: None,
         };
         let awal = |k: &str| format!("K1\u{1f}jns-x\u{1f}{k}\u{1f}0\u{1f}Tidak Berpengaruh\u{1f}2026-11-02\u{1f}2026-11-02\u{1f}0\u{1f}Opname");
         let hash = |t: String| hex::encode(Sha256::digest(t.as_bytes()));
@@ -3309,6 +4383,7 @@ mod tests {
             satuan_maks: "Hari Kerja".into(),
             wajib_dokumen: false,
             is_aktif: true,
+            batas_bulanan: None,
         };
         let isian = |lain: Value| {
             let mut d = json!({"id_karyawan": "K1", "id_jenis": "j", "tanggal_mulai": "2026-11-02", "tanggal_selesai": "2026-11-02", "alasan": "x"});
@@ -3353,5 +4428,246 @@ mod tests {
             "Batas lembur harian harus 1 sampai 12 jam."
         );
         assert_eq!(validasi_aturan_lembur(&json!({"hr_lembur_mode": "x"})).unwrap_err(), "Mode lembur harus otomatis atau SPL.");
+    }
+
+    // ── Fase 4 (v39), vektor yang sama dengan `hr-pengajuan.test.ts` ───────
+
+    #[test]
+    fn fase4_sidik_bentrok_dan_nominal() {
+        let isi = IsiPengajuan {
+            id_karyawan: "K1",
+            id_jenis: "jns-rmb-transport",
+            kelompok: "Reimburse",
+            potong_jatah: false,
+            dampak_gaji: "Tidak Berpengaruh",
+            tanggal_mulai: "2026-01-05",
+            tanggal_selesai: "2026-01-05",
+            setengah_hari: false,
+            alasan: "Taksi",
+            jam_mulai: None,
+            jam_selesai: None,
+            id_karyawan_tukar: None,
+            id_shift_asal: None,
+            id_shift_tukar: None,
+            nominal: Some(150_000),
+        };
+        let kanonik = "K1\u{1f}jns-rmb-transport\u{1f}Reimburse\u{1f}0\u{1f}Tidak Berpengaruh\u{1f}2026-01-05\u{1f}2026-01-05\u{1f}0\u{1f}Taksi\u{1f}150000";
+        assert_eq!(sidik_pengajuan(&isi), hex::encode(Sha256::digest(kanonik.as_bytes())));
+        // Nominal hanya ikut sidik Reimburse: sidik kelompok lain tidak berubah.
+        let cuti = IsiPengajuan { kelompok: "Cuti", ..isi.clone() };
+        assert_eq!(sidik_pengajuan(&cuti), sidik_pengajuan(&IsiPengajuan { nominal: None, ..cuti.clone() }));
+
+        let r = |kelompok: &'static str| Ringkas {
+            kelompok,
+            id_karyawan: "K1",
+            id_karyawan_tukar: None,
+            tanggal_mulai: "2026-01-05",
+            tanggal_selesai: "2026-01-05",
+            setengah_hari: false,
+            jam_mulai: None,
+            jam_selesai: None,
+        };
+        assert!(!bentrok_pengajuan(&r("Reimburse"), &r("Cuti")));
+        assert!(!bentrok_pengajuan(&r("Lembur"), &r("Reimburse")));
+        assert!(!bentrok_pengajuan(&r("Reimburse"), &r("Reimburse")));
+
+        let k = |nominal: Option<i64>| Keputusan { nominal_disetujui: nominal, ..kep("a", "Setujui", "s", "keu", "2026-01-06 00:00:00", None) };
+        assert_eq!(nominal_berlaku(100_000, None), 100_000);
+        assert_eq!(nominal_berlaku(100_000, Some(&k(Some(60_000)))), 60_000);
+        assert_eq!(nominal_berlaku(100_000, Some(&k(None))), 100_000);
+    }
+
+    #[test]
+    fn fase4_aksi_nominal_disetujui() {
+        let k = KeadaanAksi { status: "Menunggu".into(), boleh_putus: true, reimburse: true, nominal: 100_000, ..Default::default() };
+        let salah_nominal = "Nominal disetujui harus 1 sampai Rp100.000.";
+        assert_eq!(periksa_aksi("Setujui", "", None, &k).unwrap_err(), salah_nominal);
+        assert_eq!(periksa_aksi("Setujui", "", Some(0), &k).unwrap_err(), salah_nominal);
+        assert_eq!(periksa_aksi("Setujui", "", Some(100_001), &k).unwrap_err(), salah_nominal);
+        assert_eq!(
+            periksa_aksi("Setujui", " ", Some(60_000), &k).unwrap_err(),
+            "Alasan wajib diisi bila nominal disetujui lebih kecil dari yang diajukan."
+        );
+        assert!(periksa_aksi("Setujui", "Tarif wajar", Some(60_000), &k).is_ok());
+        assert!(periksa_aksi("Setujui", "", Some(100_000), &k).is_ok());
+        let hanya_setujui = "Nominal disetujui hanya untuk menyetujui reimbursement.";
+        assert_eq!(periksa_aksi("Tolak", "Tidak sah", Some(1), &k).unwrap_err(), hanya_setujui);
+        let cuti = KeadaanAksi { reimburse: false, ..k.clone() };
+        assert_eq!(periksa_aksi("Setujui", "", Some(1), &cuti).unwrap_err(), hanya_setujui);
+        assert!(periksa_aksi("Setujui", "", None, &cuti).is_ok());
+    }
+
+    fn bayar(id: &str, jenis: &str, id_ref: Option<&str>) -> BayarReimburse {
+        BayarReimburse {
+            id_bayar: id.into(),
+            jenis: jenis.into(),
+            id_ref: id_ref.map(str::to_owned),
+            id_karyawan: "K1".into(),
+            tanggal: "2026-01-10".into(),
+            total: 1,
+            keterangan: None,
+            dicatat_oleh: "keu".into(),
+            created_at: "2026-01-10 00:00:00".into(),
+        }
+    }
+
+    fn baris_bayar(id_bayar: &str, id_klaim: &str) -> BarisReimburse {
+        BarisReimburse {
+            id_baris: format!("{id_bayar}:{id_klaim}"),
+            id_bayar: id_bayar.into(),
+            sumber: "Reimburse".into(),
+            id_klaim: id_klaim.into(),
+            nominal: 1,
+        }
+    }
+
+    fn gaji(id_run: &str, status: &str, id_klaim: &str, nominal: i64) -> GajiReimburse {
+        GajiReimburse { id_run: id_run.into(), status: status.into(), id_klaim: id_klaim.into(), nominal }
+    }
+
+    #[test]
+    fn fase4_status_bayar_dan_batas() {
+        let pembayaran = [bayar("B1", "Bayar", None), bayar("B2", "Bayar", None), bayar("batal-B2", "Pembatalan", Some("B2"))];
+        let baris = [baris_bayar("B1", "a"), baris_bayar("B2", "b")];
+        let g = [gaji("R1", "PAID", "c", 10), gaji("R2", "DRAFT", "d", 10), gaji("R3", "SUBMITTED", "a", 10)];
+        assert_eq!(status_bayar("a", &pembayaran, &baris, &g), STATUS_DIBAYAR);
+        assert_eq!(status_bayar("b", &pembayaran, &baris, &g), STATUS_BELUM_DIBAYAR);
+        assert_eq!(status_bayar("c", &pembayaran, &baris, &g), STATUS_DIBAYAR);
+        assert_eq!(status_bayar("d", &pembayaran, &baris, &g), STATUS_PROSES_GAJI);
+        assert_eq!(status_bayar("e", &pembayaran, &baris, &g), STATUS_BELUM_DIBAYAR);
+        assert!(dibayar_ganda("a", &pembayaran, &baris, &g));
+        assert!(!dibayar_ganda("c", &pembayaran, &baris, &g));
+        assert_eq!(bayar_aktif_reimburse("a", &pembayaran, &baris), vec!["B1"]);
+
+        let klaim = [
+            ("K1", "J1", "2026-01-05", 300_000),
+            ("K1", "J1", "2026-01-20", 250_000),
+            ("K1", "J1", "2026-02-01", 100_000),
+            ("K2", "J1", "2026-01-05", 500_000),
+            ("K1", "J2", "2026-01-05", 999_999),
+        ];
+        let batas: HashMap<String, i64> = [("J1".to_owned(), 500_000)].into();
+        let mut lewat: Vec<String> = lewat_batas(&klaim, &batas).into_iter().collect();
+        lewat.sort();
+        assert_eq!(lewat, vec!["K1|J1|2026-01"]);
+        assert_eq!(kunci_batas("K1", "J1", "2026-01-31"), "K1|J1|2026-01");
+    }
+
+    #[test]
+    fn fase4_bayar_terpisah_dan_payroll() {
+        let hari_ini = "2026-01-15";
+        let sah = |d: Value| validasi_bayar_reimburse(&d, hari_ini);
+        assert_eq!(sah(json!({"id_klaim": ["a"]})).unwrap_err(), "Pilih karyawan.");
+        assert_eq!(sah(json!({"id_karyawan": "K1", "id_klaim": []})).unwrap_err(), "Pilih klaim yang dibayar.");
+        assert_eq!(sah(json!({"id_karyawan": "K1", "id_klaim": ["a", "a"]})).unwrap_err(), "Klaim yang sama terpilih dua kali.");
+        assert_eq!(
+            sah(json!({"id_karyawan": "K1", "id_klaim": ["a"], "tanggal": "2026-01-16"})).unwrap_err(),
+            "Tanggal bayar tidak boleh setelah hari ini."
+        );
+        let v = sah(json!({"id_karyawan": "K1", "id_klaim": ["a", "uang:K1:2025-01-01"], "keterangan": " Transfer "})).unwrap();
+        assert_eq!((v.tanggal.as_str(), v.keterangan.as_deref()), ("2026-01-15", Some("Transfer")));
+
+        let klaim_ = |id: &str, karyawan: &str, sumber: &str, nominal: i64| Klaim {
+            id_klaim: id.into(),
+            sumber: sumber.into(),
+            id_karyawan: karyawan.into(),
+            tanggal: "2026-01-05".into(),
+            nominal,
+            keterangan: "x".into(),
+        };
+        let klaim = [
+            klaim_("a", "K1", SUMBER_REIMBURSE, 75_000),
+            klaim_("uang:K1:2025-01-01", "K1", SUMBER_UANG, 300_000),
+            klaim_("b", "K2", SUMBER_REIMBURSE, 10),
+            klaim_("d", "K1", SUMBER_REIMBURSE, 20),
+        ];
+        let g = [gaji("R2", "DRAFT", "d", 20)];
+        let dipilih = periksa_bayar_reimburse(&v, &klaim, &[], &[], &g).unwrap();
+        assert_eq!(dipilih.iter().map(|k| k.nominal).sum::<i64>(), 375_000);
+        let pilih = |ids: &[&str]| BayarReimburseValid { id_klaim: ids.iter().map(|s| s.to_string()).collect(), ..v.clone() };
+        assert_eq!(periksa_bayar_reimburse(&pilih(&["x"]), &klaim, &[], &[], &g).unwrap_err(), "Klaim tidak ditemukan atau belum disetujui.");
+        assert_eq!(periksa_bayar_reimburse(&pilih(&["b"]), &klaim, &[], &[], &g).unwrap_err(), "Klaim itu bukan milik karyawan ini.");
+        assert_eq!(
+            periksa_bayar_reimburse(&pilih(&["d"]), &klaim, &[], &[], &g).unwrap_err(),
+            "Klaim tanggal 2026-01-05 berstatus dalam proses gaji."
+        );
+
+        let pembayaran = [bayar("B1", "Bayar", None), bayar("batal-B1", "Pembatalan", Some("B1"))];
+        assert_eq!(periksa_batal_bayar_reimburse(&pembayaran, "B9").unwrap_err(), "Pembayaran tidak ditemukan.");
+        assert_eq!(periksa_batal_bayar_reimburse(&pembayaran, "B1").unwrap_err(), "Pembayaran ini sudah dibatalkan.");
+        assert!(periksa_batal_bayar_reimburse(&pembayaran[..1], "B1").is_ok());
+
+        let entri = |id: &str, n: i64| vec![(id.to_owned(), n)];
+        let paid = [gaji("R1", "PAID", "a", 75_000)];
+        assert!(periksa_reimburse_payroll("R1", &entri("a", 75_000), &klaim, &[], &[], &paid).is_ok());
+        assert_eq!(
+            periksa_reimburse_payroll("R1", &entri("x", 1), &klaim, &[], &[], &paid).unwrap_err(),
+            "Klaim reimbursement x sudah tidak berlaku. Tolak proses gaji ini lalu buat ulang."
+        );
+        assert_eq!(
+            periksa_reimburse_payroll("R1", &entri("uang:K1:2025-01-01", 300_000), &klaim, &[], &[], &paid).unwrap_err(),
+            "Klaim reimbursement uang:K1:2025-01-01 sudah tidak berlaku. Tolak proses gaji ini lalu buat ulang."
+        );
+        assert_eq!(
+            periksa_reimburse_payroll("R1", &entri("a", 70_000), &klaim, &[], &[], &paid).unwrap_err(),
+            "Nominal klaim reimbursement tanggal 2026-01-05 berubah. Tolak proses gaji ini lalu buat ulang."
+        );
+        assert_eq!(
+            periksa_reimburse_payroll("R9", &entri("a", 75_000), &klaim, &[], &[], &paid).unwrap_err(),
+            "Klaim reimbursement tanggal 2026-01-05 sudah dibayar. Tolak proses gaji ini lalu buat ulang."
+        );
+    }
+
+    #[test]
+    fn fase4_jenis_isian_dan_aturan() {
+        let j = validasi_jenis(&json!({"nama": "Reimburse Parkir", "kelompok": "Reimburse", "dampak_gaji": "Dibayar",
+            "maks_hari": 3, "boleh_urgent": true, "izin_pemutus": "reimburse.decide", "batas_bulanan": 250000})).unwrap();
+        assert_eq!(
+            (j.dampak_gaji.as_str(), j.maks_hari, j.boleh_urgent, j.izin_pemutus.as_str(), j.batas_bulanan),
+            ("Tidak Berpengaruh", None, false, "reimburse.decide", Some(250_000))
+        );
+        let cuti = validasi_jenis(&json!({"nama": "Cuti X", "kelompok": "Cuti", "dampak_gaji": "Dibayar", "batas_bulanan": 5})).unwrap();
+        assert_eq!((cuti.izin_pemutus.as_str(), cuti.batas_bulanan), ("hr.request.decide", None));
+        assert_eq!(
+            validasi_jenis(&json!({"nama": "R", "kelompok": "Reimburse", "batas_bulanan": 0})).unwrap_err(),
+            "Batas bulanan harus 1 sampai 1.000.000.000 rupiah."
+        );
+        assert_eq!(
+            validasi_jenis(&json!({"nama": "R", "kelompok": "Reimburse", "izin_pemutus": "trip.pay"})).unwrap_err(),
+            "Pemutus pengajuan tidak dikenal."
+        );
+        assert_eq!(validasi_jenis(&json!({"nama": "R", "kelompok": "Bonus"})).unwrap_err(), "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse.");
+
+        let isian = |lain: Value| {
+            let mut d = json!({"id_karyawan": "K1", "id_jenis": "j", "tanggal_mulai": "2026-01-05", "tanggal_selesai": "2026-01-05", "alasan": "x"});
+            for (k, v) in lain.as_object().unwrap() {
+                d[k] = v.clone();
+            }
+            validasi_pengajuan(&d)
+        };
+        assert_eq!(isian(json!({"nominal": 1.5})).unwrap_err(), "Nominal harus bilangan bulat rupiah.");
+        assert_eq!(isian(json!({"nominal": "100"})).unwrap_err(), "Nominal harus bilangan bulat rupiah.");
+        let jenis = JenisPengajuan { kelompok: "Reimburse".into(), boleh_urgent: false, ..j.clone() };
+        assert_eq!(periksa_jenis(&isian(json!({})).unwrap(), &jenis).unwrap_err(), PESAN_NOMINAL);
+        assert_eq!(periksa_jenis(&isian(json!({"nominal": 1_000_000_001_i64})).unwrap(), &jenis).unwrap_err(), PESAN_NOMINAL);
+        assert_eq!(
+            periksa_jenis(&isian(json!({"nominal": 5, "tanggal_selesai": "2026-01-06"})).unwrap(), &jenis).unwrap_err(),
+            "Reimburse diajukan per nota, satu tanggal biaya."
+        );
+        assert!(periksa_jenis(&isian(json!({"nominal": 5})).unwrap(), &jenis).is_ok());
+        assert_eq!(periksa_jenis(&isian(json!({"nominal": 5, "urgent": true})).unwrap(), &jenis).unwrap_err(), "Jenis pengajuan ini tidak boleh urgent.");
+        assert!(periksa_tanggal_biaya("2026-01-15", "2026-01-15").is_ok());
+        assert_eq!(periksa_tanggal_biaya("2026-01-16", "2026-01-15").unwrap_err(), "Tanggal biaya tidak boleh setelah hari ini.");
+
+        assert_eq!((mode_reimburse(None), mode_reimburse(Some(" gaji ")), mode_reimburse(Some("x"))), ("terpisah", "gaji", "terpisah"));
+        assert_eq!(validasi_aturan_reimburse(&json!({})).unwrap(), vec![]);
+        assert_eq!(validasi_aturan_reimburse(&json!({"hr_reimburse_bayar": "gaji"})).unwrap(), vec![("hr_reimburse_bayar", "gaji".to_owned())]);
+        assert_eq!(
+            validasi_aturan_reimburse(&json!({"hr_reimburse_bayar": "tunai"})).unwrap_err(),
+            "Cara bayar reimbursement harus gaji atau terpisah."
+        );
+        let bawaan: Vec<&JenisBawaan> = jenis_bawaan().iter().filter(|j| j.kelompok == "Reimburse").collect();
+        assert_eq!(bawaan.len(), 5);
+        assert!(bawaan.iter().all(|j| j.pemutus() == "reimburse.decide" && j.wajib_dokumen && !j.boleh_urgent));
     }
 }

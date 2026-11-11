@@ -12,6 +12,7 @@ mod tutup_buku;
 mod driver;
 mod hris;
 mod hr_pengajuan;
+mod hr_keluar;
 pub mod telegram;
 pub mod license;
 pub mod models;

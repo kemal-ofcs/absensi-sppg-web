@@ -103,6 +103,8 @@ export interface PayrollRecapRow {
   lembur_tanpa_spl_menit?: number;
   /** Mode `spl`: seluruh menit lembur/libur yang tidak dibayar. */
   lembur_dipotong_menit?: number;
+  /** Reimbursement mode `gaji` (HRIS v39), sudah termasuk gaji bersih. */
+  est_reimburse?: number;
 }
 
 export interface PayrollRunRow {

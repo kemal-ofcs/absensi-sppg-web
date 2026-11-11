@@ -5,6 +5,7 @@
 // backend memeriksa ulang (aturan 10).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { KeluarWorkspace } from "@/components/hris/KeluarWorkspace";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
 import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
 import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
@@ -20,7 +21,7 @@ import {
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
 
-type Tab = "karyawan" | "struktur" | "organisasi";
+type Tab = "karyawan" | "struktur" | "keluar" | "organisasi";
 export type BarisKaryawan = Record<string, unknown>;
 
 const TOMBOL_TAB =
@@ -29,7 +30,15 @@ const TOMBOL_TAB =
 export function HrisWorkspace() {
   const { user } = useAuth();
   const bolehOrg = hasPermission(user, "hr.org.manage");
+  const bolehKeluar =
+    hasPermission(user, "hr.offboard.view") ||
+    hasPermission(user, "hr.offboard.manage");
   const [tab, setTab] = useState<Tab>("karyawan");
+  // "Mulai proses keluar" dari tab SP: karyawan dan SP3 yang mendasari.
+  const [mulaiKeluar, setMulaiKeluar] = useState<{
+    idKaryawan: string;
+    idSp: string | null;
+  } | null>(null);
   const [karyawan, setKaryawan] = useState<BarisKaryawan[]>([]);
   const [org, setOrg] = useState<Organisasi | null>(null);
   const [kontrak, setKontrak] = useState<Map<string, RingkasanKontrak>>(
@@ -97,6 +106,7 @@ export function HrisWorkspace() {
           [
             ["karyawan", "Karyawan"],
             ["struktur", "Struktur"],
+            ...(bolehKeluar ? [["keluar", "Keluar"]] : []),
             ...(bolehOrg ? [["organisasi", "Organisasi"]] : []),
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
@@ -106,7 +116,10 @@ export function HrisWorkspace() {
             type="button"
             role="tab"
             aria-selected={tab === id}
-            onClick={() => setTab(id)}
+            onClick={() => {
+              setMulaiKeluar(null);
+              setTab(id);
+            }}
             className={`${TOMBOL_TAB} ${tab === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
           >
             {label}
@@ -144,7 +157,11 @@ export function HrisWorkspace() {
                       <span className="block truncate text-xs text-slate-400">
                         {String(k.divisi || "-")} •{" "}
                         {String(k.jabatan_status || "-")}
-                        {k.status_aktif === "Nonaktif" ? " • Nonaktif" : ""}
+                        {k.id_keluar
+                          ? ` • Keluar ${String(k.tanggal_selesai_aktif ?? "")}`
+                          : k.status_aktif === "Nonaktif"
+                            ? " • Nonaktif"
+                            : ""}
                       </span>
                       {ringkas?.tanda.length ? (
                         <span className="block truncate text-xs text-amber-200">
@@ -166,6 +183,17 @@ export function HrisWorkspace() {
                 karyawan={pilihan}
                 nama={nama}
                 onBerubah={muat}
+                onMulaiKeluar={
+                  hasPermission(user, "hr.offboard.manage")
+                    ? (idSp) => {
+                        setMulaiKeluar({
+                          idKaryawan: String(pilihan.id_unik),
+                          idSp,
+                        });
+                        setTab("keluar");
+                      }
+                    : undefined
+                }
               />
             ) : (
               <p className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-400">
@@ -177,6 +205,20 @@ export function HrisWorkspace() {
       ) : null}
 
       {tab === "struktur" ? <Struktur karyawan={karyawan} org={org} /> : null}
+
+      {tab === "keluar" && bolehKeluar ? (
+        <KeluarWorkspace
+          key={
+            mulaiKeluar
+              ? `${mulaiKeluar.idKaryawan}:${mulaiKeluar.idSp}`
+              : "daftar"
+          }
+          karyawan={karyawan}
+          bolehUbah={hasPermission(user, "hr.offboard.manage")}
+          mulai={mulaiKeluar}
+          onBerubah={muat}
+        />
+      ) : null}
 
       {tab === "organisasi" && bolehOrg ? (
         <>

@@ -83,11 +83,11 @@ describe("saldo", () => {
 });
 
 describe("bagan akun bawaan", () => {
-  test("27 akun, akun sistem ditandai, saldo normal sesuai kelompok", () => {
-    expect(AKUN_BAWAAN.length).toBe(27);
+  test("28 akun, akun sistem ditandai, saldo normal sesuai kelompok", () => {
+    expect(AKUN_BAWAAN.length).toBe(28);
     expect(AKUN_SISTEM_IDS.has("akun-kas")).toBe(true);
     expect(AKUN_SISTEM_IDS.has("akun-peralatan")).toBe(false);
-    expect(AKUN_SISTEM_IDS.size).toBe(8);
+    expect(AKUN_SISTEM_IDS.size).toBe(9);
     for (const akun of AKUN_BAWAAN) {
       expect(akun.saldo_normal).toBe(saldoNormalBawaan(akun.kelompok));
     }

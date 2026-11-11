@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { JatahCutiPanel } from "@/components/hris/JatahCutiPanel";
+import { SuratPeringatanPanel } from "@/components/hris/SuratPeringatanPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -33,7 +34,14 @@ import {
   STATUS_NIKAH,
 } from "@/lib/validations/hris";
 
-type Tab = "kerja" | "pribadi" | "keuangan" | "kontrak" | "dokumen" | "cuti";
+type Tab =
+  | "kerja"
+  | "pribadi"
+  | "keuangan"
+  | "kontrak"
+  | "dokumen"
+  | "cuti"
+  | "sp";
 type Isian = Record<string, string>;
 
 const KELAS =
@@ -131,10 +139,12 @@ export function RincianKaryawan({
   karyawan,
   nama,
   onBerubah,
+  onMulaiKeluar,
 }: {
   karyawan: BarisKaryawan;
   nama: Map<string, string>;
   onBerubah: () => void;
+  onMulaiKeluar?: (idSp: string) => void;
 }) {
   const { user } = useAuth();
   const boleh = (izin: Parameters<typeof hasPermission>[1]) =>
@@ -155,6 +165,9 @@ export function RincianKaryawan({
       : []),
     ...(boleh("hr.request.view")
       ? ([["cuti", "Cuti"]] as Array<[Tab, string]>)
+      : []),
+    ...(boleh("hr.warning.view")
+      ? ([["sp", "SP"]] as Array<[Tab, string]>)
       : []),
   ];
   return (
@@ -210,6 +223,14 @@ export function RincianKaryawan({
       ) : null}
       {tab === "cuti" ? (
         <JatahCutiPanel idKaryawan={id} bolehUbah={boleh("hr.leave.adjust")} />
+      ) : null}
+      {tab === "sp" ? (
+        <SuratPeringatanPanel
+          karyawan={karyawan}
+          bolehUbah={boleh("hr.warning.manage")}
+          bolehCabut={boleh("hr.warning.cancel")}
+          onMulaiKeluar={onMulaiKeluar}
+        />
       ) : null}
     </div>
   );

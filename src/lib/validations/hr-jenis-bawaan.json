@@ -163,5 +163,70 @@
     "maks_hari": null,
     "satuan_maks": "Hari Kerja",
     "wajib_dokumen": false
+  },
+  {
+    "id_jenis": "jns-rmb-transport",
+    "nama": "Reimburse Transport",
+    "kelompok": "Reimburse",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true,
+    "izin_pemutus": "reimburse.decide",
+    "batas_bulanan": null
+  },
+  {
+    "id_jenis": "jns-rmb-kesehatan",
+    "nama": "Reimburse Kesehatan",
+    "kelompok": "Reimburse",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true,
+    "izin_pemutus": "reimburse.decide",
+    "batas_bulanan": null
+  },
+  {
+    "id_jenis": "jns-rmb-makan",
+    "nama": "Reimburse Makan",
+    "kelompok": "Reimburse",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true,
+    "izin_pemutus": "reimburse.decide",
+    "batas_bulanan": null
+  },
+  {
+    "id_jenis": "jns-rmb-dinas",
+    "nama": "Reimburse Perjalanan Dinas",
+    "kelompok": "Reimburse",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true,
+    "izin_pemutus": "reimburse.decide",
+    "batas_bulanan": null
+  },
+  {
+    "id_jenis": "jns-rmb-lainnya",
+    "nama": "Reimburse Lainnya",
+    "kelompok": "Reimburse",
+    "potong_jatah": false,
+    "dampak_gaji": "Tidak Berpengaruh",
+    "boleh_urgent": false,
+    "maks_hari": null,
+    "satuan_maks": "Hari Kerja",
+    "wajib_dokumen": true,
+    "izin_pemutus": "reimburse.decide",
+    "batas_bulanan": null
   }
 ]

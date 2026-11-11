@@ -1,0 +1,82 @@
+[
+  {
+    "id_alasan": "klr-resign",
+    "nama": "Resign",
+    "pengali_up": 0,
+    "pengali_upmk": 0,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": true,
+    "dasar_hukum": "PP 35/2021 Pasal 50"
+  },
+  {
+    "id_alasan": "klr-habis-kontrak",
+    "nama": "Habis Kontrak",
+    "pengali_up": 0,
+    "pengali_upmk": 0,
+    "uph": true,
+    "kompensasi_pkwt": true,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 15-16"
+  },
+  {
+    "id_alasan": "klr-efisiensi",
+    "nama": "PHK Efisiensi",
+    "pengali_up": 100,
+    "pengali_upmk": 100,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 43 ayat 2 (karena kerugian, ayat 1: UP 50%)"
+  },
+  {
+    "id_alasan": "klr-pelanggaran",
+    "nama": "PHK Pelanggaran",
+    "pengali_up": 50,
+    "pengali_upmk": 100,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 52 ayat 1 (pelanggaran mendesak, ayat 2: tanpa UP dan UPMK, dengan uang pisah)"
+  },
+  {
+    "id_alasan": "klr-pensiun",
+    "nama": "Pensiun",
+    "pengali_up": 175,
+    "pengali_upmk": 100,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 56"
+  },
+  {
+    "id_alasan": "klr-meninggal",
+    "nama": "Meninggal",
+    "pengali_up": 200,
+    "pengali_upmk": 100,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 57"
+  },
+  {
+    "id_alasan": "klr-sakit",
+    "nama": "Sakit Berkepanjangan",
+    "pengali_up": 200,
+    "pengali_upmk": 100,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": "PP 35/2021 Pasal 55"
+  },
+  {
+    "id_alasan": "klr-lainnya",
+    "nama": "Lainnya",
+    "pengali_up": 0,
+    "pengali_upmk": 0,
+    "uph": true,
+    "kompensasi_pkwt": false,
+    "uang_pisah": false,
+    "dasar_hukum": null
+  }
+]

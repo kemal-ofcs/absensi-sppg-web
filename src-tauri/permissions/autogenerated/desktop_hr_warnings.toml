@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-warnings"
+description = "Enables the desktop_hr_warnings command without any pre-configured scope."
+commands.allow = ["desktop_hr_warnings"]
+
+[[permission]]
+identifier = "deny-desktop-hr-warnings"
+description = "Denies the desktop_hr_warnings command without any pre-configured scope."
+commands.deny = ["desktop_hr_warnings"]

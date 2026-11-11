@@ -8,6 +8,10 @@ import {
   orgStatements,
   tulisOrg,
 } from "@/lib/services/hris";
+import {
+  PESAN_SUDAH_KELUAR,
+  TANGGAL_SELESAI_KELUAR_SQL,
+} from "@/lib/validations/hr-keluar";
 
 export interface KaryawanInput {
   id_unik: string;
@@ -162,7 +166,7 @@ export async function getDaftarKaryawan(filter?: {
       m.no_hp, m.lp, m.id_shift, m.status_aktif, m.tanggal_daftar,
       m.catatan, m.status_qr, m.jenis_personil, m.tanggal_mulai_aktif,
       m.tanggal_selesai_aktif, m.status_backup, s.nama_shift,
-      m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan,
+      m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan, m.id_keluar,
       EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan') AS punya_kontrak,
       c.idcard_status, c.idcard_pdf_url, c.link_qr_png
     FROM master_data m
@@ -274,11 +278,24 @@ export async function tambahKaryawan(data: KaryawanInput) {
   return { sukses: true, id_unik: data.id_unik, token_absensi: tokenAbsensi };
 }
 
+/**
+ * Selama `id_keluar` terisi (keluar berlaku), karyawan tidak bisa diaktifkan
+ * dari halaman Karyawan (§20.4). Cermin `tolak_bila_keluar`.
+ */
+async function tolakBilaKeluar(id_unik: string) {
+  const res = await db.execute({
+    sql: "SELECT 1 FROM master_data WHERE id_unik = ? AND COALESCE(id_keluar, '') <> '';",
+    args: [id_unik],
+  });
+  if (res.rows.length > 0) throw new Error(PESAN_SUDAH_KELUAR);
+}
+
 export async function updateKaryawan(
   id_unik: string,
   data: Partial<KaryawanInput>,
 ) {
   await ensureDbInitialized();
+  if (data.status_aktif === "Aktif") await tolakBilaKeluar(id_unik);
   // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36); teks
   // divisi/jabatan selalu nama master sekarang.
   const org = await orgDariDraft(db, id_unik, { ...data });
@@ -333,7 +350,9 @@ export async function updateKaryawan(
     args.push(data.tanggal_mulai_aktif);
   }
   if (data.tanggal_selesai_aktif !== undefined) {
-    updates.push("tanggal_selesai_aktif = ?");
+    updates.push(
+      `tanggal_selesai_aktif = ${TANGGAL_SELESAI_KELUAR_SQL.replace("{baru}", "?")}`,
+    );
     args.push(data.tanggal_selesai_aktif);
   }
   // Tanggal Mulai Masuk. String kosong diabaikan agar form yang mengirim
@@ -463,6 +482,7 @@ export async function toggleStatusKaryawan(
   status_aktif: "Aktif" | "Nonaktif",
 ) {
   await ensureDbInitialized();
+  if (status_aktif === "Aktif") await tolakBilaKeluar(id_unik);
 
   await db.execute({
     sql: "UPDATE master_data SET status_aktif = ? WHERE id_unik = ?;",

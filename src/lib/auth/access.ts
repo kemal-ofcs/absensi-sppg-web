@@ -73,6 +73,14 @@ export function canAccessArea(
   subject: AccessSubject | null | undefined,
   area: AppArea,
 ) {
+  // Pemegang `reimburse.decide` tanpa `hr.request.view` melihat klaim
+  // Reimburse dan pembayarannya (§19.5); backend menyaring kelompoknya.
+  if (area === "pengajuan") {
+    return (
+      hasPermission(subject, "hr.request.view") ||
+      hasPermission(subject, "reimburse.decide")
+    );
+  }
   if (area === "operational") {
     return (
       hasPermission(subject, "corrections.view") ||

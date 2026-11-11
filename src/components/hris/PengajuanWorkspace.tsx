@@ -1,12 +1,14 @@
 "use client";
 
-// Pengajuan cuti, izin, sakit (HRIS v37, prd-hris.md §17) dan lembur, tukar
-// shift, dinas luar (v38, §18). Satu komponen untuk Web/Desktop dan Mobile
+// Pengajuan cuti, izin, sakit (HRIS v37, prd-hris.md §17), lembur, tukar
+// shift, dinas luar (v38, §18), dan reimbursement beserta pembayarannya (v39,
+// §19). Satu komponen untuk Web/Desktop dan Mobile
 // (Q-52). Tombol hanya disembunyikan bila jelas tidak
 // berhak; aturan sebenarnya (tidak untuk diri sendiri, pemutus per jenis,
 // periode gaji dibayar) dinilai backend (aturan 10).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PembayaranReimburse } from "@/components/hris/PembayaranReimburse";
 import {
   INPUT,
   LABEL,
@@ -39,6 +41,7 @@ import {
 } from "@/lib/gateways/hr-pengajuan";
 import { SYNC_COMPLETED_EVENT, syncNow } from "@/lib/gateways/sync-status";
 import type { PermissionKey } from "@/lib/rbac/catalog";
+import { formatRupiah } from "@/lib/validations/accounting";
 import {
   type AturanLembur,
   durasiLembur,
@@ -49,7 +52,14 @@ import {
   statusBerlaku,
 } from "@/lib/validations/hr-pengajuan";
 
-type Saring = "menunggu" | "diketahui" | "tinjau" | "semua" | "diuangkan";
+type Saring =
+  | "menunggu"
+  | "diketahui"
+  | "tinjau"
+  | "semua"
+  | "reimburse"
+  | "diuangkan"
+  | "pembayaran";
 
 const ISIAN_KOSONG = {
   id_pengajuan: "",
@@ -63,15 +73,23 @@ const ISIAN_KOSONG = {
   jam_mulai: "",
   jam_selesai: "",
   id_karyawan_tukar: "",
+  nominal: "",
 };
 
-/** Isian per tanggal tunggal (§18.2). */
-const KELOMPOK_SATU_TANGGAL = ["Lembur", "Tukar Shift"];
+/** Isian per tanggal tunggal (§18.2, §19.3). */
+const KELOMPOK_SATU_TANGGAL = ["Lembur", "Tukar Shift", "Reimburse"];
 
 const LABEL_ALASAN: Record<string, string> = {
   Lembur: "Pekerjaan",
   "Dinas Luar": "Tujuan dan keperluan",
+  Reimburse: "Keperluan",
 };
+
+/** Isian rupiah: hanya digit; kosong = `null`. */
+function bacaRupiah(teks: string): number | null {
+  const digit = teks.replace(/\D/g, "");
+  return digit ? Number(digit) : null;
+}
 
 const jamTeks = (menit: number) =>
   `${Math.floor(menit / 60)} j${menit % 60 ? ` ${menit % 60} m` : ""}`;
@@ -110,6 +128,7 @@ export function PengajuanWorkspace() {
   const [isi, setIsi] = useState(ISIAN_KOSONG);
   const [formBuka, setFormBuka] = useState(false);
   const [sisaJatah, setSisaJatah] = useState<number | null>(null);
+  const [pakaiBulan, setPakaiBulan] = useState<number | null>(null);
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
 
@@ -146,6 +165,7 @@ export function PengajuanWorkspace() {
   const satuTanggal = KELOMPOK_SATU_TANGGAL.includes(kelompok);
   const durasi =
     kelompok === "Lembur" ? durasiLembur(isi.jam_mulai, isi.jam_selesai) : null;
+  const nominal = bacaRupiah(isi.nominal);
   const namaKaryawanDari = (id: string) =>
     karyawan.find((k) => String(k.id_unik) === id);
   const shiftKaryawan = (id: string) => {
@@ -196,12 +216,51 @@ export function PengajuanWorkspace() {
       .catch(() => setSisaJatah(null));
   }, [isi.id_karyawan, isi.tanggal_mulai, jenisDipilih?.potong_jatah]);
 
+  // Klaim jenis ini (Menunggu + berlaku) karyawan ini di bulan tanggal biaya,
+  // dibanding batas bulanan jenisnya (§19.3, peringatan saja).
+  useEffect(() => {
+    setPakaiBulan(null);
+    if (kelompok !== "Reimburse" || !isi.id_karyawan || !isi.tanggal_mulai) {
+      return;
+    }
+    const bulan = isi.tanggal_mulai.slice(0, 7);
+    ambilPengajuan({
+      id_karyawan: isi.id_karyawan,
+      dari: `${bulan}-01`,
+      sampai: `${bulan}-31`,
+    })
+      .then((d) =>
+        setPakaiBulan(
+          d.pengajuan
+            .filter(
+              (b) =>
+                b.pengajuan.id_jenis === isi.id_jenis &&
+                b.pengajuan.id_karyawan === isi.id_karyawan &&
+                b.pengajuan.id_pengajuan !== isi.id_pengajuan &&
+                (b.status === "Menunggu" || statusBerlaku(b.status)),
+            )
+            .reduce(
+              (n, b) => n + (b.nominal_berlaku ?? b.pengajuan.nominal ?? 0),
+              0,
+            ),
+        ),
+      )
+      .catch(() => setPakaiBulan(null));
+  }, [
+    kelompok,
+    isi.id_karyawan,
+    isi.id_jenis,
+    isi.id_pengajuan,
+    isi.tanggal_mulai,
+  ]);
+
   const tampil = useMemo(
     () =>
       daftar.filter((b) => {
         if (saring === "menunggu") return b.status === "Menunggu";
         if (saring === "diketahui") return b.tanda.includes("perlu_diketahui");
         if (saring === "tinjau") return b.tanda.length > 0;
+        if (saring === "reimburse") return b.pengajuan.kelompok === "Reimburse";
         return true;
       }),
     [daftar, saring],
@@ -249,6 +308,14 @@ export function PengajuanWorkspace() {
             },
           ]
         : []),
+      ...(kelompok === "Reimburse"
+        ? [
+            {
+              label: "Nominal",
+              nilai: nominal === null ? "" : formatRupiah(nominal),
+            },
+          ]
+        : []),
       ...(isi.setengah_hari ? [{ label: "Setengah hari", nilai: "Ya" }] : []),
       { label: LABEL_ALASAN[kelompok] ?? "Alasan", nilai: isi.alasan },
       ...(isi.urgent
@@ -256,12 +323,13 @@ export function PengajuanWorkspace() {
         : []),
     ]);
     if (!lanjut) return;
-    const { id_pengajuan, ...sisa } = isi;
+    const { id_pengajuan, nominal: _nominal, ...sisa } = isi;
     const ok = await jalankan(
       () =>
         simpanPengajuan({
           ...sisa,
           tanggal_selesai: tanggalSelesai,
+          ...(kelompok === "Reimburse" ? { nominal } : {}),
           ...(id_pengajuan ? { id_pengajuan } : {}),
         }),
       "Pengajuan tersimpan.",
@@ -286,6 +354,7 @@ export function PengajuanWorkspace() {
       jam_mulai: p.jam_mulai ?? "",
       jam_selesai: p.jam_selesai ?? "",
       id_karyawan_tukar: p.id_karyawan_tukar ?? "",
+      nominal: p.nominal === null ? "" : String(p.nominal),
     });
     setFormBuka(true);
   };
@@ -295,7 +364,13 @@ export function PengajuanWorkspace() {
     ["diketahui", "Perlu diketahui"],
     ["tinjau", "Perlu ditinjau"],
     ["semua", "Semua"],
-    ["diuangkan", "Cuti diuangkan"],
+    ["reimburse", "Reimburse"],
+    ...(boleh("hr.request.view")
+      ? ([["diuangkan", "Cuti diuangkan"]] as Array<[Saring, string]>)
+      : []),
+    ...(boleh("reimburse.decide")
+      ? ([["pembayaran", "Pembayaran"]] as Array<[Saring, string]>)
+      : []),
   ];
 
   return (
@@ -350,7 +425,7 @@ export function PengajuanWorkspace() {
         </div>
       </div>
 
-      {saring !== "diuangkan" ? (
+      {saring !== "diuangkan" && saring !== "pembayaran" ? (
         <div className="grid grid-cols-2 gap-2 sm:max-w-md">
           <div>
             <label className={LABEL} htmlFor="pengajuan-dari">
@@ -443,6 +518,13 @@ export function PengajuanWorkspace() {
               <p className="mt-1 text-xs text-slate-400">
                 Di tanggal itu kedua karyawan memakai shift satu sama lain.
               </p>
+            ) : jenisDipilih && kelompok === "Reimburse" ? (
+              <p className="mt-1 text-xs text-slate-400">
+                Satu nota satu pengajuan. Lampirkan foto nota setelah tersimpan.
+                {jenisDipilih.batas_bulanan
+                  ? ` Batas ${formatRupiah(jenisDipilih.batas_bulanan)}/bulan hanya peringatan.`
+                  : ""}
+              </p>
             ) : jenisDipilih ? (
               <p className="mt-1 text-xs text-slate-400">
                 Gaji: {jenisDipilih.dampak_gaji}
@@ -458,7 +540,11 @@ export function PengajuanWorkspace() {
           </div>
           <div className={satuTanggal ? "sm:col-span-2" : undefined}>
             <label className={LABEL} htmlFor="pengajuan-mulai">
-              {satuTanggal ? "Tanggal" : "Tanggal mulai"}
+              {kelompok === "Reimburse"
+                ? "Tanggal biaya"
+                : satuTanggal
+                  ? "Tanggal"
+                  : "Tanggal mulai"}
             </label>
             <input
               id="pengajuan-mulai"
@@ -547,6 +633,37 @@ export function PengajuanWorkspace() {
                 </p>
               ) : null}
             </>
+          ) : null}
+          {kelompok === "Reimburse" ? (
+            <div className="sm:col-span-2">
+              <label className={LABEL} htmlFor="pengajuan-nominal">
+                Nominal (rupiah)
+              </label>
+              <input
+                id="pengajuan-nominal"
+                inputMode="numeric"
+                className={INPUT}
+                value={nominal === null ? "" : nominal.toLocaleString("id-ID")}
+                onChange={(e) => setIsi({ ...isi, nominal: e.target.value })}
+              />
+              {pakaiBulan !== null && nominal !== null ? (
+                <p
+                  id="pengajuan-ringkas-reimburse"
+                  className={`mt-1 text-xs ${
+                    jenisDipilih?.batas_bulanan &&
+                    pakaiBulan + nominal > jenisDipilih.batas_bulanan
+                      ? "text-amber-200"
+                      : "text-slate-400"
+                  }`}
+                >
+                  Klaim jenis ini bulan itu termasuk yang ini:{" "}
+                  {formatRupiah(pakaiBulan + nominal)}
+                  {jenisDipilih?.batas_bulanan
+                    ? ` dari batas ${formatRupiah(jenisDipilih.batas_bulanan)}.`
+                    : "."}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           {kelompok === "Tukar Shift" ? (
             <div className="sm:col-span-2">
@@ -650,7 +767,9 @@ export function PengajuanWorkspace() {
         </div>
       ) : null}
 
-      {saring === "diuangkan" ? (
+      {saring === "pembayaran" ? (
+        <PembayaranReimburse onPesan={setPesan} />
+      ) : saring === "diuangkan" ? (
         <AkhirPeriodePanel
           bolehProses={boleh("hr.leave.adjust")}
           onPesan={setPesan}
@@ -712,7 +831,11 @@ function BarisPengajuan({
   onSunting: () => void;
 }) {
   const p = baris.pengajuan;
+  const reimburse = p.kelompok === "Reimburse";
   const [alasan, setAlasan] = useState("");
+  const [nominalSetuju, setNominalSetuju] = useState(
+    p.nominal === null ? "" : String(p.nominal),
+  );
   const [riwayat, setRiwayat] = useState<KeputusanRiwayat[]>([]);
   const [berkas, setBerkas] = useState<LampiranRingkas[] | null>(null);
   const [galatBerkas, setGalatBerkas] = useState("");
@@ -744,14 +867,26 @@ function BarisPengajuan({
     baris.status === "Disetujui" || baris.status === "Disetujui (urgent)";
   const putus = (aksi: string, teks: string) =>
     jalankan(
-      () => putuskanPengajuan({ id_pengajuan: p.id_pengajuan, aksi, alasan }),
+      () =>
+        putuskanPengajuan({
+          id_pengajuan: p.id_pengajuan,
+          aksi,
+          alasan,
+          ...(reimburse && aksi === "Setujui"
+            ? { nominal_disetujui: bacaRupiah(nominalSetuju) }
+            : {}),
+        }),
       teks,
     ).then((ok) => {
       if (ok) setAlasan("");
       muatRincian();
     });
   const tanpaDokumen =
-    baris.wajib_dokumen && baris.hari_kerja > 1 && berkas?.length === 0;
+    baris.wajib_dokumen &&
+    (reimburse || baris.hari_kerja > 1) &&
+    berkas?.length === 0;
+  // Nota bisa diubah pengaju, HRD, atau pemutus jenisnya (§19.5).
+  const ubahLampiran = pengaju || boleh("hr.request.decide") || pemutus;
 
   const unggah = async (daftar: FileList | null) => {
     const berkasPilih = daftar?.[0];
@@ -804,9 +939,11 @@ function BarisPengajuan({
               ? ` • ${p.jam_mulai ?? ""}-${p.jam_selesai ?? ""}${baris.menit_lembur ? ` (${jamTeks(baris.menit_lembur)})` : ""}`
               : p.kelompok === "Tukar Shift"
                 ? ` • bertukar dengan ${baris.nama_karyawan_tukar ?? p.id_karyawan_tukar ?? "-"}`
-                : p.setengah_hari
-                  ? " (½ hari)"
-                  : ` • ${baris.hari_kerja} hari kerja`}
+                : reimburse
+                  ? ` • ${formatRupiah(baris.nominal_berlaku ?? p.nominal ?? 0)}${baris.status_bayar && berlaku ? ` • ${baris.status_bayar}` : ""}`
+                  : p.setengah_hari
+                    ? " (½ hari)"
+                    : ` • ${baris.hari_kerja} hari kerja`}
           </span>
           {baris.tanda.length > 0 ? (
             <span className="block truncate text-xs text-amber-200">
@@ -823,10 +960,21 @@ function BarisPengajuan({
       {terbuka ? (
         <div className="space-y-3 border-t border-slate-800 p-3 text-sm">
           <p className="text-slate-200">{p.alasan}</p>
-          <p className="text-xs text-slate-400">
-            Diajukan {p.diajukan_oleh} • Gaji: {p.dampak_gaji}
-            {p.potong_jatah ? " • Memotong jatah cuti" : ""}
-          </p>
+          {reimburse ? (
+            <p className="text-xs text-slate-400">
+              Diajukan {p.diajukan_oleh} • Nominal diajukan{" "}
+              {formatRupiah(p.nominal ?? 0)}
+              {baris.nominal_berlaku !== null
+                ? ` • disetujui ${formatRupiah(baris.nominal_berlaku)}`
+                : ""}
+              {baris.status_bayar ? ` • ${baris.status_bayar}` : ""}
+            </p>
+          ) : (
+            <p className="text-xs text-slate-400">
+              Diajukan {p.diajukan_oleh} • Gaji: {p.dampak_gaji}
+              {p.potong_jatah ? " • Memotong jatah cuti" : ""}
+            </p>
+          )}
           {riwayat.length > 0 ? (
             <ul className="space-y-1 text-xs text-slate-300">
               {riwayat.map((k) => (
@@ -837,6 +985,9 @@ function BarisPengajuan({
                   k.jenis !== "Diketahui"
                     ? " • isi sudah berubah"
                     : ""}
+                  {k.nominal_disetujui
+                    ? ` • ${formatRupiah(k.nominal_disetujui)}`
+                    : ""}
                   {k.alasan ? ` • ${k.alasan}` : ""}
                 </li>
               ))}
@@ -844,13 +995,17 @@ function BarisPengajuan({
           ) : null}
 
           <div className="space-y-1">
-            <p className="text-xs font-semibold text-slate-300">Lampiran</p>
+            <p className="text-xs font-semibold text-slate-300">
+              {reimburse ? "Nota" : "Lampiran"}
+            </p>
             {galatBerkas ? (
               <p className="text-xs text-slate-400">{galatBerkas}</p>
             ) : null}
             {tanpaDokumen ? (
               <p className="text-xs text-amber-200">
-                {LABEL_TANDA_PENGAJUAN.tanpa_dokumen}
+                {reimburse
+                  ? LABEL_TANDA_PENGAJUAN.tanpa_nota
+                  : LABEL_TANDA_PENGAJUAN.tanpa_dokumen}
               </p>
             ) : null}
             {berkas?.map((f) => (
@@ -862,7 +1017,7 @@ function BarisPengajuan({
                 >
                   {f.nama_berkas ?? `Lampiran ${f.urutan}`}
                 </button>
-                {pengaju || boleh("hr.request.decide") ? (
+                {ubahLampiran ? (
                   <button
                     type="button"
                     className="text-rose-200 underline"
@@ -879,9 +1034,7 @@ function BarisPengajuan({
                 ) : null}
               </div>
             ))}
-            {berkas !== null &&
-            berkas.length < 5 &&
-            (pengaju || boleh("hr.request.decide")) ? (
+            {berkas !== null && berkas.length < 5 && ubahLampiran ? (
               <input
                 id={`pengajuan-unggah-${p.id_pengajuan}`}
                 type="file"
@@ -893,6 +1046,23 @@ function BarisPengajuan({
             ) : null}
           </div>
 
+          {reimburse && baris.status === "Menunggu" && pemutus ? (
+            <div>
+              <label
+                className={LABEL}
+                htmlFor={`pengajuan-nominal-setuju-${p.id_pengajuan}`}
+              >
+                Nominal disetujui (lebih kecil dari diajukan = alasan wajib)
+              </label>
+              <input
+                id={`pengajuan-nominal-setuju-${p.id_pengajuan}`}
+                inputMode="numeric"
+                className={INPUT}
+                value={bacaRupiah(nominalSetuju)?.toLocaleString("id-ID") ?? ""}
+                onChange={(e) => setNominalSetuju(e.target.value)}
+              />
+            </div>
+          ) : null}
           <div>
             <label
               className={LABEL}
@@ -1054,17 +1224,20 @@ function AkhirPeriodePanel({
         )}
       </div>
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-        <h3 className="mb-2 text-sm font-bold text-white">
-          Perlu dibayar (manual sampai kait gaji fase 4)
-        </h3>
+        <h3 className="mb-2 text-sm font-bold text-white">Cuti diuangkan</h3>
+        <p className="mb-2 text-xs text-slate-400">
+          Dibayar lewat tab Pembayaran (pemegang izin bayar reimbursement). PPh
+          21 atas uang ini dihitung manual.
+        </p>
         {data.diuangkan.length === 0 ? (
           <p className="text-sm text-slate-400">Tidak ada.</p>
         ) : (
           <ul className="space-y-1 text-sm text-slate-200">
             {data.diuangkan.map((d) => (
               <li key={d.baris.id_penyesuaian}>
-                {d.nama} • {d.baris.periode} • {-d.baris.hari} hari • Rp{" "}
-                {(d.baris.nominal ?? 0).toLocaleString("id-ID")}
+                {d.nama} • {d.baris.periode} • {-d.baris.hari} hari •{" "}
+                {formatRupiah(d.baris.nominal ?? 0)} •{" "}
+                {d.status_bayar ?? "Belum dibayar"}
               </li>
             ))}
           </ul>

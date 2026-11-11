@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use base64::prelude::*;
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::{
-    hris,
+    hr_keluar, hris,
     config::DesktopState, face_match, models::CommandError, scanner, storage, sync,
 };
 
@@ -56,7 +56,8 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
         c.idcard_status, c.idcard_pdf_url, c.link_qr_png,
         m.token_absensi, m.qr_code,
         m.id_cabang, m.id_divisi, m.id_jabatan, m.id_atasan,
-        EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan')
+        EXISTS (SELECT 1 FROM hr_kontrak k WHERE k.id_karyawan = m.id_unik AND k.jenis <> 'Pembatalan'),
+        m.id_keluar
       FROM master_data m
       LEFT JOIN tbl_shift s ON m.id_shift = s.id_shift
       LEFT JOIN id_card c ON m.id_unik = c.id_unik
@@ -98,6 +99,8 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
                 "id_atasan": row.get::<_, Option<String>>(25)?,
                 // Berkontrak: `jenis_personil` mengikuti kontrak (Q-40).
                 "punya_kontrak": row.get::<_, bool>(26)?,
+                // Keluar berlaku (v40): hanya aktif lagi lewat pembatalan di HRIS.
+                "id_keluar": row.get::<_, Option<String>>(27)?,
             }))
         })
         .map_err(|_| CommandError::internal())?;
@@ -399,6 +402,25 @@ pub fn import_employees(state: &DesktopState, drafts: &[Value]) -> Result<Value,
     }))
 }
 
+/// Selama `id_keluar` terisi (keluar berlaku), karyawan tidak bisa
+/// diaktifkan dari halaman Karyawan (§20.4).
+fn tolak_bila_keluar(connection: &Connection, id: &str) -> Result<(), CommandError> {
+    let keluar: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ? AND COALESCE(id_keluar, '') <> '');",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())?;
+    if keluar {
+        return Err(CommandError::new(
+            "OPERATIONAL_VALIDATION_FAILED",
+            hr_keluar::PESAN_SUDAH_KELUAR,
+        ));
+    }
+    Ok(())
+}
+
 pub fn update_employee(
     state: &DesktopState,
     id: &str,
@@ -416,6 +438,10 @@ pub fn update_employee(
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let revision = base_revision(&transaction, "employee", id);
+    // Karyawan yang sudah keluar hanya aktif lagi lewat pembatalan di HRIS.
+    if text(draft, "status_aktif") == "Aktif" {
+        tolak_bila_keluar(&transaction, id)?;
+    }
     // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
     let org = hris::org_dari_draft(&transaction, id, draft)?;
 
@@ -433,7 +459,7 @@ pub fn update_employee(
 
     transaction
         .execute(
-            r#"
+            &format!(r#"
       UPDATE master_data SET
         kode_karyawan = COALESCE(NULLIF(?, ''), kode_karyawan),
         nama = COALESCE(NULLIF(?, ''), nama),
@@ -446,10 +472,12 @@ pub fn update_employee(
         catatan = ?,
         jenis_personil = ?,
         tanggal_mulai_aktif = ?,
-        tanggal_selesai_aktif = ?,
+        tanggal_selesai_aktif = {selesai},
         tanggal_daftar = COALESCE(NULLIF(?, ''), tanggal_daftar)
       WHERE id_unik = ?;
       "#,
+                selesai = hr_keluar::tanggal_selesai_keluar("?")
+            ),
             params![
                 text(draft, "kode_karyawan"),
                 text(draft, "nama"),
@@ -581,6 +609,9 @@ pub fn set_employee_status(
         .transaction()
         .map_err(|_| CommandError::internal())?;
     let revision = base_revision(&transaction, "employee", id);
+    if status == "Aktif" {
+        tolak_bila_keluar(&transaction, id)?;
+    }
     transaction
         .execute(
             "UPDATE master_data SET status_aktif = ? WHERE id_unik = ?;",

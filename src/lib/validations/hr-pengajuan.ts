@@ -6,6 +6,7 @@
  * `mod tests`). Status pengajuan dan jatah cuti TIDAK disimpan.
  */
 
+import { formatRupiah } from "./accounting";
 import {
   hariIso,
   parseHariKerja,
@@ -29,6 +30,9 @@ export interface JenisBawaan {
   maks_hari: number | null;
   satuan_maks: string;
   wajib_dokumen: boolean;
+  /** Kosong = `hr.request.decide` (v39). */
+  izin_pemutus?: string | null;
+  batas_bulanan?: number | null;
 }
 
 /** Jenis pengajuan bawaan (§6.3), berkas yang sama dengan seed Rust. */
@@ -36,7 +40,7 @@ export const JENIS_BAWAAN = jenisBawaan as readonly JenisBawaan[];
 
 /** Cermin `SEED_JENIS_SQL`. Idempoten: jenis yang sudah disunting tidak ditimpa. */
 export const SEED_JENIS_SQL =
-  "INSERT OR IGNORE INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif) VALUES (?1, ?2, ?3, 'hr.request.decide', ?4, ?5, ?6, ?7, ?8, ?9, 1);";
+  "INSERT OR IGNORE INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, batas_bulanan) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11);";
 
 /** Cermin `seed_jenis_args`. */
 export function seedJenisArgs(jenis: JenisBawaan) {
@@ -44,12 +48,14 @@ export function seedJenisArgs(jenis: JenisBawaan) {
     jenis.id_jenis,
     jenis.nama,
     jenis.kelompok,
+    jenis.izin_pemutus ?? IZIN_PEMUTUS_AKTIF,
     jenis.boleh_urgent ? 1 : 0,
     jenis.potong_jatah ? 1 : 0,
     jenis.dampak_gaji,
     jenis.maks_hari,
     jenis.satuan_maks,
     jenis.wajib_dokumen ? 1 : 0,
+    jenis.batas_bulanan ?? null,
   ];
 }
 
@@ -62,6 +68,7 @@ export const KELOMPOK_AKTIF = [
   "Lembur",
   "Tukar Shift",
   "Dinas Luar",
+  "Reimburse",
 ] as const;
 /** Cermin `KELOMPOK_TIDAK_HADIR`: menutup hari kerja (§18.3). */
 export const KELOMPOK_TIDAK_HADIR = [
@@ -71,14 +78,24 @@ export const KELOMPOK_TIDAK_HADIR = [
   "Dinas Luar",
 ] as const;
 /** Cermin `KELOMPOK_TANPA_GAJI`: tanpa dampak gaji dan jatah. */
-export const KELOMPOK_TANPA_GAJI = ["Lembur", "Tukar Shift"] as const;
+export const KELOMPOK_TANPA_GAJI = [
+  "Lembur",
+  "Tukar Shift",
+  "Reimburse",
+] as const;
 export const DAMPAK_GAJI = [
   "Dibayar",
   "Potong Gaji",
   "Tidak Berpengaruh",
 ] as const;
 export const SATUAN_MAKS = ["Hari Kerja", "Hari Kalender"] as const;
+/** Pemutus bawaan; jenis boleh memilih salah satu dari `IZIN_PEMUTUS` (Q-2). */
 export const IZIN_PEMUTUS_AKTIF = "hr.request.decide";
+export const IZIN_REIMBURSE = "reimburse.decide";
+export const IZIN_PEMUTUS = [IZIN_PEMUTUS_AKTIF, IZIN_REIMBURSE] as const;
+/** Nominal klaim dan batas bulanan reimbursement, rupiah (aturan 13). */
+export const MAKS_NOMINAL = 1_000_000_000;
+export const PESAN_NOMINAL = "Nominal harus 1 sampai 1.000.000.000 rupiah.";
 export const KEPUTUSAN_FINAL = ["Setujui", "Tolak", "Setujui Urgent"] as const;
 export const AKSI_KEPUTUSAN = [
   "Setujui",
@@ -135,6 +152,17 @@ export const TANGGAL_HADIR_SQL =
 /** Cermin `PERIODE_DIBAYAR_SQL`: proses gaji `PAID` yang menyentuh `?1`..`?2`. */
 export const PERIODE_DIBAYAR_SQL =
   "SELECT period_start, period_end FROM payroll_runs WHERE status = 'PAID' AND period_start <= ?2 AND period_end >= ?1 ORDER BY period_start LIMIT 1;";
+
+/** Cermin `KLAIM_BERLAKU_SQL`: klaim Reimburse berlaku ≤ `?1` + nominal berlakunya. */
+export const KLAIM_BERLAKU_SQL = `SELECT p.id_pengajuan, p.id_karyawan, p.tanggal_mulai, COALESCE((SELECT k.nominal_disetujui FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent') ORDER BY k.diterima_cloud IS NULL, k.diterima_cloud, k.waktu_perangkat, k.id_keputusan LIMIT 1), p.nominal, 0), COALESCE((SELECT j.nama FROM hr_jenis_pengajuan j WHERE j.id_jenis = p.id_jenis), p.id_jenis) || ': ' || p.alasan FROM hr_pengajuan p WHERE p.kelompok = 'Reimburse' AND p.tanggal_mulai <= ?1 AND ${PENGAJUAN_BERLAKU_SQL} ORDER BY p.id_karyawan, p.tanggal_mulai, p.id_pengajuan;`;
+
+/** Cermin `UANG_BERLAKU_SQL`: cuti diuangkan yang tidak dibatalkan (Q-62). */
+export const UANG_BERLAKU_SQL =
+  "SELECT u.id_penyesuaian, u.id_karyawan, u.periode, COALESCE(u.nominal, 0), 'Cuti diuangkan periode ' || u.periode FROM hr_cuti_penyesuaian u WHERE u.jenis = 'Diuangkan' AND NOT EXISTS (SELECT 1 FROM hr_cuti_penyesuaian b WHERE b.jenis = 'Pembatalan' AND b.id_ref = u.id_penyesuaian) ORDER BY u.id_karyawan, u.periode, u.id_penyesuaian;";
+
+/** Cermin `GAJI_REIMBURSE_SQL`: klaim di proses gaji yang tidak ditolak. */
+export const GAJI_REIMBURSE_SQL =
+  "SELECT r.id, r.status, json_extract(k.value, '$.id_pengajuan'), CAST(json_extract(k.value, '$.nominal') AS INTEGER) FROM payroll_items i JOIN payroll_runs r ON r.id = i.payroll_run_id, json_each(i.breakdown_snapshot, '$.reimburse') k WHERE r.status <> 'REJECTED' ORDER BY r.id;";
 
 // ── Pembantu ───────────────────────────────────────────────────────────────
 
@@ -198,6 +226,34 @@ export interface JenisPengajuan {
   satuan_maks: string;
   wajib_dokumen: boolean;
   is_aktif: boolean;
+  /** Rupiah per karyawan per bulan, hanya Reimburse; peringatan saja (v39). */
+  batas_bulanan: number | null;
+}
+
+/**
+ * Cermin `angka_opsional`: kosong = `null`, selain bilangan bulat dalam
+ * `min..maks` = `undefined` (galat).
+ */
+function angkaOpsional(
+  draft: Draft,
+  kunci: string,
+  min: number,
+  maks: number,
+): number | null | undefined {
+  const nilai = draft[kunci];
+  if (
+    nilai === undefined ||
+    nilai === null ||
+    (typeof nilai === "string" && nilai.trim() === "")
+  ) {
+    return null;
+  }
+  return typeof nilai === "number" &&
+    Number.isInteger(nilai) &&
+    nilai >= min &&
+    nilai <= maks
+    ? nilai
+    : undefined;
 }
 
 /** Cermin `validasi_jenis`. `id_jenis` diisi pemanggil. */
@@ -207,8 +263,21 @@ export function validasiJenis(draft: Draft): Hasil<JenisPengajuan> {
   const kelompok = teks(draft, "kelompok");
   if (!(KELOMPOK_AKTIF as readonly string[]).includes(kelompok)) {
     return gagal(
-      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse.",
     );
+  }
+  const reimburse = kelompok === "Reimburse";
+  const izinPemutus = teks(draft, "izin_pemutus") || IZIN_PEMUTUS_AKTIF;
+  if (!(IZIN_PEMUTUS as readonly string[]).includes(izinPemutus)) {
+    return gagal("Pemutus pengajuan tidak dikenal.");
+  }
+  let batasBulanan: number | null = null;
+  if (reimburse) {
+    const batas = angkaOpsional(draft, "batas_bulanan", 1, MAKS_NOMINAL);
+    if (batas === undefined) {
+      return gagal("Batas bulanan harus 1 sampai 1.000.000.000 rupiah.");
+    }
+    batasBulanan = batas;
   }
   const tanpaGaji = (KELOMPOK_TANPA_GAJI as readonly string[]).includes(
     kelompok,
@@ -249,14 +318,16 @@ export function validasiJenis(draft: Draft): Hasil<JenisPengajuan> {
     id_jenis: "",
     nama: nama.nilai,
     kelompok,
-    izin_pemutus: IZIN_PEMUTUS_AKTIF,
-    boleh_urgent: bendera(draft, "boleh_urgent"),
+    izin_pemutus: izinPemutus,
+    // Urgent = atasan menyetujui sendiri, melewati Keuangan (§19.3).
+    boleh_urgent: !reimburse && bendera(draft, "boleh_urgent"),
     potong_jatah: potongJatah,
     dampak_gaji: dampak,
     maks_hari: maksHari,
     satuan_maks: satuan,
     wajib_dokumen: bendera(draft, "wajib_dokumen"),
     is_aktif: draft.is_aktif === undefined || bendera(draft, "is_aktif"),
+    batas_bulanan: batasBulanan,
   });
 }
 
@@ -275,6 +346,8 @@ export interface PengajuanSah {
   jam_selesai: string;
   /** Tukar Shift: karyawan kedua, kosong untuk kelompok lain. */
   id_karyawan_tukar: string;
+  /** Reimburse: rupiah yang diajukan. */
+  nominal: number | null;
 }
 
 /** Cermin `validasi_pengajuan`: kelengkapan isian, tanpa data jenis. */
@@ -303,6 +376,14 @@ export function validasiPengajuan(draft: Draft): Hasil<PengajuanSah> {
   if (panjang(alasan) > MAKS_ALASAN) {
     return gagal(`Alasan maksimal ${MAKS_ALASAN} karakter.`);
   }
+  const nominal = angkaOpsional(
+    draft,
+    "nominal",
+    Number.MIN_SAFE_INTEGER,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (nominal === undefined)
+    return gagal("Nominal harus bilangan bulat rupiah.");
   return ok({
     id_karyawan: idKaryawan,
     id_jenis: idJenis,
@@ -314,7 +395,18 @@ export function validasiPengajuan(draft: Draft): Hasil<PengajuanSah> {
     jam_mulai: teks(draft, "jam_mulai"),
     jam_selesai: teks(draft, "jam_selesai"),
     id_karyawan_tukar: teks(draft, "id_karyawan_tukar"),
+    nominal,
   });
+}
+
+/** Cermin `periksa_tanggal_biaya`: nota tidak boleh bertanggal di masa depan. */
+export function periksaTanggalBiaya(
+  tanggal: string,
+  hariIni: string,
+): Hasil<null> {
+  return tanggal > hariIni
+    ? gagal("Tanggal biaya tidak boleh setelah hari ini.")
+    : ok(null);
 }
 
 /** Cermin `periksa_jenis`. */
@@ -344,6 +436,13 @@ export function periksaJenis(
     }
     if (p.id_karyawan_tukar === p.id_karyawan) {
       return gagal("Tukar shift harus dengan karyawan lain.");
+    }
+  } else if (jenis.kelompok === "Reimburse") {
+    if (!satuTanggal) {
+      return gagal("Reimburse diajukan per nota, satu tanggal biaya.");
+    }
+    if (p.nominal === null || p.nominal < 1 || p.nominal > MAKS_NOMINAL) {
+      return gagal(PESAN_NOMINAL);
     }
   }
   return ok(null);
@@ -401,6 +500,8 @@ const tidakHadir = (kelompok: string) =>
 
 /** Cermin `bentrok_pengajuan`: matriks §18.3. */
 export function bentrokPengajuan(a: Ringkas, b: Ringkas): boolean {
+  // Klaim biaya tidak pernah bertumpuk: nota di hari cuti atau lembur sah (§19.3).
+  if (a.kelompok === "Reimburse" || b.kelompok === "Reimburse") return false;
   const orangB = orangRingkas(b);
   const orangSama = orangRingkas(a).some((x) => orangB.includes(x));
   if (
@@ -533,11 +634,13 @@ export interface IsiPengajuan {
   id_karyawan_tukar?: string | null;
   id_shift_asal?: number | null;
   id_shift_tukar?: number | null;
+  nominal?: number | null;
 }
 
 /**
  * Teks kanonik sidik; SHA-256-nya dihitung `sidikPengajuan` di service.
- * Sembilan bagian fase 2 tetap; Lembur dan Tukar Shift menambah isiannya.
+ * Sembilan bagian fase 2 tetap; Lembur, Tukar Shift, dan Reimburse menambah
+ * isiannya.
  */
 export function kanonikPengajuan(isi: IsiPengajuan): string {
   const bagian = [
@@ -559,6 +662,8 @@ export function kanonikPengajuan(isi: IsiPengajuan): string {
       isi.id_shift_asal == null ? "" : String(isi.id_shift_asal),
       isi.id_shift_tukar == null ? "" : String(isi.id_shift_tukar),
     );
+  } else if (isi.kelompok === "Reimburse") {
+    bagian.push(isi.nominal == null ? "" : String(isi.nominal));
   }
   return bagian.join("\u001f");
 }
@@ -572,6 +677,16 @@ export interface Keputusan {
   oleh: string;
   waktu_perangkat: string;
   diterima_cloud: string | null;
+  /** Hanya `Setujui` atas Reimburse (v39). */
+  nominal_disetujui?: number | null;
+}
+
+/** Cermin `nominal_berlaku`: kosong (keputusan perangkat v38) = nominal diajukan. */
+export function nominalBerlaku(
+  nominal: number,
+  berlaku: Keputusan | null,
+): number {
+  return berlaku?.nominal_disetujui ?? nominal;
 }
 
 const bandingTeks = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -676,6 +791,10 @@ export const LABEL_TANDA_PENGAJUAN: Record<string, string> = {
   hadir_saat_cuti: "Hadir di tanggal pengajuan",
   jatah_minus: "Jatah cuti minus",
   lembur_lewat_batas: "Lembur melewati batas harian atau mingguan",
+  lewat_batas: "Klaim bulan ini melewati batas bulanan jenisnya",
+  dibayar_ganda: "Dibayar lebih dari sekali",
+  dibayar_batal: "Sudah dibayar, padahal klaimnya tidak berlaku lagi",
+  tanpa_nota: "Nota belum dilampirkan",
 };
 
 // ── Aturan aksi (§17.4) ────────────────────────────────────────────────────
@@ -687,16 +806,20 @@ export interface KeadaanAksi {
   superadmin: boolean;
   karyawan_sendiri: boolean;
   boleh_putus: boolean;
+  /** Kelompok Reimburse dan nominal yang diajukan (v39). */
+  reimburse?: boolean;
+  nominal?: number;
 }
 
 const PESAN_IZIN_PUTUS = "Kamu tidak punya izin memutus jenis pengajuan ini.";
 const PESAN_DIRI_SENDIRI =
   "Pengajuan untuk dirimu sendiri harus diputus orang lain.";
 
-/** Cermin `periksa_aksi`. */
+/** Cermin `periksa_aksi`. `nominalDisetujui` hanya untuk `Setujui` Reimburse. */
 export function periksaAksi(
   aksi: string,
   alasan: string,
+  nominalDisetujui: number | null,
   k: KeadaanAksi,
 ): Hasil<null> {
   if (!(AKSI_KEPUTUSAN as readonly string[]).includes(aksi)) {
@@ -706,6 +829,9 @@ export function periksaAksi(
     return gagal(`Alasan maksimal ${MAKS_ALASAN} karakter.`);
   }
   const tanpaAlasan = alasan.trim() === "";
+  if (nominalDisetujui !== null && !(aksi === "Setujui" && k.reimburse)) {
+    return gagal("Nominal disetujui hanya untuk menyetujui reimbursement.");
+  }
   if (aksi === "Setujui" || aksi === "Tolak") {
     if (k.status !== "Menunggu") {
       return gagal("Pengajuan ini tidak lagi menunggu keputusan.");
@@ -714,6 +840,23 @@ export function periksaAksi(
     if (k.karyawan_sendiri) return gagal(PESAN_DIRI_SENDIRI);
     if (aksi === "Tolak" && tanpaAlasan) {
       return gagal("Alasan penolakan wajib diisi.");
+    }
+    if (aksi === "Setujui" && k.reimburse) {
+      const diajukan = k.nominal ?? 0;
+      if (
+        nominalDisetujui === null ||
+        nominalDisetujui < 1 ||
+        nominalDisetujui > diajukan
+      ) {
+        return gagal(
+          `Nominal disetujui harus 1 sampai ${formatRupiah(diajukan)}.`,
+        );
+      }
+      if (nominalDisetujui < diajukan && tanpaAlasan) {
+        return gagal(
+          "Alasan wajib diisi bila nominal disetujui lebih kecil dari yang diajukan.",
+        );
+      }
     }
   } else if (aksi === "Diketahui") {
     if (k.status !== "Disetujui (urgent)" || k.sudah_diketahui) {
@@ -785,6 +928,301 @@ export function kodeKelompok(kelompok: string): string | null {
   if (kelompok === "Sakit") return "S";
   return null;
 }
+
+// ── Reimbursement dan pembayaran terpisah (§19.3, §19.4) ───────────────────
+
+export const KUNCI_REIMBURSE_BAYAR = "hr_reimburse_bayar";
+export const MODE_REIMBURSE = ["gaji", "terpisah"] as const;
+/** Bawaan `terpisah`: gaji tidak berubah sampai pemilik memilih (§19.8). */
+export const MODE_REIMBURSE_BAWAAN = "terpisah";
+export const SUMBER_REIMBURSE = "Reimburse";
+export const SUMBER_UANG = "Cuti Diuangkan";
+export const MAKS_KLAIM_PER_BAYAR = 200;
+export const STATUS_DIBAYAR = "Dibayar";
+export const STATUS_PROSES_GAJI = "Dalam proses gaji";
+export const STATUS_BELUM_DIBAYAR = "Belum dibayar";
+export type StatusBayar =
+  | typeof STATUS_DIBAYAR
+  | typeof STATUS_PROSES_GAJI
+  | typeof STATUS_BELUM_DIBAYAR;
+export const PESAN_KLAIM_DIBAYAR =
+  "Klaim ini sudah dibayar atau masih ada di proses gaji. Batalkan pembayarannya atau tolak proses gaji itu dulu.";
+export const PESAN_UANG_DIBAYAR =
+  "Cuti diuangkan ini sudah dibayar. Batalkan pembayarannya dulu.";
+
+/** Cermin `mode_reimburse`: kosong atau tidak dikenal = bawaan. */
+export function modeReimburse(nilai: string | null | undefined): string {
+  return nilai?.trim() === "gaji" ? "gaji" : MODE_REIMBURSE_BAWAAN;
+}
+
+/** Cermin `validasi_aturan_reimburse`: kunci absen = tidak disimpan. */
+export function validasiAturanReimburse(
+  draft: Draft,
+): Hasil<Array<[string, string]>> {
+  if (draft[KUNCI_REIMBURSE_BAYAR] === undefined) return ok([]);
+  const mode = teks(draft, KUNCI_REIMBURSE_BAYAR);
+  if (!(MODE_REIMBURSE as readonly string[]).includes(mode)) {
+    return gagal("Cara bayar reimbursement harus gaji atau terpisah.");
+  }
+  return ok([[KUNCI_REIMBURSE_BAYAR, mode]]);
+}
+
+/** Cermin `Klaim`: Reimburse berlaku atau cuti diuangkan. */
+export interface Klaim {
+  id_klaim: string;
+  sumber: string;
+  id_karyawan: string;
+  tanggal: string;
+  nominal: number;
+  keterangan: string;
+}
+
+/** Cermin `BayarReimburse`. */
+export interface BayarReimburse {
+  id_bayar: string;
+  jenis: string;
+  id_ref: string | null;
+  id_karyawan: string;
+  tanggal: string;
+  total: number;
+  keterangan: string | null;
+  dicatat_oleh: string;
+  created_at: string;
+}
+
+/** Cermin `BarisReimburse`. */
+export interface BarisReimburse {
+  id_baris: string;
+  id_bayar: string;
+  sumber: string;
+  id_klaim: string;
+  nominal: number;
+}
+
+/** Cermin `GajiReimburse`. */
+export interface GajiReimburse {
+  id_run: string;
+  status: string;
+  id_klaim: string;
+  nominal: number;
+}
+
+/** Cermin `bayar_aktif_reimburse`. */
+export function bayarAktifReimburse(
+  idKlaim: string,
+  pembayaran: readonly BayarReimburse[],
+  baris: readonly BarisReimburse[],
+): string[] {
+  const aktif = pembayaran
+    .filter((p) => p.jenis === "Bayar")
+    .filter((p) =>
+      baris.some((b) => b.id_bayar === p.id_bayar && b.id_klaim === idKlaim),
+    )
+    .filter(
+      (p) =>
+        !pembayaran.some(
+          (x) => x.jenis === "Pembatalan" && x.id_ref === p.id_bayar,
+        ),
+    )
+    .map((p) => p.id_bayar);
+  return [...new Set(aktif)].sort();
+}
+
+/** Cermin `status_bayar` (§19.4). */
+export function statusBayar(
+  idKlaim: string,
+  pembayaran: readonly BayarReimburse[],
+  baris: readonly BarisReimburse[],
+  gaji: readonly GajiReimburse[],
+): StatusBayar {
+  const diGaji = (paid: boolean) =>
+    gaji.some((g) => g.id_klaim === idKlaim && (g.status === "PAID") === paid);
+  if (
+    bayarAktifReimburse(idKlaim, pembayaran, baris).length > 0 ||
+    diGaji(true)
+  )
+    return STATUS_DIBAYAR;
+  if (diGaji(false)) return STATUS_PROSES_GAJI;
+  return STATUS_BELUM_DIBAYAR;
+}
+
+/** Cermin `dibayar_ganda`. */
+export function dibayarGanda(
+  idKlaim: string,
+  pembayaran: readonly BayarReimburse[],
+  baris: readonly BarisReimburse[],
+  gaji: readonly GajiReimburse[],
+): boolean {
+  return (
+    bayarAktifReimburse(idKlaim, pembayaran, baris).length +
+      gaji.filter((g) => g.id_klaim === idKlaim).length >
+    1
+  );
+}
+
+/** Cermin `kunci_batas`: karyawan, jenis, dan bulan tanggal biaya. */
+export function kunciBatas(
+  idKaryawan: string,
+  idJenis: string,
+  tanggal: string,
+): string {
+  return `${idKaryawan}|${idJenis}|${tanggal.slice(0, 7)}`;
+}
+
+/** Cermin `lewat_batas`. */
+export function lewatBatas(
+  klaim: readonly (readonly [string, string, string, number])[],
+  batas: ReadonlyMap<string, number>,
+): Set<string> {
+  const jumlah = new Map<string, number>();
+  for (const [karyawan, jenis, tanggal, nominal] of klaim) {
+    const kunci = kunciBatas(karyawan, jenis, tanggal);
+    jumlah.set(kunci, (jumlah.get(kunci) ?? 0) + nominal);
+  }
+  return new Set(
+    [...jumlah]
+      .filter(([kunci, total]) => {
+        const b = batas.get(kunci.split("|")[1] ?? "");
+        return b !== undefined && total > b;
+      })
+      .map(([kunci]) => kunci),
+  );
+}
+
+/** Cermin `BayarReimburseValid`. */
+export interface BayarReimburseValid {
+  id_karyawan: string;
+  id_klaim: string[];
+  tanggal: string;
+  keterangan: string | null;
+}
+
+/** Cermin `validasi_bayar_reimburse`. Tanggal kosong = hari ini (WIB). */
+export function validasiBayarReimburse(
+  draft: Draft,
+  hariIni: string,
+): Hasil<BayarReimburseValid> {
+  const idKaryawan = teks(draft, "id_karyawan");
+  if (idKaryawan === "") return gagal("Pilih karyawan.");
+  const idKlaim: string[] = [];
+  const mentah = Array.isArray(draft.id_klaim) ? draft.id_klaim : [];
+  for (const nilai of mentah) {
+    const id = typeof nilai === "string" ? nilai.trim() : "";
+    if (id === "") return gagal("Klaim yang dipilih tidak valid.");
+    if (idKlaim.includes(id))
+      return gagal("Klaim yang sama terpilih dua kali.");
+    idKlaim.push(id);
+  }
+  if (idKlaim.length === 0) return gagal("Pilih klaim yang dibayar.");
+  if (idKlaim.length > MAKS_KLAIM_PER_BAYAR) {
+    return gagal(
+      `Satu pembayaran paling banyak ${MAKS_KLAIM_PER_BAYAR} klaim.`,
+    );
+  }
+  const tanggal = teks(draft, "tanggal") || hariIni;
+  if (!tanggalValid(tanggal)) return gagal("Tanggal bayar tidak valid.");
+  if (tanggal > hariIni) {
+    return gagal("Tanggal bayar tidak boleh setelah hari ini.");
+  }
+  const keterangan = teks(draft, "keterangan") || null;
+  if (keterangan !== null && panjang(keterangan) > MAKS_ALASAN) {
+    return gagal(`Keterangan maksimal ${MAKS_ALASAN} karakter.`);
+  }
+  return ok({
+    id_karyawan: idKaryawan,
+    id_klaim: idKlaim,
+    tanggal,
+    keterangan,
+  });
+}
+
+/** Cermin `periksa_bayar_reimburse`. Hanya di perangkat dan Web. */
+export function periksaBayarReimburse(
+  valid: BayarReimburseValid,
+  klaim: readonly Klaim[],
+  pembayaran: readonly BayarReimburse[],
+  baris: readonly BarisReimburse[],
+  gaji: readonly GajiReimburse[],
+): Hasil<Klaim[]> {
+  const hasil: Klaim[] = [];
+  for (const id of valid.id_klaim) {
+    const k = klaim.find((x) => x.id_klaim === id);
+    if (!k) return gagal("Klaim tidak ditemukan atau belum disetujui.");
+    if (k.id_karyawan !== valid.id_karyawan) {
+      return gagal("Klaim itu bukan milik karyawan ini.");
+    }
+    const status = statusBayar(id, pembayaran, baris, gaji);
+    if (status !== STATUS_BELUM_DIBAYAR) {
+      return gagal(
+        `Klaim tanggal ${k.tanggal} berstatus ${status.toLowerCase()}.`,
+      );
+    }
+    hasil.push(k);
+  }
+  return ok(hasil);
+}
+
+/** Cermin `periksa_batal_bayar_reimburse`. */
+export function periksaBatalBayarReimburse(
+  pembayaran: readonly BayarReimburse[],
+  idBayar: string,
+): Hasil<null> {
+  if (!pembayaran.some((p) => p.id_bayar === idBayar && p.jenis === "Bayar")) {
+    return gagal("Pembayaran tidak ditemukan.");
+  }
+  if (
+    pembayaran.some((p) => p.jenis === "Pembatalan" && p.id_ref === idBayar)
+  ) {
+    return gagal("Pembayaran ini sudah dibatalkan.");
+  }
+  return ok(null);
+}
+
+/** Cermin `periksa_reimburse_payroll`. */
+export function periksaReimbursePayroll(
+  idRun: string,
+  entri: readonly (readonly [string, number])[],
+  klaim: readonly Klaim[],
+  pembayaran: readonly BayarReimburse[],
+  baris: readonly BarisReimburse[],
+  gaji: readonly GajiReimburse[],
+): Hasil<null> {
+  for (const [id, nominal] of entri) {
+    const k = klaim.find(
+      (x) => x.id_klaim === id && x.sumber === SUMBER_REIMBURSE,
+    );
+    if (!k) {
+      return gagal(
+        `Klaim reimbursement ${id} sudah tidak berlaku. Tolak proses gaji ini lalu buat ulang.`,
+      );
+    }
+    if (k.nominal !== nominal) {
+      return gagal(
+        `Nominal klaim reimbursement tanggal ${k.tanggal} berubah. Tolak proses gaji ini lalu buat ulang.`,
+      );
+    }
+    const paidLain = gaji.some(
+      (g) => g.id_klaim === id && g.status === "PAID" && g.id_run !== idRun,
+    );
+    if (paidLain || bayarAktifReimburse(id, pembayaran, baris).length > 0) {
+      return gagal(
+        `Klaim reimbursement tanggal ${k.tanggal} sudah dibayar. Tolak proses gaji ini lalu buat ulang.`,
+      );
+    }
+  }
+  return ok(null);
+}
+
+/** Cermin `id_baris_reimburse` dan `id_batal_reimburse`. */
+export const idBarisReimburse = (idBayar: string, idKlaim: string) =>
+  `${idBayar}:${idKlaim}`;
+export const idBatalReimburse = (idBayar: string) => `batal-${idBayar}`;
+
+export const CLOUD_INSERT_BAYAR_REIMBURSE_SQL =
+  "INSERT INTO hr_reimburse_bayar (id_bayar, jenis, id_ref, id_karyawan, tanggal, total, keterangan, dicatat_oleh, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(?9, datetime('now'))) ON CONFLICT(id_bayar) DO NOTHING;";
+
+export const CLOUD_INSERT_BARIS_REIMBURSE_SQL =
+  "INSERT INTO hr_reimburse_bayar_baris (id_baris, id_bayar, sumber, id_klaim, nominal) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id_baris) DO NOTHING;";
 
 // ── Hari wajib (§17.5) ─────────────────────────────────────────────────────
 
@@ -1165,10 +1603,10 @@ export function periodeCuti(
 // ── SQL tulis dan penyesuaian (kembar `desktop/hr_pengajuan.rs`) ───────────
 
 export const UPSERT_JENIS_SQL =
-  "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now')) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now');";
+  "INSERT INTO hr_jenis_pengajuan (id_jenis, nama, kelompok, izin_pemutus, boleh_urgent, potong_jatah, dampak_gaji, maks_hari, satuan_maks, wajib_dokumen, is_aktif, created_at, updated_at, batas_bulanan) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, datetime('now')), datetime('now'), ?13) ON CONFLICT(id_jenis) DO UPDATE SET nama = excluded.nama, kelompok = excluded.kelompok, izin_pemutus = excluded.izin_pemutus, boleh_urgent = excluded.boleh_urgent, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, maks_hari = excluded.maks_hari, satuan_maks = excluded.satuan_maks, wajib_dokumen = excluded.wajib_dokumen, is_aktif = excluded.is_aktif, updated_at = datetime('now'), batas_bulanan = CASE WHEN ?14 = 1 THEN excluded.batas_bulanan ELSE hr_jenis_pengajuan.batas_bulanan END;";
 
 export const UPSERT_PENGAJUAN_SQL =
-  "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar;";
+  "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, potong_jatah, dampak_gaji, tanggal_mulai, tanggal_selesai, setengah_hari, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, updated_at, jam_mulai, jam_selesai, id_karyawan_tukar, id_shift_asal, id_shift_tukar, nominal) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, datetime('now')), datetime('now'), ?15, ?16, ?17, ?18, ?19, ?20) ON CONFLICT(id_pengajuan) DO UPDATE SET id_karyawan = excluded.id_karyawan, id_jenis = excluded.id_jenis, kelompok = excluded.kelompok, potong_jatah = excluded.potong_jatah, dampak_gaji = excluded.dampak_gaji, tanggal_mulai = excluded.tanggal_mulai, tanggal_selesai = excluded.tanggal_selesai, setengah_hari = excluded.setengah_hari, alasan = excluded.alasan, sidik = excluded.sidik, waktu_perangkat = excluded.waktu_perangkat, updated_at = datetime('now'), jam_mulai = excluded.jam_mulai, jam_selesai = excluded.jam_selesai, id_karyawan_tukar = excluded.id_karyawan_tukar, id_shift_asal = excluded.id_shift_asal, id_shift_tukar = excluded.id_shift_tukar, nominal = excluded.nominal;";
 
 export const PESAN_TUKAR_NONAKTIF =
   "Karyawan yang diajak bertukar tidak ditemukan atau nonaktif.";
@@ -1181,7 +1619,7 @@ export const PESAN_TUKAR_BACKUP =
 
 /** Web menulis langsung ke cloud: `diterima_cloud` jam database cloud. */
 export const CLOUD_INSERT_KEPUTUSAN_SQL =
-  "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), COALESCE(?8, datetime('now'))) ON CONFLICT(id_keputusan) DO NOTHING;";
+  "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud, created_at, nominal_disetujui) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), COALESCE(?8, datetime('now')), ?9) ON CONFLICT(id_keputusan) DO NOTHING;";
 
 export const INSERT_PENYESUAIAN_SQL =
   "INSERT INTO hr_cuti_penyesuaian (id_penyesuaian, id_karyawan, periode, jenis, id_ref, hari, nominal, alasan, dicatat_oleh, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, datetime('now'))) ON CONFLICT(id_penyesuaian) DO NOTHING;";

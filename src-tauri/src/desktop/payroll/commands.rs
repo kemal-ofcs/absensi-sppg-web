@@ -1051,6 +1051,8 @@ pub async fn desktop_get_payroll_recap(
     let cuti_dibayar = crate::desktop::hr_pengajuan::cuti_dibayar(&conn, &period_start, &period_end)?;
     // Mode SPL (HRIS v38, Q-56, Q-57). Cermin `lemburSpl` di `computePayrollRecap`.
     let (lembur_mode, lembur_potong) = crate::desktop::hr_pengajuan::lembur_spl(&conn, &period_start, &period_end)?;
+    // Reimbursement mode `gaji` (HRIS v39). Cermin `reimburseGaji` di `computePayrollRecap`.
+    let reimburse = crate::desktop::hr_pengajuan::reimburse_gaji(&conn, &period_end)?;
 
     let mut stmt = conn
         .prepare(&format!(
@@ -1094,10 +1096,13 @@ pub async fn desktop_get_payroll_recap(
             -- dengan hari libur resmi untuk lembur). replace() mengubah 0
             -- (Minggu) dari strftime('%w') menjadi 7; hari_kerja kosong = 7 hari.
             LEFT JOIN tbl_shift sh ON sh.id_shift = ah.id_shift
-            WHERE md.status_aktif = 'Aktif'
+            -- Karyawan aktif, dan yang keluar di dalam periode ini supaya gaji
+            -- terakhirnya tetap terhitung (PRD HRIS §20.6).
+            WHERE {karyawan}
             GROUP BY md.id_unik
             ORDER BY md.nama ASC;
             "#,
+            karyawan = crate::desktop::hr_keluar::karyawan_rekap("?1"),
             hari_hadir = super::super::driver::HARI_HADIR_SQL
         ))
         .map_err(|_| CommandError::internal())?;
@@ -1202,7 +1207,12 @@ pub async fn desktop_get_payroll_recap(
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
             );
-            let net = pay.net - Decimal::from(kasbon);
+            // Reimbursement SESUDAH kasbon, jadi tidak bisa termakan kasbon.
+            let est_reimburse: i64 = reimburse
+                .get(&agg.id_unik)
+                .map(|klaim| klaim.iter().map(|(_, nominal)| nominal).sum())
+                .unwrap_or(0);
+            let net = pay.net - Decimal::from(kasbon) + Decimal::from(est_reimburse);
             let deduction = deduction + Decimal::from(kasbon);
 
             result.push(PayrollRecapRow {
@@ -1241,6 +1251,7 @@ pub async fn desktop_get_payroll_recap(
                 lembur_mode: lembur_mode.clone(),
                 lembur_tanpa_spl_menit: potong.tanpa_spl,
                 lembur_dipotong_menit: potong.lembur + potong.libur_total,
+                est_reimburse,
             });
         }
     }
@@ -1301,6 +1312,7 @@ pub async fn desktop_create_payroll_run(
     let bpjs_rules = load_bpjs_rules(&conn, &period_end)?;
     let kasbon_aktif =
         loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
+    let reimburse = crate::desktop::hr_pengajuan::reimburse_gaji(&conn, &period_end)?;
 
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
@@ -1359,7 +1371,10 @@ pub async fn desktop_create_payroll_run(
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
         );
-        let net = pay.net - Decimal::from(kasbon);
+        // Reimbursement mode `gaji` sesudah kasbon, sama dengan pratinjau.
+        let klaim_reimburse = reimburse.get(&row.id_karyawan).cloned().unwrap_or_default();
+        let total_reimburse: i64 = klaim_reimburse.iter().map(|(_, nominal)| nominal).sum();
+        let net = pay.net - Decimal::from(kasbon) + Decimal::from(total_reimburse);
         let deduction = deduction + Decimal::from(kasbon);
         let mut components_snapshot = pay.components;
         components_snapshot.extend(loan::komponen_kasbon(&rincian_kasbon));
@@ -1386,6 +1401,7 @@ pub async fn desktop_create_payroll_run(
             "bpjs": pay.bpjs,
             "tax": pay.tax,
             "kasbon": loan::rincian_kasbon_json(&rincian_kasbon),
+            "reimburse": crate::desktop::hr_pengajuan::rincian_reimburse_json(&klaim_reimburse),
             "calculated_at": now.clone()
         });
 

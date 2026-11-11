@@ -49,7 +49,9 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
         'drv_upah_bayar', 'drv_upah_bayar_baris',
         'hr_cabang', 'hr_divisi', 'hr_divisi_nama', 'hr_jabatan', 'hr_kontrak',
         'hr_profil', 'hr_dokumen_jenis', 'hr_dokumen', 'hr_dokumen_berkas',
-        'hr_jenis_pengajuan', 'hr_pengajuan', 'hr_pengajuan_keputusan', 'hr_cuti_penyesuaian', 'hr_pengajuan_berkas'
+        'hr_jenis_pengajuan', 'hr_pengajuan', 'hr_pengajuan_keputusan', 'hr_cuti_penyesuaian', 'hr_pengajuan_berkas',
+        'hr_reimburse_bayar', 'hr_reimburse_bayar_baris',
+        'hr_sp', 'hr_keluar', 'hr_keluar_rincian', 'hr_keluar_alasan'
       );
     `);
     const tableCount = Number(tablesRes.rows[0]?.count ?? 0);

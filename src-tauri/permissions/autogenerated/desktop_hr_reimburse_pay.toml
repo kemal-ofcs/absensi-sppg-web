@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-reimburse-pay"
+description = "Enables the desktop_hr_reimburse_pay command without any pre-configured scope."
+commands.allow = ["desktop_hr_reimburse_pay"]
+
+[[permission]]
+identifier = "deny-desktop-hr-reimburse-pay"
+description = "Denies the desktop_hr_reimburse_pay command without any pre-configured scope."
+commands.deny = ["desktop_hr_reimburse_pay"]

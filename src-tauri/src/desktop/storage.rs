@@ -266,7 +266,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         id_cabang TEXT,
         id_divisi TEXT,
         id_jabatan TEXT,
-        id_atasan TEXT
+        id_atasan TEXT,
+        id_keluar TEXT
       );
       CREATE TABLE IF NOT EXISTS id_card (
         id_card_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1250,6 +1251,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        batas_bulanan INTEGER,
         CHECK (potong_jatah = 0 OR kelompok = 'Cuti')
       );
       CREATE TABLE IF NOT EXISTS hr_pengajuan (
@@ -1273,6 +1275,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         id_karyawan_tukar TEXT,
         id_shift_asal INTEGER,
         id_shift_tukar INTEGER,
+        nominal INTEGER,
         CHECK (tanggal_selesai >= tanggal_mulai),
         CHECK (setengah_hari = 0 OR (kelompok = 'Izin' AND tanggal_mulai = tanggal_selesai))
       );
@@ -1288,7 +1291,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         oleh TEXT NOT NULL,
         waktu_perangkat TEXT NOT NULL,
         diterima_cloud TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        nominal_disetujui INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_keputusan_pengajuan ON hr_pengajuan_keputusan(id_pengajuan);
       -- Append-only. Pembatalan `batal-<id>`, diuangkan `uang:<karyawan>:<periode>`.
@@ -1305,6 +1309,31 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_hr_cuti_penyesuaian_karyawan ON hr_cuti_penyesuaian(id_karyawan, periode);
+      -- HRIS fase 4 (v39): pembayaran terpisah reimbursement dan cuti
+      -- diuangkan, append-only. Pembatalan = baris `Pembatalan` berid
+      -- `batal-<id_bayar>`. DDL WAJIB identik dengan `turso.rs` dan
+      -- `db-migrations.ts`.
+      CREATE TABLE IF NOT EXISTS hr_reimburse_bayar (
+        id_bayar TEXT PRIMARY KEY,
+        jenis TEXT NOT NULL CHECK (jenis IN ('Bayar', 'Pembatalan')),
+        id_ref TEXT,
+        id_karyawan TEXT NOT NULL,
+        tanggal TEXT NOT NULL,
+        total INTEGER NOT NULL CHECK (total >= 0),
+        keterangan TEXT,
+        dicatat_oleh TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_karyawan ON hr_reimburse_bayar(id_karyawan, tanggal);
+      CREATE TABLE IF NOT EXISTS hr_reimburse_bayar_baris (
+        id_baris TEXT PRIMARY KEY,
+        id_bayar TEXT NOT NULL,
+        sumber TEXT NOT NULL CHECK (sumber IN ('Reimburse', 'Cuti Diuangkan')),
+        id_klaim TEXT NOT NULL,
+        nominal INTEGER NOT NULL CHECK (nominal >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_baris_bayar ON hr_reimburse_bayar_baris(id_bayar);
+      CREATE INDEX IF NOT EXISTS idx_hr_reimburse_bayar_baris_klaim ON hr_reimburse_bayar_baris(id_klaim);
       -- Kasbon karyawan (v40). Sisa TIDAK disimpan: pokok dikurangi angsuran
       -- gaji dan pelunasan tunai. Mutasi append-only, id deterministik untuk
       -- yang bisa dicatat dua perangkat (cair-, batal-, ang-). Tanpa UNIQUE
@@ -1328,8 +1357,6 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     seed_payroll_rate_tables(&connection)?;
     super::accounting::seed_akun_bawaan(&connection)
         .map_err(|_| "Bagan akun bawaan tidak dapat disiapkan.".to_owned())?;
-    super::hr_pengajuan::seed_jenis_bawaan(&connection)
-        .map_err(|_| "Jenis pengajuan bawaan tidak dapat disiapkan.".to_owned())?;
 
     // Vonis verifikasi wajah pada foto bukti (v19). NULL = scan itu tidak
     // diperiksa wajahnya (fitur mati, atau foto lama).
@@ -1467,6 +1494,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         ("id_divisi", "ALTER TABLE master_data ADD COLUMN id_divisi TEXT;"),
         ("id_jabatan", "ALTER TABLE master_data ADD COLUMN id_jabatan TEXT;"),
         ("id_atasan", "ALTER TABLE master_data ADD COLUMN id_atasan TEXT;"),
+        // Karyawan keluar (v40). Hanya terisi lewat tarikan snapshot.
+        ("id_keluar", "ALTER TABLE master_data ADD COLUMN id_keluar TEXT;"),
     ] {
         ensure_column(&connection, "master_data", column, alter_sql)?;
     }
@@ -1483,6 +1512,17 @@ pub fn initialize(path: &Path) -> Result<(), String> {
     connection
         .execute_batch("CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tukar ON hr_pengajuan(id_karyawan_tukar, tanggal_mulai);")
         .map_err(|_| "Indeks tukar shift tidak dapat dibuat.".to_string())?;
+    // Reimbursement (v39), tanpa CHECK: ditegakkan aplikasi.
+    for (table, column, alter_sql) in [
+        ("hr_jenis_pengajuan", "batas_bulanan", "ALTER TABLE hr_jenis_pengajuan ADD COLUMN batas_bulanan INTEGER;"),
+        ("hr_pengajuan", "nominal", "ALTER TABLE hr_pengajuan ADD COLUMN nominal INTEGER;"),
+        ("hr_pengajuan_keputusan", "nominal_disetujui", "ALTER TABLE hr_pengajuan_keputusan ADD COLUMN nominal_disetujui INTEGER;"),
+    ] {
+        ensure_column(&connection, table, column, alter_sql)?;
+    }
+    // Sesudah `batas_bulanan` dipastikan ada: seed menulis kolom itu.
+    super::hr_pengajuan::seed_jenis_bawaan(&connection)
+        .map_err(|_| "Jenis pengajuan bawaan tidak dapat disiapkan.".to_owned())?;
     // Hapus barang (v32). NULL = belum dihapus.
     ensure_column(
         &connection,
@@ -1726,6 +1766,9 @@ const CLOUD_MIRRORED_TABLES: &[&str] = &[
     "hr_pengajuan",
     "hr_pengajuan_keputusan",
     "hr_cuti_penyesuaian",
+    // v39: pembayaran terpisah reimbursement dan cuti diuangkan.
+    "hr_reimburse_bayar",
+    "hr_reimburse_bayar_baris",
 ];
 
 /// Membuang seluruh jejak database cloud lama ketika perangkat dipindahkan ke

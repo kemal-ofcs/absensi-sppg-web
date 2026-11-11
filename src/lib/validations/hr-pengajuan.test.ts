@@ -6,14 +6,18 @@ import {
   aturanLemburDariPeta,
   BACKUP_TUKAR_SQL,
   bentrokPengajuan,
+  CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+  CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
   CLOUD_INSERT_KEPUTUSAN_SQL,
   durasiLembur,
+  GAJI_REIMBURSE_SQL,
   hitungCutiDibayar,
   INSERT_PENYESUAIAN_SQL,
   type JenisPengajuan,
   type Kalender,
   type KeadaanAksi,
   type Keputusan,
+  KLAIM_BERLAKU_SQL,
   kanonikPengajuan,
   kodeKelompok,
   LAPORAN_PENGAJUAN_SQL,
@@ -23,11 +27,14 @@ import {
   PENGAJUAN_BERLAKU_SQL,
   PENGAJUAN_RENTANG_SQL,
   PERIODE_DIBAYAR_SQL,
+  PESAN_KLAIM_DIBAYAR,
+  PESAN_NOMINAL,
   PESAN_TANPA_HARI_KERJA,
   PESAN_TUKAR_BACKUP,
   PESAN_TUKAR_NONAKTIF,
   PESAN_TUKAR_SHIFT_HILANG,
   PESAN_TUKAR_SHIFT_SAMA,
+  PESAN_UANG_DIBAYAR,
   periksaAksi,
   periksaJenis,
   periksaMaks,
@@ -44,6 +51,7 @@ import {
   TUKAR_RENTANG_SQL,
   tandaKeputusan,
   tanggalWajib,
+  UANG_BERLAKU_SQL,
   UPSERT_JENIS_SQL,
   UPSERT_PENGAJUAN_SQL,
   upahHarian,
@@ -112,6 +120,14 @@ describe("hr-pengajuan", () => {
         PESAN_TUKAR_SHIFT_SAMA,
         PESAN_TUKAR_SHIFT_HILANG,
         PESAN_TUKAR_BACKUP,
+        ...KLAIM_BERLAKU_SQL.split(PENGAJUAN_BERLAKU_SQL),
+        UANG_BERLAKU_SQL,
+        GAJI_REIMBURSE_SQL,
+        CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
+        CLOUD_INSERT_BARIS_REIMBURSE_SQL,
+        PESAN_KLAIM_DIBAYAR,
+        PESAN_UANG_DIBAYAR,
+        PESAN_NOMINAL,
       ]) {
         expect(rust.includes(sql ?? "tidak ada")).toBe(true);
       }
@@ -293,12 +309,12 @@ describe("hr-pengajuan", () => {
       gagalDengan(
         validasiJenis({
           nama: "X",
-          kelompok: "Reimburse",
+          kelompok: "Bonus",
           dampak_gaji: "Dibayar",
         }),
       ),
     ).toBe(
-      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse.",
     );
     const j = (kelompok: string): JenisPengajuan => ({
       id_jenis: "j",
@@ -312,6 +328,7 @@ describe("hr-pengajuan", () => {
       satuan_maks: "Hari Kerja",
       wajib_dokumen: false,
       is_aktif: true,
+      batas_bulanan: null,
     });
     const isian = (lain: Record<string, unknown>) => {
       const v = validasiPengajuan({
@@ -473,55 +490,62 @@ describe("hr-pengajuan", () => {
     });
     const izin = "Kamu tidak punya izin memutus jenis pengajuan ini.";
     const sendiri = "Pengajuan untuk dirimu sendiri harus diputus orang lain.";
-    expect(gagalDengan(periksaAksi("Hapus", "", k("Menunggu")))).toBe(
+    expect(gagalDengan(periksaAksi("Hapus", "", null, k("Menunggu")))).toBe(
       "Keputusan tidak dikenal.",
     );
-    expect(periksaAksi("Setujui", "", k("Menunggu")).ok).toBe(true);
-    expect(gagalDengan(periksaAksi("Tolak", " ", k("Menunggu")))).toBe(
+    expect(periksaAksi("Setujui", "", null, k("Menunggu")).ok).toBe(true);
+    expect(gagalDengan(periksaAksi("Tolak", " ", null, k("Menunggu")))).toBe(
       "Alasan penolakan wajib diisi.",
     );
-    expect(gagalDengan(periksaAksi("Setujui", "", k("Disetujui")))).toBe(
+    expect(gagalDengan(periksaAksi("Setujui", "", null, k("Disetujui")))).toBe(
       "Pengajuan ini tidak lagi menunggu keputusan.",
     );
     expect(
       gagalDengan(
-        periksaAksi("Setujui", "", { ...k("Menunggu"), boleh_putus: false }),
+        periksaAksi("Setujui", "", null, {
+          ...k("Menunggu"),
+          boleh_putus: false,
+        }),
       ),
     ).toBe(izin);
     expect(
       gagalDengan(
-        periksaAksi("Setujui", "", {
+        periksaAksi("Setujui", "", null, {
           ...k("Menunggu"),
           karyawan_sendiri: true,
           superadmin: true,
         }),
       ),
     ).toBe(sendiri);
-    expect(gagalDengan(periksaAksi("Diketahui", "", k("Disetujui")))).toBe(
-      "Hanya pengajuan urgent yang belum diketahui yang bisa ditandai.",
+    expect(
+      gagalDengan(periksaAksi("Diketahui", "", null, k("Disetujui"))),
+    ).toBe("Hanya pengajuan urgent yang belum diketahui yang bisa ditandai.");
+    expect(periksaAksi("Diketahui", "", null, k("Disetujui (urgent)")).ok).toBe(
+      true,
     );
-    expect(periksaAksi("Diketahui", "", k("Disetujui (urgent)")).ok).toBe(true);
-    expect(gagalDengan(periksaAksi("Batal", "", k("Menunggu")))).toBe(
+    expect(gagalDengan(periksaAksi("Batal", "", null, k("Menunggu")))).toBe(
       "Alasan pembatalan wajib diisi.",
     );
-    expect(gagalDengan(periksaAksi("Batal", "Salah", k("Menunggu")))).toBe(
+    expect(
+      gagalDengan(periksaAksi("Batal", "Salah", null, k("Menunggu"))),
+    ).toBe(
       "Hanya pengaju yang bisa membatalkan pengajuan yang masih menunggu.",
     );
     expect(
-      periksaAksi("Batal", "Salah", {
+      periksaAksi("Batal", "Salah", null, {
         ...k("Menunggu"),
         pengaju_sendiri: true,
         boleh_putus: false,
       }).ok,
     ).toBe(true);
     expect(
-      periksaAksi("Batal", "Ternyata masuk", k("Disetujui (urgent)")).ok,
+      periksaAksi("Batal", "Ternyata masuk", null, k("Disetujui (urgent)")).ok,
     ).toBe(true);
-    expect(gagalDengan(periksaAksi("Batal", "x", k("Ditolak")))).toBe(
+    expect(gagalDengan(periksaAksi("Batal", "x", null, k("Ditolak")))).toBe(
       "Pengajuan yang ditolak atau dibatalkan tidak bisa dibatalkan lagi.",
     );
     expect(
-      gagalDengan(periksaAksi("Setujui", "a".repeat(501), k("Menunggu"))),
+      gagalDengan(periksaAksi("Setujui", "a".repeat(501), null, k("Menunggu"))),
     ).toBe("Alasan maksimal 500 karakter.");
     expect(gagalDengan(periksaSunting("Disetujui", true, false))).toBe(
       "Pengajuan yang sudah diputus tidak bisa disunting.",
@@ -576,6 +600,7 @@ describe("hr-pengajuan", () => {
       satuan_maks: "Hari Kerja",
       wajib_dokumen: false,
       is_aktif: true,
+      batas_bulanan: null,
     };
     expect(gagalDengan(periksaJenis(sah.nilai, jenis))).toBe(
       "Setengah hari hanya untuk kelompok Izin.",
@@ -616,12 +641,12 @@ describe("hr-pengajuan", () => {
       gagalDengan(
         validasiJenis({
           nama: "Klaim",
-          kelompok: "Reimburse",
+          kelompok: "Bonus",
           dampak_gaji: "Dibayar",
         }),
       ),
     ).toBe(
-      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, atau Dinas Luar.",
+      "Kelompok harus Cuti, Izin, Sakit, Lembur, Tukar Shift, Dinas Luar, atau Reimburse.",
     );
     expect(
       gagalDengan(

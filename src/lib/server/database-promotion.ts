@@ -316,6 +316,27 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     uniqueColumns: [],
     dependsOn: ["hr_pengajuan"],
   },
+  // v39 — pembayaran terpisah reimbursement dan cuti diuangkan, append-only.
+  {
+    table: "hr_reimburse_bayar",
+    uniqueColumns: [],
+    dependsOn: ["master_data"],
+  },
+  {
+    table: "hr_reimburse_bayar_baris",
+    uniqueColumns: [],
+    dependsOn: ["hr_reimburse_bayar"],
+  },
+  // v40 — SP dan karyawan keluar. Khusus cloud, jadi promosi adalah
+  // satu-satunya jalan mereka pindah.
+  { table: "hr_sp", uniqueColumns: [], dependsOn: ["master_data"] },
+  { table: "hr_keluar_alasan", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "hr_keluar",
+    uniqueColumns: [],
+    dependsOn: ["master_data", "hr_keluar_alasan"],
+  },
+  { table: "hr_keluar_rincian", uniqueColumns: [], dependsOn: ["hr_keluar"] },
 ];
 
 /**

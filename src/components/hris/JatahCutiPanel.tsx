@@ -153,7 +153,7 @@ export function JatahCutiPanel({
 
       {data.penyesuaian.length > 0 ? (
         <ul className="space-y-1 text-sm">
-          {data.penyesuaian.map(({ baris, dibatalkan }) => (
+          {data.penyesuaian.map(({ baris, dibatalkan, status_bayar }) => (
             <li
               key={baris.id_penyesuaian}
               className={`flex flex-wrap items-center gap-2 ${dibatalkan ? "text-slate-500 line-through" : "text-slate-200"}`}
@@ -163,8 +163,9 @@ export function JatahCutiPanel({
                 {baris.hari} hari
                 {baris.nominal !== null
                   ? ` • Rp ${baris.nominal.toLocaleString("id-ID")}`
-                  : ""}{" "}
-                • {baris.alasan}
+                  : ""}
+                {status_bayar && !dibatalkan ? ` • ${status_bayar}` : ""} •{" "}
+                {baris.alasan}
               </span>
               {bolehUbah && !dibatalkan ? (
                 <button

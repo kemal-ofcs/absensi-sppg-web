@@ -216,6 +216,34 @@ describe("potongKasbon", () => {
 });
 
 describe("susunJurnalPayroll", () => {
+  test("reimbursement mode gaji (Q-61), vektor kembar Rust", () => {
+    // net = 5.000.000 − 150.000 − 200.000 − 500.000 + 750.000.
+    expect(
+      susunJurnalPayroll(
+        [
+          {
+            gross: 5_000_000,
+            net: 4_900_000,
+            pph21: 150_000,
+            bpjs_karyawan: 200_000,
+            bpjs_perusahaan: 300_000,
+            kasbon: 500_000,
+            reimburse: 750_000,
+          },
+        ],
+        "akun-kas",
+      ),
+    ).toEqual([
+      { id_akun: "akun-beban-gaji", debit: 5_000_000, kredit: 0 },
+      { id_akun: "akun-beban-bpjs", debit: 300_000, kredit: 0 },
+      { id_akun: "akun-beban-reimburse", debit: 750_000, kredit: 0 },
+      { id_akun: "akun-kas", debit: 0, kredit: 4_900_000 },
+      { id_akun: "akun-utang-pph21", debit: 0, kredit: 150_000 },
+      { id_akun: "akun-utang-bpjs", debit: 0, kredit: 500_000 },
+      { id_akun: "akun-piutang-karyawan", debit: 0, kredit: 500_000 },
+    ]);
+  });
+
   test("seimbang, potongan komponen adalah selisihnya", () => {
     expect(
       susunJurnalPayroll(

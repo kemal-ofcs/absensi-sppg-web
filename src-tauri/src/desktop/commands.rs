@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hr_keluar, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -71,8 +71,33 @@ pub(crate) fn require_any_permission(
             "Akses ditolak untuk tindakan ini.",
         ));
     }
+    tolak_personil_nonaktif(state, &session.operator)?;
     license::enforce_any(state, &mut session.license, permissions)?;
     Ok(session.operator.clone())
+}
+
+/// Akun yang tertaut ke personil nonaktif (mis. sudah keluar) tidak boleh
+/// bekerja lagi, juga pada sesi yang masih terbuka dan sesi offline (PRD HRIS
+/// §20.4, Q-70). Login online sudah menolaknya di database; ini padanannya di
+/// SQLite perangkat. Personil yang belum tertarik ke perangkat tidak ditolak.
+fn tolak_personil_nonaktif(state: &DesktopState, operator: &OperatorUser) -> Result<(), CommandError> {
+    let Some(id_karyawan) = operator.id_karyawan.as_deref().filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let nonaktif: bool = storage::database(&state.data_dir)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ?1 AND COALESCE(status_aktif, 'Aktif') <> 'Aktif');",
+            [id_karyawan],
+            |row| row.get(0),
+        )
+        .map_err(|_| CommandError::internal())?;
+    if nonaktif {
+        return Err(CommandError::new(
+            "DESKTOP_ACCESS_DENIED",
+            "Data personil akun ini nonaktif.",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_login_not_locked(state: &DesktopState, identifier: &str) -> Result<(), CommandError> {
@@ -609,6 +634,9 @@ pub async fn desktop_login(
     // benar terhadap vault — sama seperti pada jalur online, gerbang 2FA berdiri
     // SETELAH password, supaya layar login tidak bisa dipakai memetakan akun
     // mana yang memakai verifikasi dua langkah.
+    // Personil akun ini sudah nonaktif: jalur offline tidak boleh menjadi
+    // cara melewati penolakan login online.
+    tolak_personil_nonaktif(&state, &credential.operator)?;
     if let Err(error) = assert_offline_login_allowed(&credential.operator) {
         storage::audit(
             &state.data_dir,
@@ -3548,18 +3576,24 @@ pub async fn desktop_hr_document_file_delete(
 
 // ── HRIS fase 2: pengajuan cuti, izin, sakit dan jatah cuti (§17) ──────────
 
+/// Tanpa `hr.request.view`, pemegang `reimburse.decide` hanya melihat klaim
+/// Reimburse (Keuangan tidak melihat alasan sakit, §19.5).
+fn hanya_reimburse(operator: &OperatorUser) -> bool {
+    !operator.is_superadmin && !operator.permissions.iter().any(|p| p == "hr.request.view")
+}
+
 /// Daftar pengajuan + status + tanda, dan semua jenis pengajuan.
 #[tauri::command]
 pub fn desktop_hr_requests(state: State<'_, DesktopState>, filter: Value) -> Result<Value, CommandError> {
-    require_permission(&state, "hr.request.view")?;
-    hr_pengajuan::daftar(&state, &filter)
+    let operator = require_any_permission(&state, &["hr.request.view", "reimburse.decide"])?;
+    hr_pengajuan::daftar(&state, &filter, hanya_reimburse(&operator))
 }
 
 /// Riwayat keputusan satu pengajuan.
 #[tauri::command]
 pub fn desktop_hr_request_detail(state: State<'_, DesktopState>, id_pengajuan: String) -> Result<Value, CommandError> {
-    require_permission(&state, "hr.request.view")?;
-    hr_pengajuan::rincian(&state, &id_pengajuan)
+    let operator = require_any_permission(&state, &["hr.request.view", "reimburse.decide"])?;
+    hr_pengajuan::rincian(&state, &id_pengajuan, hanya_reimburse(&operator))
 }
 
 /// Ajukan atau sunting pengajuan. Urgent juga butuh `hr.request.urgent`.
@@ -3572,7 +3606,7 @@ pub fn desktop_hr_request_save(state: State<'_, DesktopState>, draft: Value) -> 
 /// Setujui, Tolak, Diketahui, atau Batal; izin rinci dinilai per aksi.
 #[tauri::command]
 pub fn desktop_hr_request_decide(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
-    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide", "reimburse.decide"])?;
     hr_pengajuan::putuskan(&state, &operator, &draft)
 }
 
@@ -3631,9 +3665,9 @@ pub async fn desktop_hr_request_files(
     state: State<'_, DesktopState>,
     id_pengajuan: String,
 ) -> Result<Value, CommandError> {
-    require_permission(&state, "hr.request.view")?;
+    let operator = require_any_permission(&state, &["hr.request.view", "reimburse.decide"])?;
     let turso = state.get_turso_client()?;
-    hr_pengajuan::lampiran(&turso, &id_pengajuan).await
+    hr_pengajuan::lampiran(&turso, &id_pengajuan, hanya_reimburse(&operator)).await
 }
 
 /// Isi satu lampiran (khusus cloud).
@@ -3642,9 +3676,9 @@ pub async fn desktop_hr_request_file(
     state: State<'_, DesktopState>,
     id_berkas: String,
 ) -> Result<Value, CommandError> {
-    require_permission(&state, "hr.request.view")?;
+    let operator = require_any_permission(&state, &["hr.request.view", "reimburse.decide"])?;
     let turso = state.get_turso_client()?;
-    hr_pengajuan::isi_lampiran(&turso, &id_berkas).await
+    hr_pengajuan::isi_lampiran(&turso, &id_berkas, hanya_reimburse(&operator)).await
 }
 
 /// Tambah lampiran (khusus cloud): pengaju atau HRD.
@@ -3653,7 +3687,7 @@ pub async fn desktop_hr_request_file_add(
     state: State<'_, DesktopState>,
     draft: Value,
 ) -> Result<Value, CommandError> {
-    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide", "reimburse.decide"])?;
     let turso = state.get_turso_client()?;
     hr_pengajuan::tambah_lampiran(&turso, &operator, &draft).await
 }
@@ -3664,7 +3698,139 @@ pub async fn desktop_hr_request_file_delete(
     state: State<'_, DesktopState>,
     id_berkas: String,
 ) -> Result<Value, CommandError> {
-    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide"])?;
+    let operator = require_any_permission(&state, &["hr.request.submit", "hr.request.decide", "reimburse.decide"])?;
     let turso = state.get_turso_client()?;
     hr_pengajuan::hapus_lampiran(&turso, &operator, &id_berkas).await
+}
+
+// ── HRIS fase 4: pembayaran terpisah reimbursement dan cuti diuangkan (§19) ─
+
+/// Klaim Belum dibayar dan Dalam proses gaji, dan riwayat pembayaran.
+#[tauri::command]
+pub fn desktop_hr_reimburse_overview(state: State<'_, DesktopState>, dari: String, sampai: String) -> Result<Value, CommandError> {
+    require_permission(&state, "reimburse.decide")?;
+    hr_pengajuan::ringkasan_reimburse(&state, &dari, &sampai)
+}
+
+/// Catat pembayaran terpisah satu karyawan (`reimburse.decide`).
+#[tauri::command]
+pub fn desktop_hr_reimburse_pay(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "reimburse.decide")?;
+    hr_pengajuan::catat_bayar_reimburse(&state, &operator.username, &draft)
+}
+
+/// Batalkan pembayaran terpisah (`reimburse.decide`).
+#[tauri::command]
+pub fn desktop_hr_reimburse_pay_cancel(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "reimburse.decide")?;
+    hr_pengajuan::batal_bayar_reimburse(&state, &operator.username, &draft)
+}
+
+// ── HRIS fase 5: surat peringatan dan karyawan keluar (§20, khusus cloud) ──
+
+/// SP satu karyawan (riwayat, usulan tingkat, kop) atau seluruh SP.
+#[tauri::command]
+pub async fn desktop_hr_warnings(
+    state: State<'_, DesktopState>,
+    id_karyawan: Option<String>,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.warning.view")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::daftar_sp(&turso, id_karyawan.as_deref().filter(|id| !id.is_empty())).await
+}
+
+/// Buat SP atau ubah teksnya (`hr.warning.manage`).
+#[tauri::command]
+pub async fn desktop_hr_warning_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.warning.manage")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::simpan_sp(&turso, operator.id_karyawan.as_deref(), &operator.username, &draft).await
+}
+
+/// Cabut SP dengan alasan (`hr.warning.cancel`, sensitif).
+#[tauri::command]
+pub async fn desktop_hr_warning_revoke(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.warning.cancel")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::cabut_sp(&turso, operator.id_karyawan.as_deref(), &operator.username, &draft).await
+}
+
+/// Daftar proses keluar dan alasan keluar.
+#[tauri::command]
+pub async fn desktop_hr_offboardings(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["hr.offboard.view", "hr.offboard.manage"])?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::daftar_keluar(&turso).await
+}
+
+/// Rincian satu proses keluar (`id_keluar`), atau pratinjau sebelum dicatat
+/// (`id_karyawan` + `id_alasan` + `tanggal_terakhir`).
+#[tauri::command]
+pub async fn desktop_hr_offboarding(
+    state: State<'_, DesktopState>,
+    id_keluar: Option<String>,
+    id_karyawan: Option<String>,
+    id_alasan: Option<String>,
+    tanggal_terakhir: Option<String>,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &["hr.offboard.view", "hr.offboard.manage"])?;
+    let turso = state.get_turso_client()?;
+    if let Some(id) = id_keluar.as_deref().filter(|id| !id.is_empty()) {
+        return hr_keluar::rincian_keluar(&turso, id, |karyawan, tanggal| {
+            hr_keluar::muat_lokal(&state, karyawan, tanggal)
+        })
+        .await;
+    }
+    let (karyawan, alasan, tanggal) = (
+        id_karyawan.unwrap_or_default(),
+        id_alasan.unwrap_or_default(),
+        tanggal_terakhir.unwrap_or_default(),
+    );
+    let (data, checklist) = hr_keluar::muat_lokal(&state, &karyawan, &tanggal)?;
+    hr_keluar::pratinjau_keluar(&turso, &karyawan, &alasan, &tanggal, data, checklist).await
+}
+
+/// Catat atau ubah proses keluar yang belum berlaku (`hr.offboard.manage`).
+#[tauri::command]
+pub async fn desktop_hr_offboarding_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.offboard.manage")?;
+    let sah = hr_keluar::validasi_keluar(&draft).map_err(inventory::invalid)?;
+    let (data, _) = hr_keluar::muat_lokal(&state, &sah.id_karyawan, &sah.tanggal_terakhir)?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::simpan_keluar(&turso, operator.id_karyawan.as_deref(), &operator.username, sah, data).await
+}
+
+/// Berlakukan proses keluar (`hr.offboard.manage`, sensitif).
+#[tauri::command]
+pub async fn desktop_hr_offboarding_apply(
+    state: State<'_, DesktopState>,
+    id_keluar: String,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.offboard.manage")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::berlakukan(
+        &turso,
+        operator.id_karyawan.as_deref(),
+        operator.id,
+        &operator.username,
+        &id_keluar,
+        |karyawan, tanggal| hr_keluar::muat_lokal(&state, karyawan, tanggal).map(|(_, checklist)| checklist),
+    )
+    .await
+}
+
+/// Batalkan proses keluar dengan alasan (`hr.offboard.manage`, sensitif).
+#[tauri::command]
+pub async fn desktop_hr_offboarding_cancel(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, "hr.offboard.manage")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::batalkan(&turso, operator.id_karyawan.as_deref(), &operator.username, &draft).await
+}
+
+/// Simpan alasan keluar dan pengalinya (`hr.offboard.manage`).
+#[tauri::command]
+pub async fn desktop_hr_exit_reasons_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.offboard.manage")?;
+    let turso = state.get_turso_client()?;
+    hr_keluar::simpan_alasan(&turso, &draft).await
 }

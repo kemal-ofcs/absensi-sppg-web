@@ -36,6 +36,8 @@ export const AKUN_UTANG_PPH21 = "akun-utang-pph21";
 export const AKUN_UTANG_BPJS = "akun-utang-bpjs";
 export const AKUN_POTONGAN_GAJI = "akun-potongan-gaji";
 export const AKUN_KAS = "akun-kas";
+/** Reimbursement yang dibayar lewat gaji (mode `gaji`, Q-61). */
+export const AKUN_BEBAN_REIMBURSE = "akun-beban-reimburse";
 
 export type StatusPinjaman = (typeof STATUS_PINJAMAN)[number];
 export type AksiKeputusan = (typeof AKSI_KEPUTUSAN)[number];
@@ -299,6 +301,8 @@ export interface ItemPayroll {
   bpjs_karyawan: number;
   bpjs_perusahaan: number;
   kasbon: number;
+  /** Reimbursement yang ikut gaji bersih, di luar bruto (v39). */
+  reimburse?: number;
 }
 
 export interface BarisJurnalOtomatis {
@@ -324,11 +328,13 @@ export function susunJurnalPayroll(
   const bpjsKaryawan = jumlah((item) => item.bpjs_karyawan);
   const bpjsPerusahaan = jumlah((item) => item.bpjs_perusahaan);
   const kasbon = jumlah((item) => item.kasbon);
-  const potonganLain = gross - net - pph21 - bpjsKaryawan - kasbon;
+  const reimburse = jumlah((item) => item.reimburse ?? 0);
+  const potonganLain = gross + reimburse - net - pph21 - bpjsKaryawan - kasbon;
 
   const baris: BarisJurnalOtomatis[] = [
     { id_akun: AKUN_BEBAN_GAJI, debit: gross, kredit: 0 },
     { id_akun: AKUN_BEBAN_BPJS, debit: bpjsPerusahaan, kredit: 0 },
+    { id_akun: AKUN_BEBAN_REIMBURSE, debit: reimburse, kredit: 0 },
     { id_akun: idAkunBayar, debit: 0, kredit: net },
     { id_akun: AKUN_UTANG_PPH21, debit: 0, kredit: pph21 },
     {
