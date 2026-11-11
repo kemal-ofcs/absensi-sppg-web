@@ -2,8 +2,8 @@ import type { Client } from "@libsql/client";
 import { BRANDING } from "@/lib/constants/branding";
 import { runDatabaseMigrations } from "./db-migrations";
 
-export const CURRENT_SCHEMA_VERSION = 40;
-export const REQUIRED_TABLE_COUNT = 90;
+export const CURRENT_SCHEMA_VERSION = 41;
+export const REQUIRED_TABLE_COUNT = 96;
 
 export async function isDatabaseSchemaReady(client: Client) {
   try {
@@ -38,7 +38,8 @@ export async function isDatabaseSchemaReady(client: Client) {
             'hr_profil', 'hr_dokumen_jenis', 'hr_dokumen', 'hr_dokumen_berkas',
             'hr_jenis_pengajuan', 'hr_pengajuan', 'hr_pengajuan_keputusan', 'hr_cuti_penyesuaian', 'hr_pengajuan_berkas',
             'hr_reimburse_bayar', 'hr_reimburse_bayar_baris',
-            'hr_sp', 'hr_keluar', 'hr_keluar_rincian', 'hr_keluar_alasan'
+            'hr_sp', 'hr_keluar', 'hr_keluar_rincian', 'hr_keluar_alasan',
+            'hr_kinerja_template', 'hr_kinerja_aspek', 'hr_kinerja_jabatan', 'hr_kinerja_penilaian', 'hr_kinerja_nilai', 'hr_kinerja_keputusan'
           )
         ) AS table_count;
     `);

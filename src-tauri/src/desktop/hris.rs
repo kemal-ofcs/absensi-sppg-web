@@ -1095,35 +1095,42 @@ pub fn batal_kontrak(state: &DesktopState, oleh: &str, draft: &Value) -> Result<
 
 /// Simpan angka bawaan kontrak lewat rute `setting/update` yang sudah ada.
 pub fn simpan_pengaturan(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
-    let isian = validasi_pengaturan(draft).map_err(invalid)?;
-    dalam_transaksi(state, |tx, client_id| {
-        for (kunci, nilai) in &isian {
-            let nilai = nilai.to_string();
-            tx.execute(
-                "INSERT INTO setting_gex_system (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
-                params![kunci, nilai],
-            )
-            .map_err(internal)?;
-            // Hanya nilai terakhir yang perlu sampai ke cloud (pola `sj_prefix`).
-            tx.execute(
-                "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = ?1
-                   AND status IN ('pending', 'failed', 'conflict');",
-                params![kunci],
-            )
-            .map_err(internal)?;
-            sync::enqueue(
-                tx,
-                client_id,
-                "setting",
-                "update",
-                kunci,
-                &json!({ "key": kunci, "value": nilai }),
-                None,
-            )?;
-        }
-        Ok(json!({ "sukses": true }))
-    })
+    let isian: Vec<(&str, String)> = validasi_pengaturan(draft)
+        .map_err(invalid)?
+        .into_iter()
+        .map(|(kunci, nilai)| (kunci, nilai.to_string()))
+        .collect();
+    dalam_transaksi(state, |tx, client_id| tulis_pengaturan(tx, client_id, &isian))
+}
+
+/// Upsert `setting_gex_system` + outbox `setting/update`, satu transaksi.
+/// Dipakai juga pengaturan kinerja (v41), yang validatornya sendiri.
+pub(super) fn tulis_pengaturan(tx: &Transaction<'_>, client_id: &str, isian: &[(&str, String)]) -> Result<Value, CommandError> {
+    for (kunci, nilai) in isian {
+        tx.execute(
+            "INSERT INTO setting_gex_system (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            params![kunci, nilai],
+        )
+        .map_err(internal)?;
+        // Hanya nilai terakhir yang perlu sampai ke cloud (pola `sj_prefix`).
+        tx.execute(
+            "DELETE FROM desktop_sync_outbox WHERE domain = 'setting' AND entity_key = ?1
+               AND status IN ('pending', 'failed', 'conflict');",
+            params![kunci],
+        )
+        .map_err(internal)?;
+        sync::enqueue(
+            tx,
+            client_id,
+            "setting",
+            "update",
+            kunci,
+            &json!({ "key": kunci, "value": nilai }),
+            None,
+        )?;
+    }
+    Ok(json!({ "sukses": true }))
 }
 
 // ── Data organisasi karyawan (dipakai `operational.rs`) ────────────────────

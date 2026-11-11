@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 40;
+pub const CLIENT_SCHEMA_VERSION: i64 = 41;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -1415,6 +1415,132 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_baris",
         delete_missing: false,
     },
+    // HRIS fase 6 (v41): penilaian kinerja. Tidak ada baris yang dihapus
+    // kecuali nilai: template dan aspek dinonaktifkan, pemetaan dilepas
+    // (`id_template` kosong), penilaian dibatalkan lewat keputusan.
+    SnapshotTable {
+        payload_key: "hrPerformanceTemplates",
+        domain: "hr-performance-template",
+        table: "hr_kinerja_template",
+        columns: &[
+            "id_template",
+            "nama",
+            "keterangan",
+            "is_bawaan",
+            "is_aktif",
+            "diubah_oleh",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_template",
+        entity_column: "id_template",
+        delete_missing: false,
+    },
+    // Menumpang event `hr-performance-template`.
+    SnapshotTable {
+        payload_key: "hrPerformanceAspects",
+        domain: "hr-performance-aspect",
+        table: "hr_kinerja_aspek",
+        columns: &[
+            "id_aspek",
+            "id_template",
+            "nama",
+            "tipe",
+            "bobot",
+            "panduan",
+            "urutan",
+            "is_aktif",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_aspek",
+        entity_column: "id_aspek",
+        delete_missing: false,
+    },
+    // Menumpang event `hr-performance-template`.
+    SnapshotTable {
+        payload_key: "hrPerformancePositions",
+        domain: "hr-performance-position",
+        table: "hr_kinerja_jabatan",
+        columns: &["id_jabatan", "id_template", "diubah_oleh", "updated_at"],
+        conflict_column: "id_jabatan",
+        entity_column: "id_jabatan",
+        delete_missing: false,
+    },
+    SnapshotTable {
+        payload_key: "hrPerformanceReviews",
+        domain: "hr-performance",
+        table: "hr_kinerja_penilaian",
+        columns: &[
+            "id_penilaian",
+            "id_karyawan",
+            "id_ref",
+            "alasan_koreksi",
+            "periode_jenis",
+            "periode_mulai",
+            "periode_selesai",
+            "id_template",
+            "template_nama",
+            "id_jabatan",
+            "jabatan_nama",
+            "id_penilai",
+            "penilai_oleh",
+            "catatan",
+            "sidik",
+            "dibuat_oleh",
+            "waktu_perangkat",
+            "created_at",
+            "updated_at",
+        ],
+        conflict_column: "id_penilaian",
+        entity_column: "id_penilaian",
+        delete_missing: false,
+    },
+    // `true`: muat ulang template di draf bisa membuang aspek, dan itu hanya
+    // terlihat dari ketiadaannya di snapshot (pola `drv_muatan`). Menumpang
+    // event `hr-performance`, dilindungi `PendingGuard::induk_tertunda`.
+    SnapshotTable {
+        payload_key: "hrPerformanceScores",
+        domain: "hr-performance-score",
+        table: "hr_kinerja_nilai",
+        columns: &[
+            "id_nilai",
+            "id_penilaian",
+            "id_aspek",
+            "aspek_nama",
+            "tipe",
+            "bobot",
+            "urutan",
+            "skor",
+            "catatan",
+            "rincian",
+        ],
+        conflict_column: "id_nilai",
+        entity_column: "id_nilai",
+        delete_missing: true,
+    },
+    // Append-only. `diterima_cloud` hanya diisi cloud.
+    SnapshotTable {
+        payload_key: "hrPerformanceDecisions",
+        domain: "hr-performance-decision",
+        table: "hr_kinerja_keputusan",
+        columns: &[
+            "id_keputusan",
+            "id_penilaian",
+            "jenis",
+            "sidik",
+            "alasan",
+            "nilai_akhir",
+            "predikat",
+            "oleh",
+            "waktu_perangkat",
+            "diterima_cloud",
+            "created_at",
+        ],
+        conflict_column: "id_keputusan",
+        entity_column: "id_keputusan",
+        delete_missing: false,
+    },
 ];
 
 const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
@@ -1481,6 +1607,9 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("hr-request-decision", "create"),
     ("hr-leave-adjustment", "create"),
     ("hr-reimburse-payment", "create"),
+    ("hr-performance-template", "save"),
+    ("hr-performance", "save"),
+    ("hr-performance-decision", "create"),
     ("installment", "activate"),
     ("installment", "reapprove"),
     ("installment", "close"),
@@ -1648,6 +1777,11 @@ impl PendingGuard {
             "installment-schedule" => cicilan::id_cicilan_dari_jadwal(key).is_some_and(|induk| {
                 self.has("installment", induk) || pengajuan_tertunda(induk)
             }),
+            // Nilai kinerja (v41) ikut event `hr-performance/save` induknya;
+            // id-nya `<id_penilaian>:<id_aspek>` dan `id_penilaian` tanpa `:`.
+            "hr-performance-score" => key
+                .split_once(':')
+                .is_some_and(|(induk, _)| self.has("hr-performance", induk)),
             _ => false,
         }
     }
@@ -5039,5 +5173,18 @@ mod tests {
         assert!(guard.induk_tertunda("trip-cargo", "trp-a1-3"));
         assert!(!guard.induk_tertunda("trip-cargo", "trp-b2-3"));
         assert!(!guard.induk_tertunda("trip-report-cargo", "trp-a1-3"));
+    }
+
+    /// Nilai kinerja mengikuti outbox `hr-performance/save` induknya (v41).
+    #[test]
+    fn nilai_kinerja_terlindungi_oleh_outbox_penilaian() {
+        let mut guard = super::PendingGuard::default();
+        guard
+            .by_domain_key
+            .insert(super::guard_key("hr-performance", "knj-a1"));
+        assert!(guard.induk_tertunda("hr-performance-score", "knj-a1:ktp-t1:as1"));
+        assert!(!guard.induk_tertunda("hr-performance-score", "knj-b2:ktp-t1:as1"));
+        assert!(!guard.induk_tertunda("hr-performance-score", "knj-a1"));
+        assert!(!guard.induk_tertunda("hr-performance-decision", "knj-a1:ktp-t1:as1"));
     }
 }

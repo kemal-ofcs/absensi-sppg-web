@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { JatahCutiPanel } from "@/components/hris/JatahCutiPanel";
+import { RiwayatKinerjaKaryawan } from "@/components/hris/KinerjaWorkspace";
 import { SuratPeringatanPanel } from "@/components/hris/SuratPeringatanPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { hasPermission } from "@/lib/auth/access";
@@ -41,7 +42,8 @@ type Tab =
   | "kontrak"
   | "dokumen"
   | "cuti"
-  | "sp";
+  | "sp"
+  | "kinerja";
 type Isian = Record<string, string>;
 
 const KELAS =
@@ -169,6 +171,9 @@ export function RincianKaryawan({
     ...(boleh("hr.warning.view")
       ? ([["sp", "SP"]] as Array<[Tab, string]>)
       : []),
+    ...(boleh("hr.performance.view")
+      ? ([["kinerja", "Kinerja"]] as Array<[Tab, string]>)
+      : []),
   ];
   return (
     <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -232,6 +237,7 @@ export function RincianKaryawan({
           onMulaiKeluar={onMulaiKeluar}
         />
       ) : null}
+      {tab === "kinerja" ? <RiwayatKinerjaKaryawan idKaryawan={id} /> : null}
     </div>
   );
 }

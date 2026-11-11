@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-performance-templates"
+description = "Enables the desktop_hr_performance_templates command without any pre-configured scope."
+commands.allow = ["desktop_hr_performance_templates"]
+
+[[permission]]
+identifier = "deny-desktop-hr-performance-templates"
+description = "Denies the desktop_hr_performance_templates command without any pre-configured scope."
+commands.deny = ["desktop_hr_performance_templates"]

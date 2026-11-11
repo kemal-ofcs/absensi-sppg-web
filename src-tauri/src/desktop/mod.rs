@@ -13,6 +13,7 @@ mod driver;
 mod hris;
 mod hr_pengajuan;
 mod hr_keluar;
+mod hr_kinerja;
 pub mod telegram;
 pub mod license;
 pub mod models;

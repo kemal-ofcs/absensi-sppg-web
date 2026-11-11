@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, hr_keluar, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hr_keluar, hr_kinerja, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -3833,4 +3833,61 @@ pub async fn desktop_hr_exit_reasons_save(state: State<'_, DesktopState>, draft:
     require_permission(&state, "hr.offboard.manage")?;
     let turso = state.get_turso_client()?;
     hr_keluar::simpan_alasan(&turso, &draft).await
+}
+
+// ── HRIS fase 6 (v41): penilaian kinerja (§21.9). Lokal + outbox. ──────────
+
+const IZIN_KINERJA_BACA: [&str; 3] = [hr_kinerja::IZIN_VIEW, hr_kinerja::IZIN_ASSESS, hr_kinerja::IZIN_FINALIZE];
+const IZIN_KINERJA_NILAI: [&str; 2] = [hr_kinerja::IZIN_ASSESS, hr_kinerja::IZIN_FINALIZE];
+
+/// Template, aspek, pemetaan jabatan, dan pengaturan kinerja (keempat izin).
+#[tauri::command]
+pub fn desktop_hr_performance_templates(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_any_permission(
+        &state,
+        &[hr_kinerja::IZIN_VIEW, hr_kinerja::IZIN_ASSESS, hr_kinerja::IZIN_CONFIG, hr_kinerja::IZIN_FINALIZE],
+    )?;
+    hr_kinerja::templates(&state)
+}
+
+/// Simpan template, aspek, dan pemetaan jabatan (`hr.performance.config`).
+#[tauri::command]
+pub fn desktop_hr_performance_template_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_kinerja::IZIN_CONFIG)?;
+    hr_kinerja::simpan_template(&state, &operator, &draft)
+}
+
+/// Simpan periode, ambang disiplin, dan predikat (`hr.performance.config`).
+#[tauri::command]
+pub fn desktop_hr_performance_settings_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, hr_kinerja::IZIN_CONFIG)?;
+    hr_kinerja::simpan_pengaturan(&state, &draft)
+}
+
+/// Penilaian satu periode dan karyawan yang belum dinilai.
+#[tauri::command]
+pub fn desktop_hr_performance_list(state: State<'_, DesktopState>, filter: Value) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &IZIN_KINERJA_BACA)?;
+    hr_kinerja::daftar(&state, &operator, &filter)
+}
+
+/// Rincian satu penilaian; SP periode itu dari cloud bila terhubung.
+#[tauri::command]
+pub async fn desktop_hr_performance_detail(state: State<'_, DesktopState>, id_penilaian: String) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &IZIN_KINERJA_BACA)?;
+    hr_kinerja::rincian_lengkap(&state, &operator, &id_penilaian).await
+}
+
+/// Buat, ubah draf, muat ulang template, atau buat koreksi (izin rinci per aksi).
+#[tauri::command]
+pub fn desktop_hr_performance_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &IZIN_KINERJA_NILAI)?;
+    hr_kinerja::simpan(&state, &operator, &draft)
+}
+
+/// Ajukan, Kembalikan, Final, atau Batal (izin rinci per aksi).
+#[tauri::command]
+pub fn desktop_hr_performance_decide(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &IZIN_KINERJA_NILAI)?;
+    hr_kinerja::putuskan(&state, &operator, &draft)
 }

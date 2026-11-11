@@ -60,6 +60,7 @@ const HRIS_REQUEST_MIGRATION_VERSION = 37;
 const HRIS_REQUEST_V2_MIGRATION_VERSION = 38;
 const HRIS_REIMBURSE_MIGRATION_VERSION = 39;
 const HRIS_KELUAR_MIGRATION_VERSION = 40;
+const HRIS_KINERJA_MIGRATION_VERSION = 41;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2379,6 +2380,116 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-keluar', ?);`,
     args: [HRIS_KELUAR_MIGRATION_VERSION, now],
+  });
+
+  // v41: HRIS fase 6. Penilaian kinerja, tersinkron semua (Q-71). DDL WAJIB
+  // identik dengan `storage.rs` dan `turso.rs`. Tanpa seed (§21.2).
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_template (
+      id_template TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      keterangan TEXT,
+      is_bawaan INTEGER NOT NULL DEFAULT 0 CHECK (is_bawaan IN (0, 1)),
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      diubah_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_aspek (
+      id_aspek TEXT PRIMARY KEY,
+      id_template TEXT NOT NULL,
+      nama TEXT NOT NULL,
+      tipe TEXT NOT NULL CHECK (tipe IN ('Manual', 'Otomatis Disiplin')),
+      bobot INTEGER NOT NULL CHECK (bobot BETWEEN 1 AND 100),
+      panduan TEXT,
+      urutan INTEGER NOT NULL DEFAULT 0,
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_kinerja_aspek_template ON hr_kinerja_aspek(id_template);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_jabatan (
+      id_jabatan TEXT PRIMARY KEY,
+      id_template TEXT,
+      diubah_oleh TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_penilaian (
+      id_penilaian TEXT PRIMARY KEY,
+      id_karyawan TEXT NOT NULL,
+      id_ref TEXT,
+      alasan_koreksi TEXT,
+      periode_jenis TEXT NOT NULL CHECK (periode_jenis IN ('Bulanan', 'Kuartal', 'Semester', 'Tahunan')),
+      periode_mulai TEXT NOT NULL,
+      periode_selesai TEXT NOT NULL,
+      id_template TEXT NOT NULL,
+      template_nama TEXT NOT NULL,
+      id_jabatan TEXT,
+      jabatan_nama TEXT,
+      id_penilai TEXT,
+      penilai_oleh TEXT NOT NULL,
+      catatan TEXT,
+      sidik TEXT NOT NULL,
+      dibuat_oleh TEXT NOT NULL,
+      waktu_perangkat TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (periode_selesai >= periode_mulai)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_kinerja_penilaian_karyawan ON hr_kinerja_penilaian(id_karyawan, periode_mulai);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_kinerja_penilaian_ref ON hr_kinerja_penilaian(id_ref);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_nilai (
+      id_nilai TEXT PRIMARY KEY,
+      id_penilaian TEXT NOT NULL,
+      id_aspek TEXT NOT NULL,
+      aspek_nama TEXT NOT NULL,
+      tipe TEXT NOT NULL CHECK (tipe IN ('Manual', 'Otomatis Disiplin')),
+      bobot INTEGER NOT NULL CHECK (bobot BETWEEN 1 AND 100),
+      urutan INTEGER NOT NULL DEFAULT 0,
+      skor INTEGER CHECK (skor IS NULL OR skor BETWEEN 1 AND 5),
+      catatan TEXT,
+      rincian TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_kinerja_nilai_penilaian ON hr_kinerja_nilai(id_penilaian);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_kinerja_keputusan (
+      id_keputusan TEXT PRIMARY KEY,
+      id_penilaian TEXT NOT NULL,
+      jenis TEXT NOT NULL CHECK (jenis IN ('Ajukan', 'Kembalikan', 'Final', 'Batal')),
+      sidik TEXT NOT NULL,
+      alasan TEXT,
+      nilai_akhir INTEGER CHECK (nilai_akhir IS NULL OR nilai_akhir BETWEEN 0 AND 10000),
+      predikat TEXT,
+      oleh TEXT NOT NULL,
+      waktu_perangkat TEXT NOT NULL,
+      diterima_cloud TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_kinerja_keputusan_penilaian ON hr_kinerja_keputusan(id_penilaian);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-kinerja', ?);`,
+    args: [HRIS_KINERJA_MIGRATION_VERSION, now],
   });
 
   await client.execute(

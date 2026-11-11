@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeluarWorkspace } from "@/components/hris/KeluarWorkspace";
+import { KinerjaWorkspace } from "@/components/hris/KinerjaWorkspace";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
 import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
 import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
@@ -21,7 +22,7 @@ import {
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
 
-type Tab = "karyawan" | "struktur" | "keluar" | "organisasi";
+type Tab = "karyawan" | "struktur" | "kinerja" | "keluar" | "organisasi";
 export type BarisKaryawan = Record<string, unknown>;
 
 const TOMBOL_TAB =
@@ -33,6 +34,14 @@ export function HrisWorkspace() {
   const bolehKeluar =
     hasPermission(user, "hr.offboard.view") ||
     hasPermission(user, "hr.offboard.manage");
+  const bolehKinerja = (
+    [
+      "hr.performance.view",
+      "hr.performance.assess",
+      "hr.performance.config",
+      "hr.performance.finalize",
+    ] as const
+  ).some((izin) => hasPermission(user, izin));
   const [tab, setTab] = useState<Tab>("karyawan");
   // "Mulai proses keluar" dari tab SP: karyawan dan SP3 yang mendasari.
   const [mulaiKeluar, setMulaiKeluar] = useState<{
@@ -106,6 +115,7 @@ export function HrisWorkspace() {
           [
             ["karyawan", "Karyawan"],
             ["struktur", "Struktur"],
+            ...(bolehKinerja ? [["kinerja", "Kinerja"]] : []),
             ...(bolehKeluar ? [["keluar", "Keluar"]] : []),
             ...(bolehOrg ? [["organisasi", "Organisasi"]] : []),
           ] as Array<[Tab, string]>
@@ -205,6 +215,8 @@ export function HrisWorkspace() {
       ) : null}
 
       {tab === "struktur" ? <Struktur karyawan={karyawan} org={org} /> : null}
+
+      {tab === "kinerja" && bolehKinerja ? <KinerjaWorkspace /> : null}
 
       {tab === "keluar" && bolehKeluar ? (
         <KeluarWorkspace

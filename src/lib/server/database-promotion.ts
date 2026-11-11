@@ -337,6 +337,33 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
     dependsOn: ["master_data", "hr_keluar_alasan"],
   },
   { table: "hr_keluar_rincian", uniqueColumns: [], dependsOn: ["hr_keluar"] },
+  // v41 — penilaian kinerja, tersinkron semua.
+  { table: "hr_kinerja_template", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "hr_kinerja_aspek",
+    uniqueColumns: [],
+    dependsOn: ["hr_kinerja_template"],
+  },
+  {
+    table: "hr_kinerja_jabatan",
+    uniqueColumns: [],
+    dependsOn: ["hr_jabatan", "hr_kinerja_template"],
+  },
+  {
+    table: "hr_kinerja_penilaian",
+    uniqueColumns: [],
+    dependsOn: ["master_data", "hr_kinerja_template"],
+  },
+  {
+    table: "hr_kinerja_nilai",
+    uniqueColumns: [],
+    dependsOn: ["hr_kinerja_penilaian"],
+  },
+  {
+    table: "hr_kinerja_keputusan",
+    uniqueColumns: [],
+    dependsOn: ["hr_kinerja_penilaian"],
+  },
 ];
 
 /**

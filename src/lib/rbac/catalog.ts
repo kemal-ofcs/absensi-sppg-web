@@ -347,6 +347,27 @@ export const PERMISSION_CATALOG = [
     name: "Kelola Karyawan Keluar",
     group: "Kepegawaian",
   },
+  // HRIS fase 6 (v41). Sort order cermin seed `app_permission` Rust 1619–1622.
+  {
+    key: "hr.performance.view",
+    name: "Lihat Penilaian Kinerja",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.performance.assess",
+    name: "Nilai Kinerja Karyawan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.performance.config",
+    name: "Atur Template Kinerja",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.performance.finalize",
+    name: "Finalkan Penilaian Kinerja",
+    group: "Kepegawaian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -428,6 +449,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // karyawan keluar menonaktifkan orangnya, akunnya, dan menetapkan pesangon.
   "hr.warning.cancel",
   "hr.offboard.manage",
+  // Memfinalkan dan mengoreksi penilaian kinerja menetapkan nilai resmi
+  // seorang karyawan (Q-83).
+  "hr.performance.finalize",
 ]);
 
 /**
@@ -446,6 +470,9 @@ export const CONFIDENTIAL_PERMISSIONS = new Set<PermissionKey>([
   "hr.warning.view",
   "hr.warning.manage",
   "hr.offboard.view",
+  // Skor dan catatan penilai kinerja (Q-84); `config` tidak rahasia.
+  "hr.performance.view",
+  "hr.performance.assess",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
@@ -502,6 +529,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "hr.warning.view",
     "hr.warning.manage",
     "hr.offboard.view",
+    "hr.performance.view",
+    "hr.performance.assess",
+    "hr.performance.config",
+    "hr.performance.finalize",
   ],
   atasan: [
     "home.view",
@@ -509,6 +540,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "hr.request.view",
     "hr.request.submit",
     "hr.request.urgent",
+    "hr.performance.assess",
   ],
 };
 

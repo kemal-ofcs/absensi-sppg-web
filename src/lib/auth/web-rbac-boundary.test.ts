@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type Client, createClient } from "@libsql/client";
+import { canAccessArea } from "@/lib/auth/access";
 import {
   checkLoginRateLimit,
   consumeLoginAttempt,
@@ -249,6 +250,59 @@ describe("Web RBAC trusted boundary", () => {
       }
       expect(results.slice(0, 5).every((result) => result.allowed)).toBe(true);
       expect(results[5]?.allowed).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  // HRIS fase 6 (§21.8): `view`/`assess` rahasia dan `finalize` sensitif tidak
+  // ikut paket Admin; HRD memegang keempatnya, Atasan hanya `assess`.
+  test("izin penilaian kinerja: paket bawaan dan area pengajuan", async () => {
+    const { client } = await createFixture();
+    try {
+      const izin = async (roleKey: string) =>
+        (
+          await client.execute({
+            sql: `SELECT rp.permission_key FROM role_permission rp JOIN app_role r ON r.id = rp.role_id
+                  WHERE r.role_key = ?1 AND rp.permission_key LIKE 'hr.performance.%' AND rp.is_allowed = 1
+                  ORDER BY rp.permission_key;`,
+            args: [roleKey],
+          })
+        ).rows.map((row) => String(row.permission_key));
+      expect(await izin("admin")).toEqual(["hr.performance.config"]);
+      expect(await izin("hrd")).toEqual([
+        "hr.performance.assess",
+        "hr.performance.config",
+        "hr.performance.finalize",
+        "hr.performance.view",
+      ]);
+      expect(await izin("atasan")).toEqual(["hr.performance.assess"]);
+
+      expect(
+        canAccessArea(
+          { isSuperadmin: false, permissions: ["hr.performance.assess"] },
+          "pengajuan",
+        ),
+      ).toBe(true);
+      expect(
+        canAccessArea(
+          { isSuperadmin: false, permissions: ["home.view"] },
+          "pengajuan",
+        ),
+      ).toBe(false);
+      const atasan = {
+        id: 9,
+        username: "atasan",
+        isSuperadmin: false,
+        permissions: ["hr.performance.assess"],
+      };
+      expect(() =>
+        assertActorPermission(
+          atasan as unknown as OperatorUser,
+          "hr.performance.finalize",
+          true,
+        ),
+      ).toThrow(AuthorizationError);
     } finally {
       client.close();
     }
