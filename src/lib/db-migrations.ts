@@ -61,6 +61,7 @@ const HRIS_REQUEST_V2_MIGRATION_VERSION = 38;
 const HRIS_REIMBURSE_MIGRATION_VERSION = 39;
 const HRIS_KELUAR_MIGRATION_VERSION = 40;
 const HRIS_KINERJA_MIGRATION_VERSION = 41;
+const HRIS_REKRUTMEN_MIGRATION_VERSION = 42;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2490,6 +2491,144 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-kinerja', ?);`,
     args: [HRIS_KINERJA_MIGRATION_VERSION, now],
+  });
+
+  // v42: HRIS fase 7. Rekrutmen dan pelatihan, KHUSUS CLOUD (Q-86, Q-87):
+  // tidak ada di `storage.rs` maupun snapshot. DDL WAJIB identik dengan
+  // `turso.rs`. Tanpa seed (jenis `dok-sertifikat` sudah ada sejak v36).
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_lowongan (
+      id_lowongan TEXT PRIMARY KEY,
+      judul TEXT NOT NULL,
+      id_jabatan TEXT,
+      id_divisi TEXT,
+      id_cabang TEXT,
+      jumlah INTEGER NOT NULL CHECK (jumlah BETWEEN 1 AND 999),
+      tanggal_buka TEXT NOT NULL,
+      tanggal_tutup TEXT,
+      keterangan TEXT,
+      ditutup_pada TEXT,
+      ditutup_oleh TEXT,
+      pelamar_dihapus INTEGER NOT NULL DEFAULT 0 CHECK (pelamar_dihapus >= 0),
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT,
+      CHECK (tanggal_tutup IS NULL OR tanggal_tutup >= tanggal_buka)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_lowongan_buka ON hr_lowongan(tanggal_buka);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelamar (
+      id_pelamar TEXT PRIMARY KEY,
+      id_lowongan TEXT NOT NULL,
+      nama TEXT NOT NULL,
+      no_hp TEXT,
+      email TEXT,
+      lp TEXT CHECK (lp IS NULL OR lp IN ('L', 'P')),
+      tanggal_lahir TEXT,
+      alamat TEXT,
+      pendidikan TEXT CHECK (pendidikan IS NULL OR pendidikan IN ('SD', 'SMP', 'SMA/SMK', 'D1', 'D2', 'D3', 'D4', 'S1', 'S2', 'S3', 'Lainnya')),
+      sumber TEXT,
+      tanggal_lamaran TEXT NOT NULL,
+      catatan TEXT,
+      id_karyawan TEXT,
+      dijadikan_oleh TEXT,
+      dijadikan_pada TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelamar_lowongan ON hr_pelamar(id_lowongan);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelamar_karyawan ON hr_pelamar(id_karyawan);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelamar_tahap (
+      id_tahap TEXT PRIMARY KEY,
+      id_pelamar TEXT NOT NULL,
+      urutan INTEGER NOT NULL CHECK (urutan >= 1),
+      tahap TEXT NOT NULL CHECK (tahap IN ('Lamaran', 'Seleksi Berkas', 'Wawancara', 'Tes', 'Penawaran', 'Diterima', 'Ditolak', 'Mundur')),
+      tanggal TEXT NOT NULL,
+      catatan TEXT,
+      oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      dibatalkan_oleh TEXT,
+      dibatalkan_pada TEXT,
+      alasan_batal TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelamar_tahap_pelamar ON hr_pelamar_tahap(id_pelamar);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelamar_berkas (
+      id_berkas TEXT PRIMARY KEY,
+      id_pelamar TEXT NOT NULL,
+      urutan INTEGER NOT NULL CHECK (urutan BETWEEN 1 AND 3),
+      nama_berkas TEXT,
+      mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
+      data_base64 TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelamar_berkas_pelamar ON hr_pelamar_berkas(id_pelamar);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelatihan (
+      id_pelatihan TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      penyelenggara TEXT,
+      tanggal_mulai TEXT NOT NULL,
+      tanggal_selesai TEXT NOT NULL,
+      lokasi TEXT,
+      biaya INTEGER NOT NULL DEFAULT 0 CHECK (biaya >= 0),
+      keterangan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT,
+      dibatalkan_oleh TEXT,
+      dibatalkan_pada TEXT,
+      alasan_batal TEXT,
+      CHECK (tanggal_selesai >= tanggal_mulai)
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_mulai ON hr_pelatihan(tanggal_mulai);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelatihan_peserta (
+      id_peserta TEXT PRIMARY KEY,
+      id_pelatihan TEXT NOT NULL,
+      id_karyawan TEXT NOT NULL,
+      hasil TEXT CHECK (hasil IS NULL OR hasil IN ('Lulus', 'Tidak Lulus', 'Tidak Hadir')),
+      id_dokumen TEXT,
+      catatan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_peserta_pelatihan ON hr_pelatihan_peserta(id_pelatihan);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_peserta_karyawan ON hr_pelatihan_peserta(id_karyawan);",
+  );
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_peserta_dokumen ON hr_pelatihan_peserta(id_dokumen);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-rekrutmen', ?);`,
+    args: [HRIS_REKRUTMEN_MIGRATION_VERSION, now],
   });
 
   await client.execute(

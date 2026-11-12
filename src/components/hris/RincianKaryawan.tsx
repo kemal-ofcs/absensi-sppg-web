@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { bacaBase64, bukaBerkas } from "@/components/hris/berkas";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { JatahCutiPanel } from "@/components/hris/JatahCutiPanel";
 import { RiwayatKinerjaKaryawan } from "@/components/hris/KinerjaWorkspace";
+import { RiwayatPelatihanKaryawan } from "@/components/hris/PelatihanWorkspace";
 import { SuratPeringatanPanel } from "@/components/hris/SuratPeringatanPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { hasPermission } from "@/lib/auth/access";
@@ -43,7 +45,8 @@ type Tab =
   | "dokumen"
   | "cuti"
   | "sp"
-  | "kinerja";
+  | "kinerja"
+  | "pelatihan";
 type Isian = Record<string, string>;
 
 const KELAS =
@@ -174,6 +177,9 @@ export function RincianKaryawan({
     ...(boleh("hr.performance.view")
       ? ([["kinerja", "Kinerja"]] as Array<[Tab, string]>)
       : []),
+    ...(boleh("hr.training.view") || boleh("hr.training.manage")
+      ? ([["pelatihan", "Pelatihan"]] as Array<[Tab, string]>)
+      : []),
   ];
   return (
     <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -238,6 +244,9 @@ export function RincianKaryawan({
         />
       ) : null}
       {tab === "kinerja" ? <RiwayatKinerjaKaryawan idKaryawan={id} /> : null}
+      {tab === "pelatihan" ? (
+        <RiwayatPelatihanKaryawan idKaryawan={id} />
+      ) : null}
     </div>
   );
 }
@@ -582,15 +591,6 @@ const DOKUMEN_KOSONG: Isian = {
   catatan: "",
 };
 
-function bacaBase64(berkas: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const pembaca = new FileReader();
-    pembaca.onload = () => resolve(String(pembaca.result).split(",")[1] ?? "");
-    pembaca.onerror = () => reject(new Error("Berkas tidak terbaca."));
-    pembaca.readAsDataURL(berkas);
-  });
-}
-
 function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
   const [dokumen, setDokumen] = useState<Dokumen[]>([]);
   const [jenis, setJenis] = useState<JenisDokumen[]>([]);
@@ -660,11 +660,7 @@ function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
 
   const buka = async (idBerkas: string) => {
     try {
-      const b = await ambilBerkas(idBerkas);
-      const bita = Uint8Array.from(atob(b.data_base64), (c) => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bita], { type: b.mime_type }));
-      window.open(url, "_blank", "noopener");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      bukaBerkas(await ambilBerkas(idBerkas));
     } catch (error) {
       setPesan(pesanGalat(error, "Berkas gagal dibuka."));
     }

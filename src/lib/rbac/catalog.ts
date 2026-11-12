@@ -368,6 +368,32 @@ export const PERMISSION_CATALOG = [
     name: "Finalkan Penilaian Kinerja",
     group: "Kepegawaian",
   },
+  // HRIS fase 7 (v42). Sort order cermin seed `app_permission` Rust 1623–1627.
+  {
+    key: "hr.recruit.view",
+    name: "Lihat Rekrutmen",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.recruit.manage",
+    name: "Kelola Rekrutmen",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.recruit.delete",
+    name: "Hapus Data Pelamar",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.training.view",
+    name: "Lihat Pelatihan",
+    group: "Kepegawaian",
+  },
+  {
+    key: "hr.training.manage",
+    name: "Kelola Pelatihan",
+    group: "Kepegawaian",
+  },
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_CATALOG)[number]["key"];
@@ -452,6 +478,9 @@ export const SENSITIVE_MUTATION_PERMISSIONS = new Set<PermissionKey>([
   // Memfinalkan dan mengoreksi penilaian kinerja menetapkan nilai resmi
   // seorang karyawan (Q-83).
   "hr.performance.finalize",
+  // Menghapus pelamar memusnahkan data, tahap, dan CV-nya sebelum masa
+  // simpannya habis, tanpa jalan mengembalikannya (Q-99).
+  "hr.recruit.delete",
 ]);
 
 /**
@@ -473,6 +502,10 @@ export const CONFIDENTIAL_PERMISSIONS = new Set<PermissionKey>([
   // Skor dan catatan penilai kinerja (Q-84); `config` tidak rahasia.
   "hr.performance.view",
   "hr.performance.assess",
+  // Data pribadi pelamar yang bukan karyawan (Q-86, Q-99); pelatihan tidak
+  // rahasia dan ikut paket Admin.
+  "hr.recruit.view",
+  "hr.recruit.manage",
 ]);
 
 export const SYSTEM_ROLE_KEYS = [
@@ -533,6 +566,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<
     "hr.performance.assess",
     "hr.performance.config",
     "hr.performance.finalize",
+    "hr.recruit.view",
+    "hr.recruit.manage",
+    "hr.recruit.delete",
+    "hr.training.view",
+    "hr.training.manage",
   ],
   atasan: [
     "home.view",

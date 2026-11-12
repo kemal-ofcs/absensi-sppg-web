@@ -120,7 +120,8 @@ pub fn list_employees(state: &DesktopState, filter: &Value) -> Result<Value, Com
     Ok(Value::Array(result))
 }
 
-pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
+/// Kelengkapan dasar draft karyawan baru, sebelum apa pun ditulis.
+pub fn periksa_draft_karyawan(draft: &Value) -> Result<(), CommandError> {
     let id = text(draft, "id_unik");
     let code = text(draft, "kode_karyawan");
     let name = text(draft, "nama");
@@ -131,24 +132,44 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
             "Data karyawan belum lengkap atau tidak valid.",
         ));
     }
+    Ok(())
+}
+
+pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, CommandError> {
+    periksa_draft_karyawan(draft)?;
     let client_id = sync::ensure_client_id(state)?;
-    let event_id = sync::new_event_id(&client_id, "employee", "create");
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|_| CommandError::internal())?;
+    let hasil = create_employee_tx(&transaction, &client_id, draft)?;
+    transaction.commit().map_err(|_| CommandError::internal())?;
+    Ok(hasil)
+}
+
+/// Inti `create_employee` di transaksi pemanggil: `master_data`, `id_card`,
+/// organisasi, dan outbox `employee/create`. Token dan QR `id|token` dibuat di
+/// sini (aturan 31), jadi Jadikan karyawan (fase 7) tidak punya pembuat token
+/// kedua. Pemanggil yang menjalankan `commit`.
+pub fn create_employee_tx(transaction: &Transaction<'_>, client_id: &str, draft: &Value) -> Result<Value, CommandError> {
+    periksa_draft_karyawan(draft)?;
+    let id = text(draft, "id_unik");
+    let code = text(draft, "kode_karyawan");
+    let name = text(draft, "nama");
+    let shift_id = integer(draft, "id_shift", 0);
+    let event_id = sync::new_event_id(client_id, "employee", "create");
     let token = token_from_event(&event_id);
     let qr_code = format!("{id}|{token}");
-    let mut connection = storage::database(&state.data_dir)?;
     let today = text(draft, "tanggal_daftar");
     let today = if today.is_empty() {
-        connection
+        transaction
             .query_row("SELECT date('now', 'localtime');", [], |row| row.get(0))
             .map_err(|_| CommandError::internal())?
     } else {
         today.to_owned()
     };
-    let transaction = connection
-        .transaction()
-        .map_err(|_| CommandError::internal())?;
     // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
-    let org = hris::org_dari_draft(&transaction, "", draft)?;
+    let org = hris::org_dari_draft(transaction, "", draft)?;
     let division = org.divisi.as_str();
     let jabatan = org
         .jabatan_status
@@ -220,7 +241,7 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
             params![id, name, division, today, id],
         )
         .map_err(|_| CommandError::internal())?;
-    hris::tulis_org(&transaction, id, &org)?;
+    hris::tulis_org(transaction, id, &org)?;
     let now = storage::now_epoch_seconds();
     transaction
         .execute(
@@ -233,7 +254,6 @@ pub fn create_employee(state: &DesktopState, draft: &Value) -> Result<Value, Com
             params![event_id, client_id, id, payload.to_string(), now, now],
         )
         .map_err(|_| CommandError::internal())?;
-    transaction.commit().map_err(|_| CommandError::internal())?;
     Ok(json!({ "sukses": true, "id_unik": id, "token_absensi": token }))
 }
 

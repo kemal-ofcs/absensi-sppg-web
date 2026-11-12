@@ -16,6 +16,8 @@ import { HARI_HADIR_SQL } from "@/lib/validations/driver";
 import {
   bulanPenuhTerakhir,
   dalamSiklusAtasan,
+  HAPUS_DOKUMEN_SQL,
+  INSERT_BERKAS_DOKUMEN_SQL,
   INSERT_KONTRAK_SQL,
   INSERT_NAMA_DIVISI_SQL,
   JENIS_DARI_KONTRAK_SQL,
@@ -33,6 +35,7 @@ import {
   periksaAtasan,
   SELARASKAN_DIVISI_SQL,
   SELARASKAN_JABATAN_SQL,
+  SIMPAN_DOKUMEN_SQL,
   statusKerja,
   tandaKontrak,
   teksIsian,
@@ -743,11 +746,7 @@ export async function simpanDokumen(
   }
   const id = v.id_dokumen ?? newHexId("hd-");
   await client.execute({
-    sql: `INSERT INTO hr_dokumen (id_dokumen, id_karyawan, id_jenis, nomor, tanggal_terbit, tanggal_kedaluwarsa, catatan, dicatat_oleh)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-          ON CONFLICT(id_dokumen) DO UPDATE SET id_jenis = excluded.id_jenis, nomor = excluded.nomor,
-             tanggal_terbit = excluded.tanggal_terbit, tanggal_kedaluwarsa = excluded.tanggal_kedaluwarsa,
-             catatan = excluded.catatan, updated_at = datetime('now');`,
+    sql: SIMPAN_DOKUMEN_SQL,
     args: [
       id,
       v.id_karyawan,
@@ -762,16 +761,13 @@ export async function simpanDokumen(
   return { sukses: true as const, id_dokumen: id };
 }
 
-/** Cermin `hapus_dokumen`: dokumen + berkasnya, satu transaksi. */
+/**
+ * Cermin `hapus_dokumen`: dokumen + berkasnya, dan tautan sertifikat peserta
+ * pelatihan dilepas, satu transaksi.
+ */
 export async function hapusDokumen(client: Client, id: string) {
   await client.batch(
-    [
-      {
-        sql: "DELETE FROM hr_dokumen_berkas WHERE id_dokumen = ?1;",
-        args: [id],
-      },
-      { sql: "DELETE FROM hr_dokumen WHERE id_dokumen = ?1;", args: [id] },
-    ],
+    HAPUS_DOKUMEN_SQL.map((sql) => ({ sql, args: [id] })),
     "write",
   );
   return { sukses: true as const };
@@ -812,7 +808,7 @@ export async function tambahBerkas(client: Client, raw: unknown) {
     throw new Error(`Satu dokumen maksimal ${MAKS_BERKAS_PER_DOKUMEN} berkas.`);
   const id = newHexId("hb-");
   await client.execute({
-    sql: "INSERT INTO hr_dokumen_berkas (id_berkas, id_dokumen, urutan, nama_berkas, mime_type, data_base64) VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
+    sql: INSERT_BERKAS_DOKUMEN_SQL,
     args: [id, idDokumen, urutan, namaBerkas, mime, data],
   });
   return { sukses: true as const, id_berkas: id };

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-hr-applicant-hire"
+description = "Enables the desktop_hr_applicant_hire command without any pre-configured scope."
+commands.allow = ["desktop_hr_applicant_hire"]
+
+[[permission]]
+identifier = "deny-desktop-hr-applicant-hire"
+description = "Denies the desktop_hr_applicant_hire command without any pre-configured scope."
+commands.deny = ["desktop_hr_applicant_hire"]

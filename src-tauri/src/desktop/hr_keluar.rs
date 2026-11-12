@@ -670,9 +670,9 @@ pub fn muat_lokal(state: &DesktopState, id_karyawan: &str, tanggal_terakhir: &st
 
 // ── Khusus cloud (Q-63) ────────────────────────────────────────────────────
 
-type Baris = HashMap<String, Value>;
+pub(super) type Baris = HashMap<String, Value>;
 
-fn teks_baris(baris: &Baris, kunci: &str) -> Option<String> {
+pub(super) fn teks_baris(baris: &Baris, kunci: &str) -> Option<String> {
     baris
         .get(kunci)
         .and_then(Value::as_str)
@@ -681,11 +681,11 @@ fn teks_baris(baris: &Baris, kunci: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn angka_baris(baris: &Baris, kunci: &str) -> i64 {
+pub(super) fn angka_baris(baris: &Baris, kunci: &str) -> i64 {
     baris.get(kunci).and_then(Value::as_i64).unwrap_or(0)
 }
 
-async fn hari_ini_cloud(turso: &TursoClient) -> Result<String, CommandError> {
+pub(super) async fn hari_ini_cloud(turso: &TursoClient) -> Result<String, CommandError> {
     objek(turso, "SELECT date('now', '+7 hours') AS hari;", vec![])
         .await?
         .first()

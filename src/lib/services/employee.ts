@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { InStatement } from "@libsql/client";
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
 import {
@@ -8,6 +9,7 @@ import {
   orgStatements,
   tulisOrg,
 } from "@/lib/services/hris";
+import type { Executor } from "@/lib/services/inventory";
 import {
   PESAN_SUDAH_KELUAR,
   TANGGAL_SELESAI_KELUAR_SQL,
@@ -228,15 +230,30 @@ export async function getKaryawanById(id_unik: string) {
 
 export async function tambahKaryawan(data: KaryawanInput) {
   await ensureDbInitialized();
+  const { statements, tokenAbsensi } = await susunTambahKaryawan(db, data);
+  // Satu batch: master_data, id_card, dan organisasi tidak pernah setengah jadi.
+  await db.batch(statements, "write");
+  return { sukses: true, id_unik: data.id_unik, token_absensi: tokenAbsensi };
+}
 
+/**
+ * Statement tambah karyawan tanpa menjalankannya, supaya Jadikan karyawan
+ * (fase 7) bisa menulisnya di transaksi yang sama dengan klaim pelamar dan
+ * kontrak pertama. Token dan QR `id|token` hanya dibuat di sini (aturan 31).
+ */
+export async function susunTambahKaryawan(
+  ex: Executor,
+  data: KaryawanInput,
+): Promise<{ statements: InStatement[]; tokenAbsensi: string }> {
   const tokenAbsensi = generateRandomToken(10);
   const qrCodePayload = `${data.id_unik}|${tokenAbsensi}`;
   const today = data.tanggal_daftar || formatTanggalOperasional(new Date());
   // Divisi/jabatan/cabang/atasan dipetakan ke master HRIS (v36).
-  const org = await orgDariDraft(db, "", { ...data });
+  const org = await orgDariDraft(ex, "", { ...data });
+  const statements: InStatement[] = [];
 
   // 1. Insert ke master_data
-  await db.execute({
+  statements.push({
     sql: `
       INSERT INTO master_data (
         id_unik, kode_karyawan, nama, divisi, jabatan_status, no_hp, lp,
@@ -265,7 +282,7 @@ export async function tambahKaryawan(data: KaryawanInput) {
   });
 
   // 2. Insert record ke id_card
-  await db.execute({
+  statements.push({
     sql: `
       INSERT INTO id_card (id_unik, nama, divisi, idcard_status, tanggal_generate)
       SELECT ?, ?, ?, 'Belum', ?
@@ -273,9 +290,8 @@ export async function tambahKaryawan(data: KaryawanInput) {
     `,
     args: [data.id_unik, data.nama, org.divisi, today, data.id_unik],
   });
-  await tulisOrg(db, data.id_unik, org);
-
-  return { sukses: true, id_unik: data.id_unik, token_absensi: tokenAbsensi };
+  statements.push(...orgStatements(data.id_unik, org));
+  return { statements, tokenAbsensi };
 }
 
 /**

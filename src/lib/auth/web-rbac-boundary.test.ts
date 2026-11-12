@@ -307,4 +307,48 @@ describe("Web RBAC trusted boundary", () => {
       client.close();
     }
   });
+
+  // HRIS fase 7 (§22.8): rekrutmen rahasia dan hapus pelamar sensitif tidak
+  // ikut paket Admin; pelatihan ikut. HRD memegang kelimanya, Atasan tidak ada.
+  test("izin rekrutmen dan pelatihan: paket bawaan", async () => {
+    const { client } = await createFixture();
+    try {
+      const izin = async (roleKey: string) =>
+        (
+          await client.execute({
+            sql: `SELECT rp.permission_key FROM role_permission rp JOIN app_role r ON r.id = rp.role_id
+                  WHERE r.role_key = ?1 AND (rp.permission_key LIKE 'hr.recruit.%' OR rp.permission_key LIKE 'hr.training.%') AND rp.is_allowed = 1
+                  ORDER BY rp.permission_key;`,
+            args: [roleKey],
+          })
+        ).rows.map((row) => String(row.permission_key));
+      expect(await izin("admin")).toEqual([
+        "hr.training.manage",
+        "hr.training.view",
+      ]);
+      expect(await izin("hrd")).toEqual([
+        "hr.recruit.delete",
+        "hr.recruit.manage",
+        "hr.recruit.view",
+        "hr.training.manage",
+        "hr.training.view",
+      ]);
+      expect(await izin("atasan")).toEqual([]);
+      const hrd = {
+        id: 9,
+        username: "hrd",
+        isSuperadmin: false,
+        permissions: ["hr.recruit.manage"],
+      };
+      expect(() =>
+        assertActorPermission(
+          hrd as unknown as OperatorUser,
+          "hr.recruit.delete",
+          true,
+        ),
+      ).toThrow(AuthorizationError);
+    } finally {
+      client.close();
+    }
+  });
 });

@@ -8,7 +8,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeluarWorkspace } from "@/components/hris/KeluarWorkspace";
 import { KinerjaWorkspace } from "@/components/hris/KinerjaWorkspace";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
+import { PelatihanWorkspace } from "@/components/hris/PelatihanWorkspace";
 import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
+import { RekrutmenWorkspace } from "@/components/hris/RekrutmenWorkspace";
 import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -22,7 +24,14 @@ import {
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
 
-type Tab = "karyawan" | "struktur" | "kinerja" | "keluar" | "organisasi";
+type Tab =
+  | "karyawan"
+  | "struktur"
+  | "kinerja"
+  | "keluar"
+  | "rekrutmen"
+  | "pelatihan"
+  | "organisasi";
 export type BarisKaryawan = Record<string, unknown>;
 
 const TOMBOL_TAB =
@@ -42,6 +51,12 @@ export function HrisWorkspace() {
       "hr.performance.finalize",
     ] as const
   ).some((izin) => hasPermission(user, izin));
+  const bolehRekrutmen =
+    hasPermission(user, "hr.recruit.view") ||
+    hasPermission(user, "hr.recruit.manage");
+  const bolehPelatihan =
+    hasPermission(user, "hr.training.view") ||
+    hasPermission(user, "hr.training.manage");
   const [tab, setTab] = useState<Tab>("karyawan");
   // "Mulai proses keluar" dari tab SP: karyawan dan SP3 yang mendasari.
   const [mulaiKeluar, setMulaiKeluar] = useState<{
@@ -117,6 +132,8 @@ export function HrisWorkspace() {
             ["struktur", "Struktur"],
             ...(bolehKinerja ? [["kinerja", "Kinerja"]] : []),
             ...(bolehKeluar ? [["keluar", "Keluar"]] : []),
+            ...(bolehRekrutmen ? [["rekrutmen", "Rekrutmen"]] : []),
+            ...(bolehPelatihan ? [["pelatihan", "Pelatihan"]] : []),
             ...(bolehOrg ? [["organisasi", "Organisasi"]] : []),
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
@@ -229,6 +246,30 @@ export function HrisWorkspace() {
           bolehUbah={hasPermission(user, "hr.offboard.manage")}
           mulai={mulaiKeluar}
           onBerubah={muat}
+        />
+      ) : null}
+
+      {tab === "rekrutmen" && bolehRekrutmen ? (
+        <RekrutmenWorkspace
+          karyawan={karyawan}
+          org={org}
+          bolehUbah={hasPermission(user, "hr.recruit.manage")}
+          bolehHapus={hasPermission(user, "hr.recruit.delete")}
+          bolehJadikan={(
+            [
+              "hr.recruit.manage",
+              "employees.manage",
+              "hr.contract.manage",
+            ] as const
+          ).every((izin) => hasPermission(user, izin))}
+          onBerubah={muat}
+        />
+      ) : null}
+
+      {tab === "pelatihan" && bolehPelatihan ? (
+        <PelatihanWorkspace
+          karyawan={karyawan}
+          bolehUbah={hasPermission(user, "hr.training.manage")}
         />
       ) : null}
 

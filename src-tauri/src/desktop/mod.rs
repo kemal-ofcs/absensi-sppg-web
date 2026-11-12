@@ -14,6 +14,8 @@ mod hris;
 mod hr_pengajuan;
 mod hr_keluar;
 mod hr_kinerja;
+mod hr_rekrutmen;
+mod hr_pelatihan;
 pub mod telegram;
 pub mod license;
 pub mod models;

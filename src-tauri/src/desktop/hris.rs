@@ -49,6 +49,9 @@ pub const KUNCI_HARIAN_BATAS_HARI: &str = "hr_harian_batas_hari";
 pub const KUNCI_HARIAN_BATAS_BULAN: &str = "hr_harian_batas_bulan";
 /// Masa berlaku SP dalam bulan (fase 5); dibekukan per SP saat dibuat.
 pub const KUNCI_SP_MASA_BULAN: &str = "hr_sp_masa_bulan";
+/// Masa simpan data pelamar yang tidak menjadi karyawan, dihitung dari tutup
+/// efektif lowongannya (fase 7, Q-33). Berlaku surut saat diubah.
+pub const KUNCI_PELAMAR_RETENSI_BULAN: &str = "hr_pelamar_retensi_bulan";
 
 /// Kolom kelompok pribadi `hr_profil`, urutan tetap.
 pub const KOLOM_PRIBADI: [&str; 12] = [
@@ -160,6 +163,21 @@ pub const CLOUD_TEKS_KARYAWAN_SQL: [&str; 2] = [
 /// `jenis_personil` mengikuti kontrak tidak dibatalkan dengan tanggal mulai
 /// terakhir (Q-40). Tanpa kontrak, nilai lama dipertahankan. `?1` = id_unik.
 pub const JENIS_DARI_KONTRAK_SQL: &str = "UPDATE master_data SET jenis_personil = COALESCE((SELECT CASE k.jenis WHEN 'PKWTT' THEN 'Pegawai' WHEN 'PKWT' THEN 'Kontrak' WHEN 'Harian Lepas' THEN 'Harian' ELSE 'Magang' END FROM hr_kontrak k WHERE k.id_karyawan = master_data.id_unik AND k.jenis <> 'Pembatalan' AND NOT EXISTS (SELECT 1 FROM hr_kontrak b WHERE b.id_kontrak = 'batal-' || k.id_kontrak) ORDER BY k.tanggal_mulai DESC, k.id_kontrak DESC LIMIT 1), jenis_personil) WHERE id_unik = ?1;";
+
+/// Simpan data dokumen (baru atau ubah). Dipakai `simpan_dokumen` dan
+/// sertifikat pelatihan (fase 7), yang menuliskannya satu batch bersama
+/// tautan pesertanya.
+pub const SIMPAN_DOKUMEN_SQL: &str = "INSERT INTO hr_dokumen (id_dokumen, id_karyawan, id_jenis, nomor, tanggal_terbit, tanggal_kedaluwarsa, catatan, dicatat_oleh) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id_dokumen) DO UPDATE SET id_jenis = excluded.id_jenis, nomor = excluded.nomor, tanggal_terbit = excluded.tanggal_terbit, tanggal_kedaluwarsa = excluded.tanggal_kedaluwarsa, catatan = excluded.catatan, updated_at = datetime('now');";
+
+pub const INSERT_BERKAS_DOKUMEN_SQL: &str = "INSERT INTO hr_dokumen_berkas (id_berkas, id_dokumen, urutan, nama_berkas, mime_type, data_base64) VALUES (?1, ?2, ?3, ?4, ?5, ?6);";
+
+/// Menghapus dokumen juga melepas tautan sertifikat peserta pelatihan (fase
+/// 7), supaya tab Dokumen tidak meninggalkan tautan mati.
+pub const HAPUS_DOKUMEN_SQL: [&str; 3] = [
+    "DELETE FROM hr_dokumen_berkas WHERE id_dokumen = ?1;",
+    "UPDATE hr_pelatihan_peserta SET id_dokumen = NULL WHERE id_dokumen = ?1;",
+    "DELETE FROM hr_dokumen WHERE id_dokumen = ?1;",
+];
 
 pub const INSERT_KONTRAK_SQL: &str = "INSERT INTO hr_kontrak (
         id_kontrak, id_karyawan, jenis, id_ref, nomor, tanggal_mulai, tanggal_selesai,
@@ -499,6 +517,7 @@ pub struct PengaturanKontrak {
     pub harian_batas_hari: i64,
     pub harian_batas_bulan: i64,
     pub sp_masa_bulan: i64,
+    pub pelamar_retensi_bulan: i64,
 }
 
 impl Default for PengaturanKontrak {
@@ -509,17 +528,19 @@ impl Default for PengaturanKontrak {
             harian_batas_hari: 21,
             harian_batas_bulan: 3,
             sp_masa_bulan: 6,
+            pelamar_retensi_bulan: 12,
         }
     }
 }
 
 /// Batas setiap angka: (kunci, label, min, maks).
-pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 5] = [
+pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 6] = [
     (KUNCI_PERCOBAAN_MAKS_BULAN, "Masa percobaan maksimal", 1, 12),
     (KUNCI_PKWT_MAKS_BULAN, "Total PKWT maksimal", 1, 120),
     (KUNCI_HARIAN_BATAS_HARI, "Batas hari kerja harian lepas", 1, 31),
     (KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12),
     (KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12),
+    (KUNCI_PELAMAR_RETENSI_BULAN, "Masa simpan data pelamar (bulan)", 1, 60),
 ];
 
 impl PengaturanKontrak {
@@ -542,6 +563,7 @@ impl PengaturanKontrak {
             harian_batas_hari: angka(KUNCI_HARIAN_BATAS_HARI, bawaan.harian_batas_hari),
             harian_batas_bulan: angka(KUNCI_HARIAN_BATAS_BULAN, bawaan.harian_batas_bulan),
             sp_masa_bulan: angka(KUNCI_SP_MASA_BULAN, bawaan.sp_masa_bulan),
+            pelamar_retensi_bulan: angka(KUNCI_PELAMAR_RETENSI_BULAN, bawaan.pelamar_retensi_bulan),
         }
     }
 
@@ -552,6 +574,7 @@ impl PengaturanKontrak {
             KUNCI_HARIAN_BATAS_HARI: self.harian_batas_hari,
             KUNCI_HARIAN_BATAS_BULAN: self.harian_batas_bulan,
             KUNCI_SP_MASA_BULAN: self.sp_masa_bulan,
+            KUNCI_PELAMAR_RETENSI_BULAN: self.pelamar_retensi_bulan,
         })
     }
 }
@@ -1005,41 +1028,46 @@ fn baca_pengaturan(conn: &Connection) -> Result<PengaturanKontrak, CommandError>
 /// Catat kontrak baru (`hr.contract.manage`). `jenis_personil` mengikutinya.
 pub fn catat_kontrak(state: &DesktopState, oleh: &str, draft: &Value) -> Result<Value, CommandError> {
     let sah = validasi_kontrak(draft).map_err(invalid)?;
-    dalam_transaksi(state, |tx, client_id| {
-        let ada: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ?1);",
-                params![sah.id_karyawan],
-                |r| r.get(0),
-            )
-            .map_err(internal)?;
-        if !ada {
-            return Err(invalid("Karyawan tidak ditemukan."));
-        }
-        let id = new_hex_id("ktr-");
-        tx.execute(
-            INSERT_KONTRAK_SQL,
-            params![
-                id,
-                sah.id_karyawan,
-                sah.jenis,
-                Option::<String>::None,
-                sah.nomor,
-                sah.tanggal_mulai,
-                sah.tanggal_selesai,
-                sah.percobaan_selesai,
-                sah.catatan,
-                oleh,
-                Option::<String>::None
-            ],
+    let id = new_hex_id("ktr-");
+    dalam_transaksi(state, |tx, client_id| catat_kontrak_tx(tx, client_id, oleh, &sah, &id))
+}
+
+/// Inti `catat_kontrak` di transaksi pemanggil, ber-id dari pemanggil.
+/// Jadikan karyawan (fase 7) memakai `ktr-<id_pelamar>`: kiriman ulang
+/// berhenti di PK lokal (`ON CONFLICT DO NOTHING`) dan di cloud.
+pub fn catat_kontrak_tx(tx: &Transaction<'_>, client_id: &str, oleh: &str, sah: &KontrakSah, id: &str) -> Result<Value, CommandError> {
+    let ada: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM master_data WHERE id_unik = ?1);",
+            params![sah.id_karyawan],
+            |r| r.get(0),
         )
         .map_err(internal)?;
-        tx.execute(JENIS_DARI_KONTRAK_SQL, params![sah.id_karyawan])
-            .map_err(internal)?;
-        let baris = satu_baris(tx, "SELECT * FROM hr_kontrak WHERE id_kontrak = ?1;", &id)?;
-        sync::enqueue(tx, client_id, "hr-contract", "create", &id, &baris, None)?;
-        Ok(json!({ "sukses": true, "id_kontrak": id }))
-    })
+    if !ada {
+        return Err(invalid("Karyawan tidak ditemukan."));
+    }
+    tx.execute(
+        INSERT_KONTRAK_SQL,
+        params![
+            id,
+            sah.id_karyawan,
+            sah.jenis,
+            Option::<String>::None,
+            sah.nomor,
+            sah.tanggal_mulai,
+            sah.tanggal_selesai,
+            sah.percobaan_selesai,
+            sah.catatan,
+            oleh,
+            Option::<String>::None
+        ],
+    )
+    .map_err(internal)?;
+    tx.execute(JENIS_DARI_KONTRAK_SQL, params![sah.id_karyawan])
+        .map_err(internal)?;
+    let baris = satu_baris(tx, "SELECT * FROM hr_kontrak WHERE id_kontrak = ?1;", id)?;
+    sync::enqueue(tx, client_id, "hr-contract", "create", id, &baris, None)?;
+    Ok(json!({ "sukses": true, "id_kontrak": id }))
 }
 
 /// Batalkan kontrak (`batal-<id>`, alasan wajib). Bukan menghapus.
@@ -1805,11 +1833,7 @@ pub async fn simpan_dokumen(turso: &TursoClient, draft: &Value, oleh: &str) -> R
     let id = sah.id_dokumen.clone().unwrap_or_else(|| new_hex_id("hd-"));
     turso
         .query_one(
-            "INSERT INTO hr_dokumen (id_dokumen, id_karyawan, id_jenis, nomor, tanggal_terbit, tanggal_kedaluwarsa, catatan, dicatat_oleh)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id_dokumen) DO UPDATE SET id_jenis = excluded.id_jenis, nomor = excluded.nomor,
-                tanggal_terbit = excluded.tanggal_terbit, tanggal_kedaluwarsa = excluded.tanggal_kedaluwarsa,
-                catatan = excluded.catatan, updated_at = datetime('now');",
+            SIMPAN_DOKUMEN_SQL,
             vec![
                 json!(id),
                 json!(sah.id_karyawan),
@@ -1826,15 +1850,13 @@ pub async fn simpan_dokumen(turso: &TursoClient, draft: &Value, oleh: &str) -> R
     Ok(json!({ "sukses": true, "id_dokumen": id }))
 }
 
-/// Hapus dokumen beserta berkasnya dalam satu transaksi. Khusus cloud, jadi
-/// tidak ada perangkat yang bisa menghidupkannya kembali.
+/// Hapus dokumen beserta berkasnya dalam satu transaksi, dan lepaskan
+/// tautan sertifikat peserta pelatihan. Khusus cloud, jadi tidak ada
+/// perangkat yang bisa menghidupkannya kembali.
 pub async fn hapus_dokumen(turso: &TursoClient, id: &str) -> Result<Value, CommandError> {
     siap(turso).await?;
     turso
-        .execute_atomic(vec![
-            Statement::new("DELETE FROM hr_dokumen_berkas WHERE id_dokumen = ?1;", vec![json!(id)]),
-            Statement::new("DELETE FROM hr_dokumen WHERE id_dokumen = ?1;", vec![json!(id)]),
-        ])
+        .execute_atomic(HAPUS_DOKUMEN_SQL.iter().map(|sql| Statement::new(*sql, vec![json!(id)])).collect())
         .await
         .map_err(tak_terhubung)?;
     Ok(json!({ "sukses": true }))
@@ -1865,7 +1887,7 @@ pub async fn tambah_berkas(turso: &TursoClient, draft: &Value) -> Result<Value, 
     let id = new_hex_id("hb-");
     turso
         .query_one(
-            "INSERT INTO hr_dokumen_berkas (id_berkas, id_dokumen, urutan, nama_berkas, mime_type, data_base64) VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
+            INSERT_BERKAS_DOKUMEN_SQL,
             vec![json!(id), json!(id_dokumen), json!(urutan), json!(nama_berkas), json!(mime), json!(data)],
         )
         .await
@@ -2046,15 +2068,26 @@ mod tests {
         let p = PengaturanKontrak::dari_peta(&peta);
         assert_eq!((p.pkwt_maks_bulan, p.harian_batas_hari), (36, 21));
         assert!(validasi_pengaturan(&json!({
-            "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6
+            "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
+            "hr_pelamar_retensi_bulan": 12
         }))
         .is_ok());
         assert_eq!(
             validasi_pengaturan(&json!({
-                "hr_percobaan_maks_bulan": 0, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6
+                "hr_percobaan_maks_bulan": 0, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
+                "hr_pelamar_retensi_bulan": 12
             })),
             Err("Masa percobaan maksimal harus bilangan bulat 1–12.".into())
         );
+        assert_eq!(
+            validasi_pengaturan(&json!({
+                "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
+                "hr_pelamar_retensi_bulan": 61
+            })),
+            Err("Masa simpan data pelamar (bulan) harus bilangan bulat 1–60.".into())
+        );
+        let retensi: HashMap<String, String> = [("hr_pelamar_retensi_bulan".to_owned(), "0".to_owned())].into();
+        assert_eq!(PengaturanKontrak::dari_peta(&retensi).pelamar_retensi_bulan, 12);
     }
 
     #[test]

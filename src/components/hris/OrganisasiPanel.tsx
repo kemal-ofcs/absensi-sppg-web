@@ -19,6 +19,7 @@ import {
 } from "@/lib/gateways/hris";
 import {
   BATAS_PENGATURAN,
+  KUNCI_PELAMAR_RETENSI_BULAN,
   LABEL_TANDA_HRIS,
   type PengaturanKontrak,
 } from "@/lib/validations/hris";
@@ -230,11 +231,21 @@ export function OrganisasiPanel({
 
   const simpanAturan = async () => {
     if (!aturan) return;
+    // Masa simpan pelamar berlaku surut (§22.6): memendekkannya bisa
+    // menghapus data lowongan lama pada pembersihan berikutnya.
+    const retensiLama = org.pengaturan[KUNCI_PELAMAR_RETENSI_BULAN];
     const lanjut = await konfirmasiData(
-      BATAS_PENGATURAN.map(([kunci, label]) => ({
-        label,
-        nilai: String(aturan[kunci]),
-      })),
+      BATAS_PENGATURAN.map(([kunci, label]) => {
+        const lebihPendek =
+          kunci === KUNCI_PELAMAR_RETENSI_BULAN && aturan[kunci] < retensiLama;
+        return {
+          label,
+          nilai: lebihPendek
+            ? `${aturan[kunci]} (sebelumnya ${retensiLama}). Berlaku untuk semua lowongan yang sudah tutup: data pelamar yang masa simpannya kini habis ikut terhapus pada pembersihan berikutnya.`
+            : String(aturan[kunci]),
+          peringatan: lebihPendek,
+        };
+      }),
     );
     if (!lanjut) return;
     try {

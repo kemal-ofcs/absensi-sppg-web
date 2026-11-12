@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, hr_keluar, hr_kinerja, hr_pengajuan, hris, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hr_keluar, hr_kinerja, hr_pelatihan, hr_pengajuan, hr_rekrutmen, hris, inventory, inventory_pengajuan, license, loan,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -3890,4 +3890,159 @@ pub fn desktop_hr_performance_save(state: State<'_, DesktopState>, draft: Value)
 pub fn desktop_hr_performance_decide(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
     let operator = require_any_permission(&state, &IZIN_KINERJA_NILAI)?;
     hr_kinerja::putuskan(&state, &operator, &draft)
+}
+
+// ── HRIS fase 7 (v42): rekrutmen dan pelatihan (§22.9). KHUSUS CLOUD: semua
+// lewat `TursoClient`, tanpa outbox; hanya Jadikan karyawan yang menulis
+// karyawan + kontrak ke SQLite lokal.
+
+const IZIN_REKRUTMEN_BACA: [&str; 2] = [hr_rekrutmen::IZIN_VIEW, hr_rekrutmen::IZIN_MANAGE];
+const IZIN_PELATIHAN_BACA: [&str; 2] = [hr_pelatihan::IZIN_VIEW, hr_pelatihan::IZIN_MANAGE];
+
+/// Daftar lowongan beserta status, hitungan pelamar, dan tanggal hapus data.
+#[tauri::command]
+pub async fn desktop_hr_vacancies(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_REKRUTMEN_BACA)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::daftar_lowongan(&turso).await
+}
+
+/// Buat, ubah, tutup, atau buka lagi lowongan (`hr.recruit.manage`).
+#[tauri::command]
+pub async fn desktop_hr_vacancy_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_rekrutmen::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::simpan_lowongan(&turso, &operator.username, &draft).await
+}
+
+/// Pelamar satu lowongan (`id_lowongan`), atau rincian satu pelamar
+/// (`id_pelamar`: tahap + daftar berkas tanpa isi).
+#[tauri::command]
+pub async fn desktop_hr_applicants(
+    state: State<'_, DesktopState>,
+    id_lowongan: Option<String>,
+    id_pelamar: Option<String>,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_REKRUTMEN_BACA)?;
+    let turso = state.get_turso_client()?;
+    match (id_pelamar.filter(|id| !id.is_empty()), id_lowongan.filter(|id| !id.is_empty())) {
+        (Some(id), _) => hr_rekrutmen::rincian_pelamar(&turso, &id).await,
+        (None, Some(id)) => hr_rekrutmen::daftar_pelamar(&turso, &id).await,
+        (None, None) => Err(inventory::invalid("Pilih lowongan atau pelamar.")),
+    }
+}
+
+/// Catat atau ubah pelamar (`hr.recruit.manage`).
+#[tauri::command]
+pub async fn desktop_hr_applicant_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_rekrutmen::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::simpan_pelamar(&turso, &operator.username, &draft).await
+}
+
+/// Catat tahap seleksi atau batalkan tahap terakhir (`hr.recruit.manage`).
+#[tauri::command]
+pub async fn desktop_hr_applicant_stage(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_rekrutmen::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::catat_tahap(&turso, &operator.username, &draft).await
+}
+
+/// Isi satu berkas lamaran.
+#[tauri::command]
+pub async fn desktop_hr_applicant_file(state: State<'_, DesktopState>, id_berkas: String) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_REKRUTMEN_BACA)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::berkas_pelamar(&turso, &id_berkas).await
+}
+
+/// Tambah atau hapus berkas lamaran (`hr.recruit.manage`).
+#[tauri::command]
+pub async fn desktop_hr_applicant_file_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, hr_rekrutmen::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::simpan_berkas(&turso, &draft).await
+}
+
+/// Jadikan pelamar karyawan, juga jalur Lanjutkan (Q-100: wajib ketiga izin
+/// `hr.recruit.manage`, `employees.manage`, dan `hr.contract.manage`).
+#[tauri::command]
+pub async fn desktop_hr_applicant_hire(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let mut operator = None;
+    for izin in hr_rekrutmen::IZIN_JADIKAN_KARYAWAN {
+        operator = Some(require_permission(&state, izin)?);
+    }
+    let operator = operator.ok_or_else(CommandError::internal)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::jadikan_karyawan(&state, &turso, &operator, &draft).await
+}
+
+/// Hapus permanen satu pelamar sebelum masa simpannya habis
+/// (`hr.recruit.delete`, sensitif).
+#[tauri::command]
+pub async fn desktop_hr_applicant_delete(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    require_permission(&state, hr_rekrutmen::IZIN_DELETE)?;
+    let id_pelamar = inventory::payload_text(&draft, "id_pelamar").ok_or_else(|| inventory::invalid("Pelamar tidak ditemukan."))?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::hapus_pelamar(&turso, &id_pelamar).await
+}
+
+/// Retensi data pelamar (Q-33, Q-93): dijalankan `AutoFotoCleanupRunner`
+/// untuk setiap sesi; aturannya tetap dan hasilnya hanya hitungan.
+#[tauri::command]
+pub async fn desktop_hr_recruit_cleanup(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_session(&state)?;
+    let turso = state.get_turso_client()?;
+    hr_rekrutmen::bersihkan_pelamar(&turso).await
+}
+
+/// Daftar pelatihan per tahun, rincian satu pelatihan (`id_pelatihan`), atau
+/// riwayat satu karyawan (`id_karyawan`).
+#[tauri::command]
+pub async fn desktop_hr_trainings(
+    state: State<'_, DesktopState>,
+    id_pelatihan: Option<String>,
+    id_karyawan: Option<String>,
+    tahun: Option<i64>,
+) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_PELATIHAN_BACA)?;
+    let turso = state.get_turso_client()?;
+    match (id_pelatihan.filter(|id| !id.is_empty()), id_karyawan.filter(|id| !id.is_empty())) {
+        (Some(id), _) => hr_pelatihan::rincian(&turso, &id).await,
+        (None, Some(id)) => hr_pelatihan::riwayat(&turso, &id).await,
+        (None, None) => hr_pelatihan::daftar(&turso, tahun).await,
+    }
+}
+
+/// Buat, ubah, atau batalkan pelatihan (`hr.training.manage`).
+#[tauri::command]
+pub async fn desktop_hr_training_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_pelatihan::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::simpan(&turso, &operator.username, &draft).await
+}
+
+/// Tambah, lepas, atau isi hasil peserta (`hr.training.manage`).
+#[tauri::command]
+pub async fn desktop_hr_training_participants_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_pelatihan::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::simpan_peserta(&turso, &operator.username, &draft).await
+}
+
+/// Simpan atau hapus sertifikat peserta lewat inti dokumen
+/// (`hr.training.manage`, hanya `dok-sertifikat` yang tertaut ke peserta).
+#[tauri::command]
+pub async fn desktop_hr_training_certificate_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_pelatihan::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::simpan_sertifikat(&turso, &operator.username, &draft).await
+}
+
+/// Isi satu berkas sertifikat peserta.
+#[tauri::command]
+pub async fn desktop_hr_training_certificate_file(state: State<'_, DesktopState>, id_berkas: String) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_PELATIHAN_BACA)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::berkas_sertifikat(&turso, &id_berkas).await
 }

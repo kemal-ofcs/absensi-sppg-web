@@ -8,6 +8,8 @@ import {
   DIVISI_KINI_SQL,
   dalamSiklusAtasan,
   divisiKini,
+  HAPUS_DOKUMEN_SQL,
+  INSERT_BERKAS_DOKUMEN_SQL,
   INSERT_KONTRAK_SQL,
   INSERT_NAMA_DIVISI_SQL,
   JENIS_DARI_KONTRAK_SQL,
@@ -26,6 +28,7 @@ import {
   SEED_JENIS_DOKUMEN_SQL,
   SELARASKAN_DIVISI_SQL,
   SELARASKAN_JABATAN_SQL,
+  SIMPAN_DOKUMEN_SQL,
   statusKerja,
   tambahBulan,
   tandaKontrak,
@@ -273,6 +276,7 @@ describe("hris (cermin tes Rust)", () => {
         hr_harian_batas_hari: 21,
         hr_harian_batas_bulan: 3,
         hr_sp_masa_bulan: 6,
+        hr_pelamar_retensi_bulan: 12,
       }).ok,
     ).toBe(true);
     expect(
@@ -282,11 +286,29 @@ describe("hris (cermin tes Rust)", () => {
         hr_harian_batas_hari: 21,
         hr_harian_batas_bulan: 3,
         hr_sp_masa_bulan: 6,
+        hr_pelamar_retensi_bulan: 12,
       }),
     ).toEqual({
       ok: false,
       pesan: "Masa percobaan maksimal harus bilangan bulat 1–12.",
     });
+    expect(
+      validasiPengaturan({
+        hr_percobaan_maks_bulan: 3,
+        hr_pkwt_maks_bulan: 60,
+        hr_harian_batas_hari: 21,
+        hr_harian_batas_bulan: 3,
+        hr_sp_masa_bulan: 6,
+        hr_pelamar_retensi_bulan: 61,
+      }),
+    ).toEqual({
+      ok: false,
+      pesan: "Masa simpan data pelamar (bulan) harus bilangan bulat 1–60.",
+    });
+    expect(
+      pengaturanDariPeta({ hr_pelamar_retensi_bulan: "0" })
+        .hr_pelamar_retensi_bulan,
+    ).toBe(12);
   });
 
   test("atasan dan siklus", () => {
@@ -377,6 +399,9 @@ describe("hris (cermin tes Rust)", () => {
         ...CLOUD_TEKS_KARYAWAN_SQL,
         JENIS_DARI_KONTRAK_SQL,
         INSERT_KONTRAK_SQL,
+        SIMPAN_DOKUMEN_SQL,
+        INSERT_BERKAS_DOKUMEN_SQL,
+        ...HAPUS_DOKUMEN_SQL,
       ]) {
         expect(rust.includes(sql)).toBe(true);
       }

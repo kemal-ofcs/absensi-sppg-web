@@ -66,6 +66,8 @@ export const KUNCI_HARIAN_BATAS_HARI = "hr_harian_batas_hari";
 export const KUNCI_HARIAN_BATAS_BULAN = "hr_harian_batas_bulan";
 /** Masa berlaku SP dalam bulan (fase 5); dibekukan per SP saat dibuat. */
 export const KUNCI_SP_MASA_BULAN = "hr_sp_masa_bulan";
+/** Masa simpan data pelamar (fase 7, Q-33); berlaku surut saat diubah. */
+export const KUNCI_PELAMAR_RETENSI_BULAN = "hr_pelamar_retensi_bulan";
 
 export const KOLOM_PRIBADI = [
   "nik",
@@ -162,6 +164,20 @@ export const CLOUD_TEKS_KARYAWAN_SQL = [
 
 export const JENIS_DARI_KONTRAK_SQL =
   "UPDATE master_data SET jenis_personil = COALESCE((SELECT CASE k.jenis WHEN 'PKWTT' THEN 'Pegawai' WHEN 'PKWT' THEN 'Kontrak' WHEN 'Harian Lepas' THEN 'Harian' ELSE 'Magang' END FROM hr_kontrak k WHERE k.id_karyawan = master_data.id_unik AND k.jenis <> 'Pembatalan' AND NOT EXISTS (SELECT 1 FROM hr_kontrak b WHERE b.id_kontrak = 'batal-' || k.id_kontrak) ORDER BY k.tanggal_mulai DESC, k.id_kontrak DESC LIMIT 1), jenis_personil) WHERE id_unik = ?1;";
+
+/** Cermin `SIMPAN_DOKUMEN_SQL`; dipakai juga sertifikat pelatihan (fase 7). */
+export const SIMPAN_DOKUMEN_SQL =
+  "INSERT INTO hr_dokumen (id_dokumen, id_karyawan, id_jenis, nomor, tanggal_terbit, tanggal_kedaluwarsa, catatan, dicatat_oleh) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id_dokumen) DO UPDATE SET id_jenis = excluded.id_jenis, nomor = excluded.nomor, tanggal_terbit = excluded.tanggal_terbit, tanggal_kedaluwarsa = excluded.tanggal_kedaluwarsa, catatan = excluded.catatan, updated_at = datetime('now');";
+
+export const INSERT_BERKAS_DOKUMEN_SQL =
+  "INSERT INTO hr_dokumen_berkas (id_berkas, id_dokumen, urutan, nama_berkas, mime_type, data_base64) VALUES (?1, ?2, ?3, ?4, ?5, ?6);";
+
+/** Cermin `HAPUS_DOKUMEN_SQL`: juga melepas tautan sertifikat peserta. */
+export const HAPUS_DOKUMEN_SQL = [
+  "DELETE FROM hr_dokumen_berkas WHERE id_dokumen = ?1;",
+  "UPDATE hr_pelatihan_peserta SET id_dokumen = NULL WHERE id_dokumen = ?1;",
+  "DELETE FROM hr_dokumen WHERE id_dokumen = ?1;",
+] as const;
 
 export const INSERT_KONTRAK_SQL = `INSERT INTO hr_kontrak (
         id_kontrak, id_karyawan, jenis, id_ref, nomor, tanggal_mulai, tanggal_selesai,
@@ -511,6 +527,7 @@ export interface PengaturanKontrak {
   hr_harian_batas_hari: number;
   hr_harian_batas_bulan: number;
   hr_sp_masa_bulan: number;
+  hr_pelamar_retensi_bulan: number;
 }
 
 export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
@@ -519,6 +536,7 @@ export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
   hr_harian_batas_hari: 21,
   hr_harian_batas_bulan: 3,
   hr_sp_masa_bulan: 6,
+  hr_pelamar_retensi_bulan: 12,
 };
 
 /** Cermin `BATAS_PENGATURAN`: [kunci, label, min, maks]. */
@@ -528,6 +546,7 @@ export const BATAS_PENGATURAN = [
   [KUNCI_HARIAN_BATAS_HARI, "Batas hari kerja harian lepas", 1, 31],
   [KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12],
   [KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12],
+  [KUNCI_PELAMAR_RETENSI_BULAN, "Masa simpan data pelamar (bulan)", 1, 60],
 ] as const;
 
 /** Cermin `PengaturanKontrak::dari_peta`: kosong/rusak = bawaan. */
