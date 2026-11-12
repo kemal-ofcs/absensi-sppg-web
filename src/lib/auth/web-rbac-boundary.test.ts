@@ -20,6 +20,7 @@ import { WEB_SESSION_TTL_SECONDS } from "@/lib/auth/web-session";
 import { initDatabaseSchema } from "@/lib/db-schema";
 import { editOperator } from "@/lib/operators/operator-admin";
 import { replaceRolePermissions } from "@/lib/rbac/role-admin";
+import { IZIN_PERHATIAN, izinPerhatian } from "@/lib/validations/telegram";
 
 interface Fixture {
   client: Client;
@@ -303,6 +304,18 @@ describe("Web RBAC trusted boundary", () => {
           true,
         ),
       ).toThrow(AuthorizationError);
+
+      // Kartu "Perlu perhatian" bagian Kinerja (§24.6, Q-122): paket HRD
+      // membukanya, Atasan (`assess` saja) dan Admin (`config`) tidak.
+      const kinerja = async (roleKey: string) => {
+        const punya = await izin(roleKey);
+        return izinPerhatian((p) => punya.includes(p)).kinerja;
+      };
+      expect(await kinerja("hrd")).toBe(true);
+      expect(await kinerja("atasan")).toBe(false);
+      expect(await kinerja("admin")).toBe(false);
+      expect(IZIN_PERHATIAN).toContain("hr.performance.view");
+      expect(IZIN_PERHATIAN).toContain("hr.performance.finalize");
     } finally {
       client.close();
     }

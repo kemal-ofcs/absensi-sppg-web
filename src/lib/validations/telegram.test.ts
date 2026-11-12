@@ -2,20 +2,33 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  INGAT_DOKUMEN_SQL,
+  INGAT_JAM_SQL,
+  INGAT_KONTRAK_DEKAT_SQL,
+  INGAT_KONTRAK_JAUH_SQL,
+  INGAT_MENUNGGU_SQL,
+  INGAT_PERCOBAAN_SQL,
+} from "./hris";
+import {
   type BarisStokMenipis,
   BIDANG_KEJADIAN,
   diparkir,
   galatTelegram,
   grupDariUpdates,
-  HR_HARI_DEKAT,
-  HR_HARI_JAUH,
-  HR_HARI_MENUNGGU,
+  HR_HARI_JENDELA,
+  HR_HARI_LOWONGAN,
   type IsiLaporanPerjalanan,
   IZIN_PERHATIAN,
+  idHrAjuan,
   idHrDokumen,
+  idHrKinerjaPeriode,
+  idHrKinerjaTunggu,
   idHrKontrak,
+  idHrLowongan,
   idHrMenunggu,
+  idHrPelamar,
   idHrPercobaan,
+  idHrPutus,
   idHrSp,
   idHrUltah,
   idHrUrgent,
@@ -23,6 +36,8 @@ import {
   idTripKendala,
   idTripLokasiPalsu,
   izinPerhatian,
+  type KaryawanPeriode,
+  KELOMPOK_TANPA_NAMA,
   KLAIM_PARKIR,
   klaimSetelahGagal,
   LABEL_BIDANG,
@@ -32,11 +47,19 @@ import {
   PERHATIAN_SQL_KONTRAK,
   PERHATIAN_SQL_SP,
   PERHATIAN_SQL_ULTAH,
+  type PenilaianTunggu,
+  periodeKinerjaBerakhir,
   permintaanKirim,
   pesanBukaBuku,
   pesanGajiStatus,
   pesanHrDokumenKedaluwarsa,
+  pesanHrKinerjaMenunggu,
+  pesanHrKinerjaPeriode,
   pesanHrKontrakAkhir,
+  pesanHrLowonganTutup,
+  pesanHrPelamarBaru,
+  pesanHrPengajuanBaru,
+  pesanHrPengajuanDiputus,
   pesanHrPengajuanMenunggu,
   pesanHrPercobaanAkhir,
   pesanHrSpBerakhir,
@@ -52,6 +75,8 @@ import {
   pesanTripTutup,
   pesanTutupBuku,
   potong,
+  ringkasKinerjaMenunggu,
+  ringkasKinerjaPeriode,
   samarkanToken,
   sisaHari,
   statusSetelahGagal,
@@ -62,12 +87,20 @@ import {
   TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
   TELEGRAM_KEJADIAN,
   TELEGRAM_SQL_HR_DOKUMEN,
+  TELEGRAM_SQL_HR_KINERJA_JENIS,
+  TELEGRAM_SQL_HR_KINERJA_MENUNGGU,
+  TELEGRAM_SQL_HR_KINERJA_PERIODE,
   TELEGRAM_SQL_HR_KONTRAK,
+  TELEGRAM_SQL_HR_LOWONGAN_TUTUP,
   TELEGRAM_SQL_HR_MENUNGGU,
+  TELEGRAM_SQL_HR_PELAMAR_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_PUTUS,
   TELEGRAM_SQL_HR_PERCOBAAN,
   TELEGRAM_SQL_HR_SP,
   TELEGRAM_SQL_HR_ULTAH,
   TELEGRAM_SQL_HR_URGENT,
+  TELEGRAM_SQL_JAM_WIB,
   TELEGRAM_SQL_LABEL_KENDARAAN,
   TELEGRAM_SQL_NAMA_PERSONIL,
   TELEGRAM_SQL_TRIP_GANTI_IZIN,
@@ -88,6 +121,30 @@ function bacaTelegramRs() {
     .find((path) => existsSync(path));
   expect(berkas).toBeDefined();
   return readFileSync(berkas as string, "utf8").replaceAll("\r\n", "\n");
+}
+
+/**
+ * SQL yang memakai angka pengingat ditulis Rust sebagai `concat!` potongan
+ * literal + makro `ingat_*_sql!` (§24.3). Setiap potongan di antara fragmen
+ * wajib ada sebagai literal utuh; SQL tanpa fragmen tetap satu literal.
+ */
+const FRAGMEN_INGAT = [
+  [INGAT_KONTRAK_JAUH_SQL, "ingat_kontrak_jauh_sql!()"],
+  [INGAT_KONTRAK_DEKAT_SQL, "ingat_kontrak_dekat_sql!()"],
+  [INGAT_PERCOBAAN_SQL, "ingat_percobaan_sql!()"],
+  [INGAT_DOKUMEN_SQL, "ingat_dokumen_sql!()"],
+  [INGAT_MENUNGGU_SQL, "ingat_menunggu_sql!()"],
+  [INGAT_JAM_SQL, "ingat_jam_sql!()"],
+] as const;
+function harapSqlDiRust(rust: string, sql: string) {
+  let potongan = [sql];
+  for (const [fragmen, makro] of FRAGMEN_INGAT) {
+    if (sql.includes(fragmen)) expect(rust).toContain(makro);
+    potongan = potongan.flatMap((p) => p.split(fragmen));
+  }
+  for (const p of potongan.filter((p) => p !== "")) {
+    expect(rust).toContain(`"${p}"`);
+  }
 }
 
 // Vektor yang sama diuji di `desktop/telegram.rs` (modul `tests`).
@@ -389,16 +446,30 @@ describe("aturan murni Telegram", () => {
     expect(idTripKendala("lap-1")).toBe("drv-kendala:lap-1");
     expect(idTripGantiIzin("lap-2")).toBe("drv-ganti:lap-2");
     expect(idTripLokasiPalsu("lap-3")).toBe("drv-palsu:lap-3");
-    expect(idHrKontrak("ktr-1", 30)).toBe("hr-kontrak:ktr-1:30");
-    expect(idHrKontrak("ktr-1", 8)).toBe("hr-kontrak:ktr-1:30");
-    expect(idHrKontrak("ktr-1", 7)).toBe("hr-kontrak:ktr-1:7");
-    expect(idHrKontrak("ktr-1", 0)).toBe("hr-kontrak:ktr-1:7");
+    expect(idHrKontrak("ktr-1", 30, 7)).toBe("hr-kontrak:ktr-1:jauh");
+    expect(idHrKontrak("ktr-1", 8, 7)).toBe("hr-kontrak:ktr-1:jauh");
+    expect(idHrKontrak("ktr-1", 7, 7)).toBe("hr-kontrak:ktr-1:dekat");
+    expect(idHrKontrak("ktr-1", 0, 7)).toBe("hr-kontrak:ktr-1:dekat");
+    // Angka diubah: id tetap menurut tahap, bukan angkanya (Q-116).
+    expect(idHrKontrak("ktr-1", 8, 10)).toBe("hr-kontrak:ktr-1:dekat");
+    expect(idHrKontrak("ktr-1", 20, 3)).toBe("hr-kontrak:ktr-1:jauh");
     expect(idHrPercobaan("ktr-1")).toBe("hr-coba:ktr-1");
     expect(idHrDokumen("dok-1", "2026-12-12")).toBe("hr-dok:dok-1:2026-12-12");
     expect(idHrSp("sp-1")).toBe("hr-sp:sp-1");
     expect(idHrMenunggu("2026-11-12")).toBe("hr-tunggu:2026-11-12");
     expect(idHrUrgent("2026-11-12")).toBe("hr-urgent:2026-11-12");
     expect(idHrUltah("2026-11-12")).toBe("hr-ultah:2026-11-12");
+    expect(TELEGRAM_KEJADIAN).toHaveLength(26);
+    expect(idHrKinerjaTunggu("2026-11-12")).toBe(
+      "hr-kinerja-tunggu:2026-11-12",
+    );
+    expect(idHrKinerjaPeriode("2026-01-01")).toBe(
+      "hr-kinerja-periode:2026-01-01",
+    );
+    expect(idHrPelamar("2026-11-12")).toBe("hr-pelamar:2026-11-12");
+    expect(idHrLowongan("L4", "2026-11-14")).toBe("hr-lowongan:L4:2026-11-14");
+    expect(idHrAjuan("p1")).toBe("hr-ajuan:p1");
+    expect(idHrPutus("q5")).toBe("hr-putus:q5");
     expect(TELEGRAM_INSERT_ANTREAN_PARKIR_SQL).toContain(`'${KLAIM_PARKIR}'`);
   });
 
@@ -411,6 +482,7 @@ describe("aturan murni Telegram", () => {
       pengajuan: false,
       hanyaReimburse: false,
       rekrutmen: false,
+      kinerja: false,
     };
     const dari = (izin: string[]) => izinPerhatian((p) => izin.includes(p));
     expect(dari(["employees.view"])).toEqual({
@@ -444,7 +516,23 @@ describe("aturan murni Telegram", () => {
       pengajuan: true,
       hanyaReimburse: false,
       rekrutmen: true,
+      kinerja: true,
     });
+    // Kinerja (Q-122): `view` atau `finalize`; `assess` saja tidak membuka.
+    for (const izin of ["hr.performance.view", "hr.performance.finalize"]) {
+      expect(dari([izin])).toEqual({
+        ...tidakAda,
+        kinerja: true,
+        hanyaReimburse: true,
+      });
+    }
+    expect(dari(["hr.performance.assess"])).toEqual({
+      ...tidakAda,
+      hanyaReimburse: true,
+    });
+    expect(IZIN_PERHATIAN as readonly string[]).not.toContain(
+      "hr.performance.assess",
+    );
     const rust = bacaTelegramRs();
     for (const sql of [
       PERHATIAN_SQL_KONTRAK,
@@ -452,7 +540,7 @@ describe("aturan murni Telegram", () => {
       PERHATIAN_SQL_SP,
       PERHATIAN_SQL_ULTAH,
     ]) {
-      expect(rust).toContain(`"${sql}"`);
+      harapSqlDiRust(rust, sql);
       for (const terlarang of [
         "nik",
         "hr_profil",
@@ -516,14 +604,17 @@ describe("aturan murni Telegram", () => {
       TELEGRAM_SQL_HR_URGENT,
       TELEGRAM_SQL_HR_ULTAH,
     ];
-    for (const sql of daftar) {
-      expect(rust).toContain(`"${sql}"`);
+    for (const sql of [...daftar, TELEGRAM_SQL_JAM_WIB]) {
+      harapSqlDiRust(rust, sql);
     }
-    expect(rust).toContain(`pub const HR_HARI_JAUH: i64 = ${HR_HARI_JAUH};`);
-    expect(rust).toContain(`pub const HR_HARI_DEKAT: i64 = ${HR_HARI_DEKAT};`);
-    expect(rust).toContain(
-      `pub const HR_HARI_MENUNGGU: i64 = ${HR_HARI_MENUNGGU};`,
-    );
+    // Angka yang bisa diatur dibaca lewat fragmen, bukan literal (§24.3).
+    expect(TELEGRAM_SQL_HR_KONTRAK).toContain(INGAT_KONTRAK_JAUH_SQL);
+    expect(TELEGRAM_SQL_HR_KONTRAK).toContain(INGAT_KONTRAK_DEKAT_SQL);
+    expect(TELEGRAM_SQL_HR_PERCOBAAN).toContain(INGAT_PERCOBAAN_SQL);
+    expect(TELEGRAM_SQL_HR_DOKUMEN).toContain(INGAT_DOKUMEN_SQL);
+    expect(TELEGRAM_SQL_HR_MENUNGGU).toContain(INGAT_MENUNGGU_SQL);
+    expect(TELEGRAM_SQL_JAM_WIB).toContain(INGAT_JAM_SQL);
+    expect(rust).not.toContain("pub const HR_HARI_");
     expect(rust).toContain(
       `pub(crate) const KLAIM_PARKIR: &str = "${KLAIM_PARKIR}";`,
     );
@@ -626,11 +717,21 @@ describe("aturan murni Telegram", () => {
           { kelompok: "Reimburse", jumlah: 2 },
         ],
         "2026-11-08",
+        2,
       ),
     ).toBe(
       "📥 6 pengajuan menunggu lebih dari 2 hari\nCuti 3, Izin 1, Reimburse 2\nPaling lama sejak 08/11/2026",
     );
-    expect(pesanHrPengajuanMenunggu([], "2026-11-08")).toBeNull();
+    expect(
+      pesanHrPengajuanMenunggu(
+        [{ kelompok: "Cuti", jumlah: 1 }],
+        "2026-11-01",
+        5,
+      ),
+    ).toBe(
+      "📥 1 pengajuan menunggu lebih dari 5 hari\nCuti 1\nPaling lama sejak 01/11/2026",
+    );
+    expect(pesanHrPengajuanMenunggu([], "2026-11-08", 2)).toBeNull();
     expect(pesanHrUrgentBelumDiketahui(2, "2026-11-10")).toBe(
       "⚡ 2 pengajuan urgent belum diketahui HRD\nPaling lama sejak 10/11/2026",
     );
@@ -778,6 +879,310 @@ describe("aturan murni Telegram", () => {
     );
     expect(pesanTripLokasiPalsu({ ...polos, jenisLaporan: "Berangkat" })).toBe(
       "⚠️ Perlu ditinjau: lokasi palsu terdeteksi\nSurat jalan: SJ-2611-WAB12-001\nLaporan: Berangkat\nDriver: Budi Santoso\nWaktu: 09/11/2026 14:32:05 WIB\nDikirim terlambat (offline).",
+    );
+  });
+});
+
+// Vektor yang sama diuji di `desktop/telegram.rs` (`ringkas_kinerja` dan
+// `isi_pesan_hrd_fase9`).
+describe("kejadian HR fase 9", () => {
+  const kk = (id: string, jenis: string, sidik: string, diterima: string) => ({
+    id_keputusan: id,
+    jenis,
+    sidik,
+    oleh: "hrd",
+    waktu_perangkat: "2026-11-01 00:00:00.000",
+    diterima_cloud: diterima,
+  });
+
+  test("periode kinerja berakhir", () => {
+    const smt: [string, string] = ["2026-01-01", "2026-06-30"];
+    expect(periodeKinerjaBerakhir("Semester", "2026-07-01")).toEqual(smt);
+    expect(periodeKinerjaBerakhir("Semester", "2026-07-07")).toEqual(smt);
+    expect(periodeKinerjaBerakhir("Semester", "2026-07-08")).toBeNull();
+    expect(periodeKinerjaBerakhir("Semester", "2026-06-30")).toBeNull();
+    expect(periodeKinerjaBerakhir("Bulanan", "2026-03-01")).toEqual([
+      "2026-02-01",
+      "2026-02-28",
+    ]);
+    expect(periodeKinerjaBerakhir("Tahunan", "2027-01-03")).toEqual([
+      "2026-01-01",
+      "2026-12-31",
+    ]);
+    expect(periodeKinerjaBerakhir("Kuartal", "2026-01-05")).toEqual([
+      "2025-10-01",
+      "2025-12-31",
+    ]);
+    expect(periodeKinerjaBerakhir("Mingguan", "2026-07-01")).toBeNull();
+    expect(periodeKinerjaBerakhir("Semester", "bukan")).toBeNull();
+    expect(HR_HARI_JENDELA).toBe(7);
+  });
+
+  test("ringkas kinerja", () => {
+    const tunggu: PenilaianTunggu[] = [
+      {
+        sidik: "s1",
+        sejak: "2026-11-05",
+        keputusan: [kk("a1", "Ajukan", "s1", "2026-11-05 03:00:00")],
+      },
+      {
+        sidik: "s2",
+        sejak: "2026-11-01",
+        keputusan: [
+          kk("a2", "Ajukan", "s2", "2026-11-01 03:00:00"),
+          kk("b2", "Kembalikan", "s2", "2026-11-01 04:00:00"),
+        ],
+      },
+      {
+        sidik: "s3",
+        sejak: "2026-11-03",
+        keputusan: [
+          kk("a3", "Ajukan", "s3", "2026-11-03 05:00:00"),
+          kk("b3", "Kembalikan", "s3", "2026-11-03 04:00:00"),
+        ],
+      },
+      {
+        sidik: "s4",
+        sejak: "2026-10-01",
+        keputusan: [
+          kk("a4", "Ajukan", "s4", "2026-10-01 03:00:00"),
+          kk("c4", "Batal", "s4", "2026-10-02 03:00:00"),
+        ],
+      },
+    ];
+    expect(ringkasKinerjaMenunggu(tunggu)).toEqual({
+      jumlah: 2,
+      sejak: "2026-11-03",
+    });
+    expect(ringkasKinerjaMenunggu([])).toEqual({ jumlah: 0, sejak: "" });
+
+    const nilai = (sidik: string, ...keputusan: ReturnType<typeof kk>[]) => ({
+      sidik,
+      keputusan,
+    });
+    const karyawan: KaryawanPeriode[] = [
+      {
+        tanggal_daftar: "2020-01-01",
+        tanggal_selesai_aktif: null,
+        penilaian: [
+          nilai("s1", kk("f1", "Final", "s1", "2026-07-02 00:00:00")),
+        ],
+      },
+      {
+        tanggal_daftar: null,
+        tanggal_selesai_aktif: null,
+        penilaian: [
+          nilai("s2", kk("a2", "Ajukan", "s2", "2026-07-02 00:00:00")),
+        ],
+      },
+      {
+        tanggal_daftar: "2026-03-01",
+        tanggal_selesai_aktif: null,
+        penilaian: [],
+      },
+      {
+        tanggal_daftar: "2026-07-01",
+        tanggal_selesai_aktif: null,
+        penilaian: [],
+      },
+      {
+        tanggal_daftar: null,
+        tanggal_selesai_aktif: "2025-12-31",
+        penilaian: [],
+      },
+      {
+        tanggal_daftar: null,
+        tanggal_selesai_aktif: null,
+        penilaian: [
+          nilai("s6", kk("c6", "Batal", "s6", "2026-07-02 00:00:00")),
+          nilai("s6b"),
+        ],
+      },
+      {
+        tanggal_daftar: null,
+        tanggal_selesai_aktif: null,
+        penilaian: [
+          nilai("s7", kk("c7", "Batal", "s7", "2026-07-02 00:00:00")),
+        ],
+      },
+    ];
+    expect(ringkasKinerjaPeriode(karyawan, "2026-01-01", "2026-06-30")).toEqual(
+      { belum: 2, draf: 1, diajukan: 1 },
+    );
+  });
+
+  test("isi pesan HRD fase 9", () => {
+    expect(pesanHrKinerjaMenunggu(2, "2026-11-03")).toBe(
+      "📊 2 penilaian kinerja menunggu Final\nPaling lama sejak 03/11/2026",
+    );
+    expect(pesanHrKinerjaMenunggu(1, "")).toBe(
+      "📊 1 penilaian kinerja menunggu Final",
+    );
+    expect(pesanHrKinerjaMenunggu(0, "2026-11-03")).toBeNull();
+    expect(
+      pesanHrKinerjaPeriode("Semester", "2026-01-01", "2026-06-30", {
+        belum: 2,
+        draf: 1,
+        diajukan: 1,
+      }),
+    ).toBe(
+      "📊 Periode Semester 01/01/2026 s.d. 30/06/2026 berakhir: 2 belum dinilai, 1 masih draf, 1 diajukan",
+    );
+    expect(
+      pesanHrKinerjaPeriode("Semester", "2026-01-01", "2026-06-30", {
+        belum: 0,
+        draf: 0,
+        diajukan: 0,
+      }),
+    ).toBeNull();
+    expect(
+      pesanHrPelamarBaru([
+        { judul: "Admin Gudang", jumlah: 2 },
+        { judul: "Sopir", jumlah: 1 },
+      ]),
+    ).toBe("👥 3 pelamar baru kemarin\n• Admin Gudang: 2\n• Sopir: 1");
+    expect(pesanHrPelamarBaru([])).toBeNull();
+    const banyak =
+      pesanHrPelamarBaru(
+        Array.from({ length: 32 }, (_, i) => ({
+          judul: `Lowongan ${i + 1}`,
+          jumlah: 1,
+        })),
+      ) ?? "";
+    expect(
+      banyak.startsWith("👥 32 pelamar baru kemarin\n• Lowongan 1: 1\n"),
+    ).toBe(true);
+    expect(banyak.endsWith("• Lowongan 30: 1\ndan 2 lainnya.")).toBe(true);
+    expect(
+      pesanHrLowonganTutup({
+        judul: "Admin Gudang",
+        tanggal: "2026-11-14",
+        sisa: 2,
+        pelamar: 3,
+        kuota: 2,
+      }),
+    ).toBe(
+      "📢 Lowongan Admin Gudang tutup 2 hari lagi (14/11/2026)\nPelamar: 3 · Kuota: 2",
+    );
+    expect(
+      pesanHrLowonganTutup({
+        judul: "Sopir",
+        tanggal: "2026-11-12",
+        sisa: 0,
+        pelamar: 0,
+        kuota: 1,
+      }),
+    ).toBe(
+      "📢 Lowongan Sopir tutup hari ini (12/11/2026)\nPelamar: 0 · Kuota: 1",
+    );
+
+    const cuti = {
+      kelompok: "Cuti",
+      nama: "Budi",
+      jabatan: "Staf Gudang",
+      mulai: "2026-12-01",
+      selesai: "2026-12-03",
+    };
+    const sakit = {
+      kelompok: KELOMPOK_TANPA_NAMA,
+      nama: "Sari",
+      jabatan: "Kasir",
+      mulai: "2026-11-12",
+      selesai: "2026-11-12",
+    };
+    const izin = {
+      kelompok: "Izin",
+      nama: "Budi",
+      jabatan: "",
+      mulai: "2026-12-05",
+      selesai: "2026-12-05",
+    };
+    expect(pesanHrPengajuanBaru(cuti)).toBe(
+      "📝 Pengajuan Cuti baru\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026 s.d. 03/12/2026",
+    );
+    expect(pesanHrPengajuanBaru(sakit)).toBe(
+      "📝 1 pengajuan Sakit baru\nTanggal: 12/11/2026",
+    );
+    expect(pesanHrPengajuanDiputus(cuti, "Setujui", "HRD Satu")).toBe(
+      "✅ Pengajuan Cuti disetujui\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026 s.d. 03/12/2026\nOleh: HRD Satu",
+    );
+    expect(pesanHrPengajuanDiputus(izin, "Tolak", "hrd")).toBe(
+      "❌ Pengajuan Izin ditolak\nKaryawan: Budi\nTanggal: 05/12/2026\nOleh: hrd",
+    );
+    expect(pesanHrPengajuanDiputus(sakit, "Setujui Urgent", "atasan")).toBe(
+      "✅ 1 pengajuan Sakit disetujui (urgent)\nTanggal: 12/11/2026\nOleh: atasan",
+    );
+    for (const isi of [
+      pesanHrPengajuanBaru(sakit),
+      pesanHrPengajuanDiputus(sakit, "Tolak", "hrd"),
+    ]) {
+      expect(isi).not.toContain("Sari");
+      expect(isi).not.toContain("Kasir");
+    }
+  });
+
+  test("SQL HRD fase 9 disalin harfiah ke telegram.rs dan tidak membaca kolom terlarang", () => {
+    const rust = bacaTelegramRs();
+    const kinerja = [
+      TELEGRAM_SQL_HR_KINERJA_MENUNGGU,
+      TELEGRAM_SQL_HR_KINERJA_PERIODE,
+      TELEGRAM_SQL_HR_KINERJA_JENIS,
+    ];
+    const rekrutmen = [
+      TELEGRAM_SQL_HR_PELAMAR_BARU,
+      TELEGRAM_SQL_HR_LOWONGAN_TUTUP,
+    ];
+    const pengajuan = [
+      TELEGRAM_SQL_HR_PENGAJUAN_BARU,
+      TELEGRAM_SQL_HR_PENGAJUAN_PUTUS,
+    ];
+    for (const sql of [...kinerja, ...rekrutmen, ...pengajuan]) {
+      expect(rust).toContain(`"${sql}"`);
+      for (const terlarang of [
+        "nik",
+        "hr_profil",
+        "nominal",
+        "nominal_disetujui",
+        "alasan",
+        "alasan_koreksi",
+        "nilai_akhir",
+        "predikat",
+        "hr_kinerja_nilai",
+        "catatan",
+        "pelanggaran",
+        "nomor",
+      ]) {
+        expect(sql).not.toMatch(new RegExp(`\\b${terlarang}\\b`));
+      }
+    }
+    // Rekrutmen: hanya judul dan hitungan, tidak satu kolom pun milik pelamar.
+    for (const sql of rekrutmen) {
+      for (const terlarang of [
+        "nama",
+        "no_hp",
+        "email",
+        "alamat",
+        "tanggal_lahir",
+        "pendidikan",
+        "sumber",
+      ]) {
+        expect(sql).not.toMatch(new RegExp(`\\b${terlarang}\\b`));
+      }
+    }
+    // Id di `NOT EXISTS` sama dengan fungsi id-nya.
+    expect(TELEGRAM_SQL_HR_LOWONGAN_TUTUP).toContain(
+      "'hr-lowongan:' || l.id_lowongan || ':' || l.tanggal_tutup",
+    );
+    expect(TELEGRAM_SQL_HR_PENGAJUAN_BARU).toContain(`'${idHrAjuan("")}'`);
+    expect(TELEGRAM_SQL_HR_PENGAJUAN_PUTUS).toContain(`'${idHrPutus("")}'`);
+    expect(TELEGRAM_SQL_HR_LOWONGAN_TUTUP).toContain(
+      `'+${HR_HARI_LOWONGAN} days'`,
+    );
+    expect(rust).toContain(
+      `pub(crate) const HR_HARI_JENDELA: i64 = ${HR_HARI_JENDELA};`,
+    );
+    expect(rust).toContain(
+      `pub(crate) const KELOMPOK_TANPA_NAMA: &str = "${KELOMPOK_TANPA_NAMA}";`,
     );
   });
 });

@@ -52,6 +52,14 @@ pub const KUNCI_SP_MASA_BULAN: &str = "hr_sp_masa_bulan";
 /// Masa simpan data pelamar yang tidak menjadi karyawan, dihitung dari tutup
 /// efektif lowongannya (fase 7, Q-33). Berlaku surut saat diubah.
 pub const KUNCI_PELAMAR_RETENSI_BULAN: &str = "hr_pelamar_retensi_bulan";
+/// Angka pengingat HR (fase 9, §24.3, Q-114): dibaca SQL pengingat Telegram
+/// dan kartu "Perlu perhatian" lewat fragmen `ingat_*_sql!`.
+pub const KUNCI_INGAT_KONTRAK_JAUH: &str = "hr_ingat_kontrak_jauh";
+pub const KUNCI_INGAT_KONTRAK_DEKAT: &str = "hr_ingat_kontrak_dekat";
+pub const KUNCI_INGAT_PERCOBAAN: &str = "hr_ingat_percobaan";
+pub const KUNCI_INGAT_DOKUMEN: &str = "hr_ingat_dokumen";
+pub const KUNCI_INGAT_MENUNGGU: &str = "hr_ingat_menunggu";
+pub const KUNCI_INGAT_JAM: &str = "hr_ingat_jam";
 
 /// Kolom kelompok pribadi `hr_profil`, urutan tetap.
 pub const KOLOM_PRIBADI: [&str; 12] = [
@@ -518,6 +526,12 @@ pub struct PengaturanKontrak {
     pub harian_batas_bulan: i64,
     pub sp_masa_bulan: i64,
     pub pelamar_retensi_bulan: i64,
+    pub ingat_kontrak_jauh: i64,
+    pub ingat_kontrak_dekat: i64,
+    pub ingat_percobaan: i64,
+    pub ingat_dokumen: i64,
+    pub ingat_menunggu: i64,
+    pub ingat_jam: i64,
 }
 
 impl Default for PengaturanKontrak {
@@ -529,19 +543,74 @@ impl Default for PengaturanKontrak {
             harian_batas_bulan: 3,
             sp_masa_bulan: 6,
             pelamar_retensi_bulan: 12,
+            ingat_kontrak_jauh: 30,
+            ingat_kontrak_dekat: 7,
+            ingat_percobaan: 7,
+            ingat_dokumen: 30,
+            ingat_menunggu: 2,
+            ingat_jam: 7,
         }
     }
 }
 
 /// Batas setiap angka: (kunci, label, min, maks).
-pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 6] = [
+pub const BATAS_PENGATURAN: [(&str, &str, i64, i64); 12] = [
     (KUNCI_PERCOBAAN_MAKS_BULAN, "Masa percobaan maksimal", 1, 12),
     (KUNCI_PKWT_MAKS_BULAN, "Total PKWT maksimal", 1, 120),
     (KUNCI_HARIAN_BATAS_HARI, "Batas hari kerja harian lepas", 1, 31),
     (KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12),
     (KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12),
     (KUNCI_PELAMAR_RETENSI_BULAN, "Masa simpan data pelamar (bulan)", 1, 60),
+    (KUNCI_INGAT_KONTRAK_JAUH, "Pengingat pertama PKWT berakhir (hari sebelumnya)", 8, 90),
+    (KUNCI_INGAT_KONTRAK_DEKAT, "Pengingat kedua PKWT berakhir (hari sebelumnya)", 1, 30),
+    (KUNCI_INGAT_PERCOBAAN, "Pengingat masa percobaan berakhir (hari sebelumnya)", 1, 30),
+    (KUNCI_INGAT_DOKUMEN, "Pengingat dokumen kedaluwarsa (hari sebelumnya)", 1, 90),
+    (KUNCI_INGAT_MENUNGGU, "Pengajuan dianggap lama menunggu (hari)", 1, 14),
+    (KUNCI_INGAT_JAM, "Jam mulai pengingat HR (WIB)", 0, 23),
 ];
+
+/// Aturan silang (§24.3): pengingat kedua harus lebih dekat ke hari berakhir.
+pub const PESAN_INGAT_KONTRAK: &str =
+    "Pengingat kedua PKWT harus lebih kecil dari pengingat pertama.";
+
+// Angka pengingat dibaca SQL di database (aturan 19) lewat subkueri berbatas
+// pola `retensi_bulan_sql!`: kosong atau di luar batas `BATAS_PENGATURAN` =
+// bawaan `PengaturanKontrak::default`. Cermin `INGAT_*_SQL`; teksnya diuji
+// sama dengan batas dan bawaan oleh `fragmen_ingat_sql`.
+macro_rules! ingat_kontrak_jauh_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_kontrak_jauh' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 8 AND 90), 30)"
+    };
+}
+macro_rules! ingat_kontrak_dekat_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_kontrak_dekat' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 1 AND 30), 7)"
+    };
+}
+macro_rules! ingat_percobaan_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_percobaan' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 1 AND 30), 7)"
+    };
+}
+macro_rules! ingat_dokumen_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_dokumen' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 1 AND 90), 30)"
+    };
+}
+macro_rules! ingat_menunggu_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_menunggu' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 1 AND 14), 2)"
+    };
+}
+macro_rules! ingat_jam_sql {
+    () => {
+        "COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = 'hr_ingat_jam' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN 0 AND 23), 7)"
+    };
+}
+pub(crate) use {
+    ingat_dokumen_sql, ingat_jam_sql, ingat_kontrak_dekat_sql, ingat_kontrak_jauh_sql,
+    ingat_menunggu_sql, ingat_percobaan_sql,
+};
 
 impl PengaturanKontrak {
     pub fn dari_peta(peta: &HashMap<String, String>) -> Self {
@@ -564,6 +633,12 @@ impl PengaturanKontrak {
             harian_batas_bulan: angka(KUNCI_HARIAN_BATAS_BULAN, bawaan.harian_batas_bulan),
             sp_masa_bulan: angka(KUNCI_SP_MASA_BULAN, bawaan.sp_masa_bulan),
             pelamar_retensi_bulan: angka(KUNCI_PELAMAR_RETENSI_BULAN, bawaan.pelamar_retensi_bulan),
+            ingat_kontrak_jauh: angka(KUNCI_INGAT_KONTRAK_JAUH, bawaan.ingat_kontrak_jauh),
+            ingat_kontrak_dekat: angka(KUNCI_INGAT_KONTRAK_DEKAT, bawaan.ingat_kontrak_dekat),
+            ingat_percobaan: angka(KUNCI_INGAT_PERCOBAAN, bawaan.ingat_percobaan),
+            ingat_dokumen: angka(KUNCI_INGAT_DOKUMEN, bawaan.ingat_dokumen),
+            ingat_menunggu: angka(KUNCI_INGAT_MENUNGGU, bawaan.ingat_menunggu),
+            ingat_jam: angka(KUNCI_INGAT_JAM, bawaan.ingat_jam),
         }
     }
 
@@ -575,12 +650,19 @@ impl PengaturanKontrak {
             KUNCI_HARIAN_BATAS_BULAN: self.harian_batas_bulan,
             KUNCI_SP_MASA_BULAN: self.sp_masa_bulan,
             KUNCI_PELAMAR_RETENSI_BULAN: self.pelamar_retensi_bulan,
+            KUNCI_INGAT_KONTRAK_JAUH: self.ingat_kontrak_jauh,
+            KUNCI_INGAT_KONTRAK_DEKAT: self.ingat_kontrak_dekat,
+            KUNCI_INGAT_PERCOBAAN: self.ingat_percobaan,
+            KUNCI_INGAT_DOKUMEN: self.ingat_dokumen,
+            KUNCI_INGAT_MENUNGGU: self.ingat_menunggu,
+            KUNCI_INGAT_JAM: self.ingat_jam,
         })
     }
 }
 
 /// Cermin `validasiPengaturanKontrak`: setiap kunci wajib bilangan bulat
-/// dalam batasnya. Hasil berurutan `BATAS_PENGATURAN`.
+/// dalam batasnya, dan pengingat kedua PKWT < pengingat pertama. Hasil
+/// berurutan `BATAS_PENGATURAN`.
 pub fn validasi_pengaturan(draft: &Value) -> Result<Vec<(&'static str, i64)>, String> {
     let objek = draft.as_object().ok_or("Isian tidak valid.")?;
     if let Some(asing) = objek
@@ -589,7 +671,7 @@ pub fn validasi_pengaturan(draft: &Value) -> Result<Vec<(&'static str, i64)>, St
     {
         return Err(format!("Isian '{asing}' tidak dikenal."));
     }
-    BATAS_PENGATURAN
+    let hasil: Vec<(&'static str, i64)> = BATAS_PENGATURAN
         .iter()
         .map(|(kunci, label, min, maks)| {
             objek
@@ -599,7 +681,12 @@ pub fn validasi_pengaturan(draft: &Value) -> Result<Vec<(&'static str, i64)>, St
                 .map(|n| (*kunci, n))
                 .ok_or_else(|| format!("{label} harus bilangan bulat {min}–{maks}."))
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    let nilai = |kunci: &str| hasil.iter().find(|(k, _)| *k == kunci).map(|(_, n)| *n);
+    if nilai(KUNCI_INGAT_KONTRAK_DEKAT) >= nilai(KUNCI_INGAT_KONTRAK_JAUH) {
+        return Err(PESAN_INGAT_KONTRAK.to_owned());
+    }
+    Ok(hasil)
 }
 
 /// `n` bulan penuh sebelum bulan `hari_ini`, terlama dulu: (awal, akhir).
@@ -2067,27 +2154,109 @@ mod tests {
         let peta: HashMap<String, String> = [("hr_pkwt_maks_bulan".to_owned(), "36".to_owned()), ("hr_harian_batas_hari".to_owned(), "99".to_owned())].into();
         let p = PengaturanKontrak::dari_peta(&peta);
         assert_eq!((p.pkwt_maks_bulan, p.harian_batas_hari), (36, 21));
-        assert!(validasi_pengaturan(&json!({
-            "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
-            "hr_pelamar_retensi_bulan": 12
-        }))
-        .is_ok());
+        // Bawaan = draf sah; setiap kasus mengubah satu atau dua angka.
+        let bawaan = PengaturanKontrak::default().ke_json();
+        let dengan = |ubah: &[(&str, i64)]| {
+            let mut draf = bawaan.clone();
+            for (kunci, nilai) in ubah {
+                draf[*kunci] = json!(nilai);
+            }
+            validasi_pengaturan(&draf)
+        };
+        assert_eq!(dengan(&[]).map(|v| v.len()), Ok(12));
         assert_eq!(
-            validasi_pengaturan(&json!({
-                "hr_percobaan_maks_bulan": 0, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
-                "hr_pelamar_retensi_bulan": 12
-            })),
+            dengan(&[("hr_percobaan_maks_bulan", 0)]),
             Err("Masa percobaan maksimal harus bilangan bulat 1–12.".into())
         );
         assert_eq!(
-            validasi_pengaturan(&json!({
-                "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
-                "hr_pelamar_retensi_bulan": 61
-            })),
+            dengan(&[("hr_pelamar_retensi_bulan", 61)]),
             Err("Masa simpan data pelamar (bulan) harus bilangan bulat 1–60.".into())
         );
         let retensi: HashMap<String, String> = [("hr_pelamar_retensi_bulan".to_owned(), "0".to_owned())].into();
         assert_eq!(PengaturanKontrak::dari_peta(&retensi).pelamar_retensi_bulan, 12);
+
+        // Angka pengingat (§24.3): bawaan, diubah, batas, dan dekat < jauh.
+        assert_eq!(
+            bawaan,
+            json!({
+                "hr_percobaan_maks_bulan": 3, "hr_pkwt_maks_bulan": 60, "hr_harian_batas_hari": 21, "hr_harian_batas_bulan": 3, "hr_sp_masa_bulan": 6,
+                "hr_pelamar_retensi_bulan": 12, "hr_ingat_kontrak_jauh": 30, "hr_ingat_kontrak_dekat": 7, "hr_ingat_percobaan": 7,
+                "hr_ingat_dokumen": 30, "hr_ingat_menunggu": 2, "hr_ingat_jam": 7
+            })
+        );
+        let diubah = dengan(&[("hr_ingat_kontrak_jauh", 14), ("hr_ingat_kontrak_dekat", 3), ("hr_ingat_jam", 0)]).unwrap();
+        assert!(diubah.contains(&("hr_ingat_kontrak_jauh", 14)) && diubah.contains(&("hr_ingat_jam", 0)));
+        assert_eq!(
+            dengan(&[("hr_ingat_kontrak_jauh", 7)]),
+            Err("Pengingat pertama PKWT berakhir (hari sebelumnya) harus bilangan bulat 8–90.".into())
+        );
+        assert_eq!(
+            dengan(&[("hr_ingat_jam", 24)]),
+            Err("Jam mulai pengingat HR (WIB) harus bilangan bulat 0–23.".into())
+        );
+        assert_eq!(
+            dengan(&[("hr_ingat_menunggu", 15)]),
+            Err("Pengajuan dianggap lama menunggu (hari) harus bilangan bulat 1–14.".into())
+        );
+        assert_eq!(dengan(&[("hr_ingat_kontrak_jauh", 10), ("hr_ingat_kontrak_dekat", 10)]), Err(PESAN_INGAT_KONTRAK.into()));
+        assert_eq!(dengan(&[("hr_ingat_kontrak_jauh", 10), ("hr_ingat_kontrak_dekat", 20)]), Err(PESAN_INGAT_KONTRAK.into()));
+        assert!(dengan(&[("hr_ingat_kontrak_jauh", 10), ("hr_ingat_kontrak_dekat", 9)]).is_ok());
+        // Tersimpan rusak = bawaan per angka; aturan silang hanya saat disimpan.
+        let rusak: HashMap<String, String> = [
+            ("hr_ingat_kontrak_jauh".to_owned(), "x".to_owned()),
+            ("hr_ingat_kontrak_dekat".to_owned(), " 20 ".to_owned()),
+            ("hr_ingat_jam".to_owned(), "0".to_owned()),
+            ("hr_ingat_menunggu".to_owned(), "-1".to_owned()),
+        ]
+        .into();
+        let p = PengaturanKontrak::dari_peta(&rusak);
+        assert_eq!((p.ingat_kontrak_jauh, p.ingat_kontrak_dekat, p.ingat_jam, p.ingat_menunggu), (30, 20, 0, 2));
+    }
+
+    /// Fragmen `ingat_*_sql!` = batas `BATAS_PENGATURAN` + bawaan, dan
+    /// dijalankan SQLite: kosong, rusak, atau di luar batas = bawaan.
+    #[test]
+    fn fragmen_ingat_sql() {
+        let b = PengaturanKontrak::default();
+        let fragmen = [
+            (ingat_kontrak_jauh_sql!(), KUNCI_INGAT_KONTRAK_JAUH, b.ingat_kontrak_jauh),
+            (ingat_kontrak_dekat_sql!(), KUNCI_INGAT_KONTRAK_DEKAT, b.ingat_kontrak_dekat),
+            (ingat_percobaan_sql!(), KUNCI_INGAT_PERCOBAAN, b.ingat_percobaan),
+            (ingat_dokumen_sql!(), KUNCI_INGAT_DOKUMEN, b.ingat_dokumen),
+            (ingat_menunggu_sql!(), KUNCI_INGAT_MENUNGGU, b.ingat_menunggu),
+            (ingat_jam_sql!(), KUNCI_INGAT_JAM, b.ingat_jam),
+        ];
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE setting_gex_system (key TEXT PRIMARY KEY, value TEXT NOT NULL);", []).unwrap();
+        for (sql, kunci, bawaan) in fragmen {
+            let (_, _, min, maks) = BATAS_PENGATURAN.iter().find(|(k, ..)| *k == kunci).copied().unwrap();
+            assert_eq!(
+                sql,
+                format!("COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = '{kunci}' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN {min} AND {maks}), {bawaan})")
+            );
+            let baca = |nilai: Option<String>| -> i64 {
+                conn.execute("DELETE FROM setting_gex_system;", []).unwrap();
+                if let Some(v) = nilai {
+                    conn.execute("INSERT INTO setting_gex_system VALUES (?1, ?2);", params![kunci, v]).unwrap();
+                }
+                conn.query_row(&format!("SELECT {sql};"), [], |r| r.get(0)).unwrap()
+            };
+            let tengah = (min + maks) / 2;
+            assert_eq!(
+                [
+                    baca(None),
+                    baca(Some(format!(" {tengah} "))),
+                    baca(Some(min.to_string())),
+                    baca(Some(maks.to_string())),
+                    baca(Some((maks + 1).to_string())),
+                    baca(Some("-1".into())),
+                    baca(Some("7x".into())),
+                    baca(Some(String::new())),
+                ],
+                [bawaan, tengah, min, maks, bawaan, bawaan, bawaan, bawaan],
+                "{kunci}"
+            );
+        }
     }
 
     #[test]

@@ -16,14 +16,24 @@ const { initDatabaseSchema } = await import("@/lib/db-schema");
 const {
   bacaPengaturan,
   catatHarianPada,
+  catatPengajuanHr,
   drainTelegram,
   getTelegramConfig,
   perhatianHr,
+  perhatianHrPada,
   saveTelegramConfig,
 } = await import("./telegram");
 const {
+  idHrKinerjaPeriode,
+  idHrKontrak,
   izinPerhatian,
   KLAIM_PARKIR,
+  periodeKinerjaBerakhir,
+  pesanHrPengajuanBaru,
+  pesanHrPengajuanDiputus,
+  pesanHrPengajuanMenunggu,
+  ringkasKinerjaMenunggu,
+  ringkasKinerjaPeriode,
   klaimSetelahGagal,
   statusSetelahGagal,
   TELEGRAM_DRAIN_GAGAL_SQL,
@@ -32,6 +42,14 @@ const {
   TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
   TELEGRAM_INSERT_ANTREAN_SQL,
   TELEGRAM_KEJADIAN,
+  TELEGRAM_SQL_HR_KINERJA_MENUNGGU,
+  TELEGRAM_SQL_HR_KINERJA_PERIODE,
+  TELEGRAM_SQL_HR_KONTRAK,
+  TELEGRAM_SQL_HR_LOWONGAN_TUTUP,
+  TELEGRAM_SQL_HR_MENUNGGU,
+  TELEGRAM_SQL_HR_PELAMAR_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_PUTUS,
   TELEGRAM_SQL_JAM_WIB,
   TELEGRAM_SQL_STOK_MENIPIS,
 } = await import("@/lib/validations/telegram");
@@ -56,6 +74,7 @@ beforeEach(async () => {
   await client.batch(
     [
       "DELETE FROM app_telegram_setting;",
+      "DELETE FROM setting_gex_system WHERE key LIKE 'hr_ingat_%';",
       "DELETE FROM notifikasi_telegram;",
       "DELETE FROM inventory_pengajuan;",
       "DELETE FROM inventory_pengajuan_baris;",
@@ -79,6 +98,8 @@ beforeEach(async () => {
       "DELETE FROM hr_pengajuan_keputusan;",
       "DELETE FROM hr_lowongan;",
       "DELETE FROM hr_pelamar;",
+      "DELETE FROM hr_kinerja_penilaian;",
+      "DELETE FROM hr_kinerja_keputusan;",
     ],
     "write",
   );
@@ -549,7 +570,63 @@ async function antreanUji() {
   }));
 }
 
-const KEJADIAN_HRD = TELEGRAM_KEJADIAN.slice(13);
+/**
+ * Tujuh kejadian fase 8. Kejadian fase 9 diuji terpisah ("kejadian hrd fase
+ * 9"): ringkasan periode kinerjanya bergantung tanggal kalender.
+ */
+const KEJADIAN_HRD = TELEGRAM_KEJADIAN.slice(13, 20);
+const KEJADIAN_HRD_FASE9 = TELEGRAM_KEJADIAN.slice(20);
+
+/**
+ * Data uji kejadian HR fase 9 (dipakai bersama `DATA_HRD`), disalin harfiah
+ * dari `DATA_HRD_FASE9` di `desktop/telegram.rs`.
+ */
+const DATA_HRD_FASE9 = [
+  `INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif, tanggal_daftar, id_jabatan, jabatan_status) VALUES
+           ('k6', 'Fajar', 'Kantor', 1, 'Aktif', '2020-01-01', NULL, NULL),
+           ('k7', 'Gita', 'Kantor', 1, 'Aktif', '2020-01-01', NULL, NULL);`,
+  `INSERT INTO hr_lowongan (id_lowongan, judul, jumlah, tanggal_buka, tanggal_tutup, ditutup_pada, dicatat_oleh) VALUES
+           ('L4', 'Admin Gudang', 2, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+2 days'), NULL, 'hrd'),
+           ('L5', 'Sopir', 1, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+5 days'), NULL, 'hrd'),
+           ('L6', 'Kurir', 1, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+1 day'), datetime('now'), 'hrd');`,
+  `INSERT INTO hr_pelamar (id_pelamar, id_lowongan, nama, tanggal_lamaran, dicatat_oleh, created_at) VALUES
+           ('pf1', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '+2 hours')),
+           ('pf2', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '+23 hours')),
+           ('pf3', 'L5', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours')),
+           ('pf4', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours'), '-7 hours')),
+           ('pf5', 'L6', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '-1 second'));`,
+  `INSERT INTO hr_kinerja_penilaian (id_penilaian, id_karyawan, id_ref, periode_jenis, periode_mulai, periode_selesai, id_template, template_nama, penilai_oleh, catatan, sidik, dibuat_oleh, waktu_perangkat) VALUES
+           ('kp1', 'k1', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', 'Catatan rahasia', 's1', 'atasan', '2026-07-02 00:00:00'),
+           ('kp2', 'k2', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's2', 'atasan', '2026-07-02 00:00:00'),
+           ('kp3', 'k6', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's3', 'atasan', '2026-07-02 00:00:00'),
+           ('kp4', 'k7', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's4', 'atasan', '2026-07-02 00:00:00'),
+           ('kp5', 'k6', 'kp3', 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's5', 'atasan', '2026-07-02 00:00:00'),
+           ('kp6', 'k3', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's6', 'atasan', '2026-07-02 00:00:00'),
+           ('kp7', 'k5', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's7', 'atasan', '2026-07-02 00:00:00');`,
+  `INSERT INTO hr_kinerja_keputusan (id_keputusan, id_penilaian, jenis, sidik, alasan, nilai_akhir, predikat, oleh, waktu_perangkat, diterima_cloud) VALUES
+           ('kk1', 'kp1', 'Ajukan', 's1', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-3 days')),
+           ('kk2a', 'kp2', 'Ajukan', 's2', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-5 days')),
+           ('kk2b', 'kp2', 'Kembalikan', 's2', 'Alasan rahasia', NULL, NULL, 'hrd', '2026-07-03 00:00:01.000', datetime('now', '-4 days')),
+           ('kk3', 'kp3', 'Final', 's3', NULL, 8750, 'Baik', 'hrd', '2026-07-03 00:00:00.000', datetime('now', '-10 days')),
+           ('kk4', 'kp4', 'Batal', 's4', 'Alasan rahasia', NULL, NULL, 'hrd', '2026-07-03 00:00:00.000', datetime('now', '-10 days')),
+           ('kk5', 'kp5', 'Ajukan', 's5', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-1 day')),
+           ('kk6', 'kp6', 'Ajukan', 's6', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-2 days')),
+           ('kk7', 'kp7', 'Ajukan', 'lama', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-2 days'));`,
+  `INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, dampak_gaji, tanggal_mulai, tanggal_selesai, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, nominal) VALUES
+           ('p12', 'k2', 'j', 'Sakit', 'Dibayar', '2026-12-02', '2026-12-02', 'Alasan rahasia', 's12', 'k2', '2026-11-01 00:00:00', datetime('now', '-1 hour'), NULL);`,
+];
+
+/** Angka pengingat di `setting_gex_system` cloud (§24.3). */
+async function atur(kunci: string, nilai: string) {
+  await client.execute({
+    sql: "INSERT OR REPLACE INTO setting_gex_system (key, value) VALUES (?, ?);",
+    args: [kunci, nilai],
+  });
+}
+
+async function jamHrUji() {
+  return Number((await client.execute(TELEGRAM_SQL_JAM_WIB)).rows[0]?.jam_hr);
+}
 
 describe("pengingat HRD", () => {
   // Cermin `catat_hrd_dari_data_cloud` (Rust): data dan isi pesan sama.
@@ -558,24 +635,27 @@ describe("pengingat HRD", () => {
     await aktifkanHrd(KEJADIAN_HRD);
     const t = (
       await client.execute(
-        "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '+5 days') AS k2, date('now', '+7 hours', '+3 days') AS c2, date('now', '+7 hours', '+20 days') AS k1, date('now', '+7 hours', '+30 days') AS d1, date('now', '+7 hours', '-2 days') AS s5, date('now', '+7 hours', '-4 days') AS p2, date('now', '+7 hours', '-1 day') AS p9;",
+        "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '+5 days') AS k2, date('now', '+7 hours', '+3 days') AS c2, date('now', '+7 hours', '+20 days') AS k1, date('now', '+7 hours', '+30 days') AS d1, date('now', '+7 hours', '+31 days') AS d2, date('now', '+7 hours', '-2 days') AS s5, date('now', '+7 hours', '-4 days') AS p2, date('now', '+7 hours', '-1 day') AS p9;",
       )
     ).rows[0] as unknown as Record<string, string>;
     const hariIni = String(t.t);
     const pengaturan = await bacaPengaturan(client);
 
-    // Sebelum 07.00 WIB tidak ada yang dicatat.
-    await catatHarianPada(client, pengaturan, hariIni, 6);
+    // Jam HR bawaan 07.00 WIB dibaca dari database lewat `TELEGRAM_SQL_JAM_WIB`.
+    const jamHr = await jamHrUji();
+    expect(jamHr).toBe(7);
+    // Sebelum jam HR tidak ada yang dicatat.
+    await catatHarianPada(client, pengaturan, hariIni, 6, jamHr);
     expect(await antreanUji()).toEqual([]);
 
-    await catatHarianPada(client, pengaturan, hariIni, 7);
-    await catatHarianPada(client, pengaturan, hariIni, 12);
+    await catatHarianPada(client, pengaturan, hariIni, 7, jamHr);
+    await catatHarianPada(client, pengaturan, hariIni, 12, jamHr);
     const antrean = await antreanUji();
     const harap = [
       "hr-coba:c2",
       `hr-dok:d1:${t.d1}`,
-      "hr-kontrak:c1:30",
-      "hr-kontrak:c2:7",
+      "hr-kontrak:c1:jauh",
+      "hr-kontrak:c2:dekat",
       "hr-sp:s1",
       "hr-sp:s5",
       `hr-tunggu:${hariIni}`,
@@ -585,10 +665,10 @@ describe("pengingat HRD", () => {
     expect(antrean.map((baris) => baris.id)).toEqual(harap);
     expect(antrean.every((baris) => baris.klaim === KLAIM_PARKIR)).toBe(true);
     const isi = (id: string) => antrean.find((baris) => baris.id === id)?.isi;
-    expect(isi("hr-kontrak:c2:7")).toBe(
+    expect(isi("hr-kontrak:c2:dekat")).toBe(
       `📄 Kontrak PKWT berakhir 5 hari lagi (${tanggalTampil(String(t.k2))})\nKaryawan: Sari · Kasir`,
     );
-    expect(isi("hr-kontrak:c1:30")).toBe(
+    expect(isi("hr-kontrak:c1:jauh")).toBe(
       `📄 Kontrak PKWT berakhir 20 hari lagi (${tanggalTampil(String(t.k1))})\nKaryawan: Budi · Staf Gudang`,
     );
     expect(isi("hr-coba:c2")).toBe(
@@ -630,7 +710,7 @@ describe("pengingat HRD", () => {
     await client.execute(
       "UPDATE hr_dokumen SET tanggal_kedaluwarsa = date('now', '+7 hours', '+29 days') WHERE id_dokumen = 'd1';",
     );
-    await catatHarianPada(client, pengaturan, hariIni, 8);
+    await catatHarianPada(client, pengaturan, hariIni, 8, jamHr);
     expect(await antreanUji()).toHaveLength(harap.length + 1);
 
     // Pengirim mengambil baris parkir dan mengirimnya ke grup HRD.
@@ -641,6 +721,59 @@ describe("pengingat HRD", () => {
       "SELECT COUNT(*) AS n FROM notifikasi_telegram WHERE status <> 'Terkirim' OR klaim_oleh IS NOT NULL;",
     );
     expect(Number(sisa.rows[0]?.n)).toBe(0);
+
+    // Angka pengingat diubah (§24.3), lewat `setting_gex_system` cloud.
+    // Jendela jauh 30 → 25 di tengah jendela: c1 (sisa 20) tetap tahap
+    // `:jauh`, jadi tidak ada pesan kedua (Q-116).
+    await atur("hr_ingat_kontrak_jauh", "25");
+    await catatHarianPada(client, pengaturan, hariIni, 8, jamHr);
+    expect(await antreanUji()).toHaveLength(harap.length + 1);
+    // Jendela dokumen diperbesar ke 31: d2 (sisa 31) kini tercatat.
+    await atur("hr_ingat_dokumen", "31");
+    await catatHarianPada(client, pengaturan, hariIni, 8, jamHr);
+    const ids = (await antreanUji()).map((baris) => baris.id);
+    expect(ids).toHaveLength(harap.length + 2);
+    expect(ids).toContain(`hr-dok:d2:${t.d2}`);
+    // Menunggu lebih dari 4 hari: hanya p2, dan pesannya memakai N = 4.
+    await atur("hr_ingat_menunggu", "4");
+    const menunggu = (await client.execute(TELEGRAM_SQL_HR_MENUNGGU)).rows;
+    const daftar = menunggu.map((row) => ({
+      kelompok: String(row.kelompok),
+      jumlah: Number(row.jumlah),
+    }));
+    expect(daftar).toEqual([{ kelompok: "Cuti", jumlah: 1 }]);
+    expect(
+      pesanHrPengajuanMenunggu(
+        daftar,
+        String(menunggu[0]?.sejak),
+        Number(menunggu[0]?.hari),
+      ),
+    ).toBe(
+      `📥 1 pengajuan menunggu lebih dari 4 hari\nCuti 1\nPaling lama sejak ${tanggalTampil(String(t.p2))}`,
+    );
+    // Tersimpan rusak: dekat ≥ jauh = jendela jauh kosong, dekat tetap;
+    // angka yang bukan bilangan = bawaan.
+    await atur("hr_ingat_kontrak_jauh", "10");
+    await atur("hr_ingat_kontrak_dekat", "25");
+    const kontrak = async () =>
+      (await client.execute(TELEGRAM_SQL_HR_KONTRAK)).rows.map((row) =>
+        idHrKontrak(
+          String(row.id_kontrak),
+          Number(row.sisa),
+          Number(row.dekat),
+        ),
+      );
+    expect(await kontrak()).toEqual(["hr-kontrak:c1:dekat"]);
+    await atur("hr_ingat_kontrak_dekat", "x");
+    expect(await kontrak()).toEqual([]);
+    // Jam HR diubah ke 09.00: pukul 08 hanya stok (mati di tes ini).
+    await atur("hr_ingat_jam", "9");
+    const jamHrBaru = await jamHrUji();
+    expect(jamHrBaru).toBe(9);
+    await catatHarianPada(client, pengaturan, "2099-01-01", 8, jamHrBaru);
+    expect(await antreanUji()).toHaveLength(harap.length + 2);
+    await catatHarianPada(client, pengaturan, "2099-01-01", 9, jamHrBaru);
+    expect((await antreanUji()).length).toBeGreaterThan(harap.length + 2);
   });
 
   // Cermin `baris_parkir_tidak_disentuh_predikat_lama` (Rust).
@@ -837,9 +970,9 @@ describe("kartu perlu perhatian", () => {
     ]);
     expect(semua.pengajuan).toEqual({
       menunggu: [
-        { kelompok: "Cuti", jumlah: 2 },
-        { kelompok: "Izin", jumlah: 1 },
-        { kelompok: "Reimburse", jumlah: 1 },
+        { kelompok: "Cuti", jumlah: 2, hari: 2 },
+        { kelompok: "Izin", jumlah: 1, hari: 2 },
+        { kelompok: "Reimburse", jumlah: 1, hari: 2 },
       ],
       menunggu_sejak: t.p2 as string,
       urgent: 1,
@@ -879,7 +1012,7 @@ describe("kartu perlu perhatian", () => {
     );
     expect(Object.keys(reimburse)).toEqual(["pengajuan"]);
     expect(reimburse.pengajuan).toEqual({
-      menunggu: [{ kelompok: "Reimburse", jumlah: 1 }],
+      menunggu: [{ kelompok: "Reimburse", jumlah: 1, hari: 2 }],
       menunggu_sejak: t.p3 as string,
       urgent: 0,
       urgent_sejak: "",
@@ -901,6 +1034,7 @@ describe("kartu perlu perhatian", () => {
       pengajuan: false,
       hanyaReimburse: false,
       rekrutmen: false,
+      kinerja: false,
     });
     expect(kosong).toEqual({});
   });
@@ -938,6 +1072,12 @@ describe("konfigurasi Telegram", () => {
       hr_pengajuan_menunggu: false,
       hr_urgent_belum_diketahui: false,
       hr_ulang_tahun_kerja: false,
+      hr_kinerja_menunggu: false,
+      hr_kinerja_periode: false,
+      hr_pelamar_baru: false,
+      hr_lowongan_tutup: false,
+      hr_pengajuan_baru: false,
+      hr_pengajuan_diputus: false,
     },
   };
 
@@ -988,5 +1128,293 @@ describe("konfigurasi Telegram", () => {
         },
       }),
     ).rejects.toThrow("Id grup Inventaris tidak valid");
+  });
+});
+
+/**
+ * Keputusan ganda (`q5b`), gugur (`q13`, sidik lama), dan di luar 7 hari
+ * (`q15`), serta pengajuan baru `p13` dan `p14` (8 hari). Cermin
+ * `DATA_HRD_FASE9_LANJUT` di `desktop/telegram.rs`.
+ */
+const DATA_HRD_FASE9_LANJUT = [
+  `INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, dampak_gaji, tanggal_mulai, tanggal_selesai, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, nominal) VALUES
+           ('p13', 'k1', 'j', 'Izin', 'Dibayar', '2026-12-07', '2026-12-07', 'Alasan rahasia', 's13', 'k1', '2026-11-01 00:00:00', datetime('now'), NULL),
+           ('p14', 'k1', 'j', 'Izin', 'Dibayar', '2026-12-08', '2026-12-08', 'Alasan rahasia', 's14', 'k1', '2026-11-01 00:00:00', datetime('now', '-8 days'), NULL),
+           ('p15', 'k2', 'j', 'Cuti', 'Dibayar', '2026-12-09', '2026-12-09', 'Alasan rahasia', 's15', 'k2', '2026-11-01 00:00:00', datetime('now', '-2 days'), NULL);`,
+  `INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud) VALUES
+           ('q5b', 'p5', 'Setujui', 's5', NULL, 'hrd', '2026-11-01 03:00:00', datetime('now')),
+           ('q13', 'p13', 'Setujui', 'lama', 'Alasan rahasia', 'hrd', '2026-11-01 03:00:00', datetime('now')),
+           ('q15', 'p15', 'Setujui', 's15', NULL, 'hrd', '2026-11-01 03:00:00', datetime('now', '-8 days'));`,
+];
+
+describe("kejadian HR fase 9", () => {
+  // Cermin `perhatian_kinerja` (Rust): hanya angka; periode hanya 1–7 hari
+  // sesudah berakhir.
+  test("perhatian kinerja", async () => {
+    await client.batch([...DATA_HRD, ...DATA_HRD_FASE9], "write");
+    const kk1 = String(
+      (
+        await client.execute(
+          "SELECT date('now', '+7 hours', '-3 days') AS kk1;",
+        )
+      ).rows[0]?.kk1,
+    );
+    const semua = izinPerhatian(() => true);
+    const hasil = await perhatianHrPada(client, semua, "2026-07-03");
+    expect(hasil.kinerja).toEqual({
+      menunggu: 2,
+      menunggu_sejak: kk1,
+      periode: {
+        jenis: "Semester",
+        mulai: "2026-01-01",
+        selesai: "2026-06-30",
+        belum: 1,
+        draf: 1,
+        diajukan: 1,
+      },
+    });
+    const teks = JSON.stringify(hasil.kinerja);
+    for (const nama of ["Budi", "Sari", "Fajar", "Gita", "8750", "Baik"]) {
+      expect(teks).not.toContain(nama);
+    }
+    const nanti = await perhatianHrPada(client, semua, "2026-11-12");
+    expect(nanti.kinerja?.periode).toBeNull();
+    expect(nanti.kinerja?.menunggu).toBe(2);
+
+    for (const izin of ["hr.performance.view", "hr.performance.finalize"]) {
+      const satu = await perhatianHrPada(
+        client,
+        izinPerhatian((p) => p === izin),
+        "2026-07-03",
+      );
+      expect(Object.keys(satu)).toEqual(["kinerja"]);
+    }
+    const atasan = await perhatianHrPada(
+      client,
+      // `assess` tidak ada di `IZIN_PERHATIAN`, jadi tidak membuka bagian mana pun.
+      izinPerhatian((p) => (p as string) === "hr.performance.assess"),
+      "2026-07-03",
+    );
+    expect(atasan).toEqual({});
+  });
+
+  // Cermin `catat_hrd_fase9_dari_data_cloud` (Rust): data dan isi pesan sama.
+  test("kejadian hrd fase 9", async () => {
+    await client.batch([...DATA_HRD, ...DATA_HRD_FASE9], "write");
+    await aktifkanHrd(KEJADIAN_HRD_FASE9);
+    const t = (
+      await client.execute(
+        "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '-3 days') AS kk1, date('now', '+7 hours', '+2 days') AS l4;",
+      )
+    ).rows[0] as unknown as Record<string, string>;
+    const hariIni = String(t.t);
+    const jamHr = await jamHrUji();
+    let pengaturan = await bacaPengaturan(client);
+    // Per pengajuan, lalu kejadian harian hari ini dan hari ke-3 sesudah
+    // semester 1 berakhir (ringkasan periode bawaan Semester).
+    const catatSemua = async () => {
+      await catatPengajuanHr(client, pengaturan, pengaturan.get("aktif_sejak"));
+      await catatHarianPada(client, pengaturan, hariIni, 12, jamHr);
+      await catatHarianPada(client, pengaturan, "2026-07-03", 12, jamHr);
+    };
+    await catatSemua();
+    const antrean = await antreanUji();
+    const harap = [
+      "hr-ajuan:p1",
+      "hr-ajuan:p12",
+      "hr-ajuan:p3",
+      "hr-ajuan:p4",
+      "hr-ajuan:p8",
+      "hr-kinerja-periode:2026-01-01",
+      "hr-kinerja-tunggu:2026-07-03",
+      `hr-kinerja-tunggu:${hariIni}`,
+      `hr-lowongan:L4:${t.l4}`,
+      `hr-pelamar:${hariIni}`,
+      "hr-putus:q10",
+      "hr-putus:q5",
+      "hr-putus:q9",
+    ];
+    // Hari ini 1–7 hari sesudah akhir semester: periode itu ikut tercatat.
+    const kini = periodeKinerjaBerakhir("Semester", hariIni);
+    if (kini && kini[0] !== "2026-01-01")
+      harap.push(idHrKinerjaPeriode(kini[0]));
+    harap.sort();
+    expect(antrean.map((baris) => baris.id)).toEqual(harap);
+    expect(antrean.every((baris) => baris.klaim === KLAIM_PARKIR)).toBe(true);
+    const isi = (id: string) => antrean.find((baris) => baris.id === id)?.isi;
+    expect(isi("hr-ajuan:p1")).toBe(
+      "📝 Pengajuan Cuti baru\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026",
+    );
+    expect(isi("hr-ajuan:p12")).toBe(
+      "📝 1 pengajuan Sakit baru\nTanggal: 02/12/2026",
+    );
+    expect(isi("hr-putus:q5")).toBe(
+      "✅ 1 pengajuan Sakit disetujui\nTanggal: 01/12/2026\nOleh: hrd",
+    );
+    expect(isi("hr-putus:q9")).toBe(
+      "✅ Pengajuan Izin disetujui (urgent)\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026\nOleh: atasan",
+    );
+    expect(isi(`hr-kinerja-tunggu:${hariIni}`)).toBe(
+      `📊 2 penilaian kinerja menunggu Final\nPaling lama sejak ${tanggalTampil(String(t.kk1))}`,
+    );
+    expect(isi("hr-kinerja-periode:2026-01-01")).toBe(
+      "📊 Periode Semester 01/01/2026 s.d. 30/06/2026 berakhir: 1 belum dinilai, 1 masih draf, 1 diajukan",
+    );
+    expect(isi(`hr-pelamar:${hariIni}`)).toBe(
+      "👥 3 pelamar baru kemarin\n• Admin Gudang: 2\n• Sopir: 1",
+    );
+    expect(isi(`hr-lowongan:L4:${t.l4}`)).toBe(
+      `📢 Lowongan Admin Gudang tutup 2 hari lagi (${tanggalTampil(String(t.l4))})\nPelamar: 3 · Kuota: 2`,
+    );
+    // Q-32, Q-86, Q-117, Q-120: tidak ada isi rahasia yang ikut.
+    for (const baris of antrean) {
+      for (const rahasia of [
+        "ahasia",
+        "RAHASIA",
+        "3201000000000001",
+        "987654",
+        "8750",
+        "Baik",
+        "Dodi",
+      ]) {
+        expect(baris.isi).not.toContain(rahasia);
+      }
+    }
+    expect(isi("hr-ajuan:p12")).not.toContain("Sari");
+
+    // Dicatat dua kali tidak menggandakan.
+    await catatSemua();
+    expect(await antreanUji()).toHaveLength(harap.length);
+
+    // Keputusan ganda, gugur, dan di luar 7 hari tidak dikirim; p13 baru.
+    await client.batch(DATA_HRD_FASE9_LANJUT, "write");
+    await catatSemua();
+    const ids1 = (await antreanUji()).map((baris) => baris.id);
+    expect(ids1.filter((id) => !harap.includes(id))).toEqual(["hr-ajuan:p13"]);
+
+    // `aktif_sejak` diundur 30 hari: p2 (4 hari) ikut, p14 (8 hari) tidak.
+    await client.execute(
+      "INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('aktif_sejak', datetime('now', '-30 days'));",
+    );
+    pengaturan = await bacaPengaturan(client);
+    await catatPengajuanHr(client, pengaturan, pengaturan.get("aktif_sejak"));
+    const ids2 = (await antreanUji()).map((baris) => baris.id);
+    expect(ids2.filter((id) => !ids1.includes(id))).toEqual(["hr-ajuan:p2"]);
+
+    // Pengirim mengambil baris parkir dan mengirimnya ke grup HRD.
+    const hasil = await drainTelegram(client, "uji", { jedaMs: 0 });
+    expect(hasil.terkirim).toBe(ids2.length);
+    expect(kiriman.every((item) => item.body.chat_id === "-555")).toBe(true);
+  });
+
+  // Cermin `sql_hrd_fase9_di_skema_cloud` (Rust): data dan hasil sama.
+  test("SQL sumber berjalan di skema cloud", async () => {
+    await client.batch([...DATA_HRD, ...DATA_HRD_FASE9], "write");
+    const t = (
+      await client.execute(
+        "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '-3 days') AS kk1, date('now', '+7 hours', '+2 days') AS l4;",
+      )
+    ).rows[0] as unknown as Record<string, string>;
+    const sejak = String(
+      (
+        await client.execute(
+          "SELECT nilai FROM app_telegram_setting WHERE kunci = 'aktif_sejak';",
+        )
+      ).rows[0]?.nilai,
+    );
+    const baris = async (sql: string, args: string[] = []) =>
+      (await client.execute({ sql, args })).rows;
+    const teksAtauNull = (v: unknown) => (v === null ? null : String(v));
+
+    const tunggu = (await baris(TELEGRAM_SQL_HR_KINERJA_MENUNGGU)).map((r) => ({
+      sidik: String(r.sidik),
+      sejak: String(r.sejak ?? ""),
+      keputusan: JSON.parse(String(r.keputusan)),
+    }));
+    expect(tunggu.map((p) => p.sidik)).toEqual(["s1", "s2", "s5"]);
+    expect(ringkasKinerjaMenunggu(tunggu)).toEqual({
+      jumlah: 2,
+      sejak: String(t.kk1),
+    });
+
+    const periode = (
+      await baris(TELEGRAM_SQL_HR_KINERJA_PERIODE, ["Semester", "2026-01-01"])
+    ).map((r) => ({
+      tanggal_daftar: teksAtauNull(r.tanggal_daftar),
+      tanggal_selesai_aktif: teksAtauNull(r.tanggal_selesai_aktif),
+      penilaian: JSON.parse(String(r.penilaian)),
+    }));
+    expect(periode).toHaveLength(6);
+    expect(ringkasKinerjaPeriode(periode, "2026-01-01", "2026-06-30")).toEqual({
+      belum: 1,
+      draf: 1,
+      diajukan: 1,
+    });
+
+    expect(
+      (await baris(TELEGRAM_SQL_HR_PELAMAR_BARU, [String(t.t)])).map((r) => [
+        String(r.judul),
+        Number(r.jumlah),
+      ]),
+    ).toEqual([
+      ["Admin Gudang", 2],
+      ["Sopir", 1],
+    ]);
+    expect(
+      (await baris(TELEGRAM_SQL_HR_LOWONGAN_TUTUP)).map((r) => [
+        String(r.id_lowongan),
+        String(r.tanggal_tutup),
+        Number(r.kuota),
+        Number(r.pelamar),
+        Number(r.sisa),
+      ]),
+    ).toEqual([["L4", String(t.l4), 2, 3, 2]]);
+
+    const isi = (r: Record<string, unknown>) => ({
+      kelompok: String(r.kelompok),
+      nama: String(r.nama),
+      jabatan: r.jabatan === null ? "" : String(r.jabatan),
+      mulai: String(r.tanggal_mulai),
+      selesai: String(r.tanggal_selesai),
+    });
+    const baru = await baris(TELEGRAM_SQL_HR_PENGAJUAN_BARU, [sejak]);
+    expect(baru.map((r) => String(r.id_pengajuan))).toEqual([
+      "p1",
+      "p3",
+      "p8",
+      "p4",
+      "p12",
+    ]);
+    expect(pesanHrPengajuanBaru(isi(baru[4]))).toBe(
+      "📝 1 pengajuan Sakit baru\nTanggal: 02/12/2026",
+    );
+    const putus = await baris(TELEGRAM_SQL_HR_PENGAJUAN_PUTUS, [sejak]);
+    expect(putus.map((r) => String(r.id_keputusan))).toEqual([
+      "q10",
+      "q5",
+      "q9",
+    ]);
+    expect(
+      pesanHrPengajuanDiputus(
+        isi(putus[1]),
+        String(putus[1].jenis),
+        String(putus[1].oleh),
+      ),
+    ).toBe("✅ 1 pengajuan Sakit disetujui\nTanggal: 01/12/2026\nOleh: hrd");
+    expect(
+      pesanHrPengajuanDiputus(
+        isi(putus[0]),
+        String(putus[0].jenis),
+        String(putus[0].oleh),
+      ),
+    ).toBe(
+      "✅ Pengajuan Izin disetujui (urgent)\nKaryawan: Sari · Kasir\nTanggal: 01/12/2026\nOleh: atasan",
+    );
+
+    // Q-32, Q-86, Q-117: isi rahasia tidak terbaca sama sekali.
+    const semua = JSON.stringify([tunggu, periode, baru, putus]);
+    for (const rahasia of ["ahasia", "8750", "Baik", "987654"]) {
+      expect(semua).not.toContain(rahasia);
+    }
   });
 });

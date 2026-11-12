@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { redirect, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PerluPerhatian } from "@/components/hris/PerluPerhatian";
 import { LicenseHolderLabel } from "@/components/license/LicenseNotice";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon, type IconName } from "@/components/ui/Icon";
@@ -22,6 +23,7 @@ import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 import { useVisualTier } from "@/lib/stores/visual-store";
+import { IZIN_PERHATIAN } from "@/lib/validations/telegram";
 import type { VisualTier } from "@/lib/visual/gpu-tier";
 
 interface DashboardMetrics {
@@ -250,6 +252,7 @@ export default function Home() {
   const isOnline = useOnlineStatus();
   const visualTier = useVisualTier();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const router = useRouter();
   const companyName = useCompanyName();
   const canViewDashboard = hasPermission(user, "dashboard.view");
 
@@ -604,6 +607,42 @@ export default function Home() {
           </TiltCard>
         </div>
       </section>
+
+      {/* Kartu "Perlu perhatian" (§24.5, Q-123): hanya bila ada isinya. Nama
+          membuka rincian karyawan di /hris pada tab alasannya. */}
+      {IZIN_PERHATIAN.some((izin) => hasPermission(user, izin)) ? (
+        <PerluPerhatian
+          sembunyiBilaKosong
+          onPilihKaryawan={
+            canAccessArea(user, "hris")
+              ? (idKaryawan, tab) =>
+                  router.push(
+                    `/hris?karyawan=${encodeURIComponent(idKaryawan)}&tab=${tab}`,
+                  )
+              : undefined
+          }
+          onBukaKinerja={
+            canAccessArea(user, "hris") &&
+            (
+              [
+                "hr.performance.view",
+                "hr.performance.assess",
+                "hr.performance.config",
+                "hr.performance.finalize",
+              ] as const
+            ).some((izin) => hasPermission(user, izin))
+              ? () => router.push("/hris?tab=kinerja")
+              : undefined
+          }
+          onBukaRekrutmen={
+            canAccessArea(user, "hris") &&
+            (hasPermission(user, "hr.recruit.view") ||
+              hasPermission(user, "hr.recruit.manage"))
+              ? () => router.push("/hris?tab=rekrutmen")
+              : undefined
+          }
+        />
+      ) : null}
 
       {/* =========================================================================
           3. WORKSPACE MODULES: Modern Bento Grid with Midnight Slate Cards

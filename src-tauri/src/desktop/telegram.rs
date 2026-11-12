@@ -19,6 +19,11 @@ use serde_json::{json, Value};
 use super::{
     accounting::format_rupiah,
     driver::{penugasan, Laporan, Penugasan},
+    hr_kinerja::{self, KeputusanKinerja},
+    hris::{
+        self, ingat_dokumen_sql, ingat_jam_sql, ingat_kontrak_dekat_sql, ingat_kontrak_jauh_sql,
+        ingat_menunggu_sql, ingat_percobaan_sql,
+    },
     inventory::format_jumlah,
     models::CommandError,
     turso::{Statement, TursoClient},
@@ -26,7 +31,7 @@ use super::{
 };
 
 pub const BIDANG: [&str; 5] = ["inventaris", "keuangan", "pimpinan", "armada", "hrd"];
-pub const KEJADIAN: [&str; 20] = [
+pub const KEJADIAN: [&str; 26] = [
     "pengajuan_baru",
     "pengajuan_putus",
     "stok_menipis",
@@ -47,6 +52,12 @@ pub const KEJADIAN: [&str; 20] = [
     "hr_pengajuan_menunggu",
     "hr_urgent_belum_diketahui",
     "hr_ulang_tahun_kerja",
+    "hr_kinerja_menunggu",
+    "hr_kinerja_periode",
+    "hr_pelamar_baru",
+    "hr_lowongan_tutup",
+    "hr_pengajuan_baru",
+    "hr_pengajuan_diputus",
 ];
 
 /// Grup tujuan setiap kejadian. Cermin `BIDANG_KEJADIAN`.
@@ -63,7 +74,13 @@ pub fn bidang_kejadian(kejadian: &str) -> Option<&'static str> {
         | "hr_sp_berakhir"
         | "hr_pengajuan_menunggu"
         | "hr_urgent_belum_diketahui"
-        | "hr_ulang_tahun_kerja" => Some("hrd"),
+        | "hr_ulang_tahun_kerja"
+        | "hr_kinerja_menunggu"
+        | "hr_kinerja_periode"
+        | "hr_pelamar_baru"
+        | "hr_lowongan_tutup"
+        | "hr_pengajuan_baru"
+        | "hr_pengajuan_diputus" => Some("hrd"),
         _ => None,
     }
 }
@@ -261,15 +278,17 @@ pub(crate) fn id_trip_lokasi_palsu(id_laporan: &str) -> String {
     format!("drv-palsu:{id_laporan}")
 }
 
-const SQL_JAM_WIB: &str = "SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam;";
+const SQL_JAM_WIB: &str = concat!(
+    "SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam, ",
+    ingat_jam_sql!(),
+    " AS jam_hr;"
+);
 
 // ── Pengingat HR ke grup HRD (fase 8, prd-hris.md §23) ─────────────────────
 
-/// Jendela pengingat (§23.3, Q-106), tetap di kode. Cermin `HR_HARI_*`; angka
-/// yang sama tertulis di SQL sumber di bawah.
-pub const HR_HARI_JAUH: i64 = 30;
-pub const HR_HARI_DEKAT: i64 = 7;
-pub const HR_HARI_MENUNGGU: i64 = 2;
+// Angka kontrak, percobaan, dokumen, menunggu, dan jam HR dibaca SQL di bawah
+// lewat fragmen `hris::ingat_*_sql!` (§24.3); jendela SP dan ulang tahun
+// kerja tetap 7 hari di kode (cermin `HR_HARI_JENDELA`).
 
 /// Parkir klaim (§23.2, Q-101). Cermin `KLAIM_PARKIR`: build sebelum fase 8
 /// hanya mengambil dan membatalkan baris tanpa klaim berlaku, jadi baris
@@ -308,9 +327,14 @@ pub(crate) fn klaim_setelah_gagal(kejadian: &str, status: &str) -> (Option<&'sta
 // Kolom yang tidak boleh terkirim (NIK, `hr_profil`, nominal, alasan, isi SP,
 // nomor dokumen dan kontrak, data pelamar) tidak dibaca (Q-32).
 pub(crate) const INSERT_ANTREAN_PARKIR_SQL: &str = "INSERT OR IGNORE INTO notifikasi_telegram (id_notifikasi, kejadian, isi_pesan, klaim_oleh, klaim_sampai) VALUES (?, ?, ?, 'gen:2', '9999-12-31 23:59:59');";
-pub(crate) const SQL_HR_KONTRAK: &str = "SELECT id_kontrak, tanggal_selesai, nama, jabatan, sisa FROM (
+pub(crate) const SQL_HR_KONTRAK: &str = concat!(
+    "SELECT id_kontrak, tanggal_selesai, nama, jabatan, sisa, dekat FROM (
   SELECT k.id_kontrak, k.tanggal_selesai, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan,
-         CAST(julianday(date(k.tanggal_selesai)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
+         CAST(julianday(date(k.tanggal_selesai)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa, ",
+    ingat_kontrak_jauh_sql!(),
+    " AS jauh, ",
+    ingat_kontrak_dekat_sql!(),
+    " AS dekat
   FROM hr_kontrak k
   JOIN master_data m ON m.id_unik = k.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
   WHERE k.jenis = 'PKWT' AND date(k.tanggal_selesai) IS NOT NULL
@@ -319,11 +343,13 @@ pub(crate) const SQL_HR_KONTRAK: &str = "SELECT id_kontrak, tanggal_selesai, nam
     AND NOT EXISTS (SELECT 1 FROM hr_kontrak l WHERE l.id_karyawan = k.id_karyawan AND l.jenis <> 'Pembatalan'
       AND (l.tanggal_mulai > k.tanggal_mulai OR (l.tanggal_mulai = k.tanggal_mulai AND l.id_kontrak > k.id_kontrak))
       AND NOT EXISTS (SELECT 1 FROM hr_kontrak lb WHERE lb.id_kontrak = 'batal-' || l.id_kontrak))
-) WHERE sisa BETWEEN 0 AND 30
-  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-kontrak:' || id_kontrak || CASE WHEN sisa <= 7 THEN ':7' ELSE ':30' END)
+) WHERE sisa BETWEEN 0 AND max(jauh, dekat)
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-kontrak:' || id_kontrak || CASE WHEN sisa <= dekat THEN ':dekat' ELSE ':jauh' END)
 ORDER BY tanggal_selesai, id_kontrak
-LIMIT 50;";
-pub(crate) const SQL_HR_PERCOBAAN: &str = "SELECT id_kontrak, percobaan_selesai, nama, jabatan, sisa FROM (
+LIMIT 50;"
+);
+pub(crate) const SQL_HR_PERCOBAAN: &str = concat!(
+    "SELECT id_kontrak, percobaan_selesai, nama, jabatan, sisa FROM (
   SELECT k.id_kontrak, k.percobaan_selesai, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan,
          CAST(julianday(date(k.percobaan_selesai)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
   FROM hr_kontrak k
@@ -334,21 +360,28 @@ pub(crate) const SQL_HR_PERCOBAAN: &str = "SELECT id_kontrak, percobaan_selesai,
     AND NOT EXISTS (SELECT 1 FROM hr_kontrak l WHERE l.id_karyawan = k.id_karyawan AND l.jenis <> 'Pembatalan'
       AND (l.tanggal_mulai > k.tanggal_mulai OR (l.tanggal_mulai = k.tanggal_mulai AND l.id_kontrak > k.id_kontrak))
       AND NOT EXISTS (SELECT 1 FROM hr_kontrak lb WHERE lb.id_kontrak = 'batal-' || l.id_kontrak))
-) WHERE sisa BETWEEN 0 AND 7
+) WHERE sisa BETWEEN 0 AND ",
+    ingat_percobaan_sql!(),
+    "
   AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-coba:' || id_kontrak)
 ORDER BY percobaan_selesai, id_kontrak
-LIMIT 50;";
-pub(crate) const SQL_HR_DOKUMEN: &str = "SELECT id_dokumen, jenis_dokumen, tanggal_kedaluwarsa, nama, jabatan, sisa FROM (
+LIMIT 50;"
+);
+pub(crate) const SQL_HR_DOKUMEN: &str = concat!(
+    "SELECT id_dokumen, jenis_dokumen, tanggal_kedaluwarsa, nama, jabatan, sisa FROM (
   SELECT d.id_dokumen, COALESCE(dj.nama, d.id_jenis) AS jenis_dokumen, d.tanggal_kedaluwarsa, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan,
          CAST(julianday(date(d.tanggal_kedaluwarsa)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
   FROM hr_dokumen d
   LEFT JOIN hr_dokumen_jenis dj ON dj.id_jenis = d.id_jenis
   JOIN master_data m ON m.id_unik = d.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
   WHERE date(d.tanggal_kedaluwarsa) IS NOT NULL
-) WHERE sisa BETWEEN 0 AND 30
+) WHERE sisa BETWEEN 0 AND ",
+    ingat_dokumen_sql!(),
+    "
   AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-dok:' || id_dokumen || ':' || tanggal_kedaluwarsa)
 ORDER BY tanggal_kedaluwarsa, id_dokumen
-LIMIT 50;";
+LIMIT 50;"
+);
 pub(crate) const SQL_HR_SP: &str = "SELECT s.id_sp, s.tingkat, s.berlaku_sampai, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan
 FROM hr_sp s
 JOIN master_data m ON m.id_unik = s.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
@@ -358,14 +391,20 @@ WHERE s.dicabut_pada IS NULL
   AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-sp:' || s.id_sp)
 ORDER BY s.berlaku_sampai, s.id_sp
 LIMIT 50;";
-pub(crate) const SQL_HR_MENUNGGU: &str = "SELECT p.kelompok, COUNT(*) AS jumlah, date(MIN(p.created_at), '+7 hours') AS sejak
+pub(crate) const SQL_HR_MENUNGGU: &str = concat!(
+    "SELECT p.kelompok, COUNT(*) AS jumlah, date(MIN(p.created_at), '+7 hours') AS sejak, ",
+    ingat_menunggu_sql!(),
+    " AS hari
 FROM hr_pengajuan p
 JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif'
-WHERE p.created_at <= datetime('now', '-2 days')
+WHERE p.created_at <= datetime('now', '-' || ",
+    ingat_menunggu_sql!(),
+    " || ' days')
   AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan b WHERE b.id_pengajuan = p.id_pengajuan AND b.jenis = 'Batal')
   AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent'))
 GROUP BY p.kelompok
-ORDER BY p.kelompok;";
+ORDER BY p.kelompok;"
+);
 pub(crate) const SQL_HR_URGENT: &str = "SELECT COUNT(*) AS jumlah, date(MIN(p.created_at), '+7 hours') AS sejak
 FROM hr_pengajuan p
 JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif'
@@ -383,9 +422,78 @@ WHERE date(m.tanggal_daftar) IS NOT NULL
     OR (strftime('%m-%d', date(m.tanggal_daftar)) = '02-29' AND strftime('%m-%d', h.hari) = '02-28' AND strftime('%m-%d', h.hari, '+1 day') = '03-01'))
 ORDER BY m.nama COLLATE NOCASE, m.id_unik;";
 
-/// Cermin `idHrKontrak`: tahap `:7` bila sisa ≤ 7 hari, selain itu `:30`.
-pub(crate) fn id_hr_kontrak(id_kontrak: &str, sisa: i64) -> String {
-    let tahap = if sisa <= HR_HARI_DEKAT { HR_HARI_DEKAT } else { HR_HARI_JAUH };
+// ── Kejadian HR fase 9 (prd-hris.md §24.4) ─────────────────────────────────
+
+/// Jendela SP, ulang tahun kerja, dan periode kinerja berakhir, tetap di kode
+/// (§24.3). Cermin `HR_HARI_JENDELA`.
+pub(crate) const HR_HARI_JENDELA: i64 = 7;
+/// Q-120 (b): pesan per pengajuan menyebut nama, kecuali Sakit. Cermin
+/// `KELOMPOK_TANPA_NAMA`.
+pub(crate) const KELOMPOK_TANPA_NAMA: &str = "Sakit";
+
+// Disalin harfiah dari `TELEGRAM_SQL_HR_*` fase 9 (`validations/telegram.ts`);
+// teksnya diperiksa sama oleh `telegram.test.ts`. Status kinerja dihitung
+// `hr_kinerja::status_kinerja`, bukan SQL. Nilai akhir, predikat, alasan,
+// nominal, dan data pelamar tidak dibaca (Q-32, Q-86, Q-117).
+pub(crate) const SQL_HR_KINERJA_MENUNGGU: &str = "SELECT p.sidik,
+       (SELECT date(MAX(a.diterima_cloud), '+7 hours') FROM hr_kinerja_keputusan a WHERE a.id_penilaian = p.id_penilaian AND a.jenis = 'Ajukan' AND a.sidik = p.sidik) AS sejak,
+       json((SELECT json_group_array(json_object('id_keputusan', k.id_keputusan, 'jenis', k.jenis, 'sidik', k.sidik, 'oleh', k.oleh, 'waktu_perangkat', k.waktu_perangkat, 'diterima_cloud', k.diterima_cloud)) FROM hr_kinerja_keputusan k WHERE k.id_penilaian = p.id_penilaian)) AS keputusan
+FROM hr_kinerja_penilaian p
+JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif'
+WHERE NOT EXISTS (SELECT 1 FROM hr_kinerja_keputusan b WHERE b.id_penilaian = p.id_penilaian AND b.jenis = 'Batal')
+  AND EXISTS (SELECT 1 FROM hr_kinerja_keputusan a WHERE a.id_penilaian = p.id_penilaian AND a.jenis = 'Ajukan' AND a.sidik = p.sidik)
+  AND NOT EXISTS (SELECT 1 FROM hr_kinerja_keputusan f WHERE f.id_penilaian = p.id_penilaian AND f.jenis = 'Final' AND f.sidik = p.sidik)
+ORDER BY p.id_penilaian;";
+pub(crate) const SQL_HR_KINERJA_PERIODE: &str = "SELECT m.id_unik, m.tanggal_daftar, m.tanggal_selesai_aktif,
+       json((SELECT json_group_array(json_object('sidik', p.sidik, 'keputusan', json((SELECT json_group_array(json_object('id_keputusan', k.id_keputusan, 'jenis', k.jenis, 'sidik', k.sidik, 'oleh', k.oleh, 'waktu_perangkat', k.waktu_perangkat, 'diterima_cloud', k.diterima_cloud)) FROM hr_kinerja_keputusan k WHERE k.id_penilaian = p.id_penilaian)))) FROM hr_kinerja_penilaian p WHERE p.id_karyawan = m.id_unik AND p.id_ref IS NULL AND p.periode_jenis = ? AND p.periode_mulai = ? AND NOT EXISTS (SELECT 1 FROM hr_kinerja_keputusan b WHERE b.id_penilaian = p.id_penilaian AND b.jenis = 'Batal'))) AS penilaian
+FROM master_data m
+WHERE m.status_aktif = 'Aktif'
+ORDER BY m.id_unik;";
+pub(crate) const SQL_HR_PELAMAR_BARU: &str = "SELECT l.judul, COUNT(*) AS jumlah
+FROM hr_pelamar p
+JOIN hr_lowongan l ON l.id_lowongan = p.id_lowongan
+WHERE p.created_at >= datetime(?1, '-1 day', '-7 hours') AND p.created_at < datetime(?1, '-7 hours')
+GROUP BY l.id_lowongan, l.judul
+ORDER BY l.judul COLLATE NOCASE, l.id_lowongan;";
+pub(crate) const SQL_HR_LOWONGAN_TUTUP: &str = "SELECT l.id_lowongan, l.judul, l.tanggal_tutup, l.jumlah AS kuota,
+       (SELECT COUNT(*) FROM hr_pelamar p WHERE p.id_lowongan = l.id_lowongan) AS pelamar,
+       CAST(julianday(date(l.tanggal_tutup)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
+FROM hr_lowongan l
+WHERE l.ditutup_pada IS NULL AND l.tanggal_buka <= date('now', '+7 hours')
+  AND l.tanggal_tutup BETWEEN date('now', '+7 hours') AND date('now', '+7 hours', '+3 days')
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-lowongan:' || l.id_lowongan || ':' || l.tanggal_tutup)
+ORDER BY l.tanggal_tutup, l.id_lowongan
+LIMIT 50;";
+pub(crate) const SQL_HR_PENGAJUAN_BARU: &str = "SELECT p.id_pengajuan, p.kelompok, p.tanggal_mulai, p.tanggal_selesai, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan
+FROM hr_pengajuan p
+JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
+WHERE p.created_at >= ? AND p.created_at >= datetime('now', '-7 days')
+  AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan b WHERE b.id_pengajuan = p.id_pengajuan AND b.jenis = 'Batal')
+  AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent'))
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-ajuan:' || p.id_pengajuan)
+ORDER BY p.created_at, p.id_pengajuan
+LIMIT 50;";
+/// Jenis periode kinerja yang berlaku; kosong atau rusak = bawaan
+/// (`PengaturanKinerja::dari_peta`). Cermin `TELEGRAM_SQL_HR_KINERJA_JENIS`.
+pub(crate) const SQL_HR_KINERJA_JENIS: &str = "SELECT value FROM setting_gex_system WHERE key = 'hr_kinerja_periode';";
+pub(crate) const SQL_HR_PENGAJUAN_PUTUS: &str = "SELECT k.id_keputusan, k.jenis, p.kelompok, p.tanggal_mulai, p.tanggal_selesai, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan, COALESCE(o.nama_operator, k.oleh) AS oleh
+FROM hr_pengajuan_keputusan k
+JOIN hr_pengajuan p ON p.id_pengajuan = k.id_pengajuan
+JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
+LEFT JOIN master_operator o ON o.username = k.oleh
+WHERE k.diterima_cloud >= ? AND k.diterima_cloud >= datetime('now', '-7 days')
+  AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent')
+  AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan b WHERE b.id_pengajuan = p.id_pengajuan AND b.jenis = 'Batal')
+  AND k.id_keputusan = (SELECT f.id_keputusan FROM hr_pengajuan_keputusan f WHERE f.id_pengajuan = p.id_pengajuan AND f.sidik = p.sidik AND f.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent') ORDER BY f.diterima_cloud IS NULL, f.diterima_cloud, f.waktu_perangkat, f.id_keputusan LIMIT 1)
+  AND NOT EXISTS (SELECT 1 FROM notifikasi_telegram n WHERE n.id_notifikasi = 'hr-putus:' || k.id_keputusan)
+ORDER BY k.diterima_cloud, k.id_keputusan
+LIMIT 50;";
+
+/// Cermin `idHrKontrak`: tahap, bukan angkanya (Q-116). `:dekat` bila sisa ≤
+/// `dekat`, selain itu `:jauh`; mengubah angka di tengah jendela tidak
+/// melahirkan pesan kedua untuk tahap yang sama.
+pub(crate) fn id_hr_kontrak(id_kontrak: &str, sisa: i64, dekat: i64) -> String {
+    let tahap = if sisa <= dekat { "dekat" } else { "jauh" };
     format!("hr-kontrak:{id_kontrak}:{tahap}")
 }
 pub(crate) fn id_hr_percobaan(id_kontrak: &str) -> String {
@@ -407,12 +515,33 @@ pub(crate) fn id_hr_urgent(tanggal: &str) -> String {
 pub(crate) fn id_hr_ultah(tanggal: &str) -> String {
     format!("hr-ultah:{tanggal}")
 }
+pub(crate) fn id_hr_kinerja_tunggu(tanggal: &str) -> String {
+    format!("hr-kinerja-tunggu:{tanggal}")
+}
+/// Sekali per periode (§24.4).
+pub(crate) fn id_hr_kinerja_periode(periode_mulai: &str) -> String {
+    format!("hr-kinerja-periode:{periode_mulai}")
+}
+pub(crate) fn id_hr_pelamar(tanggal: &str) -> String {
+    format!("hr-pelamar:{tanggal}")
+}
+/// Memuat tanggalnya: tanggal tutup yang diundur diingatkan lagi.
+pub(crate) fn id_hr_lowongan(id_lowongan: &str, tanggal_tutup: &str) -> String {
+    format!("hr-lowongan:{id_lowongan}:{tanggal_tutup}")
+}
+pub(crate) fn id_hr_ajuan(id_pengajuan: &str) -> String {
+    format!("hr-ajuan:{id_pengajuan}")
+}
+pub(crate) fn id_hr_putus(id_keputusan: &str) -> String {
+    format!("hr-putus:{id_keputusan}")
+}
 
 // SQL kartu "Perlu perhatian" (§23.4), disalin harfiah dari
 // `PERHATIAN_SQL_*` (`validations/telegram.ts`). Potongannya sama dengan SQL
 // sumber Telegram di atas, jadi kartu dan grup HRD tidak bisa berbeda
 // pendapat; bagian pengajuan memakai `SQL_HR_MENUNGGU`/`SQL_HR_URGENT`.
-pub(crate) const PERHATIAN_SQL_KONTRAK: &str = "SELECT jenis, id_karyawan, nama, jabatan, tanggal, sisa FROM (
+pub(crate) const PERHATIAN_SQL_KONTRAK: &str = concat!(
+    "SELECT jenis, id_karyawan, nama, jabatan, tanggal, sisa FROM (
   SELECT 'PKWT' AS jenis, k.id_karyawan, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan, k.tanggal_selesai AS tanggal, CAST(julianday(date(k.tanggal_selesai)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
   FROM hr_kontrak k
   JOIN master_data m ON m.id_unik = k.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
@@ -432,18 +561,29 @@ pub(crate) const PERHATIAN_SQL_KONTRAK: &str = "SELECT jenis, id_karyawan, nama,
     AND NOT EXISTS (SELECT 1 FROM hr_kontrak l WHERE l.id_karyawan = k.id_karyawan AND l.jenis <> 'Pembatalan'
       AND (l.tanggal_mulai > k.tanggal_mulai OR (l.tanggal_mulai = k.tanggal_mulai AND l.id_kontrak > k.id_kontrak))
       AND NOT EXISTS (SELECT 1 FROM hr_kontrak lb WHERE lb.id_kontrak = 'batal-' || l.id_kontrak))
-) WHERE (jenis = 'PKWT' AND sisa BETWEEN 0 AND 30) OR (jenis = 'Percobaan' AND sisa BETWEEN 0 AND 7)
+) WHERE (jenis = 'PKWT' AND sisa BETWEEN 0 AND max(",
+    ingat_kontrak_jauh_sql!(),
+    ", ",
+    ingat_kontrak_dekat_sql!(),
+    ")) OR (jenis = 'Percobaan' AND sisa BETWEEN 0 AND ",
+    ingat_percobaan_sql!(),
+    ")
 ORDER BY sisa, nama COLLATE NOCASE, id_karyawan, jenis
-LIMIT 200;";
-pub(crate) const PERHATIAN_SQL_DOKUMEN: &str = "SELECT id_karyawan, nama, jabatan, jenis_dokumen, tanggal, sisa FROM (
+LIMIT 200;"
+);
+pub(crate) const PERHATIAN_SQL_DOKUMEN: &str = concat!(
+    "SELECT id_karyawan, nama, jabatan, jenis_dokumen, tanggal, sisa FROM (
   SELECT d.id_karyawan, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan, COALESCE(dj.nama, d.id_jenis) AS jenis_dokumen, d.tanggal_kedaluwarsa AS tanggal, CAST(julianday(date(d.tanggal_kedaluwarsa)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
   FROM hr_dokumen d
   LEFT JOIN hr_dokumen_jenis dj ON dj.id_jenis = d.id_jenis
   JOIN master_data m ON m.id_unik = d.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
   WHERE date(d.tanggal_kedaluwarsa) IS NOT NULL
-) WHERE sisa <= 30
+) WHERE sisa <= ",
+    ingat_dokumen_sql!(),
+    "
 ORDER BY sisa, nama COLLATE NOCASE, id_karyawan
-LIMIT 200;";
+LIMIT 200;"
+);
 pub(crate) const PERHATIAN_SQL_SP: &str = "SELECT s.id_karyawan, m.nama, COALESCE(j.nama, m.jabatan_status) AS jabatan, s.tingkat, s.berlaku_sampai AS tanggal, CAST(julianday(date(s.berlaku_sampai)) - julianday(date('now', '+7 hours')) AS INTEGER) AS sisa
 FROM hr_sp s
 JOIN master_data m ON m.id_unik = s.id_karyawan AND m.status_aktif = 'Aktif' LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
@@ -950,15 +1090,16 @@ pub fn pesan_hr_sp_berakhir(tingkat: &str, nama: &str, jabatan: &str, tanggal: &
 }
 
 /// Cermin `pesanHrPengajuanMenunggu`. Hitungan per kelompok, tanpa nama
-/// (Q-108); daftar tanpa isi tidak menghasilkan pesan.
-pub fn pesan_hr_pengajuan_menunggu(daftar: &[(String, i64)], sejak: &str) -> Option<String> {
+/// (Q-108); daftar tanpa isi tidak menghasilkan pesan. `hari` = angka
+/// `hr_ingat_menunggu` yang dipakai SQL-nya.
+pub fn pesan_hr_pengajuan_menunggu(daftar: &[(String, i64)], sejak: &str, hari: i64) -> Option<String> {
     let total: i64 = daftar.iter().map(|(_, jumlah)| jumlah).sum();
     if total <= 0 {
         return None;
     }
     Some(
         [
-            format!("📥 {total} pengajuan menunggu lebih dari {HR_HARI_MENUNGGU} hari"),
+            format!("📥 {total} pengajuan menunggu lebih dari {hari} hari"),
             daftar
                 .iter()
                 .map(|(kelompok, jumlah)| format!("{kelompok} {jumlah}"))
@@ -1013,6 +1154,198 @@ pub fn pesan_hr_ulang_tahun_kerja(daftar: &[BarisUltah]) -> Option<String> {
     }
     Some(baris.join("
 "))
+}
+
+/// Cermin `periodeKinerjaBerakhir`: periode `jenis` yang berakhir 1–7 hari
+/// sebelum `hari_ini` (§24.4), sebagai `(mulai, selesai)`.
+pub fn periode_kinerja_berakhir(jenis: &str, hari_ini: &str) -> Option<(String, String)> {
+    let awal = hr_kinerja::awal_periode(jenis, hari_ini)?;
+    let jarak = hris::nomor_hari(hari_ini)? - hris::nomor_hari(&awal)?;
+    if jarak >= HR_HARI_JENDELA {
+        return None;
+    }
+    let sebelum = hris::tambah_bulan(&awal, -1)?;
+    let mulai = hr_kinerja::awal_periode(jenis, &sebelum)?;
+    hr_kinerja::periode_rentang(jenis, &mulai).ok()
+}
+
+/// Satu baris `SQL_HR_KINERJA_MENUNGGU`. Cermin `PenilaianTunggu`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PenilaianTunggu {
+    pub sidik: String,
+    pub sejak: String,
+    pub keputusan: Vec<KeputusanKinerja>,
+}
+
+/// Cermin `ringkasKinerjaMenunggu`: jumlah berstatus Diajukan dan tanggal
+/// `Ajukan` yang paling lama.
+pub fn ringkas_kinerja_menunggu(daftar: &[PenilaianTunggu]) -> (i64, String) {
+    let tunggu: Vec<&PenilaianTunggu> = daftar
+        .iter()
+        .filter(|p| hr_kinerja::status_kinerja(&p.sidik, &p.keputusan) == hr_kinerja::STATUS_DIAJUKAN)
+        .collect();
+    let sejak = tunggu.iter().map(|p| p.sejak.clone()).min().unwrap_or_default();
+    (i64::try_from(tunggu.len()).unwrap_or(i64::MAX), sejak)
+}
+
+/// Penilaian akar satu karyawan di `SQL_HR_KINERJA_PERIODE`.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PenilaianPeriode {
+    pub sidik: String,
+    pub keputusan: Vec<KeputusanKinerja>,
+}
+
+/// Satu baris `SQL_HR_KINERJA_PERIODE`. Cermin `KaryawanPeriode`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KaryawanPeriode {
+    pub tanggal_daftar: Option<String>,
+    pub tanggal_selesai_aktif: Option<String>,
+    pub penilaian: Vec<PenilaianPeriode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RingkasPeriode {
+    pub belum: i64,
+    pub draf: i64,
+    pub diajukan: i64,
+}
+
+/// Cermin `ringkasKinerjaPeriode`. Wajib dinilai = rentang aktifnya
+/// beririsan dengan periode (Q-118). Per karyawan: ada Final = selesai, ada
+/// Diajukan = diajukan, ada penilaian lain = draf, tanpa penilaian = belum.
+pub fn ringkas_kinerja_periode(daftar: &[KaryawanPeriode], mulai: &str, selesai: &str) -> RingkasPeriode {
+    let mut hasil = RingkasPeriode::default();
+    for k in daftar {
+        if hr_kinerja::rentang_aktif(mulai, selesai, k.tanggal_daftar.as_deref(), k.tanggal_selesai_aktif.as_deref()).is_none() {
+            continue;
+        }
+        let status: Vec<&str> = k
+            .penilaian
+            .iter()
+            .map(|p| hr_kinerja::status_kinerja(&p.sidik, &p.keputusan))
+            .filter(|s| *s != hr_kinerja::STATUS_DIBATALKAN)
+            .collect();
+        if status.contains(&hr_kinerja::STATUS_FINAL) {
+            continue;
+        }
+        if status.contains(&hr_kinerja::STATUS_DIAJUKAN) {
+            hasil.diajukan += 1;
+        } else if !status.is_empty() {
+            hasil.draf += 1;
+        } else {
+            hasil.belum += 1;
+        }
+    }
+    hasil
+}
+
+/// Cermin `pesanHrKinerjaMenunggu`. Hanya angka (Q-117).
+pub fn pesan_hr_kinerja_menunggu(jumlah: i64, sejak: &str) -> Option<String> {
+    if jumlah <= 0 {
+        return None;
+    }
+    let mut baris = vec![format!("📊 {jumlah} penilaian kinerja menunggu Final")];
+    if !sejak.is_empty() {
+        baris.push(format!("Paling lama sejak {}", tanggal_tampil(sejak)));
+    }
+    Some(baris.join("\n"))
+}
+
+/// Cermin `pesanHrKinerjaPeriode`. Semua nol tidak menghasilkan pesan.
+pub fn pesan_hr_kinerja_periode(jenis: &str, mulai: &str, selesai: &str, r: RingkasPeriode) -> Option<String> {
+    (r.belum + r.draf + r.diajukan > 0).then(|| {
+        format!(
+            "📊 Periode {jenis} {} s.d. {} berakhir: {} belum dinilai, {} masih draf, {} diajukan",
+            tanggal_tampil(mulai),
+            tanggal_tampil(selesai),
+            r.belum,
+            r.draf,
+            r.diajukan
+        )
+    })
+}
+
+/// Cermin `pesanHrPelamarBaru`: tanpa nama pelamar (Q-86).
+pub fn pesan_hr_pelamar_baru(daftar: &[(String, i64)]) -> Option<String> {
+    let total: i64 = daftar.iter().map(|(_, jumlah)| jumlah).sum();
+    if total <= 0 {
+        return None;
+    }
+    let mut baris = vec![format!("👥 {total} pelamar baru kemarin")];
+    for (judul, jumlah) in daftar.iter().take(MAKS_BARIS_STOK) {
+        baris.push(format!("• {}: {jumlah}", potong(judul, 100)));
+    }
+    if daftar.len() > MAKS_BARIS_STOK {
+        baris.push(format!("dan {} lainnya.", daftar.len() - MAKS_BARIS_STOK));
+    }
+    Some(baris.join("\n"))
+}
+
+/// Cermin `pesanHrLowonganTutup`.
+pub fn pesan_hr_lowongan_tutup(judul: &str, tanggal: &str, sisa: i64, pelamar: i64, kuota: i64) -> String {
+    [
+        format!(
+            "📢 Lowongan {} tutup {} ({})",
+            potong(judul, 100),
+            sisa_hari(sisa),
+            tanggal_tampil(tanggal)
+        ),
+        format!("Pelamar: {pelamar} · Kuota: {kuota}"),
+    ]
+    .join("\n")
+}
+
+/// Isi pesan per pengajuan (Q-120): tanpa alasan dan nominal. Cermin
+/// `IsiPengajuanHr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsiPengajuanHr {
+    pub kelompok: String,
+    pub nama: String,
+    pub jabatan: String,
+    pub mulai: String,
+    pub selesai: String,
+}
+
+fn baris_tanggal_pengajuan(mulai: &str, selesai: &str) -> String {
+    if mulai == selesai {
+        format!("Tanggal: {}", tanggal_tampil(mulai))
+    } else {
+        format!("Tanggal: {} s.d. {}", tanggal_tampil(mulai), tanggal_tampil(selesai))
+    }
+}
+
+/// Cermin `pesanHrPengajuanBaru`. Sakit tanpa nama (Q-120 (b)).
+pub fn pesan_hr_pengajuan_baru(isi: &IsiPengajuanHr) -> String {
+    let kelompok = potong(&isi.kelompok, 30);
+    let mut baris = if isi.kelompok == KELOMPOK_TANPA_NAMA {
+        vec![format!("📝 1 pengajuan {kelompok} baru")]
+    } else {
+        vec![format!("📝 Pengajuan {kelompok} baru"), baris_karyawan(&isi.nama, &isi.jabatan)]
+    };
+    baris.push(baris_tanggal_pengajuan(&isi.mulai, &isi.selesai));
+    baris.join("\n")
+}
+
+/// Cermin `pesanHrPengajuanDiputus`. Pemutus ya, alasan tidak (Q-32).
+pub fn pesan_hr_pengajuan_diputus(isi: &IsiPengajuanHr, jenis: &str, oleh: &str) -> String {
+    let kelompok = potong(&isi.kelompok, 30);
+    let tolak = jenis == "Tolak";
+    let hasil = if tolak {
+        "ditolak"
+    } else if jenis == "Setujui Urgent" {
+        "disetujui (urgent)"
+    } else {
+        "disetujui"
+    };
+    let ikon = if tolak { "❌" } else { "✅" };
+    let mut baris = if isi.kelompok == KELOMPOK_TANPA_NAMA {
+        vec![format!("{ikon} 1 pengajuan {kelompok} {hasil}")]
+    } else {
+        vec![format!("{ikon} Pengajuan {kelompok} {hasil}"), baris_karyawan(&isi.nama, &isi.jabatan)]
+    };
+    baris.push(baris_tanggal_pengajuan(&isi.mulai, &isi.selesai));
+    baris.push(format!("Oleh: {}", potong(oleh, 100)));
+    baris.join("\n")
 }
 
 pub fn permintaan_kirim(token: &str, chat_id: &str, teks: &str) -> (String, Value) {
@@ -1544,7 +1877,43 @@ async fn catat_kejadian(turso: &TursoClient, pengaturan: &Pengaturan) -> Result<
         }
     }
     catat_armada(turso, pengaturan, &sejak).await?;
+    catat_pengajuan_hr(turso, pengaturan, &sejak).await?;
     catat_harian(turso, pengaturan).await
+}
+
+fn isi_pengajuan_hr(row: &HashMap<String, Value>) -> IsiPengajuanHr {
+    IsiPengajuanHr {
+        kelompok: text(row, "kelompok"),
+        nama: text(row, "nama"),
+        jabatan: text(row, "jabatan"),
+        mulai: text(row, "tanggal_mulai"),
+        selesai: text(row, "tanggal_selesai"),
+    }
+}
+
+/// Kejadian per pengajuan HR ke grup HRD (§24.4, Q-120, Q-121), diparkir.
+/// Cermin `catatPengajuanHr`. `sejak` = `aktif_sejak`; batas 7 hari jam cloud
+/// dan id-nya diperiksa di SQL sumber.
+async fn catat_pengajuan_hr(
+    turso: &TursoClient,
+    pengaturan: &Pengaturan,
+    sejak: &str,
+) -> Result<(), CommandError> {
+    if pengaturan.siap("hr_pengajuan_baru") {
+        for row in baris(turso, SQL_HR_PENGAJUAN_BARU, vec![json!(sejak)]).await? {
+            let isi = pesan_hr_pengajuan_baru(&isi_pengajuan_hr(&row));
+            let id = id_hr_ajuan(&text(&row, "id_pengajuan"));
+            antrekan_parkir(turso, &id, "hr_pengajuan_baru", &isi).await?;
+        }
+    }
+    if pengaturan.siap("hr_pengajuan_diputus") {
+        for row in baris(turso, SQL_HR_PENGAJUAN_PUTUS, vec![json!(sejak)]).await? {
+            let isi = pesan_hr_pengajuan_diputus(&isi_pengajuan_hr(&row), &text(&row, "jenis"), &text(&row, "oleh"));
+            let id = id_hr_putus(&text(&row, "id_keputusan"));
+            antrekan_parkir(turso, &id, "hr_pengajuan_diputus", &isi).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Driver dan kendaraan yang bertugas TEPAT SEBELUM laporan `row`, menurut
@@ -1784,8 +2153,8 @@ async fn belum_tercatat(turso: &TursoClient, id: &str) -> Result<bool, CommandEr
         .is_empty())
 }
 
-/// Cermin `catatHarian`: kejadian berbasis tanggal, mulai 07.00 WIB jam
-/// database. Stok sekali per tanggal; pengingat HR lihat `catat_hrd`.
+/// Cermin `catatHarian`: kejadian berbasis tanggal menurut jam WIB database.
+/// Stok sekali per tanggal; pengingat HR lihat `catat_hrd`.
 async fn catat_harian(turso: &TursoClient, pengaturan: &Pengaturan) -> Result<(), CommandError> {
     if !pengaturan.siap("stok_menipis") && !KEJADIAN.iter().any(|k| diparkir(k) && pengaturan.siap(k)) {
         return Ok(());
@@ -1794,24 +2163,33 @@ async fn catat_harian(turso: &TursoClient, pengaturan: &Pengaturan) -> Result<()
     let Some(jam) = jam.first() else {
         return Ok(());
     };
-    catat_harian_pada(turso, pengaturan, &text(jam, "tanggal"), int(jam, "jam")).await
+    catat_harian_pada(
+        turso,
+        pengaturan,
+        &text(jam, "tanggal"),
+        int(jam, "jam"),
+        int(jam, "jam_hr"),
+    )
+    .await
 }
 
-/// `tanggal`/`jam` = tanggal dan jam WIB dari `SQL_JAM_WIB`. Dipisah supaya
-/// batas 07.00 bisa diuji tanpa bergantung jam saat tes berjalan.
+/// `tanggal`/`jam`/`jam_hr` dari `SQL_JAM_WIB`. Dipisah supaya batas jam bisa
+/// diuji tanpa bergantung jam saat tes berjalan. Stok tetap mulai
+/// `JAM_RINGKASAN_STOK`, pengingat HR mulai `hr_ingat_jam` (§24.3).
 async fn catat_harian_pada(
     turso: &TursoClient,
     pengaturan: &Pengaturan,
     tanggal: &str,
     jam: i64,
+    jam_hr: i64,
 ) -> Result<(), CommandError> {
-    if jam < JAM_RINGKASAN_STOK {
-        return Ok(());
-    }
-    if pengaturan.siap("stok_menipis") {
+    if jam >= JAM_RINGKASAN_STOK && pengaturan.siap("stok_menipis") {
         catat_stok(turso, tanggal).await?;
     }
-    catat_hrd(turso, pengaturan, tanggal).await
+    if jam >= jam_hr {
+        catat_hrd(turso, pengaturan, tanggal).await?;
+    }
+    Ok(())
 }
 
 async fn catat_stok(turso: &TursoClient, tanggal: &str) -> Result<(), CommandError> {
@@ -1863,7 +2241,7 @@ async fn catat_hrd(
                 &text(&row, "tanggal_selesai"),
                 sisa,
             );
-            let id = id_hr_kontrak(&text(&row, "id_kontrak"), sisa);
+            let id = id_hr_kontrak(&text(&row, "id_kontrak"), sisa, int(&row, "dekat"));
             antrekan_parkir(turso, &id, "hr_kontrak_akhir", &isi).await?;
         }
     }
@@ -1914,7 +2292,8 @@ async fn catat_hrd(
             .map(|row| (text(row, "kelompok"), int(row, "jumlah")))
             .collect();
         let paling_lama = rows.iter().map(|row| text(row, "sejak")).min().unwrap_or_default();
-        if let Some(isi) = pesan_hr_pengajuan_menunggu(&daftar, &paling_lama) {
+        let hari = rows.first().map(|row| int(row, "hari")).unwrap_or_default();
+        if let Some(isi) = pesan_hr_pengajuan_menunggu(&daftar, &paling_lama, hari) {
             antrekan_parkir(turso, &id, "hr_pengajuan_menunggu", &isi).await?;
         }
     }
@@ -1940,6 +2319,111 @@ async fn catat_hrd(
             .collect();
         if let Some(isi) = pesan_hr_ulang_tahun_kerja(&daftar) {
             antrekan_parkir(turso, &id, "hr_ulang_tahun_kerja", &isi).await?;
+        }
+    }
+    catat_kinerja_rekrutmen(turso, pengaturan, tanggal).await
+}
+
+/// Keputusan kinerja dari kolom JSON SQL sumber; JSON rusak = tanpa keputusan.
+fn keputusan_json<T: serde::de::DeserializeOwned>(row: &HashMap<String, Value>, kunci: &str) -> Vec<T> {
+    serde_json::from_str(&text(row, kunci)).unwrap_or_default()
+}
+
+/// Ringkasan "menunggu Final" dari cloud. Cermin `ringkasMenungguCloud`.
+async fn ringkas_menunggu_cloud(turso: &TursoClient) -> Result<(i64, String), CommandError> {
+    let daftar: Vec<PenilaianTunggu> = baris(turso, SQL_HR_KINERJA_MENUNGGU, vec![])
+        .await?
+        .iter()
+        .map(|row| PenilaianTunggu {
+            sidik: text(row, "sidik"),
+            sejak: text(row, "sejak"),
+            keputusan: keputusan_json(row, "keputusan"),
+        })
+        .collect();
+    Ok(ringkas_kinerja_menunggu(&daftar))
+}
+
+/// Jenis periode kinerja yang berlaku di cloud; kosong atau rusak = bawaan.
+/// Cermin `jenisPeriodeCloud`.
+async fn jenis_periode_cloud(turso: &TursoClient) -> Result<String, CommandError> {
+    let nilai = baris(turso, SQL_HR_KINERJA_JENIS, vec![])
+        .await?
+        .first()
+        .map(|row| text(row, "value"))
+        .unwrap_or_default();
+    Ok(hr_kinerja::PengaturanKinerja::dari_peta(&HashMap::from([(hr_kinerja::KUNCI_PERIODE.to_owned(), nilai)])).periode)
+}
+
+/// Ringkasan satu periode dari cloud. Cermin `ringkasPeriodeCloud`.
+async fn ringkas_periode_cloud(
+    turso: &TursoClient,
+    jenis: &str,
+    mulai: &str,
+    selesai: &str,
+) -> Result<RingkasPeriode, CommandError> {
+    let daftar: Vec<KaryawanPeriode> = baris(turso, SQL_HR_KINERJA_PERIODE, vec![json!(jenis), json!(mulai)])
+        .await?
+        .iter()
+        .map(|row| KaryawanPeriode {
+            tanggal_daftar: Some(text(row, "tanggal_daftar")).filter(|t| !t.is_empty()),
+            tanggal_selesai_aktif: Some(text(row, "tanggal_selesai_aktif")).filter(|t| !t.is_empty()),
+            penilaian: keputusan_json(row, "penilaian"),
+        })
+        .collect();
+    Ok(ringkas_kinerja_periode(&daftar, mulai, selesai))
+}
+
+/// Kejadian kinerja dan rekrutmen berbasis tanggal (§24.4). Cermin
+/// `catatKinerjaRekrutmen`. Kinerja hanya angka (Q-117), rekrutmen tanpa
+/// data pelamar (Q-86). Ringkasan sekali per tanggal lewat `belum_tercatat`,
+/// periode sekali per `periode_mulai`, lowongan diperiksa di SQL sumber.
+async fn catat_kinerja_rekrutmen(
+    turso: &TursoClient,
+    pengaturan: &Pengaturan,
+    tanggal: &str,
+) -> Result<(), CommandError> {
+    let id = id_hr_kinerja_tunggu(tanggal);
+    if pengaturan.siap("hr_kinerja_menunggu") && belum_tercatat(turso, &id).await? {
+        let (jumlah, sejak) = ringkas_menunggu_cloud(turso).await?;
+        if let Some(isi) = pesan_hr_kinerja_menunggu(jumlah, &sejak) {
+            antrekan_parkir(turso, &id, "hr_kinerja_menunggu", &isi).await?;
+        }
+    }
+    if pengaturan.siap("hr_kinerja_periode") {
+        let jenis = jenis_periode_cloud(turso).await?;
+        if let Some((mulai, selesai)) = periode_kinerja_berakhir(&jenis, tanggal) {
+            let id = id_hr_kinerja_periode(&mulai);
+            if belum_tercatat(turso, &id).await? {
+                let ringkas = ringkas_periode_cloud(turso, &jenis, &mulai, &selesai).await?;
+                if let Some(isi) = pesan_hr_kinerja_periode(&jenis, &mulai, &selesai, ringkas) {
+                    antrekan_parkir(turso, &id, "hr_kinerja_periode", &isi).await?;
+                }
+            }
+        }
+    }
+    let id = id_hr_pelamar(tanggal);
+    if pengaturan.siap("hr_pelamar_baru") && belum_tercatat(turso, &id).await? {
+        let daftar: Vec<(String, i64)> = baris(turso, SQL_HR_PELAMAR_BARU, vec![json!(tanggal)])
+            .await?
+            .iter()
+            .map(|row| (text(row, "judul"), int(row, "jumlah")))
+            .collect();
+        if let Some(isi) = pesan_hr_pelamar_baru(&daftar) {
+            antrekan_parkir(turso, &id, "hr_pelamar_baru", &isi).await?;
+        }
+    }
+    if pengaturan.siap("hr_lowongan_tutup") {
+        for row in baris(turso, SQL_HR_LOWONGAN_TUTUP, vec![]).await? {
+            let tutup = text(&row, "tanggal_tutup");
+            let isi = pesan_hr_lowongan_tutup(
+                &text(&row, "judul"),
+                &tutup,
+                int(&row, "sisa"),
+                int(&row, "pelamar"),
+                int(&row, "kuota"),
+            );
+            let id = id_hr_lowongan(&text(&row, "id_lowongan"), &tutup);
+            antrekan_parkir(turso, &id, "hr_lowongan_tutup", &isi).await?;
         }
     }
     Ok(())
@@ -2055,7 +2539,7 @@ pub async fn drain(
 // ── Kartu "Perlu perhatian" di /hris (§23.4) ──────────────────────────────
 
 /// Izin yang membuka kartu (salah satu). Cermin `IZIN_PERHATIAN`.
-pub const IZIN_PERHATIAN: [&str; 7] = [
+pub const IZIN_PERHATIAN: [&str; 9] = [
     "employees.view",
     "hr.document.view",
     "hr.warning.view",
@@ -2063,6 +2547,8 @@ pub const IZIN_PERHATIAN: [&str; 7] = [
     "reimburse.decide",
     "hr.recruit.view",
     "hr.recruit.manage",
+    "hr.performance.view",
+    "hr.performance.finalize",
 ];
 
 /// Bagian kartu yang boleh dibaca sesi. Cermin `IzinPerhatian`.
@@ -2075,6 +2561,8 @@ pub struct IzinPerhatian {
     /// Tanpa `hr.request.view`: hanya hitungan Reimburse (§19.5).
     pub hanya_reimburse: bool,
     pub rekrutmen: bool,
+    /// Hanya angka (Q-122), jadi `assess` tidak cukup.
+    pub kinerja: bool,
 }
 
 /// Cermin `izinPerhatian`. Kontrak dan ulang tahun kerja = `employees.view`
@@ -2087,6 +2575,7 @@ pub fn izin_perhatian(punya: impl Fn(&str) -> bool) -> IzinPerhatian {
         pengajuan: punya("hr.request.view") || punya("reimburse.decide"),
         hanya_reimburse: !punya("hr.request.view"),
         rekrutmen: punya("hr.recruit.view") || punya("hr.recruit.manage"),
+        kinerja: punya("hr.performance.view") || punya("hr.performance.finalize"),
     }
 }
 
@@ -2113,6 +2602,17 @@ fn objek_kolom(rows: &[HashMap<String, Value>], teks: &[&str], angka: &[&str]) -
 /// tidak ada di hasil.
 pub async fn perhatian(turso: &TursoClient, izin: &IzinPerhatian) -> Result<Value, CommandError> {
     turso.ensure_schema_current().await?;
+    let tanggal = baris(turso, SQL_JAM_WIB, vec![])
+        .await?
+        .first()
+        .map(|row| text(row, "tanggal"))
+        .unwrap_or_default();
+    perhatian_pada(turso, izin, &tanggal).await
+}
+
+/// `tanggal` = tanggal WIB jam database. Dipisah supaya jendela periode
+/// kinerja bisa diuji tanpa bergantung tanggal saat tes berjalan.
+async fn perhatian_pada(turso: &TursoClient, izin: &IzinPerhatian, tanggal: &str) -> Result<Value, CommandError> {
     let mut hasil = serde_json::Map::new();
     if izin.kontrak {
         let rows = baris(turso, PERHATIAN_SQL_KONTRAK, vec![]).await?;
@@ -2158,7 +2658,7 @@ pub async fn perhatian(turso: &TursoClient, izin: &IzinPerhatian) -> Result<Valu
         hasil.insert(
             "pengajuan".into(),
             json!({
-                "menunggu": objek_kolom(&menunggu, &["kelompok"], &["jumlah"]),
+                "menunggu": objek_kolom(&menunggu, &["kelompok"], &["jumlah", "hari"]),
                 "menunggu_sejak": menunggu_sejak,
                 "urgent": urgent_baris.map(|row| int(row, "jumlah")).unwrap_or(0),
                 "urgent_sejak": urgent_baris.map(|row| text(row, "sejak")).unwrap_or_default(),
@@ -2170,6 +2670,30 @@ pub async fn perhatian(turso: &TursoClient, izin: &IzinPerhatian) -> Result<Valu
         hasil.insert(
             "rekrutmen".into(),
             objek_kolom(&rows, &["id_lowongan", "judul", "tanggal_hapus"], &["jumlah"]),
+        );
+    }
+    // Kinerja (§24.5, Q-122): hanya angka, dengan aturan yang sama dengan
+    // kejadian Telegram `hr_kinerja_menunggu`/`hr_kinerja_periode`.
+    if izin.kinerja {
+        let (menunggu, menunggu_sejak) = ringkas_menunggu_cloud(turso).await?;
+        let jenis = jenis_periode_cloud(turso).await?;
+        let periode = match periode_kinerja_berakhir(&jenis, tanggal) {
+            Some((mulai, selesai)) => {
+                let r = ringkas_periode_cloud(turso, &jenis, &mulai, &selesai).await?;
+                json!({
+                    "jenis": jenis,
+                    "mulai": mulai,
+                    "selesai": selesai,
+                    "belum": r.belum,
+                    "draf": r.draf,
+                    "diajukan": r.diajukan,
+                })
+            }
+            None => Value::Null,
+        };
+        hasil.insert(
+            "kinerja".into(),
+            json!({ "menunggu": menunggu, "menunggu_sejak": menunggu_sejak, "periode": periode }),
         );
     }
     Ok(Value::Object(hasil))
@@ -2413,16 +2937,26 @@ mod tests {
         assert_eq!(id_trip_kendala("lap-1"), "drv-kendala:lap-1");
         assert_eq!(id_trip_ganti_izin("lap-2"), "drv-ganti:lap-2");
         assert_eq!(id_trip_lokasi_palsu("lap-3"), "drv-palsu:lap-3");
-        assert_eq!(id_hr_kontrak("ktr-1", 30), "hr-kontrak:ktr-1:30");
-        assert_eq!(id_hr_kontrak("ktr-1", 8), "hr-kontrak:ktr-1:30");
-        assert_eq!(id_hr_kontrak("ktr-1", 7), "hr-kontrak:ktr-1:7");
-        assert_eq!(id_hr_kontrak("ktr-1", 0), "hr-kontrak:ktr-1:7");
+        assert_eq!(id_hr_kontrak("ktr-1", 30, 7), "hr-kontrak:ktr-1:jauh");
+        assert_eq!(id_hr_kontrak("ktr-1", 8, 7), "hr-kontrak:ktr-1:jauh");
+        assert_eq!(id_hr_kontrak("ktr-1", 7, 7), "hr-kontrak:ktr-1:dekat");
+        assert_eq!(id_hr_kontrak("ktr-1", 0, 7), "hr-kontrak:ktr-1:dekat");
+        // Angka diubah: id tetap menurut tahap, bukan angkanya (Q-116).
+        assert_eq!(id_hr_kontrak("ktr-1", 8, 10), "hr-kontrak:ktr-1:dekat");
+        assert_eq!(id_hr_kontrak("ktr-1", 20, 3), "hr-kontrak:ktr-1:jauh");
         assert_eq!(id_hr_percobaan("ktr-1"), "hr-coba:ktr-1");
         assert_eq!(id_hr_dokumen("dok-1", "2026-12-12"), "hr-dok:dok-1:2026-12-12");
         assert_eq!(id_hr_sp("sp-1"), "hr-sp:sp-1");
         assert_eq!(id_hr_menunggu("2026-11-12"), "hr-tunggu:2026-11-12");
         assert_eq!(id_hr_urgent("2026-11-12"), "hr-urgent:2026-11-12");
         assert_eq!(id_hr_ultah("2026-11-12"), "hr-ultah:2026-11-12");
+        assert_eq!(KEJADIAN.len(), 26);
+        assert_eq!(id_hr_kinerja_tunggu("2026-11-12"), "hr-kinerja-tunggu:2026-11-12");
+        assert_eq!(id_hr_kinerja_periode("2026-01-01"), "hr-kinerja-periode:2026-01-01");
+        assert_eq!(id_hr_pelamar("2026-11-12"), "hr-pelamar:2026-11-12");
+        assert_eq!(id_hr_lowongan("L4", "2026-11-14"), "hr-lowongan:L4:2026-11-14");
+        assert_eq!(id_hr_ajuan("p1"), "hr-ajuan:p1");
+        assert_eq!(id_hr_putus("q5"), "hr-putus:q5");
         assert!(INSERT_ANTREAN_PARKIR_SQL.contains(&format!("'{KLAIM_PARKIR}'")));
     }
 
@@ -2610,11 +3144,16 @@ mod tests {
         assert_eq!(
             pesan_hr_pengajuan_menunggu(
                 &[kelompok("Cuti", 3), kelompok("Izin", 1), kelompok("Reimburse", 2)],
-                "2026-11-08"
+                "2026-11-08",
+                2
             ),
             Some("📥 6 pengajuan menunggu lebih dari 2 hari\nCuti 3, Izin 1, Reimburse 2\nPaling lama sejak 08/11/2026".to_owned())
         );
-        assert_eq!(pesan_hr_pengajuan_menunggu(&[], "2026-11-08"), None);
+        assert_eq!(
+            pesan_hr_pengajuan_menunggu(&[kelompok("Cuti", 1)], "2026-11-01", 5),
+            Some("📥 1 pengajuan menunggu lebih dari 5 hari\nCuti 1\nPaling lama sejak 01/11/2026".to_owned())
+        );
+        assert_eq!(pesan_hr_pengajuan_menunggu(&[], "2026-11-08", 2), None);
         assert_eq!(
             pesan_hr_urgent_belum_diketahui(2, "2026-11-10"),
             Some("⚡ 2 pengajuan urgent belum diketahui HRD\nPaling lama sejak 10/11/2026".to_owned())
@@ -2635,6 +3174,134 @@ mod tests {
         let pesan = pesan_hr_ulang_tahun_kerja(&banyak).unwrap();
         assert!(pesan.starts_with("🎉 Ulang tahun kerja hari ini\n• Karyawan 1 (Staf), 2 tahun\n"));
         assert!(pesan.ends_with("• Karyawan 30 (Staf), 2 tahun\ndan 2 lainnya."));
+    }
+
+    fn kk(id: &str, jenis: &str, sidik: &str, diterima: &str) -> KeputusanKinerja {
+        KeputusanKinerja {
+            id_keputusan: id.to_owned(),
+            jenis: jenis.to_owned(),
+            sidik: sidik.to_owned(),
+            oleh: "hrd".to_owned(),
+            waktu_perangkat: "2026-11-01 00:00:00.000".to_owned(),
+            diterima_cloud: Some(diterima.to_owned()),
+            nilai_akhir: None,
+            predikat: None,
+        }
+    }
+
+    // Vektor yang sama diuji di `validations/telegram.test.ts` ("periode kinerja
+    // berakhir" dan "ringkas kinerja").
+    #[test]
+    fn ringkas_kinerja() {
+        let smt = Some(("2026-01-01".to_owned(), "2026-06-30".to_owned()));
+        assert_eq!(periode_kinerja_berakhir("Semester", "2026-07-01"), smt);
+        assert_eq!(periode_kinerja_berakhir("Semester", "2026-07-07"), smt);
+        assert_eq!(periode_kinerja_berakhir("Semester", "2026-07-08"), None);
+        assert_eq!(periode_kinerja_berakhir("Semester", "2026-06-30"), None);
+        assert_eq!(periode_kinerja_berakhir("Bulanan", "2026-03-01"), Some(("2026-02-01".to_owned(), "2026-02-28".to_owned())));
+        assert_eq!(periode_kinerja_berakhir("Tahunan", "2027-01-03"), Some(("2026-01-01".to_owned(), "2026-12-31".to_owned())));
+        assert_eq!(periode_kinerja_berakhir("Kuartal", "2026-01-05"), Some(("2025-10-01".to_owned(), "2025-12-31".to_owned())));
+        assert_eq!(periode_kinerja_berakhir("Mingguan", "2026-07-01"), None);
+        assert_eq!(periode_kinerja_berakhir("Semester", "bukan"), None);
+        assert_eq!(HR_HARI_JENDELA, 7);
+
+        let p = |sidik: &str, sejak: &str, keputusan: Vec<KeputusanKinerja>| PenilaianTunggu {
+            sidik: sidik.to_owned(),
+            sejak: sejak.to_owned(),
+            keputusan,
+        };
+        let tunggu = [
+            p("s1", "2026-11-05", vec![kk("a1", "Ajukan", "s1", "2026-11-05 03:00:00")]),
+            p("s2", "2026-11-01", vec![kk("a2", "Ajukan", "s2", "2026-11-01 03:00:00"), kk("b2", "Kembalikan", "s2", "2026-11-01 04:00:00")]),
+            p("s3", "2026-11-03", vec![kk("a3", "Ajukan", "s3", "2026-11-03 05:00:00"), kk("b3", "Kembalikan", "s3", "2026-11-03 04:00:00")]),
+            p("s4", "2026-10-01", vec![kk("a4", "Ajukan", "s4", "2026-10-01 03:00:00"), kk("c4", "Batal", "s4", "2026-10-02 03:00:00")]),
+        ];
+        assert_eq!(ringkas_kinerja_menunggu(&tunggu), (2, "2026-11-03".to_owned()));
+        assert_eq!(ringkas_kinerja_menunggu(&[]), (0, String::new()));
+
+        let nilai = |sidik: &str, keputusan: Vec<KeputusanKinerja>| PenilaianPeriode { sidik: sidik.to_owned(), keputusan };
+        let k = |daftar: Option<&str>, selesai: Option<&str>, penilaian: Vec<PenilaianPeriode>| KaryawanPeriode {
+            tanggal_daftar: daftar.map(str::to_owned),
+            tanggal_selesai_aktif: selesai.map(str::to_owned),
+            penilaian,
+        };
+        let karyawan = [
+            k(Some("2020-01-01"), None, vec![nilai("s1", vec![kk("f1", "Final", "s1", "2026-07-02 00:00:00")])]),
+            k(None, None, vec![nilai("s2", vec![kk("a2", "Ajukan", "s2", "2026-07-02 00:00:00")])]),
+            k(Some("2026-03-01"), None, vec![]),
+            k(Some("2026-07-01"), None, vec![]),
+            k(None, Some("2025-12-31"), vec![]),
+            k(None, None, vec![nilai("s6", vec![kk("c6", "Batal", "s6", "2026-07-02 00:00:00")]), nilai("s6b", vec![])]),
+            k(None, None, vec![nilai("s7", vec![kk("c7", "Batal", "s7", "2026-07-02 00:00:00")])]),
+        ];
+        assert_eq!(
+            ringkas_kinerja_periode(&karyawan, "2026-01-01", "2026-06-30"),
+            RingkasPeriode { belum: 2, draf: 1, diajukan: 1 }
+        );
+    }
+
+    // Vektor yang sama diuji di `validations/telegram.test.ts` ("isi pesan HRD fase 9").
+    #[test]
+    fn isi_pesan_hrd_fase9() {
+        assert_eq!(
+            pesan_hr_kinerja_menunggu(2, "2026-11-03"),
+            Some("📊 2 penilaian kinerja menunggu Final\nPaling lama sejak 03/11/2026".to_owned())
+        );
+        assert_eq!(pesan_hr_kinerja_menunggu(1, ""), Some("📊 1 penilaian kinerja menunggu Final".to_owned()));
+        assert_eq!(pesan_hr_kinerja_menunggu(0, "2026-11-03"), None);
+        assert_eq!(
+            pesan_hr_kinerja_periode("Semester", "2026-01-01", "2026-06-30", RingkasPeriode { belum: 2, draf: 1, diajukan: 1 }),
+            Some("📊 Periode Semester 01/01/2026 s.d. 30/06/2026 berakhir: 2 belum dinilai, 1 masih draf, 1 diajukan".to_owned())
+        );
+        assert_eq!(pesan_hr_kinerja_periode("Semester", "2026-01-01", "2026-06-30", RingkasPeriode::default()), None);
+        assert_eq!(
+            pesan_hr_pelamar_baru(&[("Admin Gudang".to_owned(), 2), ("Sopir".to_owned(), 1)]),
+            Some("👥 3 pelamar baru kemarin\n• Admin Gudang: 2\n• Sopir: 1".to_owned())
+        );
+        assert_eq!(pesan_hr_pelamar_baru(&[]), None);
+        let banyak: Vec<(String, i64)> = (1..=32).map(|i| (format!("Lowongan {i}"), 1)).collect();
+        let banyak = pesan_hr_pelamar_baru(&banyak).unwrap();
+        assert!(banyak.starts_with("👥 32 pelamar baru kemarin\n• Lowongan 1: 1\n"));
+        assert!(banyak.ends_with("• Lowongan 30: 1\ndan 2 lainnya."));
+        assert_eq!(
+            pesan_hr_lowongan_tutup("Admin Gudang", "2026-11-14", 2, 3, 2),
+            "📢 Lowongan Admin Gudang tutup 2 hari lagi (14/11/2026)\nPelamar: 3 · Kuota: 2"
+        );
+        assert_eq!(
+            pesan_hr_lowongan_tutup("Sopir", "2026-11-12", 0, 0, 1),
+            "📢 Lowongan Sopir tutup hari ini (12/11/2026)\nPelamar: 0 · Kuota: 1"
+        );
+
+        let isi = |kelompok: &str, nama: &str, jabatan: &str, mulai: &str, selesai: &str| IsiPengajuanHr {
+            kelompok: kelompok.to_owned(),
+            nama: nama.to_owned(),
+            jabatan: jabatan.to_owned(),
+            mulai: mulai.to_owned(),
+            selesai: selesai.to_owned(),
+        };
+        let cuti = isi("Cuti", "Budi", "Staf Gudang", "2026-12-01", "2026-12-03");
+        let sakit = isi(KELOMPOK_TANPA_NAMA, "Sari", "Kasir", "2026-11-12", "2026-11-12");
+        let izin = isi("Izin", "Budi", "", "2026-12-05", "2026-12-05");
+        assert_eq!(
+            pesan_hr_pengajuan_baru(&cuti),
+            "📝 Pengajuan Cuti baru\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026 s.d. 03/12/2026"
+        );
+        assert_eq!(pesan_hr_pengajuan_baru(&sakit), "📝 1 pengajuan Sakit baru\nTanggal: 12/11/2026");
+        assert_eq!(
+            pesan_hr_pengajuan_diputus(&cuti, "Setujui", "HRD Satu"),
+            "✅ Pengajuan Cuti disetujui\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026 s.d. 03/12/2026\nOleh: HRD Satu"
+        );
+        assert_eq!(
+            pesan_hr_pengajuan_diputus(&izin, "Tolak", "hrd"),
+            "❌ Pengajuan Izin ditolak\nKaryawan: Budi\nTanggal: 05/12/2026\nOleh: hrd"
+        );
+        assert_eq!(
+            pesan_hr_pengajuan_diputus(&sakit, "Setujui Urgent", "atasan"),
+            "✅ 1 pengajuan Sakit disetujui (urgent)\nTanggal: 12/11/2026\nOleh: atasan"
+        );
+        for pesan in [pesan_hr_pengajuan_baru(&sakit), pesan_hr_pengajuan_diputus(&sakit, "Tolak", "hrd")] {
+            assert!(!pesan.contains("Sari") && !pesan.contains("Kasir"), "{pesan}");
+        }
     }
 
     async fn ultah_pada(turso: &TursoClient, hari: &str) -> Vec<String> {
@@ -2673,6 +3340,12 @@ mod tests {
                 (SQL_HR_MENUNGGU, vec![]),
                 (SQL_HR_URGENT, vec![]),
                 (SQL_HR_ULTAH, vec![]),
+                (SQL_HR_KINERJA_MENUNGGU, vec![]),
+                (SQL_HR_KINERJA_PERIODE, vec![json!("Semester"), json!("2026-01-01")]),
+                (SQL_HR_PELAMAR_BARU, vec![json!("2026-11-12")]),
+                (SQL_HR_LOWONGAN_TUTUP, vec![]),
+                (SQL_HR_PENGAJUAN_BARU, vec![json!("2026-01-01 00:00:00")]),
+                (SQL_HR_PENGAJUAN_PUTUS, vec![json!("2026-01-01 00:00:00")]),
             ] {
                 turso.query_one(sql, args).await.expect(sql);
             }
@@ -2797,6 +3470,17 @@ mod tests {
            ('q11b', 'p11', 'Batal', 's11', NULL, 'k1', '2026-11-01 02:00:00', datetime('now'));",
     ];
 
+    /// Angka pengingat di `setting_gex_system` cloud (§24.3).
+    async fn atur(turso: &TursoClient, kunci: &str, nilai: &str) {
+        turso
+            .query_one(
+                "INSERT OR REPLACE INTO setting_gex_system (key, value) VALUES (?, ?);",
+                vec![json!(kunci), json!(nilai)],
+            )
+            .await
+            .unwrap();
+    }
+
     /// Cermin "kejadian hrd" di `services/telegram.test.ts`: data dan isi
     /// pesan yang sama, terhadap berkas SQLite sungguhan (tanpa HTTP).
     #[test]
@@ -2816,14 +3500,14 @@ mod tests {
             ] {
                 sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('{kunci}', '{nilai}');"));
             }
-            for kejadian in &KEJADIAN[13..] {
+            for kejadian in &KEJADIAN[13..20] {
                 sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('kirim:{kejadian}', '1');"));
             }
             turso
                 .execute_atomic(sql.into_iter().map(|s| Statement::new(s, vec![])).collect())
                 .await
                 .expect("data uji");
-            let tanggal = baris(&turso, "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '+5 days') AS k2, date('now', '+7 hours', '+3 days') AS c2, date('now', '+7 hours', '+20 days') AS k1, date('now', '+7 hours', '+30 days') AS d1, date('now', '+7 hours', '-2 days') AS s5, date('now', '+7 hours', '-4 days') AS p2, date('now', '+7 hours', '-1 day') AS p9;", vec![])
+            let tanggal = baris(&turso, "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '+5 days') AS k2, date('now', '+7 hours', '+3 days') AS c2, date('now', '+7 hours', '+20 days') AS k1, date('now', '+7 hours', '+30 days') AS d1, date('now', '+7 hours', '+31 days') AS d2, date('now', '+7 hours', '-2 days') AS s5, date('now', '+7 hours', '-4 days') AS p2, date('now', '+7 hours', '-1 day') AS p9;", vec![])
                 .await
                 .unwrap()
                 .remove(0);
@@ -2832,18 +3516,22 @@ mod tests {
             let pengaturan = baca_pengaturan(&turso).await.unwrap();
 
             // Sebelum 07.00 WIB tidak ada yang dicatat.
-            catat_harian_pada(&turso, &pengaturan, &hari_ini, 6).await.unwrap();
+            // Jam HR bawaan 07.00 WIB dibaca dari database lewat `SQL_JAM_WIB`.
+            let jam_hr = int(&baris(&turso, SQL_JAM_WIB, vec![]).await.unwrap()[0], "jam_hr");
+            assert_eq!(jam_hr, 7);
+            // Sebelum jam HR tidak ada yang dicatat.
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 6, jam_hr).await.unwrap();
             assert!(antrean_uji(&turso).await.is_empty());
 
-            catat_harian_pada(&turso, &pengaturan, &hari_ini, 7).await.unwrap();
-            catat_harian_pada(&turso, &pengaturan, &hari_ini, 12).await.unwrap();
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 7, jam_hr).await.unwrap();
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 12, jam_hr).await.unwrap();
             let antrean = antrean_uji(&turso).await;
             let ids: Vec<&str> = antrean.iter().map(|(id, _, _)| id.as_str()).collect();
             let harap = [
                 "hr-coba:c2".to_owned(),
                 format!("hr-dok:d1:{}", t("d1")),
-                "hr-kontrak:c1:30".to_owned(),
-                "hr-kontrak:c2:7".to_owned(),
+                "hr-kontrak:c1:jauh".to_owned(),
+                "hr-kontrak:c2:dekat".to_owned(),
                 "hr-sp:s1".to_owned(),
                 "hr-sp:s5".to_owned(),
                 format!("hr-tunggu:{hari_ini}"),
@@ -2854,11 +3542,11 @@ mod tests {
             assert!(antrean.iter().all(|(_, _, klaim)| klaim == KLAIM_PARKIR));
             let isi = |id: &str| antrean.iter().find(|(ada, _, _)| ada == id).unwrap().1.clone();
             assert_eq!(
-                isi("hr-kontrak:c2:7"),
+                isi("hr-kontrak:c2:dekat"),
                 format!("📄 Kontrak PKWT berakhir 5 hari lagi ({})\nKaryawan: Sari · Kasir", tanggal_tampil(&t("k2")))
             );
             assert_eq!(
-                isi("hr-kontrak:c1:30"),
+                isi("hr-kontrak:c1:jauh"),
                 format!("📄 Kontrak PKWT berakhir 20 hari lagi ({})\nKaryawan: Budi · Staf Gudang", tanggal_tampil(&t("k1")))
             );
             assert_eq!(
@@ -2901,8 +3589,51 @@ mod tests {
                 .query_one("UPDATE hr_dokumen SET tanggal_kedaluwarsa = date('now', '+7 hours', '+29 days') WHERE id_dokumen = 'd1';", vec![])
                 .await
                 .unwrap();
-            catat_harian_pada(&turso, &pengaturan, &hari_ini, 8).await.unwrap();
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 8, jam_hr).await.unwrap();
             assert_eq!(antrean_uji(&turso).await.len(), harap.len() + 1);
+
+            // Angka pengingat diubah (§24.3), lewat `setting_gex_system` cloud.
+            // Jendela jauh 30 → 25 di tengah jendela: c1 (sisa 20) tetap tahap
+            // `:jauh`, jadi tidak ada pesan kedua (Q-116).
+            atur(&turso, "hr_ingat_kontrak_jauh", "25").await;
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 8, jam_hr).await.unwrap();
+            assert_eq!(antrean_uji(&turso).await.len(), harap.len() + 1);
+            // Jendela dokumen diperbesar ke 31: d2 (sisa 31) kini tercatat.
+            atur(&turso, "hr_ingat_dokumen", "31").await;
+            catat_harian_pada(&turso, &pengaturan, &hari_ini, 8, jam_hr).await.unwrap();
+            let ids: Vec<String> = antrean_uji(&turso).await.into_iter().map(|(id, _, _)| id).collect();
+            assert_eq!(ids.len(), harap.len() + 2);
+            assert!(ids.contains(&format!("hr-dok:d2:{}", t("d2"))));
+            // Menunggu lebih dari 4 hari: hanya p2, dan pesannya memakai N = 4.
+            atur(&turso, "hr_ingat_menunggu", "4").await;
+            let rows = baris(&turso, SQL_HR_MENUNGGU, vec![]).await.unwrap();
+            let daftar: Vec<(String, i64)> = rows.iter().map(|row| (text(row, "kelompok"), int(row, "jumlah"))).collect();
+            assert_eq!(daftar, vec![("Cuti".to_owned(), 1)]);
+            assert_eq!(
+                pesan_hr_pengajuan_menunggu(&daftar, &text(&rows[0], "sejak"), int(&rows[0], "hari")),
+                Some(format!("📥 1 pengajuan menunggu lebih dari 4 hari\nCuti 1\nPaling lama sejak {}", tanggal_tampil(&t("p2"))))
+            );
+            // Tersimpan rusak: dekat ≥ jauh = jendela jauh kosong, dekat tetap;
+            // angka yang bukan bilangan = bawaan.
+            atur(&turso, "hr_ingat_kontrak_jauh", "10").await;
+            atur(&turso, "hr_ingat_kontrak_dekat", "25").await;
+            let kontrak: Vec<String> = baris(&turso, SQL_HR_KONTRAK, vec![])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| id_hr_kontrak(&text(row, "id_kontrak"), int(row, "sisa"), int(row, "dekat")))
+                .collect();
+            assert_eq!(kontrak, vec!["hr-kontrak:c1:dekat".to_owned()]);
+            atur(&turso, "hr_ingat_kontrak_dekat", "x").await;
+            assert!(baris(&turso, SQL_HR_KONTRAK, vec![]).await.unwrap().is_empty());
+            // Jam HR diubah ke 09.00: pukul 08 hanya stok (mati di tes ini).
+            atur(&turso, "hr_ingat_jam", "9").await;
+            let jam_hr = int(&baris(&turso, SQL_JAM_WIB, vec![]).await.unwrap()[0], "jam_hr");
+            assert_eq!(jam_hr, 9);
+            catat_harian_pada(&turso, &pengaturan, "2099-01-01", 8, jam_hr).await.unwrap();
+            assert_eq!(antrean_uji(&turso).await.len(), harap.len() + 2);
+            catat_harian_pada(&turso, &pengaturan, "2099-01-01", 9, jam_hr).await.unwrap();
+            assert!(antrean_uji(&turso).await.len() > harap.len() + 2);
         });
     }
 
@@ -3006,6 +3737,287 @@ mod tests {
            ('pl5', 'L3', 'Pelamar Rahasia', '2025-01-02', NULL, 'hrd');",
     ];
 
+    /// Data uji kejadian HR fase 9 (dipakai bersama `DATA_HRD`). Cermin
+    /// `DATA_HRD_FASE9` di `services/telegram.test.ts`.
+    const DATA_HRD_FASE9: &[&str] = &[
+        "INSERT INTO master_data (id_unik, nama, divisi, id_shift, status_aktif, tanggal_daftar, id_jabatan, jabatan_status) VALUES
+           ('k6', 'Fajar', 'Kantor', 1, 'Aktif', '2020-01-01', NULL, NULL),
+           ('k7', 'Gita', 'Kantor', 1, 'Aktif', '2020-01-01', NULL, NULL);",
+        "INSERT INTO hr_lowongan (id_lowongan, judul, jumlah, tanggal_buka, tanggal_tutup, ditutup_pada, dicatat_oleh) VALUES
+           ('L4', 'Admin Gudang', 2, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+2 days'), NULL, 'hrd'),
+           ('L5', 'Sopir', 1, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+5 days'), NULL, 'hrd'),
+           ('L6', 'Kurir', 1, date('now', '+7 hours', '-30 days'), date('now', '+7 hours', '+1 day'), datetime('now'), 'hrd');",
+        "INSERT INTO hr_pelamar (id_pelamar, id_lowongan, nama, tanggal_lamaran, dicatat_oleh, created_at) VALUES
+           ('pf1', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '+2 hours')),
+           ('pf2', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '+23 hours')),
+           ('pf3', 'L5', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours')),
+           ('pf4', 'L4', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours'), '-7 hours')),
+           ('pf5', 'L6', 'Pelamar Rahasia', '2026-11-01', 'hrd', datetime(date('now', '+7 hours', '-1 day'), '-7 hours', '-1 second'));",
+        "INSERT INTO hr_kinerja_penilaian (id_penilaian, id_karyawan, id_ref, periode_jenis, periode_mulai, periode_selesai, id_template, template_nama, penilai_oleh, catatan, sidik, dibuat_oleh, waktu_perangkat) VALUES
+           ('kp1', 'k1', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', 'Catatan rahasia', 's1', 'atasan', '2026-07-02 00:00:00'),
+           ('kp2', 'k2', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's2', 'atasan', '2026-07-02 00:00:00'),
+           ('kp3', 'k6', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's3', 'atasan', '2026-07-02 00:00:00'),
+           ('kp4', 'k7', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's4', 'atasan', '2026-07-02 00:00:00'),
+           ('kp5', 'k6', 'kp3', 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's5', 'atasan', '2026-07-02 00:00:00'),
+           ('kp6', 'k3', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's6', 'atasan', '2026-07-02 00:00:00'),
+           ('kp7', 'k5', NULL, 'Semester', '2026-01-01', '2026-06-30', 't', 'T', 'atasan', NULL, 's7', 'atasan', '2026-07-02 00:00:00');",
+        "INSERT INTO hr_kinerja_keputusan (id_keputusan, id_penilaian, jenis, sidik, alasan, nilai_akhir, predikat, oleh, waktu_perangkat, diterima_cloud) VALUES
+           ('kk1', 'kp1', 'Ajukan', 's1', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-3 days')),
+           ('kk2a', 'kp2', 'Ajukan', 's2', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-5 days')),
+           ('kk2b', 'kp2', 'Kembalikan', 's2', 'Alasan rahasia', NULL, NULL, 'hrd', '2026-07-03 00:00:01.000', datetime('now', '-4 days')),
+           ('kk3', 'kp3', 'Final', 's3', NULL, 8750, 'Baik', 'hrd', '2026-07-03 00:00:00.000', datetime('now', '-10 days')),
+           ('kk4', 'kp4', 'Batal', 's4', 'Alasan rahasia', NULL, NULL, 'hrd', '2026-07-03 00:00:00.000', datetime('now', '-10 days')),
+           ('kk5', 'kp5', 'Ajukan', 's5', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-1 day')),
+           ('kk6', 'kp6', 'Ajukan', 's6', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-2 days')),
+           ('kk7', 'kp7', 'Ajukan', 'lama', NULL, NULL, NULL, 'atasan', '2026-07-03 00:00:00.000', datetime('now', '-2 days'));",
+        "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, dampak_gaji, tanggal_mulai, tanggal_selesai, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, nominal) VALUES
+           ('p12', 'k2', 'j', 'Sakit', 'Dibayar', '2026-12-02', '2026-12-02', 'Alasan rahasia', 's12', 'k2', '2026-11-01 00:00:00', datetime('now', '-1 hour'), NULL);",
+    ];
+
+    /// Keputusan ganda (`q5b`), gugur (`q13`, sidik lama), dan di luar 7 hari
+    /// (`q15`), serta pengajuan baru `p13` dan `p14` (8 hari). Cermin
+    /// `DATA_HRD_FASE9_LANJUT` di `services/telegram.test.ts`.
+    const DATA_HRD_FASE9_LANJUT: &[&str] = &[
+        "INSERT INTO hr_pengajuan (id_pengajuan, id_karyawan, id_jenis, kelompok, dampak_gaji, tanggal_mulai, tanggal_selesai, alasan, sidik, diajukan_oleh, waktu_perangkat, created_at, nominal) VALUES
+           ('p13', 'k1', 'j', 'Izin', 'Dibayar', '2026-12-07', '2026-12-07', 'Alasan rahasia', 's13', 'k1', '2026-11-01 00:00:00', datetime('now'), NULL),
+           ('p14', 'k1', 'j', 'Izin', 'Dibayar', '2026-12-08', '2026-12-08', 'Alasan rahasia', 's14', 'k1', '2026-11-01 00:00:00', datetime('now', '-8 days'), NULL),
+           ('p15', 'k2', 'j', 'Cuti', 'Dibayar', '2026-12-09', '2026-12-09', 'Alasan rahasia', 's15', 'k2', '2026-11-01 00:00:00', datetime('now', '-2 days'), NULL);",
+        "INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, alasan, oleh, waktu_perangkat, diterima_cloud) VALUES
+           ('q5b', 'p5', 'Setujui', 's5', NULL, 'hrd', '2026-11-01 03:00:00', datetime('now')),
+           ('q13', 'p13', 'Setujui', 'lama', 'Alasan rahasia', 'hrd', '2026-11-01 03:00:00', datetime('now')),
+           ('q15', 'p15', 'Setujui', 's15', NULL, 'hrd', '2026-11-01 03:00:00', datetime('now', '-8 days'));",
+    ];
+
+    /// Per pengajuan, lalu kejadian harian hari ini dan hari ke-3 sesudah
+    /// semester 1 berakhir (ringkasan periode bawaan Semester).
+    async fn catat_fase9(turso: &TursoClient, pengaturan: &Pengaturan, hari_ini: &str, jam_hr: i64) {
+        catat_pengajuan_hr(turso, pengaturan, pengaturan.get(KUNCI_AKTIF_SEJAK)).await.unwrap();
+        catat_harian_pada(turso, pengaturan, hari_ini, 12, jam_hr).await.unwrap();
+        catat_harian_pada(turso, pengaturan, "2026-07-03", 12, jam_hr).await.unwrap();
+    }
+
+    /// Cermin "kejadian hrd fase 9" di `services/telegram.test.ts`: data dan
+    /// isi pesan sama, terhadap berkas SQLite sungguhan (tanpa HTTP).
+    #[test]
+    fn catat_hrd_fase9_dari_data_cloud() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let turso = klien_uji(&dir, "telegram-hrd-fase9-catat");
+            turso.ensure_schema().await.expect("skema");
+            let mut sql: Vec<String> = DATA_HRD.iter().chain(DATA_HRD_FASE9).map(|s| (*s).to_owned()).collect();
+            for (kunci, nilai) in [
+                ("bot_token", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0"),
+                ("aktif", "1"),
+                ("grup:hrd", "-555"),
+            ] {
+                sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('{kunci}', '{nilai}');"));
+            }
+            for kejadian in &KEJADIAN[20..] {
+                sql.push(format!("INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('kirim:{kejadian}', '1');"));
+            }
+            turso
+                .execute_atomic(sql.into_iter().map(|s| Statement::new(s, vec![])).collect())
+                .await
+                .expect("data uji");
+            let t = baris(&turso, "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '-3 days') AS kk1, date('now', '+7 hours', '+2 days') AS l4;", vec![])
+                .await
+                .unwrap()
+                .remove(0);
+            let t = |kunci: &str| text(&t, kunci);
+            let hari_ini = t("t");
+            let jam_hr = int(&baris(&turso, SQL_JAM_WIB, vec![]).await.unwrap()[0], "jam_hr");
+            let mut pengaturan = baca_pengaturan(&turso).await.unwrap();
+
+            catat_fase9(&turso, &pengaturan, &hari_ini, jam_hr).await;
+            let antrean = antrean_uji(&turso).await;
+            let mut harap = vec![
+                "hr-ajuan:p1".to_owned(),
+                "hr-ajuan:p12".to_owned(),
+                "hr-ajuan:p3".to_owned(),
+                "hr-ajuan:p4".to_owned(),
+                "hr-ajuan:p8".to_owned(),
+                "hr-kinerja-periode:2026-01-01".to_owned(),
+                "hr-kinerja-tunggu:2026-07-03".to_owned(),
+                format!("hr-kinerja-tunggu:{hari_ini}"),
+                format!("hr-lowongan:L4:{}", t("l4")),
+                format!("hr-pelamar:{hari_ini}"),
+                "hr-putus:q10".to_owned(),
+                "hr-putus:q5".to_owned(),
+                "hr-putus:q9".to_owned(),
+            ];
+            // Hari ini 1–7 hari sesudah akhir semester: periode itu ikut tercatat.
+            if let Some((mulai, _)) = periode_kinerja_berakhir("Semester", &hari_ini) {
+                if mulai != "2026-01-01" {
+                    harap.push(id_hr_kinerja_periode(&mulai));
+                }
+            }
+            harap.sort();
+            assert_eq!(antrean.iter().map(|(id, _, _)| id.clone()).collect::<Vec<_>>(), harap);
+            assert!(antrean.iter().all(|(_, _, klaim)| klaim == KLAIM_PARKIR));
+            let isi = |id: &str| antrean.iter().find(|(ada, _, _)| ada == id).unwrap().1.clone();
+            assert_eq!(isi("hr-ajuan:p1"), "📝 Pengajuan Cuti baru\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026");
+            assert_eq!(isi("hr-ajuan:p12"), "📝 1 pengajuan Sakit baru\nTanggal: 02/12/2026");
+            assert_eq!(isi("hr-putus:q5"), "✅ 1 pengajuan Sakit disetujui\nTanggal: 01/12/2026\nOleh: hrd");
+            assert_eq!(
+                isi("hr-putus:q9"),
+                "✅ Pengajuan Izin disetujui (urgent)\nKaryawan: Budi · Staf Gudang\nTanggal: 01/12/2026\nOleh: atasan"
+            );
+            assert_eq!(
+                isi(&format!("hr-kinerja-tunggu:{hari_ini}")),
+                format!("📊 2 penilaian kinerja menunggu Final\nPaling lama sejak {}", tanggal_tampil(&t("kk1")))
+            );
+            assert_eq!(
+                isi("hr-kinerja-periode:2026-01-01"),
+                "📊 Periode Semester 01/01/2026 s.d. 30/06/2026 berakhir: 1 belum dinilai, 1 masih draf, 1 diajukan"
+            );
+            assert_eq!(isi(&format!("hr-pelamar:{hari_ini}")), "👥 3 pelamar baru kemarin\n• Admin Gudang: 2\n• Sopir: 1");
+            assert_eq!(
+                isi(&format!("hr-lowongan:L4:{}", t("l4"))),
+                format!("📢 Lowongan Admin Gudang tutup 2 hari lagi ({})\nPelamar: 3 · Kuota: 2", tanggal_tampil(&t("l4")))
+            );
+            // Q-32, Q-86, Q-117, Q-120: tidak ada isi rahasia yang ikut.
+            for (_, pesan, _) in &antrean {
+                for rahasia in ["ahasia", "RAHASIA", "3201000000000001", "987654", "8750", "Baik", "Dodi"] {
+                    assert!(!pesan.contains(rahasia), "{pesan}");
+                }
+            }
+            assert!(!isi("hr-ajuan:p12").contains("Sari"));
+
+            // Dicatat dua kali tidak menggandakan.
+            catat_fase9(&turso, &pengaturan, &hari_ini, jam_hr).await;
+            assert_eq!(antrean_uji(&turso).await.len(), harap.len());
+
+            // Keputusan ganda, gugur, dan di luar 7 hari tidak dikirim; p13 baru.
+            turso
+                .execute_atomic(DATA_HRD_FASE9_LANJUT.iter().map(|s| Statement::new(*s, vec![])).collect())
+                .await
+                .expect("data lanjutan");
+            catat_fase9(&turso, &pengaturan, &hari_ini, jam_hr).await;
+            let ids1: Vec<String> = antrean_uji(&turso).await.into_iter().map(|(id, _, _)| id).collect();
+            assert_eq!(ids1.iter().filter(|id| !harap.contains(id)).collect::<Vec<_>>(), ["hr-ajuan:p13"]);
+
+            // `aktif_sejak` diundur 30 hari: p2 (4 hari) ikut, p14 (8 hari) tidak.
+            turso
+                .query_one(
+                    "INSERT OR REPLACE INTO app_telegram_setting (kunci, nilai) VALUES ('aktif_sejak', datetime('now', '-30 days'));",
+                    vec![],
+                )
+                .await
+                .unwrap();
+            pengaturan = baca_pengaturan(&turso).await.unwrap();
+            catat_pengajuan_hr(&turso, &pengaturan, pengaturan.get(KUNCI_AKTIF_SEJAK)).await.unwrap();
+            let ids2: Vec<String> = antrean_uji(&turso).await.into_iter().map(|(id, _, _)| id).collect();
+            assert_eq!(ids2.iter().filter(|id| !ids1.contains(id)).collect::<Vec<_>>(), ["hr-ajuan:p2"]);
+        });
+    }
+
+    /// Cermin "SQL sumber berjalan di skema cloud" di `services/telegram.test.ts`.
+    #[test]
+    fn sql_hrd_fase9_di_skema_cloud() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let turso = klien_uji(&dir, "telegram-hrd-fase9");
+            turso.ensure_schema().await.expect("skema");
+            turso
+                .execute_atomic(
+                    DATA_HRD
+                        .iter()
+                        .chain(DATA_HRD_FASE9)
+                        .map(|s| Statement::new(*s, vec![]))
+                        .collect(),
+                )
+                .await
+                .expect("data uji");
+            let t = baris(&turso, "SELECT date('now', '+7 hours') AS t, date('now', '+7 hours', '-3 days') AS kk1, date('now', '+7 hours', '+2 days') AS l4;", vec![])
+                .await
+                .unwrap()
+                .remove(0);
+            let t = |kunci: &str| text(&t, kunci);
+            let sejak = text(
+                &baris(&turso, "SELECT nilai FROM app_telegram_setting WHERE kunci = 'aktif_sejak';", vec![]).await.unwrap()[0],
+                "nilai",
+            );
+            let opsi = |row: &HashMap<String, Value>, kunci: &str| Some(text(row, kunci)).filter(|v| !v.is_empty());
+
+            let tunggu: Vec<PenilaianTunggu> = baris(&turso, SQL_HR_KINERJA_MENUNGGU, vec![])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| PenilaianTunggu {
+                    sidik: text(row, "sidik"),
+                    sejak: text(row, "sejak"),
+                    keputusan: serde_json::from_str(&text(row, "keputusan")).unwrap(),
+                })
+                .collect();
+            assert_eq!(tunggu.iter().map(|p| p.sidik.as_str()).collect::<Vec<_>>(), ["s1", "s2", "s5"]);
+            assert_eq!(ringkas_kinerja_menunggu(&tunggu), (2, t("kk1")));
+
+            let periode: Vec<KaryawanPeriode> = baris(&turso, SQL_HR_KINERJA_PERIODE, vec![json!("Semester"), json!("2026-01-01")])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| KaryawanPeriode {
+                    tanggal_daftar: opsi(row, "tanggal_daftar"),
+                    tanggal_selesai_aktif: opsi(row, "tanggal_selesai_aktif"),
+                    penilaian: serde_json::from_str(&text(row, "penilaian")).unwrap(),
+                })
+                .collect();
+            assert_eq!(periode.len(), 6);
+            assert_eq!(
+                ringkas_kinerja_periode(&periode, "2026-01-01", "2026-06-30"),
+                RingkasPeriode { belum: 1, draf: 1, diajukan: 1 }
+            );
+
+            let pelamar: Vec<(String, i64)> = baris(&turso, SQL_HR_PELAMAR_BARU, vec![json!(t("t"))])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| (text(row, "judul"), int(row, "jumlah")))
+                .collect();
+            assert_eq!(pelamar, vec![("Admin Gudang".to_owned(), 2), ("Sopir".to_owned(), 1)]);
+            let tutup: Vec<(String, String, i64, i64, i64)> = baris(&turso, SQL_HR_LOWONGAN_TUTUP, vec![])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| (text(row, "id_lowongan"), text(row, "tanggal_tutup"), int(row, "kuota"), int(row, "pelamar"), int(row, "sisa")))
+                .collect();
+            assert_eq!(tutup, vec![("L4".to_owned(), t("l4"), 2, 3, 2)]);
+
+            let isi = |row: &HashMap<String, Value>| IsiPengajuanHr {
+                kelompok: text(row, "kelompok"),
+                nama: text(row, "nama"),
+                jabatan: text(row, "jabatan"),
+                mulai: text(row, "tanggal_mulai"),
+                selesai: text(row, "tanggal_selesai"),
+            };
+            let baru = baris(&turso, SQL_HR_PENGAJUAN_BARU, vec![json!(sejak)]).await.unwrap();
+            assert_eq!(baru.iter().map(|row| text(row, "id_pengajuan")).collect::<Vec<_>>(), ["p1", "p3", "p8", "p4", "p12"]);
+            assert_eq!(pesan_hr_pengajuan_baru(&isi(&baru[4])), "📝 1 pengajuan Sakit baru\nTanggal: 02/12/2026");
+            let putus = baris(&turso, SQL_HR_PENGAJUAN_PUTUS, vec![json!(sejak)]).await.unwrap();
+            assert_eq!(putus.iter().map(|row| text(row, "id_keputusan")).collect::<Vec<_>>(), ["q10", "q5", "q9"]);
+            assert_eq!(
+                pesan_hr_pengajuan_diputus(&isi(&putus[1]), &text(&putus[1], "jenis"), &text(&putus[1], "oleh")),
+                "✅ 1 pengajuan Sakit disetujui\nTanggal: 01/12/2026\nOleh: hrd"
+            );
+            assert_eq!(
+                pesan_hr_pengajuan_diputus(&isi(&putus[0]), &text(&putus[0], "jenis"), &text(&putus[0], "oleh")),
+                "✅ Pengajuan Izin disetujui (urgent)\nKaryawan: Sari · Kasir\nTanggal: 01/12/2026\nOleh: atasan"
+            );
+
+            // Q-32, Q-86, Q-117: isi rahasia tidak terbaca sama sekali.
+            let semua = format!("{tunggu:?}{periode:?}{baru:?}{putus:?}");
+            for rahasia in ["ahasia", "8750", "Baik", "987654"] {
+                assert!(!semua.contains(rahasia), "{rahasia}");
+            }
+        });
+    }
+
     // Vektor yang sama diuji di `validations/telegram.test.ts` ("izin kartu perhatian").
     #[test]
     fn izin_kartu_perhatian() {
@@ -3027,8 +4039,67 @@ mod tests {
         );
         assert_eq!(
             izin_perhatian(|_| true),
-            IzinPerhatian { kontrak: true, dokumen: true, sp: true, pengajuan: true, hanya_reimburse: false, rekrutmen: true }
+            IzinPerhatian { kontrak: true, dokumen: true, sp: true, pengajuan: true, hanya_reimburse: false, rekrutmen: true, kinerja: true }
         );
+        // Kinerja (Q-122): `view` atau `finalize`; `assess` saja tidak membuka.
+        for izin in ["hr.performance.view", "hr.performance.finalize"] {
+            assert_eq!(dari(&[izin]), IzinPerhatian { kinerja: true, hanya_reimburse: true, ..Default::default() });
+        }
+        assert_eq!(dari(&["hr.performance.assess"]), IzinPerhatian { hanya_reimburse: true, ..Default::default() });
+        assert!(!IZIN_PERHATIAN.contains(&"hr.performance.assess"));
+    }
+
+    /// Cermin "perhatian kinerja" di `services/telegram.test.ts`: data dan
+    /// hasil sama. Hanya angka; periode hanya 1–7 hari sesudah berakhir.
+    #[test]
+    fn perhatian_kinerja() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let turso = klien_uji(&dir, "telegram-perhatian-kinerja");
+            turso.ensure_schema().await.expect("skema");
+            turso
+                .execute_atomic(
+                    DATA_HRD
+                        .iter()
+                        .chain(DATA_HRD_FASE9)
+                        .map(|s| Statement::new(*s, vec![]))
+                        .collect(),
+                )
+                .await
+                .expect("data uji");
+            let kk1 = text(
+                &baris(&turso, "SELECT date('now', '+7 hours', '-3 days') AS kk1;", vec![]).await.unwrap()[0],
+                "kk1",
+            );
+            let semua = izin_perhatian(|_| true);
+            let hasil = perhatian_pada(&turso, &semua, "2026-07-03").await.unwrap();
+            assert_eq!(
+                hasil["kinerja"],
+                json!({
+                    "menunggu": 2,
+                    "menunggu_sejak": kk1,
+                    "periode": { "jenis": "Semester", "mulai": "2026-01-01", "selesai": "2026-06-30", "belum": 1, "draf": 1, "diajukan": 1 },
+                })
+            );
+            let teks = hasil["kinerja"].to_string();
+            for nama in ["Budi", "Sari", "Fajar", "Gita", "8750", "Baik"] {
+                assert!(!teks.contains(nama), "{nama}");
+            }
+            let nanti = perhatian_pada(&turso, &semua, "2026-11-12").await.unwrap();
+            assert_eq!(nanti["kinerja"]["periode"], Value::Null);
+            assert_eq!(nanti["kinerja"]["menunggu"], json!(2));
+
+            let kunci = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            for izin in ["hr.performance.view", "hr.performance.finalize"] {
+                let satu = perhatian_pada(&turso, &izin_perhatian(|p| p == izin), "2026-07-03").await.unwrap();
+                assert_eq!(kunci(&satu), ["kinerja"], "{izin}");
+            }
+            let atasan = perhatian_pada(&turso, &izin_perhatian(|p| p == "hr.performance.assess"), "2026-07-03").await.unwrap();
+            assert_eq!(atasan, json!({}));
+        });
     }
 
     /// Cermin "perhatian" di `services/telegram.test.ts`: data dan hasil sama.
@@ -3081,9 +4152,9 @@ mod tests {
                 semua["pengajuan"],
                 json!({
                     "menunggu": [
-                        { "kelompok": "Cuti", "jumlah": 2 },
-                        { "kelompok": "Izin", "jumlah": 1 },
-                        { "kelompok": "Reimburse", "jumlah": 1 },
+                        { "kelompok": "Cuti", "jumlah": 2, "hari": 2 },
+                        { "kelompok": "Izin", "jumlah": 1, "hari": 2 },
+                        { "kelompok": "Reimburse", "jumlah": 1, "hari": 2 },
                     ],
                     "menunggu_sejak": t("p2"),
                     "urgent": 1,
@@ -3113,7 +4184,7 @@ mod tests {
             assert_eq!(
                 reimburse["pengajuan"],
                 json!({
-                    "menunggu": [{ "kelompok": "Reimburse", "jumlah": 1 }],
+                    "menunggu": [{ "kelompok": "Reimburse", "jumlah": 1, "hari": 2 }],
                     "menunggu_sejak": t("p3"),
                     "urgent": 0,
                     "urgent_sejak": "",
@@ -3143,6 +4214,8 @@ mod tests {
                 "hr_kontrak_akhir": true, "hr_percobaan_akhir": false, "hr_dokumen_kedaluwarsa": true,
                 "hr_sp_berakhir": false, "hr_pengajuan_menunggu": true,
                 "hr_urgent_belum_diketahui": false, "hr_ulang_tahun_kerja": true,
+                "hr_kinerja_menunggu": false, "hr_kinerja_periode": true, "hr_pelamar_baru": false,
+                "hr_lowongan_tutup": true, "hr_pengajuan_baru": false, "hr_pengajuan_diputus": true,
             },
         });
         let draft = baca_draft(&sah).unwrap();
@@ -3179,7 +4252,13 @@ mod tests {
                 ("hr_sp_berakhir", false),
                 ("hr_pengajuan_menunggu", true),
                 ("hr_urgent_belum_diketahui", false),
-                ("hr_ulang_tahun_kerja", true)
+                ("hr_ulang_tahun_kerja", true),
+                ("hr_kinerja_menunggu", false),
+                ("hr_kinerja_periode", true),
+                ("hr_pelamar_baru", false),
+                ("hr_lowongan_tutup", true),
+                ("hr_pengajuan_baru", false),
+                ("hr_pengajuan_diputus", true)
             ]
         );
 

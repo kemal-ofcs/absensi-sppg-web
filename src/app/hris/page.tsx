@@ -1,6 +1,7 @@
 "use client";
 
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { AppShell } from "@/components/AppShell";
 import { HrisWorkspace } from "@/components/hris/HrisWorkspace";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -22,7 +23,11 @@ export default function HrisPage() {
           title="HRIS"
           description="Struktur organisasi, data pribadi dan keuangan karyawan, kontrak kerja, dan dokumen. Data pribadi, keuangan, dan dokumen hanya tersimpan di database pusat."
         />
-        {isAuthenticated ? <HrisWorkspace /> : null}
+        {isAuthenticated ? (
+          <Suspense fallback={null}>
+            <HrisWorkspace />
+          </Suspense>
+        ) : null}
       </div>
     </AppShell>
   );

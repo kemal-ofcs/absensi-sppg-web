@@ -36,19 +36,9 @@ import {
   PENDIDIKAN,
   STATUS_NIKAH,
 } from "@/lib/validations/hris";
+import type { TabRincian } from "@/lib/validations/telegram";
 
-type Tab =
-  | "kerja"
-  | "pribadi"
-  | "keuangan"
-  | "kontrak"
-  | "dokumen"
-  | "cuti"
-  | "sp"
-  | "kinerja"
-  | "pelatihan";
-/** Tab rincian yang bisa dibuka langsung, mis. dari kartu "Perlu perhatian". */
-export type TabRincian = Tab;
+type Tab = TabRincian;
 type Isian = Record<string, string>;
 
 const KELAS =

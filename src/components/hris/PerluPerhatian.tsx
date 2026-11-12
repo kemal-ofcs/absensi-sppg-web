@@ -1,19 +1,19 @@
 "use client";
 
-// Kartu "Perlu perhatian" di tab Karyawan /hris (fase 8, prd-hris.md §23.4).
-// Selalu dibaca dari database (Desktop sekalipun), dengan SQL yang sama
-// dengan pengingat Telegram grup HRD. Bagian yang tidak diizinkan tidak
-// dikirim backend sama sekali; layar hanya merender yang ada.
+// Kartu "Perlu perhatian" (fase 8 §23.4, fase 9 §24.5) di tab Karyawan /hris,
+// di beranda Web/Desktop, dan di /dashboard Mobile (disalin lewat
+// `filesToCopy`). Selalu dibaca dari database (Desktop sekalipun), dengan SQL
+// yang sama dengan pengingat Telegram grup HRD. Bagian yang tidak diizinkan
+// tidak dikirim backend sama sekali; layar hanya merender yang ada.
 
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import type { TabRincian } from "@/components/hris/RincianKaryawan";
 import { ambilPerhatian } from "@/lib/gateways/hris";
 import { syncNow } from "@/lib/gateways/sync-status";
 import {
-  HR_HARI_MENUNGGU,
   type PerhatianHr,
   sisaHari,
+  type TabRincian,
 } from "@/lib/validations/telegram";
 import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
@@ -76,10 +76,18 @@ const denganJabatan = (nama: string, jabatan: string) =>
 export function PerluPerhatian({
   onPilihKaryawan,
   onBukaRekrutmen,
+  onBukaKinerja,
+  sembunyiBilaKosong = false,
 }: {
-  onPilihKaryawan: (idKaryawan: string, tab: TabRincian) => void;
+  /** Tanpa ini nama tidak bisa diklik (Mobile tidak punya /hris, Q-124). */
+  onPilihKaryawan?: (idKaryawan: string, tab: TabRincian) => void;
   onBukaRekrutmen?: () => void;
+  onBukaKinerja?: () => void;
+  /** Beranda (Q-123): tidak tampil selama memuat dan bila tidak ada isinya. */
+  sembunyiBilaKosong?: boolean;
 }) {
+  const pilih = (idKaryawan: string, tab: TabRincian) =>
+    onPilihKaryawan ? () => onPilihKaryawan(idKaryawan, tab) : undefined;
   const [data, setData] = useState<PerhatianHr | null>(null);
   const [galat, setGalat] = useState("");
   const [sibuk, setSibuk] = useState(false);
@@ -111,13 +119,22 @@ export function PerluPerhatian({
     0,
   );
   const adaPengajuan = totalMenunggu > 0 || (pengajuan?.urgent ?? 0) > 0;
+  const kinerja = data?.kinerja;
+  const periode = kinerja?.periode;
+  const adaPeriode =
+    periode != null && periode.belum + periode.draf + periode.diajukan > 0;
+  const adaKinerja = (kinerja?.menunggu ?? 0) > 0 || adaPeriode;
   const kosong =
     kontrak.length +
       dokumen.length +
       sp.length +
       ultah.length +
       rekrutmen.length ===
-      0 && !adaPengajuan;
+      0 &&
+    !adaPengajuan &&
+    !adaKinerja;
+
+  if (sembunyiBilaKosong && !galat && (data === null || kosong)) return null;
 
   return (
     <section
@@ -170,7 +187,7 @@ export function PerluPerhatian({
                   nama={denganJabatan(k.nama, k.jabatan)}
                   rincian={`${k.jenis === "PKWT" ? "PKWT berakhir" : "Masa percobaan berakhir"} ${tanggalTampil(k.tanggal)}`}
                   tanda={labelSisa(k.sisa)}
-                  onPilih={() => onPilihKaryawan(k.id_karyawan, "kontrak")}
+                  onPilih={pilih(k.id_karyawan, "kontrak")}
                 />
               ))}
             </Bagian>
@@ -183,7 +200,7 @@ export function PerluPerhatian({
                   nama={denganJabatan(d.nama, d.jabatan)}
                   rincian={`${d.jenis_dokumen} kedaluwarsa ${tanggalTampil(d.tanggal)}`}
                   tanda={labelSisa(d.sisa)}
-                  onPilih={() => onPilihKaryawan(d.id_karyawan, "dokumen")}
+                  onPilih={pilih(d.id_karyawan, "dokumen")}
                 />
               ))}
             </Bagian>
@@ -196,7 +213,7 @@ export function PerluPerhatian({
                   nama={denganJabatan(s.nama, s.jabatan)}
                   rincian={`${s.tingkat} berakhir ${tanggalTampil(s.tanggal)}`}
                   tanda={labelSisa(s.sisa)}
-                  onPilih={() => onPilihKaryawan(s.id_karyawan, "sp")}
+                  onPilih={pilih(s.id_karyawan, "sp")}
                 />
               ))}
             </Bagian>
@@ -205,7 +222,7 @@ export function PerluPerhatian({
             <Bagian judul="Pengajuan">
               {totalMenunggu > 0 ? (
                 <Butir
-                  nama={`${totalMenunggu} menunggu lebih dari ${HR_HARI_MENUNGGU} hari`}
+                  nama={`${totalMenunggu} menunggu lebih dari ${pengajuan.menunggu[0]?.hari ?? 0} hari`}
                   rincian={pengajuan.menunggu
                     .map((m) => `${m.kelompok} ${m.jumlah}`)
                     .join(" · ")}
@@ -229,6 +246,38 @@ export function PerluPerhatian({
               </li>
             </Bagian>
           ) : null}
+          {kinerja && adaKinerja ? (
+            <Bagian judul="Kinerja">
+              {kinerja.menunggu > 0 ? (
+                <Butir
+                  nama={`${kinerja.menunggu} penilaian menunggu Final`}
+                  rincian={
+                    kinerja.menunggu_sejak
+                      ? `Paling lama sejak ${tanggalTampil(kinerja.menunggu_sejak)}`
+                      : ""
+                  }
+                />
+              ) : null}
+              {periode && adaPeriode ? (
+                <Butir
+                  nama={`Periode ${periode.jenis} ${tanggalTampil(periode.mulai)} s.d. ${tanggalTampil(periode.selesai)} berakhir`}
+                  rincian={`${periode.belum} belum dinilai · ${periode.draf} masih draf · ${periode.diajukan} diajukan`}
+                />
+              ) : null}
+              {onBukaKinerja ? (
+                <li className="px-2 pt-1">
+                  <button
+                    type="button"
+                    id="hris-perlu-perhatian-kinerja"
+                    onClick={onBukaKinerja}
+                    className="text-xs font-bold text-sky-300 hover:underline"
+                  >
+                    Buka penilaian kinerja
+                  </button>
+                </li>
+              ) : null}
+            </Bagian>
+          ) : null}
           {ultah.length > 0 ? (
             <Bagian judul="Ulang tahun kerja">
               {ultah.map((u) => (
@@ -236,7 +285,7 @@ export function PerluPerhatian({
                   key={`${u.id_karyawan}:${u.tanggal}`}
                   nama={denganJabatan(u.nama, u.jabatan)}
                   rincian={`${tanggalTampil(u.tanggal)}, tahun ke-${u.tahun}`}
-                  onPilih={() => onPilihKaryawan(u.id_karyawan, "kerja")}
+                  onPilih={pilih(u.id_karyawan, "kerja")}
                 />
               ))}
             </Bagian>

@@ -22,7 +22,17 @@ import {
   KUNCI_PELAMAR_RETENSI_BULAN,
   LABEL_TANDA_HRIS,
   type PengaturanKontrak,
+  validasiPengaturan,
 } from "@/lib/validations/hris";
+
+// Angka pengingat HR (fase 9, §24.3) tampil sebagai kelompok sendiri, tetapi
+// disimpan bersama angka kontrak: validatornya menuntut semua kunci sekaligus.
+const ANGKA_KONTRAK = BATAS_PENGATURAN.filter(
+  ([kunci]) => !kunci.startsWith("hr_ingat_"),
+);
+const ANGKA_PENGINGAT = BATAS_PENGATURAN.filter(([kunci]) =>
+  kunci.startsWith("hr_ingat_"),
+);
 
 const KELAS =
   "min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500";
@@ -231,6 +241,11 @@ export function OrganisasiPanel({
 
   const simpanAturan = async () => {
     if (!aturan) return;
+    const cek = validasiPengaturan({ ...aturan } as Record<string, unknown>);
+    if (!cek.ok) {
+      setPesanAturan(cek.pesan);
+      return;
+    }
     // Masa simpan pelamar berlaku surut (§22.6): memendekkannya bisa
     // menghapus data lowongan lama pada pembersihan berikutnya.
     const retensiLama = org.pengaturan[KUNCI_PELAMAR_RETENSI_BULAN];
@@ -377,39 +392,81 @@ export function OrganisasiPanel({
           ulang dengan konsultan HR atau hukum perusahaan.
         </p>
         {aturan ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {BATAS_PENGATURAN.map(([kunci, label, min, maks]) => (
-              <div key={kunci} className="min-w-0">
-                <label
-                  htmlFor={`hris-${kunci}`}
-                  className="mb-1 block text-xs font-semibold text-slate-400"
-                >
-                  {label} ({min}–{maks})
-                </label>
-                <input
-                  id={`hris-${kunci}`}
-                  type="number"
-                  min={min}
-                  max={maks}
-                  value={aturan[kunci]}
-                  onChange={(e) =>
-                    setAturan((l) =>
-                      l ? { ...l, [kunci]: Number(e.target.value) } : l,
-                    )
-                  }
-                  className={KELAS}
-                />
-              </div>
-            ))}
-          </div>
+          <>
+            <IsianAngka
+              daftar={ANGKA_KONTRAK}
+              aturan={aturan}
+              setAturan={setAturan}
+            />
+            <h4 className="pt-2 text-sm font-bold text-white">
+              Angka pengingat HR
+            </h4>
+            <p className="text-xs text-slate-400">
+              Dipakai pengingat grup Telegram HRD dan kartu Perlu perhatian,
+              setelah tersimpan di database pusat. Memperkecil angka tidak
+              membatalkan pengingat yang sudah tercatat; memperbesarnya bisa
+              langsung memunculkan pengingat untuk yang kini masuk jendela.
+              Pengingat kedua PKWT harus lebih kecil dari yang pertama.
+            </p>
+            <IsianAngka
+              daftar={ANGKA_PENGINGAT}
+              aturan={aturan}
+              setAturan={setAturan}
+            />
+          </>
         ) : null}
-        <button type="button" onClick={simpanAturan} className={TOMBOL}>
+        <button
+          type="button"
+          id="hris-simpan-angka"
+          onClick={simpanAturan}
+          className={TOMBOL}
+        >
           Simpan angka bawaan
         </button>
         {pesanAturan ? (
           <p className="text-sm text-slate-300">{pesanAturan}</p>
         ) : null}
       </section>
+    </div>
+  );
+}
+
+function IsianAngka({
+  daftar,
+  aturan,
+  setAturan,
+}: {
+  daftar: readonly (typeof BATAS_PENGATURAN)[number][];
+  aturan: PengaturanKontrak;
+  setAturan: (
+    ubah: (lama: PengaturanKontrak | null) => PengaturanKontrak | null,
+  ) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {daftar.map(([kunci, label, min, maks]) => (
+        <div key={kunci} className="min-w-0">
+          <label
+            htmlFor={`hris-${kunci}`}
+            className="mb-1 block text-xs font-semibold text-slate-400"
+          >
+            {label} ({min}–{maks})
+          </label>
+          <input
+            id={`hris-${kunci}`}
+            type="number"
+            min={min}
+            max={maks}
+            value={aturan[kunci]}
+            onChange={(e) =>
+              setAturan((l) =>
+                l ? { ...l, [kunci]: Number(e.target.value) } : l,
+              )
+            }
+            className={KELAS}
+          />
+        </div>
+      ))}
     </div>
   );
 }

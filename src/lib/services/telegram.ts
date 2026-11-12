@@ -4,6 +4,10 @@ import type { Client, InStatement } from "@libsql/client";
 import { z } from "zod";
 import { ApiRequestError } from "@/lib/server/http/api-response";
 import { type Laporan, penugasan } from "@/lib/validations/driver";
+import {
+  KUNCI_PERIODE,
+  pengaturanKinerjaDariPeta,
+} from "@/lib/validations/hr-kinerja";
 import { PERHATIAN_REKRUTMEN_SQL } from "@/lib/validations/hr-rekrutmen";
 import {
   AWALAN_BUKA,
@@ -15,12 +19,19 @@ import {
   galatTelegram,
   grupDariUpdates,
   type IsiLaporanPerjalanan,
+  type IsiPengajuanHr,
   type IzinPerhatian,
   idGajiStatus,
+  idHrAjuan,
   idHrDokumen,
+  idHrKinerjaPeriode,
+  idHrKinerjaTunggu,
   idHrKontrak,
+  idHrLowongan,
   idHrMenunggu,
+  idHrPelamar,
   idHrPercobaan,
+  idHrPutus,
   idHrSp,
   idHrUltah,
   idHrUrgent,
@@ -33,6 +44,7 @@ import {
   idTripLokasiPalsu,
   idTutupBuku,
   JAM_RINGKASAN_STOK,
+  type KaryawanPeriode,
   type KejadianTelegram,
   KUNCI_AKTIF,
   KUNCI_AKTIF_SEJAK,
@@ -46,12 +58,20 @@ import {
   PERHATIAN_SQL_KONTRAK,
   PERHATIAN_SQL_SP,
   PERHATIAN_SQL_ULTAH,
+  type PenilaianTunggu,
   type PerhatianHr,
+  periodeKinerjaBerakhir,
   permintaanKirim,
   pesanBukaBuku,
   pesanGajiStatus,
   pesanHrDokumenKedaluwarsa,
+  pesanHrKinerjaMenunggu,
+  pesanHrKinerjaPeriode,
   pesanHrKontrakAkhir,
+  pesanHrLowonganTutup,
+  pesanHrPelamarBaru,
+  pesanHrPengajuanBaru,
+  pesanHrPengajuanDiputus,
   pesanHrPengajuanMenunggu,
   pesanHrPercobaanAkhir,
   pesanHrSpBerakhir,
@@ -67,6 +87,8 @@ import {
   pesanTripTutup,
   pesanTutupBuku,
   potong,
+  ringkasKinerjaMenunggu,
+  ringkasKinerjaPeriode,
   samarkanToken,
   statusSetelahGagal,
   TELEGRAM_BATCH,
@@ -82,8 +104,15 @@ import {
   TELEGRAM_SQL_BUKA_BUKU,
   TELEGRAM_SQL_GAJI_STATUS,
   TELEGRAM_SQL_HR_DOKUMEN,
+  TELEGRAM_SQL_HR_KINERJA_JENIS,
+  TELEGRAM_SQL_HR_KINERJA_MENUNGGU,
+  TELEGRAM_SQL_HR_KINERJA_PERIODE,
   TELEGRAM_SQL_HR_KONTRAK,
+  TELEGRAM_SQL_HR_LOWONGAN_TUTUP,
   TELEGRAM_SQL_HR_MENUNGGU,
+  TELEGRAM_SQL_HR_PELAMAR_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_BARU,
+  TELEGRAM_SQL_HR_PENGAJUAN_PUTUS,
   TELEGRAM_SQL_HR_PERCOBAAN,
   TELEGRAM_SQL_HR_SP,
   TELEGRAM_SQL_HR_ULTAH,
@@ -156,6 +185,12 @@ export const telegramDraftSchema = z
         hr_pengajuan_menunggu: z.boolean(),
         hr_urgent_belum_diketahui: z.boolean(),
         hr_ulang_tahun_kerja: z.boolean(),
+        hr_kinerja_menunggu: z.boolean(),
+        hr_kinerja_periode: z.boolean(),
+        hr_pelamar_baru: z.boolean(),
+        hr_lowongan_tutup: z.boolean(),
+        hr_pengajuan_baru: z.boolean(),
+        hr_pengajuan_diputus: z.boolean(),
       })
       .strict(),
   })
@@ -510,6 +545,7 @@ async function catatKejadian(client: Client, pengaturan: Pengaturan) {
     }
   }
   await catatArmada(client, pengaturan, sejak);
+  await catatPengajuanHr(client, pengaturan, sejak);
   await catatHarian(client, pengaturan);
 }
 
@@ -729,23 +765,32 @@ async function catatHarian(client: Client, pengaturan: Pengaturan) {
   }
   const jam = (await client.execute(TELEGRAM_SQL_JAM_WIB)).rows[0];
   if (!jam) return;
-  await catatHarianPada(client, pengaturan, teks(jam.tanggal), Number(jam.jam));
+  await catatHarianPada(
+    client,
+    pengaturan,
+    teks(jam.tanggal),
+    Number(jam.jam),
+    Number(jam.jam_hr),
+  );
 }
 
 /**
- * Cermin `catat_harian_pada`. `tanggal`/`jam` = tanggal dan jam WIB dari
- * `TELEGRAM_SQL_JAM_WIB`; diekspor supaya batas 07.00 bisa diuji tanpa
- * bergantung jam saat tes berjalan.
+ * Cermin `catat_harian_pada`. `tanggal`/`jam`/`jamHr` dari
+ * `TELEGRAM_SQL_JAM_WIB`; diekspor supaya batas jam bisa diuji tanpa
+ * bergantung jam saat tes berjalan. Stok tetap mulai `JAM_RINGKASAN_STOK`,
+ * pengingat HR mulai `hr_ingat_jam` (§24.3).
  */
 export async function catatHarianPada(
   client: Client,
   pengaturan: Pengaturan,
   tanggal: string,
   jam: number,
+  jamHr: number,
 ) {
-  if (jam < JAM_RINGKASAN_STOK) return;
-  if (pengaturan.siap("stok_menipis")) await catatStok(client, tanggal);
-  await catatHrd(client, pengaturan, tanggal);
+  if (jam >= JAM_RINGKASAN_STOK && pengaturan.siap("stok_menipis")) {
+    await catatStok(client, tanggal);
+  }
+  if (jam >= jamHr) await catatHrd(client, pengaturan, tanggal);
 }
 
 async function catatStok(client: Client, tanggal: string) {
@@ -785,7 +830,7 @@ async function catatHrd(
       const sisa = Number(row.sisa ?? 0);
       await antrekanParkir(
         client,
-        idHrKontrak(teks(row.id_kontrak), sisa),
+        idHrKontrak(teks(row.id_kontrak), sisa, Number(row.dekat ?? 0)),
         "hr_kontrak_akhir",
         pesanHrKontrakAkhir({
           nama: teks(row.nama),
@@ -860,6 +905,7 @@ async function catatHrd(
         jumlah: Number(row.jumlah ?? 0),
       })),
       palingLama,
+      Number(rows[0]?.hari ?? 0),
     );
     if (isi !== null) {
       await antrekanParkir(client, idMenunggu, "hr_pengajuan_menunggu", isi);
@@ -892,6 +938,178 @@ async function catatHrd(
     );
     if (isi !== null) {
       await antrekanParkir(client, idUltah, "hr_ulang_tahun_kerja", isi);
+    }
+  }
+  await catatKinerjaRekrutmen(client, pengaturan, tanggal);
+}
+
+/** Cermin `keputusan_json`: JSON rusak = tanpa isi. */
+function jsonDaftar<T>(nilai: unknown): T[] {
+  try {
+    const hasil: unknown = JSON.parse(teks(nilai));
+    return Array.isArray(hasil) ? (hasil as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Cermin `ringkas_menunggu_cloud`: ringkasan "menunggu Final" dari cloud. */
+async function ringkasMenungguCloud(client: Client) {
+  const daftar: PenilaianTunggu[] = (
+    await baris(client, TELEGRAM_SQL_HR_KINERJA_MENUNGGU)
+  ).map((row) => ({
+    sidik: teks(row.sidik),
+    sejak: teks(row.sejak),
+    keputusan: jsonDaftar(row.keputusan),
+  }));
+  return ringkasKinerjaMenunggu(daftar);
+}
+
+/** Cermin `jenis_periode_cloud`: kosong atau rusak = bawaan. */
+async function jenisPeriodeCloud(client: Client) {
+  const nilai = teks(
+    (await baris(client, TELEGRAM_SQL_HR_KINERJA_JENIS))[0]?.value,
+  );
+  return pengaturanKinerjaDariPeta(new Map([[KUNCI_PERIODE, nilai]])).periode;
+}
+
+/** Cermin `ringkas_periode_cloud`: ringkasan satu periode dari cloud. */
+async function ringkasPeriodeCloud(
+  client: Client,
+  jenis: string,
+  mulai: string,
+  selesai: string,
+) {
+  const daftar: KaryawanPeriode[] = (
+    await baris(client, TELEGRAM_SQL_HR_KINERJA_PERIODE, [jenis, mulai])
+  ).map((row) => ({
+    tanggal_daftar: teks(row.tanggal_daftar) || null,
+    tanggal_selesai_aktif: teks(row.tanggal_selesai_aktif) || null,
+    penilaian: jsonDaftar(row.penilaian),
+  }));
+  return ringkasKinerjaPeriode(daftar, mulai, selesai);
+}
+
+/**
+ * Cermin `catat_kinerja_rekrutmen`: kejadian kinerja dan rekrutmen berbasis
+ * tanggal (§24.4). Kinerja hanya angka (Q-117), rekrutmen tanpa data pelamar
+ * (Q-86). Ringkasan sekali per tanggal lewat `belumTercatat`, periode sekali
+ * per `periode_mulai`, lowongan diperiksa di SQL sumber.
+ */
+async function catatKinerjaRekrutmen(
+  client: Client,
+  pengaturan: Pengaturan,
+  tanggal: string,
+) {
+  const idTunggu = idHrKinerjaTunggu(tanggal);
+  if (
+    pengaturan.siap("hr_kinerja_menunggu") &&
+    (await belumTercatat(client, idTunggu))
+  ) {
+    const { jumlah, sejak } = await ringkasMenungguCloud(client);
+    const isi = pesanHrKinerjaMenunggu(jumlah, sejak);
+    if (isi !== null) {
+      await antrekanParkir(client, idTunggu, "hr_kinerja_menunggu", isi);
+    }
+  }
+  if (pengaturan.siap("hr_kinerja_periode")) {
+    const jenis = await jenisPeriodeCloud(client);
+    const periode = periodeKinerjaBerakhir(jenis, tanggal);
+    if (periode) {
+      const [mulai, selesai] = periode;
+      const idPeriode = idHrKinerjaPeriode(mulai);
+      if (await belumTercatat(client, idPeriode)) {
+        const isi = pesanHrKinerjaPeriode(
+          jenis,
+          mulai,
+          selesai,
+          await ringkasPeriodeCloud(client, jenis, mulai, selesai),
+        );
+        if (isi !== null) {
+          await antrekanParkir(client, idPeriode, "hr_kinerja_periode", isi);
+        }
+      }
+    }
+  }
+  const idPelamar = idHrPelamar(tanggal);
+  if (
+    pengaturan.siap("hr_pelamar_baru") &&
+    (await belumTercatat(client, idPelamar))
+  ) {
+    const isi = pesanHrPelamarBaru(
+      (await baris(client, TELEGRAM_SQL_HR_PELAMAR_BARU, [tanggal])).map(
+        (row) => ({ judul: teks(row.judul), jumlah: Number(row.jumlah ?? 0) }),
+      ),
+    );
+    if (isi !== null) {
+      await antrekanParkir(client, idPelamar, "hr_pelamar_baru", isi);
+    }
+  }
+  if (pengaturan.siap("hr_lowongan_tutup")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_LOWONGAN_TUTUP)) {
+      const tutup = teks(row.tanggal_tutup);
+      await antrekanParkir(
+        client,
+        idHrLowongan(teks(row.id_lowongan), tutup),
+        "hr_lowongan_tutup",
+        pesanHrLowonganTutup({
+          judul: teks(row.judul),
+          tanggal: tutup,
+          sisa: Number(row.sisa ?? 0),
+          pelamar: Number(row.pelamar ?? 0),
+          kuota: Number(row.kuota ?? 0),
+        }),
+      );
+    }
+  }
+}
+
+function isiPengajuanHr(row: Record<string, unknown>): IsiPengajuanHr {
+  return {
+    kelompok: teks(row.kelompok),
+    nama: teks(row.nama),
+    jabatan: teks(row.jabatan),
+    mulai: teks(row.tanggal_mulai),
+    selesai: teks(row.tanggal_selesai),
+  };
+}
+
+/**
+ * Cermin `catat_pengajuan_hr`: kejadian per pengajuan HR ke grup HRD
+ * (§24.4, Q-120, Q-121), diparkir. `sejak` = `aktif_sejak`; batas 7 hari jam
+ * cloud dan id-nya diperiksa di SQL sumber. Diekspor untuk tes.
+ */
+export async function catatPengajuanHr(
+  client: Client,
+  pengaturan: Pengaturan,
+  sejak: string,
+) {
+  if (pengaturan.siap("hr_pengajuan_baru")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_PENGAJUAN_BARU, [
+      sejak,
+    ])) {
+      await antrekanParkir(
+        client,
+        idHrAjuan(teks(row.id_pengajuan)),
+        "hr_pengajuan_baru",
+        pesanHrPengajuanBaru(isiPengajuanHr(row)),
+      );
+    }
+  }
+  if (pengaturan.siap("hr_pengajuan_diputus")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_PENGAJUAN_PUTUS, [
+      sejak,
+    ])) {
+      await antrekanParkir(
+        client,
+        idHrPutus(teks(row.id_keputusan)),
+        "hr_pengajuan_diputus",
+        pesanHrPengajuanDiputus(
+          isiPengajuanHr(row),
+          teks(row.jenis),
+          teks(row.oleh),
+        ),
+      );
     }
   }
 }
@@ -1014,6 +1232,19 @@ export async function perhatianHr(
   client: Client,
   izin: IzinPerhatian,
 ): Promise<PerhatianHr> {
+  const jam = (await client.execute(TELEGRAM_SQL_JAM_WIB)).rows[0];
+  return perhatianHrPada(client, izin, teks(jam?.tanggal));
+}
+
+/**
+ * Cermin `perhatian_pada`. `tanggal` = tanggal WIB jam database; diekspor
+ * supaya jendela periode kinerja bisa diuji tanpa bergantung tanggal tes.
+ */
+export async function perhatianHrPada(
+  client: Client,
+  izin: IzinPerhatian,
+  tanggal: string,
+): Promise<PerhatianHr> {
   const hasil: PerhatianHr = {};
   if (izin.kontrak) {
     hasil.kontrak = objekKolom<BagianPerhatian<"kontrak">[number]>(
@@ -1051,7 +1282,7 @@ export async function perhatianHr(
       ? undefined
       : (await baris(client, TELEGRAM_SQL_HR_URGENT))[0];
     hasil.pengajuan = {
-      menunggu: objekKolom(menunggu, ["kelompok"], ["jumlah"]),
+      menunggu: objekKolom(menunggu, ["kelompok"], ["jumlah", "hari"]),
       menunggu_sejak: menunggu
         .map((row) => teks(row.sejak))
         .reduce((a, b) => (a === "" || b < a ? b : a), ""),
@@ -1065,6 +1296,24 @@ export async function perhatianHr(
       ["id_lowongan", "judul", "tanggal_hapus"],
       ["jumlah"],
     );
+  }
+  // Kinerja (§24.5, Q-122): hanya angka, dengan aturan yang sama dengan
+  // kejadian Telegram `hr_kinerja_menunggu`/`hr_kinerja_periode`.
+  if (izin.kinerja) {
+    const { jumlah, sejak } = await ringkasMenungguCloud(client);
+    const jenis = await jenisPeriodeCloud(client);
+    const rentang = periodeKinerjaBerakhir(jenis, tanggal);
+    let periode: NonNullable<PerhatianHr["kinerja"]>["periode"] = null;
+    if (rentang) {
+      const [mulai, selesai] = rentang;
+      periode = {
+        jenis,
+        mulai,
+        selesai,
+        ...(await ringkasPeriodeCloud(client, jenis, mulai, selesai)),
+      };
+    }
+    hasil.kinerja = { menunggu: jumlah, menunggu_sejak: sejak, periode };
   }
   return hasil;
 }

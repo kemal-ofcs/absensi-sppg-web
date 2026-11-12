@@ -68,6 +68,16 @@ export const KUNCI_HARIAN_BATAS_BULAN = "hr_harian_batas_bulan";
 export const KUNCI_SP_MASA_BULAN = "hr_sp_masa_bulan";
 /** Masa simpan data pelamar (fase 7, Q-33); berlaku surut saat diubah. */
 export const KUNCI_PELAMAR_RETENSI_BULAN = "hr_pelamar_retensi_bulan";
+/**
+ * Angka pengingat HR (fase 9, §24.3, Q-114): dibaca SQL pengingat Telegram
+ * dan kartu "Perlu perhatian" lewat `INGAT_*_SQL`.
+ */
+export const KUNCI_INGAT_KONTRAK_JAUH = "hr_ingat_kontrak_jauh";
+export const KUNCI_INGAT_KONTRAK_DEKAT = "hr_ingat_kontrak_dekat";
+export const KUNCI_INGAT_PERCOBAAN = "hr_ingat_percobaan";
+export const KUNCI_INGAT_DOKUMEN = "hr_ingat_dokumen";
+export const KUNCI_INGAT_MENUNGGU = "hr_ingat_menunggu";
+export const KUNCI_INGAT_JAM = "hr_ingat_jam";
 
 export const KOLOM_PRIBADI = [
   "nik",
@@ -528,6 +538,12 @@ export interface PengaturanKontrak {
   hr_harian_batas_bulan: number;
   hr_sp_masa_bulan: number;
   hr_pelamar_retensi_bulan: number;
+  hr_ingat_kontrak_jauh: number;
+  hr_ingat_kontrak_dekat: number;
+  hr_ingat_percobaan: number;
+  hr_ingat_dokumen: number;
+  hr_ingat_menunggu: number;
+  hr_ingat_jam: number;
 }
 
 export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
@@ -537,6 +553,12 @@ export const PENGATURAN_KONTRAK_BAWAAN: PengaturanKontrak = {
   hr_harian_batas_bulan: 3,
   hr_sp_masa_bulan: 6,
   hr_pelamar_retensi_bulan: 12,
+  hr_ingat_kontrak_jauh: 30,
+  hr_ingat_kontrak_dekat: 7,
+  hr_ingat_percobaan: 7,
+  hr_ingat_dokumen: 30,
+  hr_ingat_menunggu: 2,
+  hr_ingat_jam: 7,
 };
 
 /** Cermin `BATAS_PENGATURAN`: [kunci, label, min, maks]. */
@@ -547,7 +569,53 @@ export const BATAS_PENGATURAN = [
   [KUNCI_HARIAN_BATAS_BULAN, "Batas bulan berturut-turut harian lepas", 1, 12],
   [KUNCI_SP_MASA_BULAN, "Masa berlaku SP (bulan)", 1, 12],
   [KUNCI_PELAMAR_RETENSI_BULAN, "Masa simpan data pelamar (bulan)", 1, 60],
+  [
+    KUNCI_INGAT_KONTRAK_JAUH,
+    "Pengingat pertama PKWT berakhir (hari sebelumnya)",
+    8,
+    90,
+  ],
+  [
+    KUNCI_INGAT_KONTRAK_DEKAT,
+    "Pengingat kedua PKWT berakhir (hari sebelumnya)",
+    1,
+    30,
+  ],
+  [
+    KUNCI_INGAT_PERCOBAAN,
+    "Pengingat masa percobaan berakhir (hari sebelumnya)",
+    1,
+    30,
+  ],
+  [
+    KUNCI_INGAT_DOKUMEN,
+    "Pengingat dokumen kedaluwarsa (hari sebelumnya)",
+    1,
+    90,
+  ],
+  [KUNCI_INGAT_MENUNGGU, "Pengajuan dianggap lama menunggu (hari)", 1, 14],
+  [KUNCI_INGAT_JAM, "Jam mulai pengingat HR (WIB)", 0, 23],
 ] as const;
+
+/** Cermin `PESAN_INGAT_KONTRAK`: aturan silang pengingat PKWT (§24.3). */
+export const PESAN_INGAT_KONTRAK =
+  "Pengingat kedua PKWT harus lebih kecil dari pengingat pertama.";
+
+/**
+ * Cermin makro `ingat_*_sql!`: angka pengingat dibaca di database (aturan 19)
+ * lewat subkueri berbatas pola `RETENSI_BULAN_SQL`; kosong atau di luar
+ * `BATAS_PENGATURAN` = bawaan `PENGATURAN_KONTRAK_BAWAAN`.
+ */
+function ingatSql(kunci: (typeof BATAS_PENGATURAN)[number][0]) {
+  const batas = BATAS_PENGATURAN.find(([k]) => k === kunci);
+  return `COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = '${kunci}' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN ${batas?.[2]} AND ${batas?.[3]}), ${PENGATURAN_KONTRAK_BAWAAN[kunci]})`;
+}
+export const INGAT_KONTRAK_JAUH_SQL = ingatSql(KUNCI_INGAT_KONTRAK_JAUH);
+export const INGAT_KONTRAK_DEKAT_SQL = ingatSql(KUNCI_INGAT_KONTRAK_DEKAT);
+export const INGAT_PERCOBAAN_SQL = ingatSql(KUNCI_INGAT_PERCOBAAN);
+export const INGAT_DOKUMEN_SQL = ingatSql(KUNCI_INGAT_DOKUMEN);
+export const INGAT_MENUNGGU_SQL = ingatSql(KUNCI_INGAT_MENUNGGU);
+export const INGAT_JAM_SQL = ingatSql(KUNCI_INGAT_JAM);
 
 /** Cermin `PengaturanKontrak::dari_peta`: kosong/rusak = bawaan. */
 export function pengaturanDariPeta(
@@ -562,7 +630,7 @@ export function pengaturanDariPeta(
   return hasil;
 }
 
-/** Cermin `validasi_pengaturan`. */
+/** Cermin `validasi_pengaturan`, termasuk aturan silang pengingat PKWT. */
 export function validasiPengaturan(
   draft: Record<string, unknown>,
 ): Hasil<PengaturanKontrak> {
@@ -582,6 +650,9 @@ export function validasiPengaturan(
       return gagal(`${label} harus bilangan bulat ${min}–${maks}.`);
     }
     hasil[kunci] = n;
+  }
+  if (hasil.hr_ingat_kontrak_dekat >= hasil.hr_ingat_kontrak_jauh) {
+    return gagal(PESAN_INGAT_KONTRAK);
   }
   return ok(hasil);
 }

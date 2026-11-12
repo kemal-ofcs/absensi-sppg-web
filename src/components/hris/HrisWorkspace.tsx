@@ -4,6 +4,7 @@
 // berjenjang, dan master organisasi. Setiap tab memeriksa izinnya sendiri;
 // backend memeriksa ulang (aturan 10).
 
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeluarWorkspace } from "@/components/hris/KeluarWorkspace";
 import { KinerjaWorkspace } from "@/components/hris/KinerjaWorkspace";
@@ -12,10 +13,7 @@ import { PelatihanWorkspace } from "@/components/hris/PelatihanWorkspace";
 import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
 import { PerluPerhatian } from "@/components/hris/PerluPerhatian";
 import { RekrutmenWorkspace } from "@/components/hris/RekrutmenWorkspace";
-import {
-  RincianKaryawan,
-  type TabRincian,
-} from "@/components/hris/RincianKaryawan";
+import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
@@ -27,7 +25,11 @@ import {
 } from "@/lib/gateways/hris";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
-import { IZIN_PERHATIAN } from "@/lib/validations/telegram";
+import {
+  IZIN_PERHATIAN,
+  TAB_RINCIAN,
+  type TabRincian,
+} from "@/lib/validations/telegram";
 
 type Tab =
   | "karyawan"
@@ -65,7 +67,17 @@ export function HrisWorkspace() {
   const bolehPerhatian = IZIN_PERHATIAN.some((izin) =>
     hasPermission(user, izin),
   );
-  const [tab, setTab] = useState<Tab>("karyawan");
+  // Tautan dari kartu di beranda (§24.5): `?karyawan=<id>&tab=<tab rincian>`
+  // membuka rincian karyawan, `?tab=kinerja|rekrutmen` membuka tab itu.
+  const parameter = useSearchParams();
+  const karyawanUrl = parameter.get("karyawan");
+  const tabUrl = parameter.get("tab") ?? "";
+  const [tab, setTab] = useState<Tab>(() => {
+    if (karyawanUrl) return "karyawan";
+    if (tabUrl === "kinerja" && bolehKinerja) return "kinerja";
+    if (tabUrl === "rekrutmen" && bolehRekrutmen) return "rekrutmen";
+    return "karyawan";
+  });
   // "Mulai proses keluar" dari tab SP: karyawan dan SP3 yang mendasari.
   const [mulaiKeluar, setMulaiKeluar] = useState<{
     idKaryawan: string;
@@ -77,9 +89,13 @@ export function HrisWorkspace() {
     new Map(),
   );
   const [cari, setCari] = useState("");
-  const [dipilih, setDipilih] = useState<string | null>(null);
+  const [dipilih, setDipilih] = useState<string | null>(karyawanUrl);
   // Tab rincian yang dibuka langsung dari kartu "Perlu perhatian".
-  const [tabRincian, setTabRincian] = useState<TabRincian>("kerja");
+  const [tabRincian, setTabRincian] = useState<TabRincian>(() =>
+    karyawanUrl && (TAB_RINCIAN as readonly string[]).includes(tabUrl)
+      ? (tabUrl as TabRincian)
+      : "kerja",
+  );
   const [galat, setGalat] = useState("");
 
   const muat = useCallback(async () => {
@@ -175,6 +191,7 @@ export function HrisWorkspace() {
           onBukaRekrutmen={
             bolehRekrutmen ? () => setTab("rekrutmen") : undefined
           }
+          onBukaKinerja={bolehKinerja ? () => setTab("kinerja") : undefined}
         />
       ) : null}
 

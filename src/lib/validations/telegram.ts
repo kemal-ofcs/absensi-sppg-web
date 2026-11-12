@@ -13,6 +13,26 @@
  */
 
 import { formatRupiah } from "@/lib/validations/accounting";
+import {
+  awalPeriode,
+  type KeputusanKinerja,
+  periodeRentang,
+  rentangAktif,
+  STATUS_DIAJUKAN,
+  STATUS_DIBATALKAN,
+  STATUS_FINAL,
+  statusKinerja,
+} from "@/lib/validations/hr-kinerja";
+import {
+  INGAT_DOKUMEN_SQL,
+  INGAT_JAM_SQL,
+  INGAT_KONTRAK_DEKAT_SQL,
+  INGAT_KONTRAK_JAUH_SQL,
+  INGAT_MENUNGGU_SQL,
+  INGAT_PERCOBAAN_SQL,
+  nomorHari,
+  tambahBulan,
+} from "@/lib/validations/hris";
 import { formatJumlah } from "@/lib/validations/inventory";
 import { tanggalTampil, waktuTampil } from "@/lib/validations/tutup-buku";
 
@@ -46,6 +66,12 @@ export const TELEGRAM_KEJADIAN = [
   "hr_pengajuan_menunggu",
   "hr_urgent_belum_diketahui",
   "hr_ulang_tahun_kerja",
+  "hr_kinerja_menunggu",
+  "hr_kinerja_periode",
+  "hr_pelamar_baru",
+  "hr_lowongan_tutup",
+  "hr_pengajuan_baru",
+  "hr_pengajuan_diputus",
 ] as const;
 export type KejadianTelegram = (typeof TELEGRAM_KEJADIAN)[number];
 
@@ -74,6 +100,12 @@ export const BIDANG_KEJADIAN: Record<KejadianTelegram, BidangTelegram> = {
   hr_pengajuan_menunggu: "hrd",
   hr_urgent_belum_diketahui: "hrd",
   hr_ulang_tahun_kerja: "hrd",
+  hr_kinerja_menunggu: "hrd",
+  hr_kinerja_periode: "hrd",
+  hr_pelamar_baru: "hrd",
+  hr_lowongan_tutup: "hrd",
+  hr_pengajuan_baru: "hrd",
+  hr_pengajuan_diputus: "hrd",
 };
 
 export const LABEL_BIDANG: Record<BidangTelegram, string> = {
@@ -98,16 +130,25 @@ export const LABEL_KEJADIAN: Record<KejadianTelegram, string> = {
   trip_dibatalkan: "Surat jalan dibatalkan",
   trip_ganti_izin: "Ganti kendaraan atau driver yang menunggu keputusan",
   trip_lokasi_palsu: "Lokasi palsu terdeteksi (perlu ditinjau)",
-  hr_kontrak_akhir: "Kontrak PKWT akan berakhir (30 dan 7 hari sebelumnya)",
-  hr_percobaan_akhir: "Masa percobaan akan berakhir (7 hari sebelumnya)",
-  hr_dokumen_kedaluwarsa:
-    "Dokumen karyawan akan kedaluwarsa (30 hari sebelumnya)",
+  hr_kontrak_akhir:
+    "Kontrak PKWT akan berakhir (pengingat pertama dan kedua, angkanya di HRIS)",
+  hr_percobaan_akhir: "Masa percobaan akan berakhir",
+  hr_dokumen_kedaluwarsa: "Dokumen karyawan akan kedaluwarsa",
   hr_sp_berakhir: "Masa berlaku surat peringatan berakhir",
   hr_pengajuan_menunggu:
-    "Ringkasan pengajuan menunggu lebih dari 2 hari (tanpa nama, sekali sehari)",
+    "Ringkasan pengajuan yang lama menunggu (tanpa nama, sekali sehari)",
   hr_urgent_belum_diketahui:
     "Ringkasan pengajuan urgent belum diketahui (tanpa nama, sekali sehari)",
   hr_ulang_tahun_kerja: "Ringkasan ulang tahun kerja (sekali sehari)",
+  hr_kinerja_menunggu:
+    "Ringkasan penilaian kinerja menunggu Final (hanya angka, sekali sehari)",
+  hr_kinerja_periode: "Periode penilaian kinerja berakhir (hanya angka)",
+  hr_pelamar_baru:
+    "Ringkasan pelamar baru kemarin per lowongan (tanpa nama, sekali sehari)",
+  hr_lowongan_tutup: "Lowongan akan tutup (3 hari sebelumnya)",
+  hr_pengajuan_baru: "Pengajuan HR baru (Sakit tanpa nama)",
+  hr_pengajuan_diputus:
+    "Pengajuan HR disetujui atau ditolak (Sakit tanpa nama)",
 };
 
 /** Kunci `app_telegram_setting`. Cermin konstanta `KUNCI_*` di Rust. */
@@ -283,15 +324,17 @@ export const TELEGRAM_SQL_NAMA_PERSONIL =
 export const TELEGRAM_SQL_LABEL_KENDARAAN =
   "SELECT TRIM(COALESCE(j.nama, '') || ' ' || k.identitas) AS label FROM drv_kendaraan k LEFT JOIN drv_jenis_kendaraan j ON j.id_jenis = k.id_jenis WHERE k.id_kendaraan = ?;";
 
-export const TELEGRAM_SQL_JAM_WIB =
-  "SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam;";
+/** `jam_hr` = jam WIB mulai pengingat HR (`hr_ingat_jam`, §24.3). */
+export const TELEGRAM_SQL_JAM_WIB = `SELECT date('now', '+7 hours') AS tanggal, date('now', '+7 hours', '-1 day') AS kemarin, CAST(strftime('%H', 'now', '+7 hours') AS INTEGER) AS jam, ${INGAT_JAM_SQL} AS jam_hr;`;
 
 // ── Pengingat HR ke grup HRD (fase 8, prd-hris.md §23) ─────────────────────
 
-/** Jendela pengingat (§23.3, Q-106): tetap di kode, tidak bisa diatur. */
-export const HR_HARI_JAUH = 30;
-export const HR_HARI_DEKAT = 7;
-export const HR_HARI_MENUNGGU = 2;
+/**
+ * Jendela SP, ulang tahun kerja, dan periode kinerja berakhir, tetap di kode
+ * (§24.3). Angka kontrak, percobaan, dokumen, menunggu, dan jam bisa diatur
+ * (`INGAT_*_SQL`).
+ */
+export const HR_HARI_JENDELA = 7;
 
 /**
  * Parkir klaim (§23.2, Q-101): baris kejadian HR lahir dengan klaim yang tidak
@@ -366,16 +409,20 @@ const BELUM_DIANTREKAN_SQL = (id: string) =>
 const TANPA_BATAL_SQL =
   "NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan b WHERE b.id_pengajuan = p.id_pengajuan AND b.jenis = 'Batal')";
 
-/** PKWT berakhir: sisa 8–30 hari = tahap `:30`, 0–7 hari = tahap `:7`. */
-export const TELEGRAM_SQL_HR_KONTRAK = `SELECT id_kontrak, tanggal_selesai, nama, jabatan, sisa FROM (
+/**
+ * PKWT berakhir: sisa (dekat, jauh] = tahap `:jauh`, [0, dekat] = tahap
+ * `:dekat` (Q-116). Angka tersimpan rusak (dekat ≥ jauh): jendela jauh
+ * kosong, jendela dekat tetap.
+ */
+export const TELEGRAM_SQL_HR_KONTRAK = `SELECT id_kontrak, tanggal_selesai, nama, jabatan, sisa, dekat FROM (
   SELECT k.id_kontrak, k.tanggal_selesai, m.nama, ${JABATAN_SQL},
-         ${SISA_SQL("k.tanggal_selesai")}
+         ${SISA_SQL("k.tanggal_selesai")}, ${INGAT_KONTRAK_JAUH_SQL} AS jauh, ${INGAT_KONTRAK_DEKAT_SQL} AS dekat
   FROM hr_kontrak k
   ${KARYAWAN_SQL("k")}
   WHERE k.jenis = 'PKWT' AND date(k.tanggal_selesai) IS NOT NULL
     AND ${KONTRAK_TERAKHIR_SQL}
-) WHERE sisa BETWEEN 0 AND ${HR_HARI_JAUH}
-  AND ${BELUM_DIANTREKAN_SQL(`'hr-kontrak:' || id_kontrak || CASE WHEN sisa <= ${HR_HARI_DEKAT} THEN ':${HR_HARI_DEKAT}' ELSE ':${HR_HARI_JAUH}' END`)}
+) WHERE sisa BETWEEN 0 AND max(jauh, dekat)
+  AND ${BELUM_DIANTREKAN_SQL("'hr-kontrak:' || id_kontrak || CASE WHEN sisa <= dekat THEN ':dekat' ELSE ':jauh' END")}
 ORDER BY tanggal_selesai, id_kontrak
 LIMIT 50;`;
 
@@ -386,7 +433,7 @@ export const TELEGRAM_SQL_HR_PERCOBAAN = `SELECT id_kontrak, percobaan_selesai, 
   ${KARYAWAN_SQL("k")}
   WHERE date(k.percobaan_selesai) IS NOT NULL
     AND ${KONTRAK_TERAKHIR_SQL}
-) WHERE sisa BETWEEN 0 AND ${HR_HARI_DEKAT}
+) WHERE sisa BETWEEN 0 AND ${INGAT_PERCOBAAN_SQL}
   AND ${BELUM_DIANTREKAN_SQL("'hr-coba:' || id_kontrak")}
 ORDER BY percobaan_selesai, id_kontrak
 LIMIT 50;`;
@@ -399,7 +446,7 @@ export const TELEGRAM_SQL_HR_DOKUMEN = `SELECT id_dokumen, jenis_dokumen, tangga
   LEFT JOIN hr_dokumen_jenis dj ON dj.id_jenis = d.id_jenis
   ${KARYAWAN_SQL("d")}
   WHERE date(d.tanggal_kedaluwarsa) IS NOT NULL
-) WHERE sisa BETWEEN 0 AND ${HR_HARI_JAUH}
+) WHERE sisa BETWEEN 0 AND ${INGAT_DOKUMEN_SQL}
   AND ${BELUM_DIANTREKAN_SQL("'hr-dok:' || id_dokumen || ':' || tanggal_kedaluwarsa")}
 ORDER BY tanggal_kedaluwarsa, id_dokumen
 LIMIT 50;`;
@@ -412,7 +459,7 @@ export const TELEGRAM_SQL_HR_SP = `SELECT s.id_sp, s.tingkat, s.berlaku_sampai, 
 FROM hr_sp s
 ${KARYAWAN_SQL("s")}
 WHERE s.dicabut_pada IS NULL
-  AND s.berlaku_sampai <= ${HARI_INI_SQL} AND s.berlaku_sampai >= date('now', '+7 hours', '-${HR_HARI_DEKAT - 1} days')
+  AND s.berlaku_sampai <= ${HARI_INI_SQL} AND s.berlaku_sampai >= date('now', '+7 hours', '-${HR_HARI_JENDELA - 1} days')
   AND s.berlaku_sampai >= date(?, '+7 hours')
   AND ${BELUM_DIANTREKAN_SQL("'hr-sp:' || s.id_sp")}
 ORDER BY s.berlaku_sampai, s.id_sp
@@ -420,14 +467,15 @@ LIMIT 50;`;
 
 /**
  * Pengajuan berstatus Menunggu (`statusPengajuan`: tanpa `Batal`, tanpa
- * keputusan final bersidik sekarang) yang diterima cloud lebih dari 2 × 24
- * jam lalu, dihitung per kelompok. Klaim Reimburse ikut (Q-107); tanpa nama
- * (Q-108). `sejak` = tanggal WIB yang paling lama.
+ * keputusan final bersidik sekarang) yang diterima cloud lebih dari N × 24
+ * jam lalu (`hari` = N, `hr_ingat_menunggu`), dihitung per kelompok. Klaim
+ * Reimburse ikut (Q-107); tanpa nama (Q-108). `sejak` = tanggal WIB yang
+ * paling lama.
  */
-export const TELEGRAM_SQL_HR_MENUNGGU = `SELECT p.kelompok, COUNT(*) AS jumlah, date(MIN(p.created_at), '+7 hours') AS sejak
+export const TELEGRAM_SQL_HR_MENUNGGU = `SELECT p.kelompok, COUNT(*) AS jumlah, date(MIN(p.created_at), '+7 hours') AS sejak, ${INGAT_MENUNGGU_SQL} AS hari
 FROM hr_pengajuan p
 JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif'
-WHERE p.created_at <= datetime('now', '-${HR_HARI_MENUNGGU} days')
+WHERE p.created_at <= datetime('now', '-' || ${INGAT_MENUNGGU_SQL} || ' days')
   AND ${TANPA_BATAL_SQL}
   AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ('Setujui', 'Tolak', 'Setujui Urgent'))
 GROUP BY p.kelompok
@@ -460,6 +508,113 @@ LEFT JOIN hr_jabatan j ON j.id_jabatan = m.id_jabatan
 WHERE ${ULTAH_SYARAT_SQL}
 ORDER BY m.nama COLLATE NOCASE, m.id_unik;`;
 
+// ── Kejadian HR fase 9 (prd-hris.md §24.4) ────────────────────────────────
+
+/** Lowongan diingatkan sejak H-3 sampai hari tutup (Q-119). */
+export const HR_HARI_LOWONGAN = 3;
+/** Q-120 (b): pesan per pengajuan menyebut nama, kecuali Sakit. */
+export const KELOMPOK_TANPA_NAMA = "Sakit";
+
+/**
+ * Keputusan satu penilaian `p` sebagai JSON (`KeputusanKinerja`); status
+ * dihitung `statusKinerja`, bukan SQL. Nilai akhir dan predikat tidak dibaca:
+ * hasil kinerja rahasia (Q-117).
+ */
+const KEPUTUSAN_KINERJA_JSON_SQL =
+  "json((SELECT json_group_array(json_object('id_keputusan', k.id_keputusan, 'jenis', k.jenis, 'sidik', k.sidik, 'oleh', k.oleh, 'waktu_perangkat', k.waktu_perangkat, 'diterima_cloud', k.diterima_cloud)) FROM hr_kinerja_keputusan k WHERE k.id_penilaian = p.id_penilaian))";
+const KINERJA_TANPA_BATAL_SQL =
+  "NOT EXISTS (SELECT 1 FROM hr_kinerja_keputusan b WHERE b.id_penilaian = p.id_penilaian AND b.jenis = 'Batal')";
+const KINERJA_AJUKAN_SQL =
+  "hr_kinerja_keputusan a WHERE a.id_penilaian = p.id_penilaian AND a.jenis = 'Ajukan' AND a.sidik = p.sidik";
+
+/**
+ * Calon "menunggu Final": tidak dibatalkan, ada `Ajukan` bersidik sekarang,
+ * belum `Final` bersidik sekarang. `sejak` = tanggal WIB `Ajukan` terakhir
+ * (jam cloud). Koreksi ikut; karyawan hanya yang Aktif.
+ */
+export const TELEGRAM_SQL_HR_KINERJA_MENUNGGU = `SELECT p.sidik,
+       (SELECT date(MAX(a.diterima_cloud), '+7 hours') FROM ${KINERJA_AJUKAN_SQL}) AS sejak,
+       ${KEPUTUSAN_KINERJA_JSON_SQL} AS keputusan
+FROM hr_kinerja_penilaian p
+JOIN master_data m ON m.id_unik = p.id_karyawan AND m.status_aktif = 'Aktif'
+WHERE ${KINERJA_TANPA_BATAL_SQL}
+  AND EXISTS (SELECT 1 FROM ${KINERJA_AJUKAN_SQL})
+  AND NOT EXISTS (SELECT 1 FROM hr_kinerja_keputusan f WHERE f.id_penilaian = p.id_penilaian AND f.jenis = 'Final' AND f.sidik = p.sidik)
+ORDER BY p.id_penilaian;`;
+
+/**
+ * Karyawan Aktif beserta penilaian akar yang tidak dibatalkan untuk satu
+ * periode (`?` jenis, `?` mulai). "Wajib dinilai" (Q-118) dan statusnya
+ * dihitung `ringkasKinerjaPeriode`.
+ */
+export const TELEGRAM_SQL_HR_KINERJA_PERIODE = `SELECT m.id_unik, m.tanggal_daftar, m.tanggal_selesai_aktif,
+       json((SELECT json_group_array(json_object('sidik', p.sidik, 'keputusan', ${KEPUTUSAN_KINERJA_JSON_SQL})) FROM hr_kinerja_penilaian p WHERE p.id_karyawan = m.id_unik AND p.id_ref IS NULL AND p.periode_jenis = ? AND p.periode_mulai = ? AND ${KINERJA_TANPA_BATAL_SQL})) AS penilaian
+FROM master_data m
+WHERE m.status_aktif = 'Aktif'
+ORDER BY m.id_unik;`;
+
+/**
+ * Pelamar yang dicatat kemarin (WIB) per lowongan; `?1` = tanggal WIB hari
+ * ini. Hanya judul dan hitungan: data pelamar tidak dibaca (Q-86).
+ */
+export const TELEGRAM_SQL_HR_PELAMAR_BARU = `SELECT l.judul, COUNT(*) AS jumlah
+FROM hr_pelamar p
+JOIN hr_lowongan l ON l.id_lowongan = p.id_lowongan
+WHERE p.created_at >= datetime(?1, '-1 day', '-7 hours') AND p.created_at < datetime(?1, '-7 hours')
+GROUP BY l.id_lowongan, l.judul
+ORDER BY l.judul COLLATE NOCASE, l.id_lowongan;`;
+
+/** Lowongan terbuka yang `tanggal_tutup`-nya hari ini sampai H-3. */
+export const TELEGRAM_SQL_HR_LOWONGAN_TUTUP = `SELECT l.id_lowongan, l.judul, l.tanggal_tutup, l.jumlah AS kuota,
+       (SELECT COUNT(*) FROM hr_pelamar p WHERE p.id_lowongan = l.id_lowongan) AS pelamar,
+       ${SISA_SQL("l.tanggal_tutup")}
+FROM hr_lowongan l
+WHERE l.ditutup_pada IS NULL AND l.tanggal_buka <= ${HARI_INI_SQL}
+  AND l.tanggal_tutup BETWEEN ${HARI_INI_SQL} AND date('now', '+7 hours', '+${HR_HARI_LOWONGAN} days')
+  AND ${BELUM_DIANTREKAN_SQL("'hr-lowongan:' || l.id_lowongan || ':' || l.tanggal_tutup")}
+ORDER BY l.tanggal_tutup, l.id_lowongan
+LIMIT 50;`;
+
+/** Jenis periode kinerja; kosong atau rusak = bawaan (`pengaturanKinerjaDariPeta`). */
+export const TELEGRAM_SQL_HR_KINERJA_JENIS =
+  "SELECT value FROM setting_gex_system WHERE key = 'hr_kinerja_periode';";
+
+/** Kolom pesan per pengajuan: tanpa alasan dan nominal (Q-32, Q-121). */
+const PENGAJUAN_HR_KOLOM_SQL = `p.kelompok, p.tanggal_mulai, p.tanggal_selesai, m.nama, ${JABATAN_SQL}`;
+const KEPUTUSAN_FINAL_SQL = "('Setujui', 'Tolak', 'Setujui Urgent')";
+
+/**
+ * Pengajuan yang diterima cloud sejak `aktif_sejak` (`?`) dan maksimal 7 hari
+ * lalu, dan masih Menunggu saat dibaca.
+ */
+export const TELEGRAM_SQL_HR_PENGAJUAN_BARU = `SELECT p.id_pengajuan, ${PENGAJUAN_HR_KOLOM_SQL}
+FROM hr_pengajuan p
+${KARYAWAN_SQL("p")}
+WHERE p.created_at >= ? AND p.created_at >= datetime('now', '-7 days')
+  AND ${TANPA_BATAL_SQL}
+  AND NOT EXISTS (SELECT 1 FROM hr_pengajuan_keputusan k WHERE k.id_pengajuan = p.id_pengajuan AND k.sidik = p.sidik AND k.jenis IN ${KEPUTUSAN_FINAL_SQL})
+  AND ${BELUM_DIANTREKAN_SQL("'hr-ajuan:' || p.id_pengajuan")}
+ORDER BY p.created_at, p.id_pengajuan
+LIMIT 50;`;
+
+/**
+ * Keputusan final yang berlaku: yang pertama (urutan `urutKeputusan`) bersidik
+ * isi sekarang, tanpa `Batal`. Keputusan ganda dan yang gugur tidak terpilih.
+ * `?` = `aktif_sejak`, disaring jam cloud `diterima_cloud`.
+ */
+export const TELEGRAM_SQL_HR_PENGAJUAN_PUTUS = `SELECT k.id_keputusan, k.jenis, ${PENGAJUAN_HR_KOLOM_SQL}, COALESCE(o.nama_operator, k.oleh) AS oleh
+FROM hr_pengajuan_keputusan k
+JOIN hr_pengajuan p ON p.id_pengajuan = k.id_pengajuan
+${KARYAWAN_SQL("p")}
+LEFT JOIN master_operator o ON o.username = k.oleh
+WHERE k.diterima_cloud >= ? AND k.diterima_cloud >= datetime('now', '-7 days')
+  AND k.jenis IN ${KEPUTUSAN_FINAL_SQL}
+  AND ${TANPA_BATAL_SQL}
+  AND k.id_keputusan = (SELECT f.id_keputusan FROM hr_pengajuan_keputusan f WHERE f.id_pengajuan = p.id_pengajuan AND f.sidik = p.sidik AND f.jenis IN ${KEPUTUSAN_FINAL_SQL} ORDER BY f.diterima_cloud IS NULL, f.diterima_cloud, f.waktu_perangkat, f.id_keputusan LIMIT 1)
+  AND ${BELUM_DIANTREKAN_SQL("'hr-putus:' || k.id_keputusan")}
+ORDER BY k.diterima_cloud, k.id_keputusan
+LIMIT 50;`;
+
 // ── Kartu "Perlu perhatian" di /hris (§23.4) ──────────────────────────────
 // Potongan SQL yang sama dengan pengingat Telegram di atas, jadi kartu dan
 // grup HRD tidak bisa berbeda pendapat. Kartu lebih lebar: dokumen yang sudah
@@ -478,7 +633,7 @@ export const PERHATIAN_SQL_KONTRAK = `SELECT jenis, id_karyawan, nama, jabatan, 
   ${KARYAWAN_SQL("k")}
   WHERE date(k.percobaan_selesai) IS NOT NULL
     AND ${KONTRAK_TERAKHIR_SQL}
-) WHERE (jenis = 'PKWT' AND sisa BETWEEN 0 AND ${HR_HARI_JAUH}) OR (jenis = 'Percobaan' AND sisa BETWEEN 0 AND ${HR_HARI_DEKAT})
+) WHERE (jenis = 'PKWT' AND sisa BETWEEN 0 AND max(${INGAT_KONTRAK_JAUH_SQL}, ${INGAT_KONTRAK_DEKAT_SQL})) OR (jenis = 'Percobaan' AND sisa BETWEEN 0 AND ${INGAT_PERCOBAAN_SQL})
 ORDER BY sisa, nama COLLATE NOCASE, id_karyawan, jenis
 LIMIT 200;`;
 
@@ -489,7 +644,7 @@ export const PERHATIAN_SQL_DOKUMEN = `SELECT id_karyawan, nama, jabatan, jenis_d
   LEFT JOIN hr_dokumen_jenis dj ON dj.id_jenis = d.id_jenis
   ${KARYAWAN_SQL("d")}
   WHERE date(d.tanggal_kedaluwarsa) IS NOT NULL
-) WHERE sisa <= ${HR_HARI_JAUH}
+) WHERE sisa <= ${INGAT_DOKUMEN_SQL}
 ORDER BY sisa, nama COLLATE NOCASE, id_karyawan
 LIMIT 200;`;
 
@@ -498,12 +653,12 @@ export const PERHATIAN_SQL_SP = `SELECT s.id_karyawan, m.nama, ${JABATAN_SQL}, s
 FROM hr_sp s
 ${KARYAWAN_SQL("s")}
 WHERE s.dicabut_pada IS NULL AND s.tanggal <= ${HARI_INI_SQL}
-  AND s.berlaku_sampai >= ${HARI_INI_SQL} AND s.berlaku_sampai <= date('now', '+7 hours', '+${HR_HARI_DEKAT} days')
+  AND s.berlaku_sampai >= ${HARI_INI_SQL} AND s.berlaku_sampai <= date('now', '+7 hours', '+${HR_HARI_JENDELA} days')
 ORDER BY s.berlaku_sampai, m.nama COLLATE NOCASE, s.id_sp
 LIMIT 200;`;
 
 /** Hari ini dan 7 hari ke depan; syarat tanggalnya sama dengan Telegram. */
-export const PERHATIAN_SQL_ULTAH = `WITH RECURSIVE h(hari, n) AS (SELECT ${HARI_INI_SQL}, 0 UNION ALL SELECT date(hari, '+1 day'), n + 1 FROM h WHERE n < ${HR_HARI_DEKAT})
+export const PERHATIAN_SQL_ULTAH = `WITH RECURSIVE h(hari, n) AS (SELECT ${HARI_INI_SQL}, 0 UNION ALL SELECT date(hari, '+1 day'), n + 1 FROM h WHERE n < ${HR_HARI_JENDELA})
 SELECT m.id_unik AS id_karyawan, m.nama, ${JABATAN_SQL}, h.hari AS tanggal,
        ${TAHUN_KERJA_SQL}
 FROM h
@@ -525,6 +680,8 @@ export const IZIN_PERHATIAN = [
   "reimburse.decide",
   "hr.recruit.view",
   "hr.recruit.manage",
+  "hr.performance.view",
+  "hr.performance.finalize",
 ] as const;
 
 export interface IzinPerhatian {
@@ -535,6 +692,8 @@ export interface IzinPerhatian {
   /** Tanpa `hr.request.view`: hanya hitungan Reimburse (§19.5). */
   hanyaReimburse: boolean;
   rekrutmen: boolean;
+  /** Hanya angka (Q-122), jadi `assess` tidak cukup. */
+  kinerja: boolean;
 }
 
 /**
@@ -551,8 +710,27 @@ export function izinPerhatian(
     pengajuan: punya("hr.request.view") || punya("reimburse.decide"),
     hanyaReimburse: !punya("hr.request.view"),
     rekrutmen: punya("hr.recruit.view") || punya("hr.recruit.manage"),
+    kinerja: punya("hr.performance.view") || punya("hr.performance.finalize"),
   };
 }
+
+/**
+ * Tab rincian karyawan yang bisa dibuka langsung, mis. dari kartu "Perlu
+ * perhatian" (`/hris?karyawan=<id>&tab=<tab>`). Di sini, bukan di
+ * `RincianKaryawan`, supaya kartunya bisa disalin ke Mobile (§24.5).
+ */
+export const TAB_RINCIAN = [
+  "kerja",
+  "pribadi",
+  "keuangan",
+  "kontrak",
+  "dokumen",
+  "cuti",
+  "sp",
+  "kinerja",
+  "pelatihan",
+] as const;
+export type TabRincian = (typeof TAB_RINCIAN)[number];
 
 /** Bentuk hasil `desktop_hr_attention` / aksi `perhatian`. Bagian tanpa izin tidak ada. */
 export interface PerhatianHr {
@@ -581,7 +759,7 @@ export interface PerhatianHr {
     sisa: number;
   }[];
   pengajuan?: {
-    menunggu: { kelompok: string; jumlah: number }[];
+    menunggu: { kelompok: string; jumlah: number; hari: number }[];
     menunggu_sejak: string;
     urgent: number;
     urgent_sejak: string;
@@ -599,11 +777,28 @@ export interface PerhatianHr {
     jumlah: number;
     tanggal_hapus: string;
   }[];
+  /** Hanya angka (Q-122); `periode` hanya 1–7 hari sesudah periode berakhir. */
+  kinerja?: {
+    menunggu: number;
+    menunggu_sejak: string;
+    periode: {
+      jenis: string;
+      mulai: string;
+      selesai: string;
+      belum: number;
+      draf: number;
+      diajukan: number;
+    } | null;
+  };
 }
 
-/** Tahap pengingat kontrak menurut sisa hari: `:7` atau `:30`. */
-export function idHrKontrak(idKontrak: string, sisa: number) {
-  return `hr-kontrak:${idKontrak}:${sisa <= HR_HARI_DEKAT ? HR_HARI_DEKAT : HR_HARI_JAUH}`;
+/**
+ * Tahap pengingat kontrak, bukan angkanya (Q-116): `:dekat` bila sisa ≤
+ * `dekat`, selain itu `:jauh`. Mengubah angka di tengah jendela tidak
+ * melahirkan pesan kedua untuk tahap yang sama.
+ */
+export function idHrKontrak(idKontrak: string, sisa: number, dekat: number) {
+  return `hr-kontrak:${idKontrak}:${sisa <= dekat ? "dekat" : "jauh"}`;
 }
 export function idHrPercobaan(idKontrak: string) {
   return `hr-coba:${idKontrak}`;
@@ -623,6 +818,26 @@ export function idHrUrgent(tanggal: string) {
 }
 export function idHrUltah(tanggal: string) {
   return `hr-ultah:${tanggal}`;
+}
+export function idHrKinerjaTunggu(tanggal: string) {
+  return `hr-kinerja-tunggu:${tanggal}`;
+}
+/** Sekali per periode (§24.4). */
+export function idHrKinerjaPeriode(periodeMulai: string) {
+  return `hr-kinerja-periode:${periodeMulai}`;
+}
+export function idHrPelamar(tanggal: string) {
+  return `hr-pelamar:${tanggal}`;
+}
+/** Memuat tanggalnya: tanggal tutup yang diundur diingatkan lagi. */
+export function idHrLowongan(idLowongan: string, tanggalTutup: string) {
+  return `hr-lowongan:${idLowongan}:${tanggalTutup}`;
+}
+export function idHrAjuan(idPengajuan: string) {
+  return `hr-ajuan:${idPengajuan}`;
+}
+export function idHrPutus(idKeputusan: string) {
+  return `hr-putus:${idKeputusan}`;
 }
 
 export function idPengajuanBaru(idPengajuan: string) {
@@ -1090,16 +1305,18 @@ export function pesanHrSpBerakhir(isi: {
 
 /**
  * Cermin `pesan_hr_pengajuan_menunggu`. Hitungan per kelompok, tanpa nama
- * (Q-108); daftar tanpa isi tidak menghasilkan pesan.
+ * (Q-108); daftar tanpa isi tidak menghasilkan pesan. `hari` = angka
+ * `hr_ingat_menunggu` yang dipakai SQL-nya.
  */
 export function pesanHrPengajuanMenunggu(
   daftar: { kelompok: string; jumlah: number }[],
   sejak: string,
+  hari: number,
 ): string | null {
   const total = daftar.reduce((jumlah, item) => jumlah + item.jumlah, 0);
   if (total <= 0) return null;
   return [
-    `📥 ${total} pengajuan menunggu lebih dari ${HR_HARI_MENUNGGU} hari`,
+    `📥 ${total} pengajuan menunggu lebih dari ${hari} hari`,
     daftar.map((item) => `${item.kelompok} ${item.jumlah}`).join(", "),
     `Paling lama sejak ${tanggalTampil(sejak)}`,
   ].join("\n");
@@ -1134,6 +1351,194 @@ export function pesanHrUlangTahunKerja(
     baris.push(`dan ${daftar.length - MAKS_BARIS_STOK} lainnya.`);
   }
   return baris.join("\n");
+}
+
+/**
+ * Cermin `periode_kinerja_berakhir`: periode `jenis` yang berakhir 1–7 hari
+ * sebelum `hariIni` (§24.4), sebagai `[mulai, selesai]`; selain itu `null`.
+ */
+export function periodeKinerjaBerakhir(
+  jenis: string,
+  hariIni: string,
+): [string, string] | null {
+  const awal = awalPeriode(jenis, hariIni);
+  const nHari = nomorHari(hariIni);
+  const nAwal = awal ? nomorHari(awal) : null;
+  if (!awal || nHari === null || nAwal === null) return null;
+  if (nHari - nAwal >= HR_HARI_JENDELA) return null;
+  const sebelum = tambahBulan(awal, -1);
+  const mulai = sebelum ? awalPeriode(jenis, sebelum) : null;
+  const rentang = mulai ? periodeRentang(jenis, mulai) : null;
+  return rentang?.ok ? rentang.nilai : null;
+}
+
+/** Satu baris `TELEGRAM_SQL_HR_KINERJA_MENUNGGU`. */
+export interface PenilaianTunggu {
+  sidik: string;
+  sejak: string;
+  keputusan: KeputusanKinerja[];
+}
+
+/**
+ * Cermin `ringkas_kinerja_menunggu`: jumlah berstatus Diajukan dan tanggal
+ * `Ajukan` yang paling lama.
+ */
+export function ringkasKinerjaMenunggu(daftar: readonly PenilaianTunggu[]): {
+  jumlah: number;
+  sejak: string;
+} {
+  const tunggu = daftar.filter(
+    (p) => statusKinerja(p.sidik, p.keputusan) === STATUS_DIAJUKAN,
+  );
+  return {
+    jumlah: tunggu.length,
+    sejak: tunggu
+      .map((p) => p.sejak)
+      .reduce((a, b) => (a === "" || b < a ? b : a), ""),
+  };
+}
+
+/** Satu baris `TELEGRAM_SQL_HR_KINERJA_PERIODE`. */
+export interface KaryawanPeriode {
+  tanggal_daftar: string | null;
+  tanggal_selesai_aktif: string | null;
+  penilaian: { sidik: string; keputusan: KeputusanKinerja[] }[];
+}
+
+/**
+ * Cermin `ringkas_kinerja_periode`. Wajib dinilai = rentang aktifnya
+ * beririsan dengan periode (Q-118). Per karyawan: ada Final = selesai, ada
+ * Diajukan = diajukan, ada penilaian lain = draf, tanpa penilaian = belum.
+ */
+export function ringkasKinerjaPeriode(
+  daftar: readonly KaryawanPeriode[],
+  mulai: string,
+  selesai: string,
+): { belum: number; draf: number; diajukan: number } {
+  const hasil = { belum: 0, draf: 0, diajukan: 0 };
+  for (const k of daftar) {
+    if (
+      !rentangAktif(mulai, selesai, k.tanggal_daftar, k.tanggal_selesai_aktif)
+    ) {
+      continue;
+    }
+    const status = k.penilaian
+      .map((p) => statusKinerja(p.sidik, p.keputusan))
+      .filter((s) => s !== STATUS_DIBATALKAN);
+    if (status.includes(STATUS_FINAL)) continue;
+    if (status.includes(STATUS_DIAJUKAN)) hasil.diajukan++;
+    else if (status.length > 0) hasil.draf++;
+    else hasil.belum++;
+  }
+  return hasil;
+}
+
+/** Cermin `pesan_hr_kinerja_menunggu`. Hanya angka (Q-117). */
+export function pesanHrKinerjaMenunggu(
+  jumlah: number,
+  sejak: string,
+): string | null {
+  if (jumlah <= 0) return null;
+  const baris = [`📊 ${jumlah} penilaian kinerja menunggu Final`];
+  if (sejak !== "") baris.push(`Paling lama sejak ${tanggalTampil(sejak)}`);
+  return baris.join("\n");
+}
+
+/** Cermin `pesan_hr_kinerja_periode`. Semua nol tidak menghasilkan pesan. */
+export function pesanHrKinerjaPeriode(
+  jenis: string,
+  mulai: string,
+  selesai: string,
+  r: { belum: number; draf: number; diajukan: number },
+): string | null {
+  if (r.belum + r.draf + r.diajukan <= 0) return null;
+  return `📊 Periode ${jenis} ${tanggalTampil(mulai)} s.d. ${tanggalTampil(selesai)} berakhir: ${r.belum} belum dinilai, ${r.draf} masih draf, ${r.diajukan} diajukan`;
+}
+
+/** Cermin `pesan_hr_pelamar_baru`: tanpa nama pelamar (Q-86). */
+export function pesanHrPelamarBaru(
+  daftar: { judul: string; jumlah: number }[],
+): string | null {
+  const total = daftar.reduce((jumlah, item) => jumlah + item.jumlah, 0);
+  if (total <= 0) return null;
+  const baris = [`👥 ${total} pelamar baru kemarin`];
+  for (const item of daftar.slice(0, MAKS_BARIS_STOK)) {
+    baris.push(`• ${potong(item.judul, 100)}: ${item.jumlah}`);
+  }
+  if (daftar.length > MAKS_BARIS_STOK) {
+    baris.push(`dan ${daftar.length - MAKS_BARIS_STOK} lainnya.`);
+  }
+  return baris.join("\n");
+}
+
+/** Cermin `pesan_hr_lowongan_tutup`. */
+export function pesanHrLowonganTutup(isi: {
+  judul: string;
+  tanggal: string;
+  sisa: number;
+  pelamar: number;
+  kuota: number;
+}): string {
+  return [
+    `📢 Lowongan ${potong(isi.judul, 100)} tutup ${sisaHari(isi.sisa)} (${tanggalTampil(isi.tanggal)})`,
+    `Pelamar: ${isi.pelamar} · Kuota: ${isi.kuota}`,
+  ].join("\n");
+}
+
+/** Isi pesan per pengajuan (Q-120): tanpa alasan dan nominal. */
+export interface IsiPengajuanHr {
+  kelompok: string;
+  nama: string;
+  jabatan: string;
+  mulai: string;
+  selesai: string;
+}
+
+function barisTanggalPengajuan(mulai: string, selesai: string) {
+  return mulai === selesai
+    ? `Tanggal: ${tanggalTampil(mulai)}`
+    : `Tanggal: ${tanggalTampil(mulai)} s.d. ${tanggalTampil(selesai)}`;
+}
+
+/** Cermin `pesan_hr_pengajuan_baru`. Sakit tanpa nama (Q-120 (b)). */
+export function pesanHrPengajuanBaru(isi: IsiPengajuanHr): string {
+  const kelompok = potong(isi.kelompok, 30);
+  return (
+    isi.kelompok === KELOMPOK_TANPA_NAMA
+      ? [`📝 1 pengajuan ${kelompok} baru`]
+      : [`📝 Pengajuan ${kelompok} baru`, barisKaryawan(isi.nama, isi.jabatan)]
+  )
+    .concat(barisTanggalPengajuan(isi.mulai, isi.selesai))
+    .join("\n");
+}
+
+/** Cermin `pesan_hr_pengajuan_diputus`. Pemutus ya, alasan tidak (Q-32). */
+export function pesanHrPengajuanDiputus(
+  isi: IsiPengajuanHr,
+  jenis: string,
+  oleh: string,
+): string {
+  const kelompok = potong(isi.kelompok, 30);
+  const tolak = jenis === "Tolak";
+  const hasil = tolak
+    ? "ditolak"
+    : jenis === "Setujui Urgent"
+      ? "disetujui (urgent)"
+      : "disetujui";
+  const ikon = tolak ? "❌" : "✅";
+  return (
+    isi.kelompok === KELOMPOK_TANPA_NAMA
+      ? [`${ikon} 1 pengajuan ${kelompok} ${hasil}`]
+      : [
+          `${ikon} Pengajuan ${kelompok} ${hasil}`,
+          barisKaryawan(isi.nama, isi.jabatan),
+        ]
+  )
+    .concat(
+      barisTanggalPengajuan(isi.mulai, isi.selesai),
+      `Oleh: ${potong(oleh, 100)}`,
+    )
+    .join("\n");
 }
 
 export interface PermintaanTelegram {

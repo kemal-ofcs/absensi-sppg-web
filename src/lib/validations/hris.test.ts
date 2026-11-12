@@ -1,7 +1,9 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  BATAS_PENGATURAN,
   bulanPenuhTerakhir,
   CLOUD_ORG_KARYAWAN_SQL,
   CLOUD_TEKS_KARYAWAN_SQL,
@@ -9,6 +11,12 @@ import {
   dalamSiklusAtasan,
   divisiKini,
   HAPUS_DOKUMEN_SQL,
+  INGAT_DOKUMEN_SQL,
+  INGAT_JAM_SQL,
+  INGAT_KONTRAK_DEKAT_SQL,
+  INGAT_KONTRAK_JAUH_SQL,
+  INGAT_MENUNGGU_SQL,
+  INGAT_PERCOBAAN_SQL,
   INSERT_BERKAS_DOKUMEN_SQL,
   INSERT_KONTRAK_SQL,
   INSERT_NAMA_DIVISI_SQL,
@@ -23,6 +31,7 @@ import {
   nomorIdentitas,
   PANJANG_REKENING,
   PENGATURAN_KONTRAK_BAWAAN,
+  PESAN_INGAT_KONTRAK,
   pengaturanDariPeta,
   periksaAtasan,
   SEED_JENIS_DOKUMEN_SQL,
@@ -269,39 +278,15 @@ describe("hris (cermin tes Rust)", () => {
       hr_harian_batas_hari: "99",
     });
     expect([p.hr_pkwt_maks_bulan, p.hr_harian_batas_hari]).toEqual([36, 21]);
-    expect(
-      validasiPengaturan({
-        hr_percobaan_maks_bulan: 3,
-        hr_pkwt_maks_bulan: 60,
-        hr_harian_batas_hari: 21,
-        hr_harian_batas_bulan: 3,
-        hr_sp_masa_bulan: 6,
-        hr_pelamar_retensi_bulan: 12,
-      }).ok,
-    ).toBe(true);
-    expect(
-      validasiPengaturan({
-        hr_percobaan_maks_bulan: 0,
-        hr_pkwt_maks_bulan: 60,
-        hr_harian_batas_hari: 21,
-        hr_harian_batas_bulan: 3,
-        hr_sp_masa_bulan: 6,
-        hr_pelamar_retensi_bulan: 12,
-      }),
-    ).toEqual({
+    // Bawaan = draf sah; setiap kasus mengubah satu atau dua angka.
+    const dengan = (ubah: Record<string, number> = {}) =>
+      validasiPengaturan({ ...PENGATURAN_KONTRAK_BAWAAN, ...ubah });
+    expect(dengan().ok).toBe(true);
+    expect(dengan({ hr_percobaan_maks_bulan: 0 })).toEqual({
       ok: false,
       pesan: "Masa percobaan maksimal harus bilangan bulat 1–12.",
     });
-    expect(
-      validasiPengaturan({
-        hr_percobaan_maks_bulan: 3,
-        hr_pkwt_maks_bulan: 60,
-        hr_harian_batas_hari: 21,
-        hr_harian_batas_bulan: 3,
-        hr_sp_masa_bulan: 6,
-        hr_pelamar_retensi_bulan: 61,
-      }),
-    ).toEqual({
+    expect(dengan({ hr_pelamar_retensi_bulan: 61 })).toEqual({
       ok: false,
       pesan: "Masa simpan data pelamar (bulan) harus bilangan bulat 1–60.",
     });
@@ -309,6 +294,113 @@ describe("hris (cermin tes Rust)", () => {
       pengaturanDariPeta({ hr_pelamar_retensi_bulan: "0" })
         .hr_pelamar_retensi_bulan,
     ).toBe(12);
+
+    // Angka pengingat (§24.3): bawaan, diubah, batas, dan dekat < jauh.
+    expect(PENGATURAN_KONTRAK_BAWAAN).toEqual({
+      hr_percobaan_maks_bulan: 3,
+      hr_pkwt_maks_bulan: 60,
+      hr_harian_batas_hari: 21,
+      hr_harian_batas_bulan: 3,
+      hr_sp_masa_bulan: 6,
+      hr_pelamar_retensi_bulan: 12,
+      hr_ingat_kontrak_jauh: 30,
+      hr_ingat_kontrak_dekat: 7,
+      hr_ingat_percobaan: 7,
+      hr_ingat_dokumen: 30,
+      hr_ingat_menunggu: 2,
+      hr_ingat_jam: 7,
+    });
+    const diubah = dengan({
+      hr_ingat_kontrak_jauh: 14,
+      hr_ingat_kontrak_dekat: 3,
+      hr_ingat_jam: 0,
+    });
+    expect(diubah.ok && diubah.nilai.hr_ingat_kontrak_jauh).toBe(14);
+    expect(diubah.ok && diubah.nilai.hr_ingat_jam).toBe(0);
+    expect(dengan({ hr_ingat_kontrak_jauh: 7 })).toEqual({
+      ok: false,
+      pesan:
+        "Pengingat pertama PKWT berakhir (hari sebelumnya) harus bilangan bulat 8–90.",
+    });
+    expect(dengan({ hr_ingat_jam: 24 })).toEqual({
+      ok: false,
+      pesan: "Jam mulai pengingat HR (WIB) harus bilangan bulat 0–23.",
+    });
+    expect(dengan({ hr_ingat_menunggu: 15 })).toEqual({
+      ok: false,
+      pesan:
+        "Pengajuan dianggap lama menunggu (hari) harus bilangan bulat 1–14.",
+    });
+    const salahUrut = { ok: false as const, pesan: PESAN_INGAT_KONTRAK };
+    expect(
+      dengan({ hr_ingat_kontrak_jauh: 10, hr_ingat_kontrak_dekat: 10 }),
+    ).toEqual(salahUrut);
+    expect(
+      dengan({ hr_ingat_kontrak_jauh: 10, hr_ingat_kontrak_dekat: 20 }),
+    ).toEqual(salahUrut);
+    expect(
+      dengan({ hr_ingat_kontrak_jauh: 10, hr_ingat_kontrak_dekat: 9 }).ok,
+    ).toBe(true);
+    // Tersimpan rusak = bawaan per angka; aturan silang hanya saat disimpan.
+    const p2 = pengaturanDariPeta({
+      hr_ingat_kontrak_jauh: "x",
+      hr_ingat_kontrak_dekat: " 20 ",
+      hr_ingat_jam: "0",
+      hr_ingat_menunggu: "-1",
+    });
+    expect([
+      p2.hr_ingat_kontrak_jauh,
+      p2.hr_ingat_kontrak_dekat,
+      p2.hr_ingat_jam,
+      p2.hr_ingat_menunggu,
+    ]).toEqual([30, 20, 0, 2]);
+  });
+
+  // Cermin `fragmen_ingat_sql` (Rust): kosong, rusak, di luar batas = bawaan.
+  test("fragmen SQL angka pengingat", () => {
+    const db = new Database(":memory:");
+    db.run(
+      "CREATE TABLE setting_gex_system (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    );
+    for (const [sql, kunci] of [
+      [INGAT_KONTRAK_JAUH_SQL, "hr_ingat_kontrak_jauh"],
+      [INGAT_KONTRAK_DEKAT_SQL, "hr_ingat_kontrak_dekat"],
+      [INGAT_PERCOBAAN_SQL, "hr_ingat_percobaan"],
+      [INGAT_DOKUMEN_SQL, "hr_ingat_dokumen"],
+      [INGAT_MENUNGGU_SQL, "hr_ingat_menunggu"],
+      [INGAT_JAM_SQL, "hr_ingat_jam"],
+    ] as const) {
+      const [, , min, maks] = BATAS_PENGATURAN.find(
+        ([k]) => k === kunci,
+      ) as readonly [string, string, number, number];
+      const bawaan = PENGATURAN_KONTRAK_BAWAAN[kunci];
+      expect(sql).toBe(
+        `COALESCE((SELECT CAST(trim(value) AS INTEGER) FROM setting_gex_system WHERE key = '${kunci}' AND trim(value) <> '' AND trim(value) NOT GLOB '*[^0-9]*' AND CAST(trim(value) AS INTEGER) BETWEEN ${min} AND ${maks}), ${bawaan})`,
+      );
+      const baca = (nilai: string | null) => {
+        db.run("DELETE FROM setting_gex_system;");
+        if (nilai !== null) {
+          db.run("INSERT INTO setting_gex_system VALUES (?, ?);", [
+            kunci,
+            nilai,
+          ]);
+        }
+        const row = db.query(`SELECT ${sql} AS n;`).get() as { n: number };
+        return row.n;
+      };
+      const tengah = Math.floor((min + maks) / 2);
+      expect([
+        baca(null),
+        baca(` ${tengah} `),
+        baca(String(min)),
+        baca(String(maks)),
+        baca(String(maks + 1)),
+        baca("-1"),
+        baca("7x"),
+        baca(""),
+      ]).toEqual([bawaan, tengah, min, maks, bawaan, bawaan, bawaan, bawaan]);
+    }
+    db.close();
   });
 
   test("atasan dan siklus", () => {
@@ -402,6 +494,13 @@ describe("hris (cermin tes Rust)", () => {
         SIMPAN_DOKUMEN_SQL,
         INSERT_BERKAS_DOKUMEN_SQL,
         ...HAPUS_DOKUMEN_SQL,
+        `"${INGAT_KONTRAK_JAUH_SQL}"`,
+        `"${INGAT_KONTRAK_DEKAT_SQL}"`,
+        `"${INGAT_PERCOBAAN_SQL}"`,
+        `"${INGAT_DOKUMEN_SQL}"`,
+        `"${INGAT_MENUNGGU_SQL}"`,
+        `"${INGAT_JAM_SQL}"`,
+        `"${PESAN_INGAT_KONTRAK}"`,
       ]) {
         expect(rust.includes(sql)).toBe(true);
       }
