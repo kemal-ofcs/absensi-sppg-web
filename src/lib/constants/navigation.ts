@@ -26,8 +26,6 @@ export interface NavigationItem {
   href: string;
   icon: NavigationIcon;
   label: string;
-  /** Halaman hanya ada di Web/Desktop; Menu Mobile menyembunyikannya. */
-  desktopSaja?: boolean;
 }
 
 export interface NavigationGroup {
@@ -83,13 +81,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     label: "SDM",
     items: [
       { area: "karyawan", href: "/karyawan", icon: "user", label: "Karyawan" },
-      {
-        area: "hris",
-        href: "/hris",
-        icon: "users",
-        label: "HRIS",
-        desktopSaja: true,
-      },
+      { area: "hris", href: "/hris", icon: "users", label: "HRIS" },
       {
         area: "pengajuan",
         href: "/pengajuan",
@@ -174,6 +166,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
 
 /** Pintasan di halaman Karyawan Mobile: modul yang mengurus data seorang karyawan. */
 export const KARYAWAN_SHORTCUT_AREAS: AppArea[] = [
+  "hris",
   "idcards",
   "face_template",
   "shift",

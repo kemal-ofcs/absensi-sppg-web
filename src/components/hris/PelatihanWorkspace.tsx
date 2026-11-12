@@ -7,11 +7,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  bacaBase64,
   bukaBerkas,
   mimeBerkasSah,
   PESAN_MIME_BERKAS,
+  siapkanBerkas,
 } from "@/components/hris/berkas";
+import { DaftarRincian } from "@/components/hris/DaftarRincian";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
@@ -114,82 +115,90 @@ export function PelatihanWorkspace({
   const pilihanTahun = Array.from({ length: 6 }, (_, i) => tahunIni + 1 - i);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-      <div className={`${KARTU} space-y-3`}>
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <label htmlFor="pelatihan-tahun" className={LABEL}>
-              Tahun
-            </label>
-            <select
-              id="pelatihan-tahun"
-              value={tahun ?? tahunIni}
-              onChange={(e) => {
-                setDipilih(null);
-                setTahun(Number(e.target.value));
-              }}
-              className={KELAS}
-            >
-              {pilihanTahun.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-          {bolehUbah ? (
-            <button
-              id="pelatihan-baru"
-              type="button"
-              className={TOMBOL_KEDUA}
-              onClick={() => {
-                setDipilih(null);
-                setForm({
-                  tanggal_mulai: hariIni,
-                  tanggal_selesai: hariIni,
-                  biaya: "",
-                });
-              }}
-            >
-              Pelatihan baru
-            </button>
-          ) : null}
-        </div>
-        {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
-        <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
-          {daftar.map((p) => (
-            <li key={p.id_pelatihan}>
-              <button
-                type="button"
-                onClick={() => {
-                  setForm(null);
-                  setDipilih(p.id_pelatihan);
+    <DaftarRincian
+      adaPilihan={Boolean(form || dipilih)}
+      onKembali={() => {
+        setForm(null);
+        setDipilih(null);
+      }}
+      daftar={
+        <div className={`${KARTU} space-y-3`}>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <label htmlFor="pelatihan-tahun" className={LABEL}>
+                Tahun
+              </label>
+              <select
+                id="pelatihan-tahun"
+                value={tahun ?? tahunIni}
+                onChange={(e) => {
+                  setDipilih(null);
+                  setTahun(Number(e.target.value));
                 }}
-                className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_pelatihan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
+                className={KELAS}
               >
-                <span className="block truncate font-semibold text-white">
-                  {p.nama}
-                </span>
-                <span className="block truncate text-xs text-slate-400">
-                  <span className={WARNA_STATUS[p.status] ?? ""}>
-                    {p.status}
-                  </span>{" "}
-                  • {p.tanggal_mulai}
-                  {p.tanggal_selesai !== p.tanggal_mulai
-                    ? ` s.d. ${p.tanggal_selesai}`
-                    : ""}{" "}
-                  • {p.jumlah_peserta ?? 0} peserta
-                </span>
+                {pilihanTahun.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {bolehUbah ? (
+              <button
+                id="pelatihan-baru"
+                type="button"
+                className={TOMBOL_KEDUA}
+                onClick={() => {
+                  setDipilih(null);
+                  setForm({
+                    tanggal_mulai: hariIni,
+                    tanggal_selesai: hariIni,
+                    biaya: "",
+                  });
+                }}
+              >
+                Pelatihan baru
               </button>
-            </li>
-          ))}
-          {daftar.length === 0 ? (
-            <li className="text-sm text-slate-400">
-              Belum ada pelatihan di tahun ini.
-            </li>
-          ) : null}
-        </ul>
-      </div>
+            ) : null}
+          </div>
+          {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
+          <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
+            {daftar.map((p) => (
+              <li key={p.id_pelatihan}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm(null);
+                    setDipilih(p.id_pelatihan);
+                  }}
+                  className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_pelatihan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
+                >
+                  <span className="block truncate font-semibold text-white">
+                    {p.nama}
+                  </span>
+                  <span className="block truncate text-xs text-slate-400">
+                    <span className={WARNA_STATUS[p.status] ?? ""}>
+                      {p.status}
+                    </span>{" "}
+                    • {p.tanggal_mulai}
+                    {p.tanggal_selesai !== p.tanggal_mulai
+                      ? ` s.d. ${p.tanggal_selesai}`
+                      : ""}{" "}
+                    • {p.jumlah_peserta ?? 0} peserta
+                  </span>
+                </button>
+              </li>
+            ))}
+            {daftar.length === 0 ? (
+              <li className="text-sm text-slate-400">
+                Belum ada pelatihan di tahun ini.
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      }
+    >
       <div className="min-w-0">
         {form ? (
           <FormPelatihan
@@ -227,7 +236,7 @@ export function PelatihanWorkspace({
           </p>
         )}
       </div>
-    </div>
+    </DaftarRincian>
   );
 }
 
@@ -700,13 +709,7 @@ function Sertifikat({
         ...Object.fromEntries(
           Object.entries(isi).map(([k, v]) => [k, v.trim() || null]),
         ),
-        berkas: await Promise.all(
-          berkas.map(async (f) => ({
-            nama_berkas: f.name,
-            mime_type: f.type,
-            data_base64: await bacaBase64(f),
-          })),
-        ),
+        berkas: await Promise.all(berkas.map(siapkanBerkas)),
       });
       return "Sertifikat tersimpan dan tampil di tab Dokumen karyawan.";
     }, "Sertifikat gagal disimpan.");
@@ -741,6 +744,9 @@ function Sertifikat({
                 onClick={() =>
                   ambilBerkasSertifikat(b.id_berkas)
                     .then(bukaBerkas)
+                    .then((pesanBuka) => {
+                      if (pesanBuka) setPesan(pesanBuka);
+                    })
                     .catch((error: unknown) =>
                       setPesan(pesanGalat(error, "Berkas gagal dibuka.")),
                     )

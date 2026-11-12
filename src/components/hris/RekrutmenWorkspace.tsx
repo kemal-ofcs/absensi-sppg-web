@@ -6,11 +6,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  bacaBase64,
   bukaBerkas,
   mimeBerkasSah,
   PESAN_MIME_BERKAS,
+  siapkanBerkas,
 } from "@/components/hris/berkas";
+import { DaftarRincian } from "@/components/hris/DaftarRincian";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
@@ -139,66 +140,74 @@ export function RekrutmenWorkspace({
   const lowongan = daftar.find((l) => l.id_lowongan === dipilih) ?? null;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-      <div className={`${KARTU} space-y-3`}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-bold text-white">Lowongan</h2>
-          {bolehUbah ? (
-            <button
-              id="rekrutmen-lowongan-baru"
-              type="button"
-              className={TOMBOL_KEDUA}
-              onClick={() => {
-                setDipilih(null);
-                setFormLowongan({ jumlah: "1", tanggal_buka: hariIni });
-              }}
-            >
-              Lowongan baru
-            </button>
-          ) : null}
-        </div>
-        {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
-        <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
-          {daftar.map((l) => {
-            const segera =
-              l.tanggal_hapus !== null &&
-              l.tanggal_hapus <= tambahHari(hariIni, 30);
-            return (
-              <li key={l.id_lowongan}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormLowongan(null);
-                    setDipilih(l.id_lowongan);
-                  }}
-                  className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === l.id_lowongan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
-                >
-                  <span className="block truncate font-semibold text-white">
-                    {l.judul}
-                  </span>
-                  <span className="block truncate text-xs text-slate-400">
-                    <span className={WARNA_LOWONGAN[l.status] ?? ""}>
-                      {l.status}
-                    </span>{" "}
-                    • {l.jumlah_pelamar} pelamar • diterima{" "}
-                    {l.hitungan.Diterima ?? 0}/{l.jumlah}
-                  </span>
-                  {l.tanggal_hapus ? (
-                    <span
-                      className={`block truncate text-xs ${segera ? "text-amber-200" : "text-slate-400"}`}
-                    >
-                      Data pelamar dihapus pada {l.tanggal_hapus}
+    <DaftarRincian
+      adaPilihan={Boolean(formLowongan || lowongan)}
+      onKembali={() => {
+        setFormLowongan(null);
+        setDipilih(null);
+      }}
+      daftar={
+        <div className={`${KARTU} space-y-3`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-bold text-white">Lowongan</h2>
+            {bolehUbah ? (
+              <button
+                id="rekrutmen-lowongan-baru"
+                type="button"
+                className={TOMBOL_KEDUA}
+                onClick={() => {
+                  setDipilih(null);
+                  setFormLowongan({ jumlah: "1", tanggal_buka: hariIni });
+                }}
+              >
+                Lowongan baru
+              </button>
+            ) : null}
+          </div>
+          {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
+          <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
+            {daftar.map((l) => {
+              const segera =
+                l.tanggal_hapus !== null &&
+                l.tanggal_hapus <= tambahHari(hariIni, 30);
+              return (
+                <li key={l.id_lowongan}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormLowongan(null);
+                      setDipilih(l.id_lowongan);
+                    }}
+                    className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === l.id_lowongan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
+                  >
+                    <span className="block truncate font-semibold text-white">
+                      {l.judul}
                     </span>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
-          {daftar.length === 0 ? (
-            <li className="text-sm text-slate-400">Belum ada lowongan.</li>
-          ) : null}
-        </ul>
-      </div>
+                    <span className="block truncate text-xs text-slate-400">
+                      <span className={WARNA_LOWONGAN[l.status] ?? ""}>
+                        {l.status}
+                      </span>{" "}
+                      • {l.jumlah_pelamar} pelamar • diterima{" "}
+                      {l.hitungan.Diterima ?? 0}/{l.jumlah}
+                    </span>
+                    {l.tanggal_hapus ? (
+                      <span
+                        className={`block truncate text-xs ${segera ? "text-amber-200" : "text-slate-400"}`}
+                      >
+                        Data pelamar dihapus pada {l.tanggal_hapus}
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              );
+            })}
+            {daftar.length === 0 ? (
+              <li className="text-sm text-slate-400">Belum ada lowongan.</li>
+            ) : null}
+          </ul>
+        </div>
+      }
+    >
       <div className="min-w-0 space-y-4">
         {formLowongan ? (
           <FormLowongan
@@ -246,7 +255,7 @@ export function RekrutmenWorkspace({
         )}
         {bolehHapus ? <Retensi onSelesai={muat} /> : null}
       </div>
-    </div>
+    </DaftarRincian>
   );
 }
 
@@ -1019,9 +1028,7 @@ function RincianPelamar({
     await jalankan(async () => {
       await simpanBerkasPelamar({
         id_pelamar: pelamar.id_pelamar,
-        nama_berkas: file.name,
-        mime_type: file.type,
-        data_base64: await bacaBase64(file),
+        ...(await siapkanBerkas(file)),
       });
       return sesudah("Berkas terunggah.")();
     }, "Berkas gagal diunggah.");
@@ -1219,6 +1226,9 @@ function RincianPelamar({
                 onClick={() =>
                   ambilBerkasPelamar(b.id_berkas)
                     .then(bukaBerkas)
+                    .then((pesanBuka) => {
+                      if (pesanBuka) setPesan(pesanBuka);
+                    })
                     .catch((error: unknown) =>
                       setPesan(pesanGalat(error, "Berkas gagal dibuka.")),
                     )

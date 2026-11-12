@@ -30,6 +30,7 @@ export function JatahCutiPanel({
   const [data, setData] = useState<JatahCuti | null>(null);
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
+  const [alasanBatal, setAlasanBatal] = useState<Record<string, string>>({});
   const [isi, setIsi] = useState({
     periode: "",
     jenis: "Saldo Awal",
@@ -80,8 +81,8 @@ export function JatahCutiPanel({
   };
 
   const batalkan = async (idPenyesuaian: string) => {
-    const alasan = window.prompt("Alasan membatalkan penyesuaian ini?") ?? "";
-    if (!alasan.trim()) return;
+    const alasan = (alasanBatal[idPenyesuaian] ?? "").trim();
+    if (!alasan) return;
     await jalankan(
       () => batalkanPenyesuaianCuti({ id_penyesuaian: idPenyesuaian, alasan }),
       "Penyesuaian dibatalkan.",
@@ -168,15 +169,32 @@ export function JatahCutiPanel({
                 {baris.alasan}
               </span>
               {bolehUbah && !dibatalkan ? (
-                <button
-                  type="button"
-                  id={`cuti-batal-${baris.id_penyesuaian}`}
-                  className="text-xs text-rose-200 underline"
-                  disabled={sibuk}
-                  onClick={() => void batalkan(baris.id_penyesuaian)}
-                >
-                  Batalkan
-                </button>
+                <span className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                  <input
+                    id={`cuti-batal-alasan-${baris.id_penyesuaian}`}
+                    aria-label="Alasan pembatalan"
+                    placeholder="Alasan pembatalan"
+                    value={alasanBatal[baris.id_penyesuaian] ?? ""}
+                    onChange={(e) =>
+                      setAlasanBatal((l) => ({
+                        ...l,
+                        [baris.id_penyesuaian]: e.target.value,
+                      }))
+                    }
+                    className={`${INPUT} min-w-0 flex-1 sm:w-56 sm:flex-none`}
+                  />
+                  <button
+                    type="button"
+                    id={`cuti-batal-${baris.id_penyesuaian}`}
+                    className="text-xs text-rose-200 underline disabled:no-underline disabled:opacity-50"
+                    disabled={
+                      sibuk || !(alasanBatal[baris.id_penyesuaian] ?? "").trim()
+                    }
+                    onClick={() => void batalkan(baris.id_penyesuaian)}
+                  >
+                    Batalkan
+                  </button>
+                </span>
               ) : null}
             </li>
           ))}

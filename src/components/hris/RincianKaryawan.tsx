@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { bacaBase64, bukaBerkas } from "@/components/hris/berkas";
+import { bukaBerkas, siapkanBerkas } from "@/components/hris/berkas";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { JatahCutiPanel } from "@/components/hris/JatahCutiPanel";
 import { RiwayatKinerjaKaryawan } from "@/components/hris/KinerjaWorkspace";
@@ -187,7 +187,7 @@ export function RincianKaryawan({
         </p>
       </div>
       <div
-        className="flex flex-wrap gap-2"
+        className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
         role="tablist"
         aria-label="Rincian karyawan"
       >
@@ -199,7 +199,7 @@ export function RincianKaryawan({
             role="tab"
             aria-selected={tab === t}
             onClick={() => setTab(t)}
-            className={`min-h-9 rounded-xl px-3 text-xs font-bold ${tab === t ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
+            className={`min-h-9 shrink-0 rounded-xl px-3 text-xs font-bold ${tab === t ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
           >
             {label}
           </button>
@@ -644,9 +644,7 @@ function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
       async () =>
         tambahBerkas({
           id_dokumen: idDokumen,
-          nama_berkas: berkas.name,
-          mime_type: berkas.type,
-          data_base64: await bacaBase64(berkas),
+          ...(await siapkanBerkas(berkas)),
         }),
       "Berkas terunggah.",
     );
@@ -654,7 +652,8 @@ function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
 
   const buka = async (idBerkas: string) => {
     try {
-      bukaBerkas(await ambilBerkas(idBerkas));
+      const pesanBuka = await bukaBerkas(await ambilBerkas(idBerkas));
+      if (pesanBuka) setPesan(pesanBuka);
     } catch (error) {
       setPesan(pesanGalat(error, "Berkas gagal dibuka."));
     }
@@ -692,8 +691,19 @@ function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
                       type="button"
                       aria-label="Hapus berkas"
                       disabled={sibuk}
-                      onClick={() => {
-                        if (window.confirm("Hapus berkas ini?")) {
+                      onClick={async () => {
+                        const lanjut = await konfirmasiData([
+                          {
+                            label: "Hapus berkas",
+                            nilai: b.nama_berkas ?? `Berkas ${b.urutan}`,
+                            peringatan: true,
+                          },
+                          {
+                            label: "Dokumen",
+                            nilai: `${d.nama_jenis ?? d.id_jenis}${d.nomor ? ` • ${d.nomor}` : ""}`,
+                          },
+                        ]);
+                        if (lanjut) {
                           void jalankan(
                             () => hapusBerkas(b.id_berkas),
                             "Berkas dihapus.",
@@ -745,12 +755,22 @@ function DokumenPanel({ id, bolehUbah }: { id: string; bolehUbah: boolean }) {
                 <button
                   type="button"
                   disabled={sibuk}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        "Hapus dokumen ini beserta seluruh berkasnya?",
-                      )
-                    ) {
+                  onClick={async () => {
+                    const lanjut = await konfirmasiData([
+                      {
+                        label: "Hapus dokumen",
+                        nilai: `${d.nama_jenis ?? d.id_jenis}${d.nomor ? ` • ${d.nomor}` : ""}`,
+                        peringatan: true,
+                      },
+                      {
+                        label: "Berkas ikut terhapus",
+                        nilai: d.berkas.length
+                          ? `${d.berkas.length} berkas`
+                          : null,
+                        peringatan: true,
+                      },
+                    ]);
+                    if (lanjut) {
                       void jalankan(
                         () => hapusDokumen(d.id_dokumen),
                         "Dokumen dihapus.",

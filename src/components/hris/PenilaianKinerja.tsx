@@ -7,6 +7,7 @@
 // dinilai backend (`boleh`); tombol hanya cerminnya.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DaftarRincian } from "@/components/hris/DaftarRincian";
 import {
   hariIniWib,
   INPUT,
@@ -220,95 +221,102 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
         <output className="block text-sm text-amber-200">{pesan}</output>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-        <div className="min-w-0 space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-          <div
-            className="flex flex-wrap gap-2"
-            role="tablist"
-            aria-label="Saring penilaian"
-          >
-            {saringan.map(([id, label]) => (
-              <button
-                key={id}
-                id={`kinerja-saring-${id}`}
-                type="button"
-                role="tab"
-                aria-selected={saring === id}
-                onClick={() => setSaring(id)}
-                className={`min-h-9 rounded-xl px-3 text-xs font-bold ${saring === id ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {penilaian.length === 0 && belum.length === 0 ? (
-            <p className="text-sm text-slate-400">Tidak ada di saringan ini.</p>
-          ) : null}
-          <ul className="max-h-[60vh] space-y-1 overflow-y-auto">
-            {penilaian.map((p) => (
-              <li key={p.id_penilaian}>
+      <DaftarRincian
+        adaPilihan={Boolean(dipilih)}
+        onKembali={() => setDipilih(null)}
+        daftar={
+          <div className="min-w-0 space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+            <div
+              className="flex flex-wrap gap-2"
+              role="tablist"
+              aria-label="Saring penilaian"
+            >
+              {saringan.map(([id, label]) => (
                 <button
+                  key={id}
+                  id={`kinerja-saring-${id}`}
                   type="button"
-                  onClick={() => setDipilih(p.id_penilaian)}
-                  className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_penilaian ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
+                  role="tab"
+                  aria-selected={saring === id}
+                  onClick={() => setSaring(id)}
+                  className={`min-h-9 rounded-xl px-3 text-xs font-bold ${saring === id ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate font-semibold text-white">
-                      {p.nama ?? p.id_karyawan}
-                    </span>
-                    <span
-                      className={`shrink-0 rounded-lg px-2 py-0.5 text-xs font-bold ${WARNA_STATUS_KINERJA[p.status] ?? ""}`}
-                    >
-                      {p.status}
-                    </span>
-                  </span>
-                  <span className="block truncate text-xs text-slate-400">
-                    {p.divisi ?? "-"} • {p.template_nama}
-                    {p.id_ref ? " • Koreksi" : ""}
-                    {p.nilai_teks
-                      ? ` • ${p.nilai_teks} ${p.predikat ?? ""}`
-                      : ""}
-                  </span>
-                  {p.tanda.length ? (
-                    <span className="block truncate text-xs text-amber-200">
-                      {p.tanda
-                        .map((t) => LABEL_TANDA_KINERJA[t] ?? t)
-                        .join(", ")}
-                    </span>
-                  ) : null}
+                  {label}
                 </button>
-              </li>
-            ))}
-            {belum.map((k) => (
-              <li
-                key={k.id_karyawan}
-                className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-semibold text-white">
-                    {k.nama}
-                  </span>
-                  <span className="block truncate text-xs text-slate-400">
-                    {k.divisi || "-"} •{" "}
-                    {k.template_nama ??
-                      "Belum bisa dinilai: jabatan tanpa template"}
-                  </span>
-                </span>
-                {bolehNilai && k.id_template ? (
+              ))}
+            </div>
+            {penilaian.length === 0 && belum.length === 0 ? (
+              <p className="text-sm text-slate-400">
+                Tidak ada di saringan ini.
+              </p>
+            ) : null}
+            <ul className="max-h-[60vh] space-y-1 overflow-y-auto">
+              {penilaian.map((p) => (
+                <li key={p.id_penilaian}>
                   <button
                     type="button"
-                    id={`kinerja-mulai-${k.id_karyawan}`}
-                    className={TOMBOL_KEDUA}
-                    disabled={sibuk}
-                    onClick={() => void mulaiNilai(k)}
+                    onClick={() => setDipilih(p.id_penilaian)}
+                    className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_penilaian ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
                   >
-                    Mulai nilai
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate font-semibold text-white">
+                        {p.nama ?? p.id_karyawan}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-lg px-2 py-0.5 text-xs font-bold ${WARNA_STATUS_KINERJA[p.status] ?? ""}`}
+                      >
+                        {p.status}
+                      </span>
+                    </span>
+                    <span className="block truncate text-xs text-slate-400">
+                      {p.divisi ?? "-"} • {p.template_nama}
+                      {p.id_ref ? " • Koreksi" : ""}
+                      {p.nilai_teks
+                        ? ` • ${p.nilai_teks} ${p.predikat ?? ""}`
+                        : ""}
+                    </span>
+                    {p.tanda.length ? (
+                      <span className="block truncate text-xs text-amber-200">
+                        {p.tanda
+                          .map((t) => LABEL_TANDA_KINERJA[t] ?? t)
+                          .join(", ")}
+                      </span>
+                    ) : null}
                   </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
+                </li>
+              ))}
+              {belum.map((k) => (
+                <li
+                  key={k.id_karyawan}
+                  className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-semibold text-white">
+                      {k.nama}
+                    </span>
+                    <span className="block truncate text-xs text-slate-400">
+                      {k.divisi || "-"} •{" "}
+                      {k.template_nama ??
+                        "Belum bisa dinilai: jabatan tanpa template"}
+                    </span>
+                  </span>
+                  {bolehNilai && k.id_template ? (
+                    <button
+                      type="button"
+                      id={`kinerja-mulai-${k.id_karyawan}`}
+                      className={TOMBOL_KEDUA}
+                      disabled={sibuk}
+                      onClick={() => void mulaiNilai(k)}
+                    >
+                      Mulai nilai
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        }
+      >
         <div className="min-w-0">
           {dipilih ? (
             <RincianPenilaian
@@ -325,7 +333,7 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
             </p>
           )}
         </div>
-      </div>
+      </DaftarRincian>
     </div>
   );
 }

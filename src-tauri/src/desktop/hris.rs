@@ -1726,10 +1726,13 @@ pub fn cloud_org_karyawan_statements(row: &Value, id_unik: &str) -> Vec<(String,
 
 // ── Khusus cloud: profil dan dokumen (Q-30, Q-45) ──────────────────────────
 
+/// Belum dikonfigurasi dan jaringan putus (HP tanpa sinyal, fase 10) sama-sama
+/// berarti "butuh koneksi"; galat jaringan mentah memuat alamat database.
+/// Kodenya dipertahankan, kode lain diteruskan apa adanya.
 pub(super) fn tak_terhubung(error: CommandError) -> CommandError {
-    if error.code == "TURSO_NOT_CONFIGURED" {
+    if matches!(error.code, "TURSO_NOT_CONFIGURED" | "TURSO_NETWORK_ERROR") {
         return CommandError::new(
-            "TURSO_NOT_CONFIGURED",
+            error.code,
             "Data ini hanya tersimpan di database pusat dan butuh koneksi ke database.",
         );
     }
@@ -2030,6 +2033,20 @@ mod tests {
             tanggal_selesai: None,
             percobaan_selesai: None,
         }
+    }
+
+    #[test]
+    fn tak_terhubung_menyamakan_pesan_tanpa_koneksi() {
+        let pesan = "Data ini hanya tersimpan di database pusat dan butuh koneksi ke database.";
+        let belum = tak_terhubung(CommandError::new("TURSO_NOT_CONFIGURED", "x"));
+        let putus = tak_terhubung(CommandError::new(
+            "TURSO_NETWORK_ERROR",
+            "Gagal menghubungi database Turso: error sending request for url (https://db.example.turso.io/v2/pipeline)",
+        ));
+        assert_eq!((belum.code, belum.message.as_str()), ("TURSO_NOT_CONFIGURED", pesan));
+        assert_eq!((putus.code, putus.message.as_str()), ("TURSO_NETWORK_ERROR", pesan));
+        let lain = tak_terhubung(CommandError::new("FORBIDDEN", "Tidak berwenang."));
+        assert_eq!((lain.code, lain.message.as_str()), ("FORBIDDEN", "Tidak berwenang."));
     }
 
     // Vektor yang sama diuji di `validations/hris.test.ts`.

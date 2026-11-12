@@ -212,6 +212,7 @@ export function OrganisasiPanel({
   const [galatJenis, setGalatJenis] = useState("");
   const [aturan, setAturan] = useState<PengaturanKontrak | null>(null);
   const [pesanAturan, setPesanAturan] = useState("");
+  const [galatTanpaMaster, setGalatTanpaMaster] = useState("");
 
   const muatJenis = useCallback(
     () =>
@@ -367,9 +368,10 @@ export function OrganisasiPanel({
                       return;
                     try {
                       await simpanDivisi({ nama: t.teks });
+                      setGalatTanpaMaster("");
                       onBerubah();
                     } catch (error) {
-                      window.alert(
+                      setGalatTanpaMaster(
                         error instanceof Error
                           ? error.message
                           : "Gagal menyimpan.",
@@ -383,6 +385,9 @@ export function OrganisasiPanel({
               </li>
             ))}
           </ul>
+          {galatTanpaMaster ? (
+            <p className="text-sm text-rose-200">{galatTanpaMaster}</p>
+          ) : null}
         </section>
       ) : null}
       <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">

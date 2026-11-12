@@ -8,6 +8,7 @@
 // periode gaji dibayar) dinilai backend (aturan 10).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { bukaBerkas, siapkanBerkas } from "@/components/hris/berkas";
 import { PembayaranReimburse } from "@/components/hris/PembayaranReimburse";
 import {
   INPUT,
@@ -101,15 +102,6 @@ const WARNA_STATUS: Record<string, string> = {
   Ditolak: "bg-rose-500/15 text-rose-200",
   Dibatalkan: "bg-slate-700 text-slate-300",
 };
-
-function bacaBase64(berkas: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const pembaca = new FileReader();
-    pembaca.onload = () => resolve(String(pembaca.result).split(",")[1] ?? "");
-    pembaca.onerror = () => reject(new Error("Berkas tidak terbaca."));
-    pembaca.readAsDataURL(berkas);
-  });
-}
 
 export function PengajuanWorkspace() {
   const { user } = useAuth();
@@ -891,14 +883,11 @@ function BarisPengajuan({
   const unggah = async (daftar: FileList | null) => {
     const berkasPilih = daftar?.[0];
     if (!berkasPilih) return;
-    const data = await bacaBase64(berkasPilih);
     await jalankan(
-      () =>
+      async () =>
         tambahLampiran({
           id_pengajuan: p.id_pengajuan,
-          nama_berkas: berkasPilih.name,
-          mime_type: berkasPilih.type,
-          data_base64: data,
+          ...(await siapkanBerkas(berkasPilih)),
         }),
       "Lampiran tersimpan.",
     );
@@ -907,11 +896,8 @@ function BarisPengajuan({
 
   const lihat = async (idBerkas: string) => {
     try {
-      const b = await ambilIsiLampiran(idBerkas);
-      const bita = Uint8Array.from(atob(b.data_base64), (c) => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bita], { type: b.mime_type }));
-      window.open(url, "_blank", "noopener");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const pesanBuka = await bukaBerkas(await ambilIsiLampiran(idBerkas));
+      if (pesanBuka) setGalatBerkas(pesanBuka);
     } catch (error) {
       setGalatBerkas(pesanGalat(error, "Berkas gagal dibuka."));
     }

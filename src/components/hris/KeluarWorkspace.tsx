@@ -5,6 +5,7 @@
 // layar hanya menampilkan dan mengirim isian. Backend memeriksa ulang izin.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DaftarRincian } from "@/components/hris/DaftarRincian";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
@@ -280,52 +281,59 @@ export function KeluarWorkspace({
   return (
     <div className="space-y-4">
       {pesan ? <p className="text-sm text-slate-300">{pesan}</p> : null}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-        <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-          {bolehUbah ? (
-            <button
-              id="hris-keluar-baru"
-              type="button"
-              className={TOMBOL}
-              onClick={() => {
-                setDipilih(null);
-                setDraf(drafKosong());
-              }}
-            >
-              Catat karyawan keluar
-            </button>
-          ) : null}
-          {daftar && daftar.keluar.length === 0 ? (
-            <p className="text-sm text-slate-400">Belum ada proses keluar.</p>
-          ) : null}
-          <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
-            {(daftar?.keluar ?? []).map((k) => (
-              <li key={k.id_keluar}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraf(null);
-                    setDipilih(k.id_keluar);
-                  }}
-                  className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === k.id_keluar ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
-                >
-                  <span className="block truncate font-semibold text-white">
-                    {k.nama ?? k.id_karyawan}
-                  </span>
-                  <span className="block truncate text-xs text-slate-400">
-                    {k.alasan_nama} • terakhir {k.tanggal_terakhir}
-                  </span>
-                  <span
-                    className={`block text-xs font-bold ${WARNA_STATUS[k.status] ?? ""}`}
+      <DaftarRincian
+        adaPilihan={Boolean(draf || dipilih)}
+        onKembali={() => {
+          setDraf(null);
+          setDipilih(null);
+        }}
+        daftar={
+          <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
+            {bolehUbah ? (
+              <button
+                id="hris-keluar-baru"
+                type="button"
+                className={TOMBOL}
+                onClick={() => {
+                  setDipilih(null);
+                  setDraf(drafKosong());
+                }}
+              >
+                Catat karyawan keluar
+              </button>
+            ) : null}
+            {daftar && daftar.keluar.length === 0 ? (
+              <p className="text-sm text-slate-400">Belum ada proses keluar.</p>
+            ) : null}
+            <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
+              {(daftar?.keluar ?? []).map((k) => (
+                <li key={k.id_keluar}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraf(null);
+                      setDipilih(k.id_keluar);
+                    }}
+                    className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === k.id_keluar ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
                   >
-                    {k.status} • {formatRupiah(k.total)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-
+                    <span className="block truncate font-semibold text-white">
+                      {k.nama ?? k.id_karyawan}
+                    </span>
+                    <span className="block truncate text-xs text-slate-400">
+                      {k.alasan_nama} • terakhir {k.tanggal_terakhir}
+                    </span>
+                    <span
+                      className={`block text-xs font-bold ${WARNA_STATUS[k.status] ?? ""}`}
+                    >
+                      {k.status} • {formatRupiah(k.total)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        }
+      >
         <div className="min-w-0 space-y-4">
           {draf ? (
             <FormKeluar
@@ -359,7 +367,7 @@ export function KeluarWorkspace({
             <AlasanPanel alasan={daftar.alasan} onBerubah={muatDaftar} />
           ) : null}
         </div>
-      </div>
+      </DaftarRincian>
     </div>
   );
 }

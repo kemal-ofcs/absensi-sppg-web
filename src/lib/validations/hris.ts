@@ -881,4 +881,5 @@ export const LABEL_TANDA_HRIS: Record<string, string> = {
   harian_perlu_pkwtt: "Harian lepas perlu diangkat PKWTT",
   nama_ganda: "Nama kembar dari perangkat offline",
   atasan_siklus: "Atasan membentuk lingkaran",
+  atasan_nonaktif: "Atasan nonaktif",
 };

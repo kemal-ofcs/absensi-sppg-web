@@ -1,7 +1,8 @@
 "use client";
 
-// Tab SP di rincian karyawan (PRD HRIS §20.3, Web/Desktop). Khusus cloud:
-// butuh koneksi ke database. Backend memeriksa ulang izin dan usulan tingkat.
+// Tab SP di rincian karyawan (PRD HRIS §20.3). Khusus cloud: butuh koneksi ke
+// database. Backend memeriksa ulang izin dan usulan tingkat. Cetak A4 hanya
+// Web/Desktop (Q-131): WebView Android tidak punya dialog cetak.
 
 import { useCallback, useEffect, useState } from "react";
 import { cetakSuratPeringatan } from "@/components/hris/cetakSuratPeringatan";
@@ -14,6 +15,7 @@ import {
   type SuratPeringatan,
   simpanSp,
 } from "@/lib/gateways/hr-keluar";
+import { isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { TINGKAT_SP } from "@/lib/validations/hr-keluar";
 
 const KELAS =
@@ -359,23 +361,25 @@ export function SuratPeringatanPanel({
               </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={TOMBOL_KEDUA}
-                onClick={() =>
-                  cetakSuratPeringatan(
-                    s,
-                    {
-                      nama: String(karyawan.nama),
-                      jabatan: (karyawan.jabatan_status as string) ?? null,
-                      divisi: (karyawan.divisi as string) ?? null,
-                    },
-                    data?.kop ?? null,
-                  )
-                }
-              >
-                Cetak
-              </button>
+              {isMobileRuntime() ? null : (
+                <button
+                  type="button"
+                  className={TOMBOL_KEDUA}
+                  onClick={() =>
+                    cetakSuratPeringatan(
+                      s,
+                      {
+                        nama: String(karyawan.nama),
+                        jabatan: (karyawan.jabatan_status as string) ?? null,
+                        divisi: (karyawan.divisi as string) ?? null,
+                      },
+                      data?.kop ?? null,
+                    )
+                  }
+                >
+                  Cetak
+                </button>
+              )}
               {bolehUbah && !s.dicabut_pada ? (
                 <button
                   type="button"
