@@ -103,6 +103,13 @@ export const STATUS_PELAMAR_SQL =
   "(SELECT t.tahap FROM hr_pelamar_tahap t WHERE t.id_pelamar = p.id_pelamar AND t.dibatalkan_pada IS NULL ORDER BY t.urutan DESC LIMIT 1)";
 
 /** Cermin `DAFTAR_LOWONGAN_SQL`. */
+/**
+ * Cermin `PERHATIAN_REKRUTMEN_SQL`: lowongan yang data pelamarnya dihapus
+ * retensi dalam 30 hari (kartu "Perlu perhatian", Q-111). Hanya judul, jumlah
+ * pelamar yang akan terhapus, dan tanggalnya; tanpa nama pelamar.
+ */
+export const PERHATIAN_REKRUTMEN_SQL = `SELECT id_lowongan, judul, tanggal_hapus, jumlah FROM (SELECT l.id_lowongan, l.judul, ${TANGGAL_HAPUS_SQL} AS tanggal_hapus, (SELECT COUNT(*) FROM hr_pelamar p WHERE p.id_lowongan = l.id_lowongan AND p.id_karyawan IS NULL) AS jumlah FROM hr_lowongan l WHERE ${TUTUP_EFEKTIF_SQL} IS NOT NULL) WHERE jumlah > 0 AND tanggal_hapus <= date('now', '+7 hours', '+30 days') ORDER BY tanggal_hapus, id_lowongan LIMIT 200;`;
+
 export const DAFTAR_LOWONGAN_SQL = `SELECT l.*, j.nama AS jabatan_nama, d.nama AS divisi_nama, c.nama AS cabang_nama, date(l.ditutup_pada, '+7 hours') AS tanggal_ditutup, ${TUTUP_EFEKTIF_SQL} AS tutup_efektif, ${TANGGAL_HAPUS_SQL} AS tanggal_hapus FROM hr_lowongan l LEFT JOIN hr_jabatan j ON j.id_jabatan = l.id_jabatan LEFT JOIN hr_divisi d ON d.id_divisi = l.id_divisi LEFT JOIN hr_cabang c ON c.id_cabang = l.id_cabang ORDER BY l.tanggal_buka DESC, l.id_lowongan DESC;`;
 
 /** Cermin `STATUS_SEMUA_PELAMAR_SQL`. */

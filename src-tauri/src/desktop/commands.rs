@@ -3726,6 +3726,18 @@ pub fn desktop_hr_reimburse_pay_cancel(state: State<'_, DesktopState>, draft: Va
     hr_pengajuan::batal_bayar_reimburse(&state, &operator.username, &draft)
 }
 
+// ── HRIS fase 8: kartu "Perlu perhatian" (§23.4, dibaca dari cloud) ────────
+
+/// Isi kartu "Perlu perhatian" di /hris. Bagian disaring per izin di backend,
+/// bukan di layar (aturan 10, 44).
+#[tauri::command]
+pub async fn desktop_hr_attention(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    let operator = require_any_permission(&state, &super::telegram::IZIN_PERHATIAN)?;
+    let izin = super::telegram::izin_perhatian(|izin| punya_izin(&operator, izin));
+    let turso = state.get_turso_client()?;
+    super::telegram::perhatian(&turso, &izin).await
+}
+
 // ── HRIS fase 5: surat peringatan dan karyawan keluar (§20, khusus cloud) ──
 
 /// SP satu karyawan (riwayat, usulan tingkat, kop) atau seluruh SP.

@@ -22,6 +22,8 @@ import {
   organisasi,
   profil,
 } from "@/lib/services/hris";
+import { perhatianHr } from "@/lib/services/telegram";
+import { IZIN_PERHATIAN, izinPerhatian } from "@/lib/validations/telegram";
 
 export const runtime = "nodejs";
 
@@ -34,6 +36,7 @@ const bodySchema = z
       "dokumen",
       "jenis-dokumen",
       "berkas",
+      "perhatian",
     ]),
     id: z.string().trim().min(1).max(160).optional(),
   })
@@ -92,6 +95,19 @@ export async function POST(request: NextRequest) {
         if (!id) throw new Error("Berkas tidak ditemukan.");
         await ensureServerDatabaseInitialized();
         return noStoreJson(await berkas(db, id));
+      case "perhatian": {
+        // Bagian disaring per izin di backend (aturan 10, 44).
+        const actor = await requireAnyWebPermission(request, [
+          ...IZIN_PERHATIAN,
+        ]);
+        await ensureServerDatabaseInitialized();
+        return noStoreJson(
+          await perhatianHr(
+            db,
+            izinPerhatian((izin) => hasPermission(actor, izin)),
+          ),
+        );
+      }
     }
   } catch (error) {
     return toApiErrorResponse(error);

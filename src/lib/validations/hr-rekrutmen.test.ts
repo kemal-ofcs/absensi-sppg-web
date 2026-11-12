@@ -253,6 +253,7 @@ describe("hr-rekrutmen (cermin tes Rust)", () => {
     let potongan: string[] = [
       ...HAPUS_PELAMAR_LAMA_SQL,
       R.DAFTAR_LOWONGAN_SQL,
+      R.PERHATIAN_REKRUTMEN_SQL,
       R.STATUS_SEMUA_PELAMAR_SQL,
       R.PELAMAR_LOWONGAN_SQL,
       R.PELAMAR_SATU_SQL,

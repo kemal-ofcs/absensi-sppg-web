@@ -119,6 +119,17 @@ macro_rules! status_pelamar_sql {
 
 /// Semua lowongan dengan nama master hidup (Q-12), tutup efektif, dan
 /// tanggal data pelamarnya dihapus.
+/// Lowongan yang data pelamarnya dihapus retensi dalam 30 hari (kartu "Perlu
+/// perhatian", Q-111): judul, jumlah pelamar yang akan terhapus, tanggalnya;
+/// tanpa nama pelamar. Cermin `PERHATIAN_REKRUTMEN_SQL`.
+pub const PERHATIAN_REKRUTMEN_SQL: &str = concat!(
+    "SELECT id_lowongan, judul, tanggal_hapus, jumlah FROM (SELECT l.id_lowongan, l.judul, ",
+    tanggal_hapus_sql!(),
+    " AS tanggal_hapus, (SELECT COUNT(*) FROM hr_pelamar p WHERE p.id_lowongan = l.id_lowongan AND p.id_karyawan IS NULL) AS jumlah FROM hr_lowongan l WHERE ",
+    tutup_efektif_sql!(),
+    " IS NOT NULL) WHERE jumlah > 0 AND tanggal_hapus <= date('now', '+7 hours', '+30 days') ORDER BY tanggal_hapus, id_lowongan LIMIT 200;"
+);
+
 pub const DAFTAR_LOWONGAN_SQL: &str = concat!(
     "SELECT l.*, j.nama AS jabatan_nama, d.nama AS divisi_nama, c.nama AS cabang_nama, date(l.ditutup_pada, '+7 hours') AS tanggal_ditutup, ",
     tutup_efektif_sql!(),

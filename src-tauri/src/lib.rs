@@ -114,6 +114,7 @@ pub fn run() {
             desktop::commands::desktop_hr_reimburse_overview,
             desktop::commands::desktop_hr_reimburse_pay,
             desktop::commands::desktop_hr_reimburse_pay_cancel,
+            desktop::commands::desktop_hr_attention,
             desktop::commands::desktop_hr_warnings,
             desktop::commands::desktop_hr_warning_save,
             desktop::commands::desktop_hr_warning_revoke,

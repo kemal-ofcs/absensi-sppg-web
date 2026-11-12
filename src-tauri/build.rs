@@ -93,6 +93,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "desktop_hr_reimburse_overview",
     "desktop_hr_reimburse_pay",
     "desktop_hr_reimburse_pay_cancel",
+    "desktop_hr_attention",
     "desktop_hr_warnings",
     "desktop_hr_warning_save",
     "desktop_hr_warning_revoke",

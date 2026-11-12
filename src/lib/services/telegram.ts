@@ -4,16 +4,26 @@ import type { Client, InStatement } from "@libsql/client";
 import { z } from "zod";
 import { ApiRequestError } from "@/lib/server/http/api-response";
 import { type Laporan, penugasan } from "@/lib/validations/driver";
+import { PERHATIAN_REKRUTMEN_SQL } from "@/lib/validations/hr-rekrutmen";
 import {
   AWALAN_BUKA,
   AWALAN_BUKA_PIMPINAN,
   type BarisStokMenipis,
   BIDANG_KEJADIAN,
   type BidangTelegram,
+  diparkir,
   galatTelegram,
   grupDariUpdates,
   type IsiLaporanPerjalanan,
+  type IzinPerhatian,
   idGajiStatus,
+  idHrDokumen,
+  idHrKontrak,
+  idHrMenunggu,
+  idHrPercobaan,
+  idHrSp,
+  idHrUltah,
+  idHrUrgent,
   idKasbonBaru,
   idPengajuanBaru,
   idPengajuanPutus,
@@ -27,13 +37,26 @@ import {
   KUNCI_AKTIF,
   KUNCI_AKTIF_SEJAK,
   KUNCI_TOKEN,
+  klaimSetelahGagal,
   kunciGrup,
   kunciKirim,
   LABEL_BIDANG,
   normalisasiChatId,
+  PERHATIAN_SQL_DOKUMEN,
+  PERHATIAN_SQL_KONTRAK,
+  PERHATIAN_SQL_SP,
+  PERHATIAN_SQL_ULTAH,
+  type PerhatianHr,
   permintaanKirim,
   pesanBukaBuku,
   pesanGajiStatus,
+  pesanHrDokumenKedaluwarsa,
+  pesanHrKontrakAkhir,
+  pesanHrPengajuanMenunggu,
+  pesanHrPercobaanAkhir,
+  pesanHrSpBerakhir,
+  pesanHrUlangTahunKerja,
+  pesanHrUrgentBelumDiketahui,
   pesanKasbonBaru,
   pesanPengajuanBaru,
   pesanPengajuanPutus,
@@ -48,11 +71,23 @@ import {
   statusSetelahGagal,
   TELEGRAM_BATCH,
   TELEGRAM_BIDANG,
+  TELEGRAM_DRAIN_BATAL_SQL,
+  TELEGRAM_DRAIN_GAGAL_SQL,
+  TELEGRAM_DRAIN_KLAIM_SQL,
+  TELEGRAM_DRAIN_PILIH_SQL,
+  TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
   TELEGRAM_INSERT_ANTREAN_SQL,
   TELEGRAM_KEJADIAN,
   TELEGRAM_RIWAYAT,
   TELEGRAM_SQL_BUKA_BUKU,
   TELEGRAM_SQL_GAJI_STATUS,
+  TELEGRAM_SQL_HR_DOKUMEN,
+  TELEGRAM_SQL_HR_KONTRAK,
+  TELEGRAM_SQL_HR_MENUNGGU,
+  TELEGRAM_SQL_HR_PERCOBAAN,
+  TELEGRAM_SQL_HR_SP,
+  TELEGRAM_SQL_HR_ULTAH,
+  TELEGRAM_SQL_HR_URGENT,
   TELEGRAM_SQL_JAM_WIB,
   TELEGRAM_SQL_KASBON_BARU,
   TELEGRAM_SQL_LABEL_KENDARAAN,
@@ -96,6 +131,7 @@ export const telegramDraftSchema = z
         keuangan: chatIdSchema,
         pimpinan: chatIdSchema,
         armada: chatIdSchema,
+        hrd: chatIdSchema,
       })
       .strict(),
     kirim: z
@@ -113,6 +149,13 @@ export const telegramDraftSchema = z
         trip_dibatalkan: z.boolean(),
         trip_ganti_izin: z.boolean(),
         trip_lokasi_palsu: z.boolean(),
+        hr_kontrak_akhir: z.boolean(),
+        hr_percobaan_akhir: z.boolean(),
+        hr_dokumen_kedaluwarsa: z.boolean(),
+        hr_sp_berakhir: z.boolean(),
+        hr_pengajuan_menunggu: z.boolean(),
+        hr_urgent_belum_diketahui: z.boolean(),
+        hr_ulang_tahun_kerja: z.boolean(),
       })
       .strict(),
   })
@@ -130,7 +173,7 @@ function tidakValid(pesan: string): never {
   throw new ApiRequestError(pesan, 400);
 }
 
-class Pengaturan {
+export class Pengaturan {
   constructor(private readonly nilai: Map<string, string>) {}
   get(kunci: string) {
     return this.nilai.get(kunci) ?? "";
@@ -153,7 +196,7 @@ class Pengaturan {
   }
 }
 
-async function bacaPengaturan(client: Client) {
+export async function bacaPengaturan(client: Client) {
   const hasil = await client.execute(
     "SELECT kunci, nilai FROM app_telegram_setting LIMIT 100;",
   );
@@ -338,6 +381,19 @@ async function antrekan(
 ) {
   await client.execute({
     sql: TELEGRAM_INSERT_ANTREAN_SQL,
+    args: [id, kejadian, isi],
+  });
+}
+
+/** Cermin `antrekan_parkir`: kejadian HR masuk antrean diparkir (§23.2). */
+async function antrekanParkir(
+  client: Client,
+  id: string,
+  kejadian: KejadianTelegram,
+  isi: string,
+) {
+  await client.execute({
+    sql: TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
     args: [id, kejadian, isi],
   });
 }
@@ -660,13 +716,40 @@ async function belumTercatat(client: Client, id: string) {
   return sudah.rows.length === 0;
 }
 
-/** Cermin `catat_harian`: ringkasan sekali per tanggal, mulai 07.00 WIB. */
+/**
+ * Cermin `catat_harian`: kejadian berbasis tanggal, mulai 07.00 WIB jam
+ * database. Stok sekali per tanggal; pengingat HR lihat `catatHrd`.
+ */
 async function catatHarian(client: Client, pengaturan: Pengaturan) {
-  if (!pengaturan.siap("stok_menipis")) return;
+  if (
+    !pengaturan.siap("stok_menipis") &&
+    !TELEGRAM_KEJADIAN.some((k) => diparkir(k) && pengaturan.siap(k))
+  ) {
+    return;
+  }
   const jam = (await client.execute(TELEGRAM_SQL_JAM_WIB)).rows[0];
-  if (!jam || Number(jam.jam) < JAM_RINGKASAN_STOK) return;
+  if (!jam) return;
+  await catatHarianPada(client, pengaturan, teks(jam.tanggal), Number(jam.jam));
+}
 
-  const idStok = idStokMenipis(teks(jam.tanggal));
+/**
+ * Cermin `catat_harian_pada`. `tanggal`/`jam` = tanggal dan jam WIB dari
+ * `TELEGRAM_SQL_JAM_WIB`; diekspor supaya batas 07.00 bisa diuji tanpa
+ * bergantung jam saat tes berjalan.
+ */
+export async function catatHarianPada(
+  client: Client,
+  pengaturan: Pengaturan,
+  tanggal: string,
+  jam: number,
+) {
+  if (jam < JAM_RINGKASAN_STOK) return;
+  if (pengaturan.siap("stok_menipis")) await catatStok(client, tanggal);
+  await catatHrd(client, pengaturan, tanggal);
+}
+
+async function catatStok(client: Client, tanggal: string) {
+  const idStok = idStokMenipis(tanggal);
   if (await belumTercatat(client, idStok)) {
     const daftar: BarisStokMenipis[] = (
       await client.execute(TELEGRAM_SQL_STOK_MENIPIS)
@@ -680,6 +763,136 @@ async function catatHarian(client: Client, pengaturan: Pengaturan) {
     }));
     const isi = pesanStokMenipis(daftar);
     if (isi !== null) await antrekan(client, idStok, "stok_menipis", isi);
+  }
+}
+
+async function baris(client: Client, sql: string, args: string[] = []) {
+  return (await client.execute({ sql, args })).rows;
+}
+
+/**
+ * Cermin `catat_hrd`: pengingat HR ke grup HRD (§23.3). Pengingat per
+ * karyawan memeriksa id-nya di SQL sumber (`NOT EXISTS`); tiga ringkasan
+ * harian lewat `belumTercatat` seperti stok. Semua masuk antrean diparkir.
+ */
+async function catatHrd(
+  client: Client,
+  pengaturan: Pengaturan,
+  tanggal: string,
+) {
+  if (pengaturan.siap("hr_kontrak_akhir")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_KONTRAK)) {
+      const sisa = Number(row.sisa ?? 0);
+      await antrekanParkir(
+        client,
+        idHrKontrak(teks(row.id_kontrak), sisa),
+        "hr_kontrak_akhir",
+        pesanHrKontrakAkhir({
+          nama: teks(row.nama),
+          jabatan: teks(row.jabatan),
+          tanggal: teks(row.tanggal_selesai),
+          sisa,
+        }),
+      );
+    }
+  }
+  if (pengaturan.siap("hr_percobaan_akhir")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_PERCOBAAN)) {
+      await antrekanParkir(
+        client,
+        idHrPercobaan(teks(row.id_kontrak)),
+        "hr_percobaan_akhir",
+        pesanHrPercobaanAkhir({
+          nama: teks(row.nama),
+          jabatan: teks(row.jabatan),
+          tanggal: teks(row.percobaan_selesai),
+          sisa: Number(row.sisa ?? 0),
+        }),
+      );
+    }
+  }
+  if (pengaturan.siap("hr_dokumen_kedaluwarsa")) {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_DOKUMEN)) {
+      const tanggalKedaluwarsa = teks(row.tanggal_kedaluwarsa);
+      await antrekanParkir(
+        client,
+        idHrDokumen(teks(row.id_dokumen), tanggalKedaluwarsa),
+        "hr_dokumen_kedaluwarsa",
+        pesanHrDokumenKedaluwarsa({
+          jenisDokumen: teks(row.jenis_dokumen),
+          nama: teks(row.nama),
+          jabatan: teks(row.jabatan),
+          tanggal: tanggalKedaluwarsa,
+          sisa: Number(row.sisa ?? 0),
+        }),
+      );
+    }
+  }
+  const sejak = pengaturan.get(KUNCI_AKTIF_SEJAK);
+  if (pengaturan.siap("hr_sp_berakhir") && sejak !== "") {
+    for (const row of await baris(client, TELEGRAM_SQL_HR_SP, [sejak])) {
+      await antrekanParkir(
+        client,
+        idHrSp(teks(row.id_sp)),
+        "hr_sp_berakhir",
+        pesanHrSpBerakhir({
+          tingkat: teks(row.tingkat),
+          nama: teks(row.nama),
+          jabatan: teks(row.jabatan),
+          tanggal: teks(row.berlaku_sampai),
+        }),
+      );
+    }
+  }
+
+  const idMenunggu = idHrMenunggu(tanggal);
+  if (
+    pengaturan.siap("hr_pengajuan_menunggu") &&
+    (await belumTercatat(client, idMenunggu))
+  ) {
+    const rows = await baris(client, TELEGRAM_SQL_HR_MENUNGGU);
+    const palingLama = rows
+      .map((row) => teks(row.sejak))
+      .reduce((a, b) => (a === "" || b < a ? b : a), "");
+    const isi = pesanHrPengajuanMenunggu(
+      rows.map((row) => ({
+        kelompok: teks(row.kelompok),
+        jumlah: Number(row.jumlah ?? 0),
+      })),
+      palingLama,
+    );
+    if (isi !== null) {
+      await antrekanParkir(client, idMenunggu, "hr_pengajuan_menunggu", isi);
+    }
+  }
+  const idUrgent = idHrUrgent(tanggal);
+  if (
+    pengaturan.siap("hr_urgent_belum_diketahui") &&
+    (await belumTercatat(client, idUrgent))
+  ) {
+    const row = (await baris(client, TELEGRAM_SQL_HR_URGENT))[0];
+    const isi = row
+      ? pesanHrUrgentBelumDiketahui(Number(row.jumlah ?? 0), teks(row.sejak))
+      : null;
+    if (isi !== null) {
+      await antrekanParkir(client, idUrgent, "hr_urgent_belum_diketahui", isi);
+    }
+  }
+  const idUltah = idHrUltah(tanggal);
+  if (
+    pengaturan.siap("hr_ulang_tahun_kerja") &&
+    (await belumTercatat(client, idUltah))
+  ) {
+    const isi = pesanHrUlangTahunKerja(
+      (await baris(client, TELEGRAM_SQL_HR_ULTAH)).map((row) => ({
+        nama: teks(row.nama),
+        jabatan: teks(row.jabatan),
+        tahun: Number(row.tahun ?? 0),
+      })),
+    );
+    if (isi !== null) {
+      await antrekanParkir(client, idUltah, "hr_ulang_tahun_kerja", isi);
+    }
   }
 }
 
@@ -713,7 +926,7 @@ export async function drainTelegram(
   await catatKejadian(client, pengaturan);
 
   const antrean = await client.execute({
-    sql: "SELECT id_notifikasi, kejadian, isi_pesan, attempt_count FROM notifikasi_telegram WHERE status = 'Menunggu' AND (klaim_sampai IS NULL OR klaim_sampai < datetime('now')) ORDER BY created_at ASC, id_notifikasi ASC LIMIT ?;",
+    sql: TELEGRAM_DRAIN_PILIH_SQL,
     args: [TELEGRAM_BATCH],
   });
 
@@ -728,7 +941,7 @@ export async function drainTelegram(
       bidang && pengaturan.kirim(kejadian) ? pengaturan.grup(bidang) : "";
     if (chatId === "") {
       const batal = await client.execute({
-        sql: "UPDATE notifikasi_telegram SET status = 'Dibatalkan', last_error = ? WHERE id_notifikasi = ? AND status = 'Menunggu' AND (klaim_sampai IS NULL OR klaim_sampai < datetime('now'));",
+        sql: TELEGRAM_DRAIN_BATAL_SQL,
         args: ["Kejadian dimatikan atau grupnya belum diatur.", id],
       });
       if (batal.rowsAffected > 0) dibatalkan++;
@@ -736,7 +949,7 @@ export async function drainTelegram(
     }
 
     const klaim = await client.execute({
-      sql: "UPDATE notifikasi_telegram SET klaim_oleh = ?, klaim_sampai = datetime('now', '+5 minutes') WHERE id_notifikasi = ? AND status = 'Menunggu' AND (klaim_sampai IS NULL OR klaim_sampai < datetime('now'));",
+      sql: TELEGRAM_DRAIN_KLAIM_SQL,
       args: [pengirim, id],
     });
     if (klaim.rowsAffected === 0) continue;
@@ -752,9 +965,18 @@ export async function drainTelegram(
       const { status, percobaan } = statusSetelahGagal(
         Number(row.attempt_count ?? 0),
       );
+      const { klaimOleh, klaimSampai } = klaimSetelahGagal(kejadian, status);
       await client.execute({
-        sql: "UPDATE notifikasi_telegram SET status = ?, attempt_count = ?, last_error = ?, klaim_oleh = NULL, klaim_sampai = NULL WHERE id_notifikasi = ? AND klaim_oleh = ?;",
-        args: [status, percobaan, potong(galat, 500), id, pengirim],
+        sql: TELEGRAM_DRAIN_GAGAL_SQL,
+        args: [
+          status,
+          percobaan,
+          potong(galat, 500),
+          klaimOleh,
+          klaimSampai,
+          id,
+          pengirim,
+        ],
       });
       gagal++;
     }
@@ -766,4 +988,83 @@ export async function drainTelegram(
     [antrean.rows.length, terkirim, gagal, dibatalkan],
     `${terkirim} terkirim, ${gagal} gagal, ${dibatalkan} dibatalkan.`,
   );
+}
+
+/** Cermin `objek_kolom`: baris → objek berisi kolom teks dan angka saja. */
+function objekKolom<T>(
+  rows: Record<string, unknown>[],
+  kolomTeks: readonly string[],
+  kolomAngka: readonly string[],
+): T[] {
+  return rows.map((row) => {
+    const objek: Record<string, string | number> = {};
+    for (const kunci of kolomTeks) objek[kunci] = teks(row[kunci]);
+    for (const kunci of kolomAngka) objek[kunci] = Number(row[kunci] ?? 0);
+    return objek as T;
+  });
+}
+
+type BagianPerhatian<K extends keyof PerhatianHr> = NonNullable<PerhatianHr[K]>;
+
+/**
+ * Cermin `telegram::perhatian`: isi kartu "Perlu perhatian" dari cloud
+ * (Q-102). Bagian tanpa izin tidak dibaca sama sekali dan kuncinya tidak ada.
+ */
+export async function perhatianHr(
+  client: Client,
+  izin: IzinPerhatian,
+): Promise<PerhatianHr> {
+  const hasil: PerhatianHr = {};
+  if (izin.kontrak) {
+    hasil.kontrak = objekKolom<BagianPerhatian<"kontrak">[number]>(
+      await baris(client, PERHATIAN_SQL_KONTRAK),
+      ["jenis", "id_karyawan", "nama", "jabatan", "tanggal"],
+      ["sisa"],
+    );
+    hasil.ulang_tahun = objekKolom<BagianPerhatian<"ulang_tahun">[number]>(
+      await baris(client, PERHATIAN_SQL_ULTAH),
+      ["id_karyawan", "nama", "jabatan", "tanggal"],
+      ["tahun"],
+    );
+  }
+  if (izin.dokumen) {
+    hasil.dokumen = objekKolom<BagianPerhatian<"dokumen">[number]>(
+      await baris(client, PERHATIAN_SQL_DOKUMEN),
+      ["id_karyawan", "nama", "jabatan", "jenis_dokumen", "tanggal"],
+      ["sisa"],
+    );
+  }
+  if (izin.sp) {
+    hasil.sp = objekKolom<BagianPerhatian<"sp">[number]>(
+      await baris(client, PERHATIAN_SQL_SP),
+      ["id_karyawan", "nama", "jabatan", "tingkat", "tanggal"],
+      ["sisa"],
+    );
+  }
+  if (izin.pengajuan) {
+    const menunggu = (await baris(client, TELEGRAM_SQL_HR_MENUNGGU)).filter(
+      (row) => !izin.hanyaReimburse || teks(row.kelompok) === "Reimburse",
+    );
+    // Reimburse tidak pernah urgent; pemegang `reimburse.decide` saja tidak
+    // melihat hitungan kelompok lain.
+    const urgent = izin.hanyaReimburse
+      ? undefined
+      : (await baris(client, TELEGRAM_SQL_HR_URGENT))[0];
+    hasil.pengajuan = {
+      menunggu: objekKolom(menunggu, ["kelompok"], ["jumlah"]),
+      menunggu_sejak: menunggu
+        .map((row) => teks(row.sejak))
+        .reduce((a, b) => (a === "" || b < a ? b : a), ""),
+      urgent: urgent ? Number(urgent.jumlah ?? 0) : 0,
+      urgent_sejak: urgent ? teks(urgent.sejak) : "",
+    };
+  }
+  if (izin.rekrutmen) {
+    hasil.rekrutmen = objekKolom<BagianPerhatian<"rekrutmen">[number]>(
+      await baris(client, PERHATIAN_REKRUTMEN_SQL),
+      ["id_lowongan", "judul", "tanggal_hapus"],
+      ["jumlah"],
+    );
+  }
+  return hasil;
 }

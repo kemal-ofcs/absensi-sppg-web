@@ -13,6 +13,7 @@ import type {
   StatusKerja,
   TandaKontrak,
 } from "@/lib/validations/hris";
+import type { PerhatianHr } from "@/lib/validations/telegram";
 
 type Isian = Record<string, unknown>;
 type Hasil<T extends object = object> = { sukses: boolean } & T;
@@ -107,6 +108,12 @@ const baca = <T>(aksi: string, id?: string) =>
   requestWebApi<T>("/api/hris/query", "POST", id ? { aksi, id } : { aksi });
 const ubah = <T>(aksi: string, body: { id?: string; draft?: Isian }) =>
   requestWebApi<T>("/api/hris", "POST", { aksi, ...body });
+
+/** Kartu "Perlu perhatian" (§23.4): selalu dari database, Desktop sekalipun. */
+export async function ambilPerhatian(): Promise<PerhatianHr> {
+  if (isDesktopRuntime()) return invokeDesktop("desktop_hr_attention");
+  return baca("perhatian");
+}
 
 export async function ambilOrganisasi(): Promise<Organisasi> {
   if (isDesktopRuntime()) return invokeDesktop("desktop_hr_org");

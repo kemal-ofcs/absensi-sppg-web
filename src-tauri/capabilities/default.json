@@ -98,6 +98,7 @@
     "allow-desktop-hr-reimburse-overview",
     "allow-desktop-hr-reimburse-pay",
     "allow-desktop-hr-reimburse-pay-cancel",
+    "allow-desktop-hr-attention",
     "allow-desktop-hr-warnings",
     "allow-desktop-hr-warning-save",
     "allow-desktop-hr-warning-revoke",

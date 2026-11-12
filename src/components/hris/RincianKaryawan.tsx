@@ -47,6 +47,8 @@ type Tab =
   | "sp"
   | "kinerja"
   | "pelatihan";
+/** Tab rincian yang bisa dibuka langsung, mis. dari kartu "Perlu perhatian". */
+export type TabRincian = Tab;
 type Isian = Record<string, string>;
 
 const KELAS =
@@ -145,17 +147,19 @@ export function RincianKaryawan({
   nama,
   onBerubah,
   onMulaiKeluar,
+  tabAwal = "kerja",
 }: {
   karyawan: BarisKaryawan;
   nama: Map<string, string>;
   onBerubah: () => void;
   onMulaiKeluar?: (idSp: string) => void;
+  tabAwal?: Tab;
 }) {
   const { user } = useAuth();
   const boleh = (izin: Parameters<typeof hasPermission>[1]) =>
     hasPermission(user, izin);
   const id = String(karyawan.id_unik);
-  const [tab, setTab] = useState<Tab>("kerja");
+  const [tab, setTab] = useState<Tab>(tabAwal);
   const tabs: Array<[Tab, string]> = [
     ["kerja", "Kerja"],
     ...(boleh("hr.personal.view")

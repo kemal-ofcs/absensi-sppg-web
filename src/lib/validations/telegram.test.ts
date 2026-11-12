@@ -4,17 +4,44 @@ import { join } from "node:path";
 import {
   type BarisStokMenipis,
   BIDANG_KEJADIAN,
+  diparkir,
   galatTelegram,
   grupDariUpdates,
+  HR_HARI_DEKAT,
+  HR_HARI_JAUH,
+  HR_HARI_MENUNGGU,
   type IsiLaporanPerjalanan,
+  IZIN_PERHATIAN,
+  idHrDokumen,
+  idHrKontrak,
+  idHrMenunggu,
+  idHrPercobaan,
+  idHrSp,
+  idHrUltah,
+  idHrUrgent,
   idTripGantiIzin,
   idTripKendala,
   idTripLokasiPalsu,
+  izinPerhatian,
+  KLAIM_PARKIR,
+  klaimSetelahGagal,
+  LABEL_BIDANG,
   labelBulan,
   normalisasiChatId,
+  PERHATIAN_SQL_DOKUMEN,
+  PERHATIAN_SQL_KONTRAK,
+  PERHATIAN_SQL_SP,
+  PERHATIAN_SQL_ULTAH,
   permintaanKirim,
   pesanBukaBuku,
   pesanGajiStatus,
+  pesanHrDokumenKedaluwarsa,
+  pesanHrKontrakAkhir,
+  pesanHrPengajuanMenunggu,
+  pesanHrPercobaanAkhir,
+  pesanHrSpBerakhir,
+  pesanHrUlangTahunKerja,
+  pesanHrUrgentBelumDiketahui,
   pesanKasbonBaru,
   pesanPengajuanBaru,
   pesanPengajuanPutus,
@@ -26,8 +53,21 @@ import {
   pesanTutupBuku,
   potong,
   samarkanToken,
+  sisaHari,
   statusSetelahGagal,
+  TELEGRAM_DRAIN_BATAL_SQL,
+  TELEGRAM_DRAIN_GAGAL_SQL,
+  TELEGRAM_DRAIN_KLAIM_SQL,
+  TELEGRAM_DRAIN_PILIH_SQL,
+  TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
   TELEGRAM_KEJADIAN,
+  TELEGRAM_SQL_HR_DOKUMEN,
+  TELEGRAM_SQL_HR_KONTRAK,
+  TELEGRAM_SQL_HR_MENUNGGU,
+  TELEGRAM_SQL_HR_PERCOBAAN,
+  TELEGRAM_SQL_HR_SP,
+  TELEGRAM_SQL_HR_ULTAH,
+  TELEGRAM_SQL_HR_URGENT,
   TELEGRAM_SQL_LABEL_KENDARAAN,
   TELEGRAM_SQL_NAMA_PERSONIL,
   TELEGRAM_SQL_TRIP_GANTI_IZIN,
@@ -38,6 +78,17 @@ import {
   TRIP_TUTUP,
   tokenBotValid,
 } from "./telegram";
+
+/** Berkas ini ikut disalin ke Mobile, tempat salinan Rust-nya di `src/mobile`. */
+function bacaTelegramRs() {
+  const berkas = ["desktop", "mobile"]
+    .map((dir) =>
+      join(import.meta.dir, `../../../src-tauri/src/${dir}/telegram.rs`),
+    )
+    .find((path) => existsSync(path));
+  expect(berkas).toBeDefined();
+  return readFileSync(berkas as string, "utf8").replaceAll("\r\n", "\n");
+}
 
 // Vektor yang sama diuji di `desktop/telegram.rs` (modul `tests`).
 describe("aturan murni Telegram", () => {
@@ -324,29 +375,180 @@ describe("aturan murni Telegram", () => {
     expect(BIDANG_KEJADIAN.pengajuan_baru).toBe("keuangan");
     expect(BIDANG_KEJADIAN.pengajuan_putus).toBe("inventaris");
     expect(BIDANG_KEJADIAN.stok_menipis).toBe("inventaris");
-    for (const kejadian of TELEGRAM_KEJADIAN.slice(7)) {
+    for (const kejadian of TELEGRAM_KEJADIAN.slice(7, 13)) {
       expect(BIDANG_KEJADIAN[kejadian]).toBe("armada");
     }
+    for (const kejadian of TELEGRAM_KEJADIAN.slice(13)) {
+      expect(kejadian.startsWith("hr_")).toBe(true);
+      expect(BIDANG_KEJADIAN[kejadian]).toBe("hrd");
+    }
+    expect(LABEL_BIDANG.hrd).toBe("HRD");
     for (const { kejadian } of TRIP_TUTUP) {
       expect(TELEGRAM_KEJADIAN).toContain(kejadian);
     }
     expect(idTripKendala("lap-1")).toBe("drv-kendala:lap-1");
     expect(idTripGantiIzin("lap-2")).toBe("drv-ganti:lap-2");
     expect(idTripLokasiPalsu("lap-3")).toBe("drv-palsu:lap-3");
+    expect(idHrKontrak("ktr-1", 30)).toBe("hr-kontrak:ktr-1:30");
+    expect(idHrKontrak("ktr-1", 8)).toBe("hr-kontrak:ktr-1:30");
+    expect(idHrKontrak("ktr-1", 7)).toBe("hr-kontrak:ktr-1:7");
+    expect(idHrKontrak("ktr-1", 0)).toBe("hr-kontrak:ktr-1:7");
+    expect(idHrPercobaan("ktr-1")).toBe("hr-coba:ktr-1");
+    expect(idHrDokumen("dok-1", "2026-12-12")).toBe("hr-dok:dok-1:2026-12-12");
+    expect(idHrSp("sp-1")).toBe("hr-sp:sp-1");
+    expect(idHrMenunggu("2026-11-12")).toBe("hr-tunggu:2026-11-12");
+    expect(idHrUrgent("2026-11-12")).toBe("hr-urgent:2026-11-12");
+    expect(idHrUltah("2026-11-12")).toBe("hr-ultah:2026-11-12");
+    expect(TELEGRAM_INSERT_ANTREAN_PARKIR_SQL).toContain(`'${KLAIM_PARKIR}'`);
+  });
+
+  // Vektor yang sama diuji di `desktop/telegram.rs` (`izin_kartu_perhatian`).
+  test("izin kartu perhatian", () => {
+    const tidakAda = {
+      kontrak: false,
+      dokumen: false,
+      sp: false,
+      pengajuan: false,
+      hanyaReimburse: false,
+      rekrutmen: false,
+    };
+    const dari = (izin: string[]) => izinPerhatian((p) => izin.includes(p));
+    expect(dari(["employees.view"])).toEqual({
+      ...tidakAda,
+      kontrak: true,
+      hanyaReimburse: true,
+    });
+    expect(dari(["reimburse.decide"])).toEqual({
+      ...tidakAda,
+      pengajuan: true,
+      hanyaReimburse: true,
+    });
+    expect(
+      dari([
+        "hr.request.view",
+        "hr.recruit.manage",
+        "hr.warning.view",
+        "hr.document.view",
+      ]),
+    ).toEqual({
+      ...tidakAda,
+      dokumen: true,
+      sp: true,
+      pengajuan: true,
+      rekrutmen: true,
+    });
+    expect(izinPerhatian(() => true)).toEqual({
+      kontrak: true,
+      dokumen: true,
+      sp: true,
+      pengajuan: true,
+      hanyaReimburse: false,
+      rekrutmen: true,
+    });
+    const rust = bacaTelegramRs();
+    for (const sql of [
+      PERHATIAN_SQL_KONTRAK,
+      PERHATIAN_SQL_DOKUMEN,
+      PERHATIAN_SQL_SP,
+      PERHATIAN_SQL_ULTAH,
+    ]) {
+      expect(rust).toContain(`"${sql}"`);
+      for (const terlarang of [
+        "nik",
+        "hr_profil",
+        "nominal",
+        "alasan",
+        "pelanggaran",
+        "harapan",
+        "nomor",
+        "hr_pelamar",
+      ]) {
+        expect(sql).not.toMatch(new RegExp(`\\b${terlarang}\\b`));
+      }
+    }
+    expect(rust).toContain(
+      `pub const IZIN_PERHATIAN: [&str; ${IZIN_PERHATIAN.length}] = [\n${IZIN_PERHATIAN.map((izin) => `    "${izin}",\n`).join("")}];`,
+    );
+  });
+
+  // Vektor yang sama diuji di `desktop/telegram.rs` (`baris_parkir_tidak_disentuh_predikat_lama`).
+  test("parkir klaim", () => {
+    expect(TELEGRAM_KEJADIAN.filter(diparkir)).toEqual(
+      TELEGRAM_KEJADIAN.slice(13),
+    );
+    expect(diparkir("gaji")).toBe(false);
+    expect(klaimSetelahGagal("hr_sp_berakhir", "Menunggu")).toEqual({
+      klaimOleh: "gen:2",
+      klaimSampai: "9999-12-31 23:59:59",
+    });
+    expect(klaimSetelahGagal("hr_ulang_tahun_kerja", "Gagal")).toEqual({
+      klaimOleh: null,
+      klaimSampai: null,
+    });
+    expect(klaimSetelahGagal("stok_menipis", "Menunggu")).toEqual({
+      klaimOleh: null,
+      klaimSampai: null,
+    });
+    expect(klaimSetelahGagal("trip_kendala", "Menunggu")).toEqual({
+      klaimOleh: null,
+      klaimSampai: null,
+    });
+    const rust = bacaTelegramRs();
+    for (const sql of [
+      TELEGRAM_DRAIN_PILIH_SQL,
+      TELEGRAM_DRAIN_BATAL_SQL,
+      TELEGRAM_DRAIN_KLAIM_SQL,
+      TELEGRAM_DRAIN_GAGAL_SQL,
+    ]) {
+      expect(rust).toContain(`"${sql}"`);
+    }
+  });
+
+  test("SQL HRD disalin harfiah ke telegram.rs dan tidak membaca kolom terlarang", () => {
+    const rust = bacaTelegramRs();
+    const daftar = [
+      TELEGRAM_INSERT_ANTREAN_PARKIR_SQL,
+      TELEGRAM_SQL_HR_KONTRAK,
+      TELEGRAM_SQL_HR_PERCOBAAN,
+      TELEGRAM_SQL_HR_DOKUMEN,
+      TELEGRAM_SQL_HR_SP,
+      TELEGRAM_SQL_HR_MENUNGGU,
+      TELEGRAM_SQL_HR_URGENT,
+      TELEGRAM_SQL_HR_ULTAH,
+    ];
+    for (const sql of daftar) {
+      expect(rust).toContain(`"${sql}"`);
+    }
+    expect(rust).toContain(`pub const HR_HARI_JAUH: i64 = ${HR_HARI_JAUH};`);
+    expect(rust).toContain(`pub const HR_HARI_DEKAT: i64 = ${HR_HARI_DEKAT};`);
+    expect(rust).toContain(
+      `pub const HR_HARI_MENUNGGU: i64 = ${HR_HARI_MENUNGGU};`,
+    );
+    expect(rust).toContain(
+      `pub(crate) const KLAIM_PARKIR: &str = "${KLAIM_PARKIR}";`,
+    );
+    // Q-32 / §23.3: kolom yang tidak pernah boleh terkirim tidak dibaca.
+    for (const sql of daftar) {
+      for (const terlarang of [
+        "nik",
+        "hr_profil",
+        "nominal",
+        "alasan",
+        "alasan_tingkat",
+        "alasan_cabut",
+        "pelanggaran",
+        "harapan",
+        "nomor",
+        "hr_pelamar",
+        "hr_lowongan",
+      ]) {
+        expect(sql).not.toMatch(new RegExp(`\\b${terlarang}\\b`));
+      }
+    }
   });
 
   test("SQL perjalanan disalin harfiah ke telegram.rs", () => {
-    // Berkas ini ikut disalin ke Mobile, tempat salinan Rust-nya di `src/mobile`.
-    const berkas = ["desktop", "mobile"]
-      .map((dir) =>
-        join(import.meta.dir, `../../../src-tauri/src/${dir}/telegram.rs`),
-      )
-      .find((path) => existsSync(path));
-    expect(berkas).toBeDefined();
-    const rust = readFileSync(berkas as string, "utf8").replaceAll(
-      "\r\n",
-      "\n",
-    );
+    const rust = bacaTelegramRs();
     for (const sql of [
       TELEGRAM_SQL_TRIP_KENDALA,
       TELEGRAM_SQL_TRIP_TUTUP,
@@ -361,6 +563,104 @@ describe("aturan murni Telegram", () => {
     expect(rust).toContain(
       '("Tidak Jalan", "trip_tidak_jalan", "drv-tidak-jalan:")',
     );
+  });
+
+  // Vektor yang sama diuji di `desktop/telegram.rs` (`isi_pesan_hrd`).
+  test("isi pesan HRD", () => {
+    expect(sisaHari(0)).toBe("hari ini");
+    expect(sisaHari(7)).toBe("7 hari lagi");
+    expect(
+      pesanHrKontrakAkhir({
+        nama: "Budi Santoso",
+        jabatan: "Staf Gudang",
+        tanggal: "2026-12-12",
+        sisa: 30,
+      }),
+    ).toBe(
+      "📄 Kontrak PKWT berakhir 30 hari lagi (12/12/2026)\nKaryawan: Budi Santoso · Staf Gudang",
+    );
+    expect(
+      pesanHrKontrakAkhir({
+        nama: "Budi Santoso",
+        jabatan: "",
+        tanggal: "2026-11-12",
+        sisa: 0,
+      }),
+    ).toBe(
+      "📄 Kontrak PKWT berakhir hari ini (12/11/2026)\nKaryawan: Budi Santoso",
+    );
+    expect(
+      pesanHrPercobaanAkhir({
+        nama: "Sari",
+        jabatan: "Kasir",
+        tanggal: "2026-11-15",
+        sisa: 3,
+      }),
+    ).toBe(
+      "⏳ Masa percobaan berakhir 3 hari lagi (15/11/2026)\nKaryawan: Sari · Kasir",
+    );
+    expect(
+      pesanHrDokumenKedaluwarsa({
+        jenisDokumen: "SIM B1",
+        nama: "Andi",
+        jabatan: "Driver",
+        tanggal: "2026-11-19",
+        sisa: 7,
+      }),
+    ).toBe(
+      "🪪 Dokumen SIM B1 kedaluwarsa 7 hari lagi (19/11/2026)\nKaryawan: Andi · Driver",
+    );
+    expect(
+      pesanHrSpBerakhir({
+        tingkat: "SP2",
+        nama: "Andi",
+        jabatan: "Driver",
+        tanggal: "2026-11-12",
+      }),
+    ).toBe("📋 Masa berlaku SP2 berakhir 12/11/2026\nKaryawan: Andi · Driver");
+    expect(
+      pesanHrPengajuanMenunggu(
+        [
+          { kelompok: "Cuti", jumlah: 3 },
+          { kelompok: "Izin", jumlah: 1 },
+          { kelompok: "Reimburse", jumlah: 2 },
+        ],
+        "2026-11-08",
+      ),
+    ).toBe(
+      "📥 6 pengajuan menunggu lebih dari 2 hari\nCuti 3, Izin 1, Reimburse 2\nPaling lama sejak 08/11/2026",
+    );
+    expect(pesanHrPengajuanMenunggu([], "2026-11-08")).toBeNull();
+    expect(pesanHrUrgentBelumDiketahui(2, "2026-11-10")).toBe(
+      "⚡ 2 pengajuan urgent belum diketahui HRD\nPaling lama sejak 10/11/2026",
+    );
+    expect(pesanHrUrgentBelumDiketahui(0, "2026-11-10")).toBeNull();
+
+    expect(pesanHrUlangTahunKerja([])).toBeNull();
+    expect(
+      pesanHrUlangTahunKerja([
+        { nama: "Budi", jabatan: "Staf Gudang", tahun: 3 },
+        { nama: "Sari", jabatan: "", tahun: 1 },
+      ]),
+    ).toBe(
+      "🎉 Ulang tahun kerja hari ini\n• Budi (Staf Gudang), 3 tahun\n• Sari, 1 tahun",
+    );
+    const pesan =
+      pesanHrUlangTahunKerja(
+        Array.from({ length: 32 }, (_, i) => ({
+          nama: `Karyawan ${i + 1}`,
+          jabatan: "Staf",
+          tahun: 2,
+        })),
+      ) ?? "";
+    expect(
+      pesan.startsWith(
+        "🎉 Ulang tahun kerja hari ini\n• Karyawan 1 (Staf), 2 tahun\n",
+      ),
+    ).toBe(true);
+    expect(
+      pesan.endsWith("• Karyawan 30 (Staf), 2 tahun\ndan 2 lainnya."),
+    ).toBe(true);
   });
 
   // Vektor yang sama diuji di `desktop/telegram.rs` (`isi_pesan_perjalanan`).

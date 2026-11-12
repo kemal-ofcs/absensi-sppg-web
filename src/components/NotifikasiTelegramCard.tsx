@@ -297,6 +297,13 @@ export function NotifikasiTelegramCard() {
                   lama membatalkan pesan perjalanan tanpa mengirimnya.
                 </p>
               ) : null}
+              {bidang === "hrd" ? (
+                <p className="text-xs text-slate-500">
+                  Setiap anggota grup ini membaca nama, jabatan, jenis dokumen,
+                  dan tingkat SP karyawan tanpa pemeriksaan hak akses. Isi hanya
+                  dengan grup HRD.
+                </p>
+              ) : null}
             </div>
           ))}
         </div>

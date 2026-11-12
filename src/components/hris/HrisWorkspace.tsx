@@ -10,8 +10,12 @@ import { KinerjaWorkspace } from "@/components/hris/KinerjaWorkspace";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
 import { PelatihanWorkspace } from "@/components/hris/PelatihanWorkspace";
 import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
+import { PerluPerhatian } from "@/components/hris/PerluPerhatian";
 import { RekrutmenWorkspace } from "@/components/hris/RekrutmenWorkspace";
-import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
+import {
+  RincianKaryawan,
+  type TabRincian,
+} from "@/components/hris/RincianKaryawan";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
@@ -23,6 +27,7 @@ import {
 } from "@/lib/gateways/hris";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
+import { IZIN_PERHATIAN } from "@/lib/validations/telegram";
 
 type Tab =
   | "karyawan"
@@ -57,6 +62,9 @@ export function HrisWorkspace() {
   const bolehPelatihan =
     hasPermission(user, "hr.training.view") ||
     hasPermission(user, "hr.training.manage");
+  const bolehPerhatian = IZIN_PERHATIAN.some((izin) =>
+    hasPermission(user, izin),
+  );
   const [tab, setTab] = useState<Tab>("karyawan");
   // "Mulai proses keluar" dari tab SP: karyawan dan SP3 yang mendasari.
   const [mulaiKeluar, setMulaiKeluar] = useState<{
@@ -70,6 +78,8 @@ export function HrisWorkspace() {
   );
   const [cari, setCari] = useState("");
   const [dipilih, setDipilih] = useState<string | null>(null);
+  // Tab rincian yang dibuka langsung dari kartu "Perlu perhatian".
+  const [tabRincian, setTabRincian] = useState<TabRincian>("kerja");
   const [galat, setGalat] = useState("");
 
   const muat = useCallback(async () => {
@@ -156,6 +166,18 @@ export function HrisWorkspace() {
 
       {galat ? <p className="text-sm text-rose-200">{galat}</p> : null}
 
+      {tab === "karyawan" && bolehPerhatian ? (
+        <PerluPerhatian
+          onPilihKaryawan={(idKaryawan, tabAwal) => {
+            setDipilih(idKaryawan);
+            setTabRincian(tabAwal);
+          }}
+          onBukaRekrutmen={
+            bolehRekrutmen ? () => setTab("rekrutmen") : undefined
+          }
+        />
+      ) : null}
+
       {tab === "karyawan" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
           <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
@@ -175,7 +197,10 @@ export function HrisWorkspace() {
                   <li key={id}>
                     <button
                       type="button"
-                      onClick={() => setDipilih(id)}
+                      onClick={() => {
+                        setDipilih(id);
+                        setTabRincian("kerja");
+                      }}
                       className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === id ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
                     >
                       <span className="block truncate font-semibold text-white">
@@ -206,8 +231,9 @@ export function HrisWorkspace() {
           <div className="min-w-0">
             {pilihan ? (
               <RincianKaryawan
-                key={String(pilihan.id_unik)}
+                key={`${String(pilihan.id_unik)}:${tabRincian}`}
                 karyawan={pilihan}
+                tabAwal={tabRincian}
                 nama={nama}
                 onBerubah={muat}
                 onMulaiKeluar={
