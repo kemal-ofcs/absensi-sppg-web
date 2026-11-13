@@ -3,6 +3,7 @@
 import { LicenseHolderLabel } from "@/components/license/LicenseNotice";
 import { BRANDING } from "@/lib/constants/branding";
 import type { PayrollItemRow, PayrollRunRow } from "@/lib/gateways/payroll";
+import { bacaPajakSnapshot, labelPph } from "@/lib/validations/pajak";
 
 interface SlipGajiPrintViewProps {
   run: PayrollRunRow;
@@ -220,10 +221,14 @@ export function SlipGajiPrintView({
                   </td>
                 </tr>
               ))}
-              {item.pph21_amount > 0 && (
+              {item.pph21_amount !== 0 && (
                 <tr>
                   <td className="py-1 text-slate-600">
-                    PPh 21 (TER {item.ptkp_status})
+                    {labelPph(
+                      bacaPajakSnapshot(item.breakdown_snapshot || "{}"),
+                      item.pph21_amount,
+                      item.ptkp_status,
+                    )}
                   </td>
                   <td className="py-1 text-right font-mono text-rose-600 font-medium">
                     {IDR.format(item.pph21_amount)}

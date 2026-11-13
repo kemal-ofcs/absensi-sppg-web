@@ -336,7 +336,12 @@ export function susunJurnalPayroll(
     { id_akun: AKUN_BEBAN_BPJS, debit: bpjsPerusahaan, kredit: 0 },
     { id_akun: AKUN_BEBAN_REIMBURSE, debit: reimburse, kredit: 0 },
     { id_akun: idAkunBayar, debit: 0, kredit: net },
-    { id_akun: AKUN_UTANG_PPH21, debit: 0, kredit: pph21 },
+    // Total negatif = pengembalian PPh masa terakhir (Q-189): debit utang.
+    {
+      id_akun: AKUN_UTANG_PPH21,
+      debit: Math.max(0, -pph21),
+      kredit: Math.max(0, pph21),
+    },
     {
       id_akun: AKUN_UTANG_BPJS,
       debit: 0,

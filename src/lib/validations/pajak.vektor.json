@@ -1,0 +1,821 @@
+{
+  "catatan": "Vektor kembar desktop/payroll/pajak.rs dan validations/pajak.ts (prd-hris.md §29.2). Lapis tarif dari tarif-bawaan.json kecuali lapis_kosong. Harapan dihitung tangan, bukan dari implementasi. 'sumber': paparan DJP = angka contoh resmi; hitungan sendiri = dihitung dari data contoh, BELUM dicocokkan dengan lampiran PMK 168 (§29.13). V2 menggabungkan zakat 2.400.000 ke iuran_pensiun karena zakat di luar cakupan (§29.8); PKP-nya sama. Masukan dan harapan setiap kasus digabung (dangkal) di atas 'bawaan'.",
+  "bawaan": {
+    "masukan": {
+      "period_start": "2026-01-01",
+      "period_end": "2026-01-31",
+      "jenis_personil": "Pegawai",
+      "salary_type": "HOURLY",
+      "ptkp_status": "TK/0",
+      "gross": 0,
+      "premi": 0,
+      "hari": 0,
+      "keluar_pada": null,
+      "bruto_masa_sebelum": 0,
+      "pph_masa_sebelum": 0,
+      "bruto_tahun_sebelum": 0,
+      "pph_tahun_sebelum": 0,
+      "iuran_pensiun_sebelum": 0,
+      "iuran_pensiun_run": 0,
+      "masa_berbruto_lain": 0,
+      "rumus_lama": false,
+      "status_pajak_berubah": false,
+      "komponen_per_run": false
+    },
+    "harapan": {
+      "versi": 1,
+      "masa": "2026-01",
+      "status": "tetap",
+      "metode": "TER_BULANAN",
+      "kategori": "TER_A",
+      "tarif": null,
+      "bruto_pajak": 0,
+      "premi": 0,
+      "bruto_masa": null,
+      "sudah_dipotong": 0,
+      "hari": null,
+      "bruto_tahun": null,
+      "biaya_jabatan": null,
+      "iuran_pensiun": null,
+      "ptkp": null,
+      "pkp": null,
+      "pph_setahun": null,
+      "pph": 0,
+      "tanda": []
+    }
+  },
+  "pph": [
+    {
+      "nama": "V1 Januari: Tuan R K/0 10.000.000, TER A 2%",
+      "sumber": "paparan DJP",
+      "masukan": { "ptkp_status": "K/0", "gross": 10000000 },
+      "harapan": {
+        "tarif": 200,
+        "bruto_pajak": 10000000,
+        "bruto_masa": 10000000,
+        "pph": 200000
+      }
+    },
+    {
+      "nama": "V1 Desember: setahun 2.715.000, Desember 515.000",
+      "sumber": "paparan DJP",
+      "masukan": {
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "ptkp_status": "K/0",
+        "gross": 10000000,
+        "bruto_tahun_sebelum": 110000000,
+        "pph_tahun_sebelum": 2200000,
+        "iuran_pensiun_sebelum": 1100000,
+        "iuran_pensiun_run": 100000,
+        "masa_berbruto_lain": 11
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 10000000,
+        "bruto_masa": 10000000,
+        "sudah_dipotong": 2200000,
+        "bruto_tahun": 120000000,
+        "biaya_jabatan": 6000000,
+        "iuran_pensiun": 1200000,
+        "ptkp": 58500000,
+        "pkp": 54300000,
+        "pph_setahun": 2715000,
+        "pph": 515000
+      }
+    },
+    {
+      "nama": "V2 Desember: Tuan A K/0 bruto setahun 450.960.000, Jan-Nov 50.120.000",
+      "sumber": "hitungan sendiri (Jan-Nov dari paparan DJP)",
+      "masukan": {
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "ptkp_status": "K/0",
+        "gross": 37500000,
+        "premi": 80000,
+        "bruto_tahun_sebelum": 413380000,
+        "pph_tahun_sebelum": 50120000,
+        "iuran_pensiun_sebelum": 3300000,
+        "iuran_pensiun_run": 300000,
+        "masa_berbruto_lain": 11
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 37580000,
+        "premi": 80000,
+        "bruto_masa": 37580000,
+        "sudah_dipotong": 50120000,
+        "bruto_tahun": 450960000,
+        "biaya_jabatan": 6000000,
+        "iuran_pensiun": 3600000,
+        "ptkp": 58500000,
+        "pkp": 382860000,
+        "pph_setahun": 64715000,
+        "pph": 14595000
+      }
+    },
+    {
+      "nama": "V3 Juli: Tuan D TK/0 17.500.000, TER A 8%",
+      "sumber": "paparan DJP",
+      "masukan": {
+        "period_start": "2026-07-01",
+        "period_end": "2026-07-31",
+        "gross": 17500000
+      },
+      "harapan": {
+        "masa": "2026-07",
+        "tarif": 800,
+        "bruto_pajak": 17500000,
+        "bruto_masa": 17500000,
+        "pph": 1400000
+      }
+    },
+    {
+      "nama": "V3 Agustus: berhenti 1 Sep, biaya jabatan 8 masa, dikembalikan 3.620.000",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "gross": 17500000,
+        "keluar_pada": "2026-08-31",
+        "bruto_tahun_sebelum": 122500000,
+        "pph_tahun_sebelum": 9800000,
+        "iuran_pensiun_sebelum": 700000,
+        "iuran_pensiun_run": 100000,
+        "masa_berbruto_lain": 7
+      },
+      "harapan": {
+        "masa": "2026-08",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 17500000,
+        "bruto_masa": 17500000,
+        "sudah_dipotong": 9800000,
+        "bruto_tahun": 140000000,
+        "biaya_jabatan": 4000000,
+        "iuran_pensiun": 800000,
+        "ptkp": 54000000,
+        "pkp": 81200000,
+        "pph_setahun": 6180000,
+        "pph": -3620000
+      }
+    },
+    {
+      "nama": "V3 Juli dengan tanggal keluar Agustus: bukan masa terakhir",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-07-01",
+        "period_end": "2026-07-31",
+        "gross": 17500000,
+        "keluar_pada": "2026-08-31"
+      },
+      "harapan": {
+        "masa": "2026-07",
+        "tarif": 800,
+        "bruto_pajak": 17500000,
+        "bruto_masa": 17500000,
+        "pph": 1400000
+      }
+    },
+    {
+      "nama": "V4: Tuan H K/2 6.800.000, TER B 0,5%",
+      "sumber": "paparan DJP",
+      "masukan": { "ptkp_status": "K/2", "gross": 6800000 },
+      "harapan": {
+        "kategori": "TER_B",
+        "tarif": 50,
+        "bruto_pajak": 6800000,
+        "bruto_masa": 6800000,
+        "pph": 34000
+      }
+    },
+    {
+      "nama": "V5: Tuan G TK/0 65.605.059, TER A 21%",
+      "sumber": "paparan DJP",
+      "masukan": { "gross": 65605059 },
+      "harapan": {
+        "tarif": 2100,
+        "bruto_pajak": 65605059,
+        "bruto_masa": 65605059,
+        "pph": 13777062
+      }
+    },
+    {
+      "nama": "V6: K/1 12.000.000, TER B 3% (seed lama 2%)",
+      "sumber": "hitungan sendiri (tabel PP 58/2023)",
+      "masukan": { "ptkp_status": "K/1", "gross": 12000000 },
+      "harapan": {
+        "kategori": "TER_B",
+        "tarif": 300,
+        "bruto_pajak": 12000000,
+        "bruto_masa": 12000000,
+        "pph": 360000
+      }
+    },
+    {
+      "nama": "V6: K/3 25.000.000, TER C 9% (seed lama 10%)",
+      "sumber": "hitungan sendiri (tabel PP 58/2023)",
+      "masukan": { "ptkp_status": "K/3", "gross": 25000000 },
+      "harapan": {
+        "kategori": "TER_C",
+        "tarif": 900,
+        "bruto_pajak": 25000000,
+        "bruto_masa": 25000000,
+        "pph": 2250000
+      }
+    },
+    {
+      "nama": "V7: Tuan L tidak tetap 4.500.000 untuk 10 hari, 0%",
+      "sumber": "paparan DJP",
+      "masukan": {
+        "jenis_personil": "Harian",
+        "salary_type": "FLAT_DAILY",
+        "period_end": "2026-01-10",
+        "gross": 4500000,
+        "hari": 10
+      },
+      "harapan": {
+        "status": "tidak_tetap",
+        "metode": "TER_HARIAN",
+        "kategori": null,
+        "tarif": 0,
+        "bruto_pajak": 4500000,
+        "hari": 10
+      }
+    },
+    {
+      "nama": "V8: Tuan M tidak tetap 3.000.000 sehari, 5% x 50%",
+      "sumber": "paparan DJP",
+      "masukan": {
+        "jenis_personil": "Harian",
+        "salary_type": "FLAT_DAILY",
+        "period_start": "2026-01-05",
+        "period_end": "2026-01-05",
+        "gross": 3000000,
+        "hari": 1
+      },
+      "harapan": {
+        "status": "tidak_tetap",
+        "metode": "PASAL_17_HARIAN",
+        "kategori": null,
+        "bruto_pajak": 3000000,
+        "hari": 1,
+        "pph": 75000
+      }
+    },
+    {
+      "nama": "V9: Tuan N tidak tetap dibayar bulanan, Desember tanpa rekonsiliasi",
+      "sumber": "paparan DJP",
+      "masukan": {
+        "jenis_personil": "Harian",
+        "salary_type": "FLAT_DAILY",
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "gross": 7000000,
+        "hari": 22,
+        "bruto_tahun_sebelum": 77000000,
+        "pph_tahun_sebelum": 962500,
+        "masa_berbruto_lain": 11
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "status": "tidak_tetap",
+        "tarif": 125,
+        "bruto_pajak": 7000000,
+        "bruto_masa": 7000000,
+        "pph": 87500
+      }
+    },
+    {
+      "nama": "V10 run 1: dua mingguan 3.000.000",
+      "sumber": "hitungan sendiri",
+      "masukan": { "period_end": "2026-01-15", "gross": 3000000 },
+      "harapan": {
+        "tarif": 0,
+        "bruto_pajak": 3000000,
+        "bruto_masa": 3000000
+      }
+    },
+    {
+      "nama": "V10 run 2: masa 6.000.000 x 0,75%",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-01-16",
+        "gross": 3000000,
+        "bruto_masa_sebelum": 3000000
+      },
+      "harapan": {
+        "tarif": 75,
+        "bruto_pajak": 3000000,
+        "bruto_masa": 6000000,
+        "pph": 45000
+      }
+    },
+    {
+      "nama": "V12: batas atas lapis inklusif 5.400.000",
+      "sumber": "paparan DJP",
+      "masukan": { "gross": 5400000 },
+      "harapan": {
+        "tarif": 0,
+        "bruto_pajak": 5400000,
+        "bruto_masa": 5400000
+      }
+    },
+    {
+      "nama": "V12: 5.400.001 sudah 0,25%",
+      "sumber": "paparan DJP",
+      "masukan": { "gross": 5400001 },
+      "harapan": {
+        "tarif": 25,
+        "bruto_pajak": 5400001,
+        "bruto_masa": 5400001,
+        "pph": 13500
+      }
+    },
+    {
+      "nama": "Premi perusahaan menaikkan lapis: 9.600.000 + 84.000",
+      "sumber": "hitungan sendiri",
+      "masukan": { "gross": 9600000, "premi": 84000 },
+      "harapan": {
+        "tarif": 200,
+        "bruto_pajak": 9684000,
+        "premi": 84000,
+        "bruto_masa": 9684000,
+        "pph": 193680
+      }
+    },
+    {
+      "nama": "Lebih potong masa: potongan 0, ditandai",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "gross": 1,
+        "bruto_masa_sebelum": 10000000,
+        "pph_masa_sebelum": 300000
+      },
+      "harapan": {
+        "tarif": 200,
+        "bruto_pajak": 1,
+        "bruto_masa": 10000001,
+        "sudah_dipotong": 300000,
+        "tanda": ["lebih_potong_masa"]
+      }
+    },
+    {
+      "nama": "Run lintas bulan: masa = bulan period_start, tanda konteks berurutan",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-01-26",
+        "period_end": "2026-02-08",
+        "gross": 2000000,
+        "komponen_per_run": true,
+        "rumus_lama": true
+      },
+      "harapan": {
+        "tarif": 0,
+        "bruto_pajak": 2000000,
+        "bruto_masa": 2000000,
+        "tanda": ["lintas_bulan", "rumus_lama", "komponen_per_run"]
+      }
+    },
+    {
+      "nama": "Tidak tetap tanpa hari hadir: dihitung 1 hari, ditandai",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "jenis_personil": "Harian",
+        "salary_type": "FLAT_DAILY",
+        "period_start": "2026-01-05",
+        "period_end": "2026-01-06",
+        "gross": 500000
+      },
+      "harapan": {
+        "status": "tidak_tetap",
+        "metode": "TER_HARIAN",
+        "kategori": null,
+        "tarif": 50,
+        "bruto_pajak": 500000,
+        "hari": 1,
+        "pph": 2500,
+        "tanda": ["tanpa_hari"]
+      }
+    },
+    {
+      "nama": "Tidak tetap 1.000.000 sehari: 0,5%",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "jenis_personil": "Harian",
+        "salary_type": "FLAT_DAILY",
+        "period_end": "2026-01-10",
+        "gross": 10000000,
+        "hari": 10
+      },
+      "harapan": {
+        "status": "tidak_tetap",
+        "metode": "TER_HARIAN",
+        "kategori": null,
+        "tarif": 50,
+        "bruto_pajak": 10000000,
+        "hari": 10,
+        "pph": 50000
+      }
+    },
+    {
+      "nama": "Kontrak Pegawai bergaji harian tetap pegawai tetap (Q-178)",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "salary_type": "FLAT_DAILY",
+        "period_end": "2026-01-10",
+        "gross": 4500000,
+        "hari": 10
+      },
+      "harapan": {
+        "tarif": 0,
+        "bruto_pajak": 4500000,
+        "bruto_masa": 4500000
+      }
+    },
+    {
+      "nama": "Tanpa lapis tarif: PPh 0, ditandai",
+      "sumber": "hitungan sendiri",
+      "lapis_kosong": true,
+      "masukan": { "gross": 10000000 },
+      "harapan": {
+        "bruto_pajak": 10000000,
+        "bruto_masa": 10000000,
+        "tanda": ["tarif_tidak_ada"]
+      }
+    },
+    {
+      "nama": "Masa terakhir dengan PKP negatif: PKP 0",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "gross": 3000000,
+        "bruto_tahun_sebelum": 33000000,
+        "masa_berbruto_lain": 11
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 3000000,
+        "bruto_masa": 3000000,
+        "bruto_tahun": 36000000,
+        "biaya_jabatan": 1800000,
+        "iuran_pensiun": 0,
+        "ptkp": 54000000,
+        "pkp": 0,
+        "pph_setahun": 0
+      }
+    },
+    {
+      "nama": "Masa terakhir: PKP dibulatkan ke bawah ribuan, biaya jabatan dibulatkan",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "gross": 8123456,
+        "bruto_tahun_sebelum": 92000000,
+        "masa_berbruto_lain": 11
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 8123456,
+        "bruto_masa": 8123456,
+        "bruto_tahun": 100123456,
+        "biaya_jabatan": 5006173,
+        "iuran_pensiun": 0,
+        "ptkp": 54000000,
+        "pkp": 41117000,
+        "pph_setahun": 2055850,
+        "pph": 2055850
+      }
+    },
+    {
+      "nama": "Status pajak berubah: masa terakhir hanya masa tetap, pengembalian (Q-192)",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "jenis_personil": "Kontrak",
+        "period_start": "2026-12-01",
+        "period_end": "2026-12-31",
+        "gross": 10000000,
+        "bruto_tahun_sebelum": 50000000,
+        "pph_tahun_sebelum": 900000,
+        "masa_berbruto_lain": 5,
+        "status_pajak_berubah": true
+      },
+      "harapan": {
+        "masa": "2026-12",
+        "metode": "PASAL_17_TERAKHIR",
+        "bruto_pajak": 10000000,
+        "bruto_masa": 10000000,
+        "sudah_dipotong": 900000,
+        "bruto_tahun": 60000000,
+        "biaya_jabatan": 3000000,
+        "iuran_pensiun": 0,
+        "ptkp": 54000000,
+        "pkp": 3000000,
+        "pph_setahun": 150000,
+        "pph": -750000,
+        "tanda": ["status_pajak_berubah"]
+      }
+    }
+  ],
+  "bpjs": [
+    {
+      "nama": "V11 run 1: dua mingguan 8.000.000",
+      "sumber": "hitungan sendiri",
+      "masukan": { "dasar_run": 8000000, "dasar_masa_sebelum": 0, "sudah": {} },
+      "harapan": {
+        "karyawan": 320000,
+        "perusahaan": 843200,
+        "dasar_masa": 8000000,
+        "nominal": {
+          "BPJS_KES_CO": 320000,
+          "BPJS_KES_EMP": 80000,
+          "JHT_CO": 296000,
+          "JHT_EMP": 160000,
+          "JKK_CO": 43200,
+          "JKM_CO": 24000,
+          "JP_CO": 160000,
+          "JP_EMP": 80000
+        },
+        "premi": 387200,
+        "iuran_pensiun": 240000,
+        "tanda": []
+      }
+    },
+    {
+      "nama": "V11 run 2: JP 1% x 11.086.300 dikurangi 80.000",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "dasar_run": 8000000,
+        "dasar_masa_sebelum": 8000000,
+        "sudah": {
+          "BPJS_KES_CO": 320000,
+          "BPJS_KES_EMP": 80000,
+          "JHT_CO": 296000,
+          "JHT_EMP": 160000,
+          "JKK_CO": 43200,
+          "JKM_CO": 24000,
+          "JP_CO": 160000,
+          "JP_EMP": 80000
+        }
+      },
+      "harapan": {
+        "karyawan": 230863,
+        "perusahaan": 584926,
+        "dasar_masa": 16000000,
+        "nominal": {
+          "BPJS_KES_CO": 160000,
+          "BPJS_KES_EMP": 40000,
+          "JHT_CO": 296000,
+          "JHT_EMP": 160000,
+          "JKK_CO": 43200,
+          "JKM_CO": 24000,
+          "JP_CO": 61726,
+          "JP_EMP": 30863
+        },
+        "premi": 227200,
+        "iuran_pensiun": 190863,
+        "tanda": []
+      }
+    },
+    {
+      "nama": "Sudah dipotong melebihi iuran masa: potongan 0",
+      "sumber": "hitungan sendiri",
+      "masukan": {
+        "dasar_run": 1000000,
+        "dasar_masa_sebelum": 0,
+        "sudah": { "JP_EMP": 50000 }
+      },
+      "harapan": {
+        "karyawan": 30000,
+        "perusahaan": 105400,
+        "dasar_masa": 1000000,
+        "nominal": {
+          "BPJS_KES_CO": 40000,
+          "BPJS_KES_EMP": 10000,
+          "JHT_CO": 37000,
+          "JHT_EMP": 20000,
+          "JKK_CO": 5400,
+          "JKM_CO": 3000,
+          "JP_CO": 20000,
+          "JP_EMP": 0
+        },
+        "premi": 48400,
+        "iuran_pensiun": 20000,
+        "tanda": []
+      }
+    },
+    {
+      "nama": "Pembulatan per kode: 1.234.567",
+      "sumber": "hitungan sendiri",
+      "masukan": { "dasar_run": 1234567, "dasar_masa_sebelum": 0, "sudah": {} },
+      "harapan": {
+        "karyawan": 49383,
+        "perusahaan": 130124,
+        "dasar_masa": 1234567,
+        "nominal": {
+          "BPJS_KES_CO": 49383,
+          "BPJS_KES_EMP": 12346,
+          "JHT_CO": 45679,
+          "JHT_EMP": 24691,
+          "JKK_CO": 6667,
+          "JKM_CO": 3704,
+          "JP_CO": 24691,
+          "JP_EMP": 12346
+        },
+        "premi": 59754,
+        "iuran_pensiun": 37037,
+        "tanda": []
+      }
+    }
+  ],
+  "pembanding": [
+    {
+      "nama": "Masa Februari: masa hanya item Februari; tahun menjumlah item tetap, rumus lama dihitung ulang dengan premi kode lama",
+      "masa": "2026-02",
+      "status": "tetap",
+      "items": [
+        {
+          "masa": "2026-01",
+          "gross_salary": 3000000,
+          "pph21_amount": 0,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"pajak\":{\"bruto_pajak\":3145200,\"status\":\"tetap\"},\"bpjs_masa\":{\"dasar_run\":3000000},\"bpjs\":[{\"code\":\"JP_EMP\",\"nominal\":30000},{\"code\":\"JHT_EMP\",\"nominal\":60000},{\"code\":\"JKK_CO\",\"nominal\":16200}]}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 1000000,
+          "pph21_amount": 5000,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"bpjs\":[{\"code\":\"JKK\",\"nominal\":2400},{\"code\":\"JHT_EMP\",\"nominal\":20000}],\"tax\":{\"category\":\"TER_A\"}}"
+        },
+        {
+          "masa": "2026-02",
+          "gross_salary": 5000000,
+          "pph21_amount": 50000,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"pajak\":{\"bruto_pajak\":5000000,\"status\":\"tetap\"},\"bpjs_masa\":{\"dasar_run\":5000000},\"bpjs\":[{\"code\":\"JP_EMP\",\"nominal\":50000}]}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 2000000,
+          "pph21_amount": 0,
+          "salary_type": "FLAT_DAILY",
+          "breakdown_snapshot": "{}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 0,
+          "pph21_amount": 0,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "bukan json"
+        }
+      ],
+      "harapan": {
+        "bruto_masa": 5000000,
+        "pph_masa": 50000,
+        "dasar_bpjs_masa": 5000000,
+        "bpjs_masa": {
+          "JP_EMP": 50000
+        },
+        "run_masa": 1,
+        "bruto_tahun": 9147600,
+        "pph_tahun": 55000,
+        "iuran_pensiun_tahun": 160000,
+        "masa_berbruto_lain": 1,
+        "rumus_lama_masa": false,
+        "rumus_lama_tahun": true,
+        "status_berubah": true
+      }
+    },
+    {
+      "nama": "Masa Januari: semua status ikut masa; FLAT_DAILY lama tanpa dasar BPJS; snapshot rusak = rumus lama",
+      "masa": "2026-01",
+      "status": "tetap",
+      "items": [
+        {
+          "masa": "2026-01",
+          "gross_salary": 3000000,
+          "pph21_amount": 0,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"pajak\":{\"bruto_pajak\":3145200,\"status\":\"tetap\"},\"bpjs_masa\":{\"dasar_run\":3000000},\"bpjs\":[{\"code\":\"JP_EMP\",\"nominal\":30000},{\"code\":\"JHT_EMP\",\"nominal\":60000},{\"code\":\"JKK_CO\",\"nominal\":16200}]}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 1000000,
+          "pph21_amount": 5000,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"bpjs\":[{\"code\":\"JKK\",\"nominal\":2400},{\"code\":\"JHT_EMP\",\"nominal\":20000}],\"tax\":{\"category\":\"TER_A\"}}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 2000000,
+          "pph21_amount": 0,
+          "salary_type": "FLAT_DAILY",
+          "breakdown_snapshot": "{}"
+        },
+        {
+          "masa": "2026-01",
+          "gross_salary": 0,
+          "pph21_amount": 0,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "bukan json"
+        }
+      ],
+      "harapan": {
+        "bruto_masa": 6147600,
+        "pph_masa": 5000,
+        "dasar_bpjs_masa": 4000000,
+        "bpjs_masa": {
+          "JHT_EMP": 80000,
+          "JKK": 2400,
+          "JKK_CO": 16200,
+          "JP_EMP": 30000
+        },
+        "run_masa": 4,
+        "bruto_tahun": 4147600,
+        "pph_tahun": 5000,
+        "iuran_pensiun_tahun": 110000,
+        "masa_berbruto_lain": 0,
+        "rumus_lama_masa": true,
+        "rumus_lama_tahun": true,
+        "status_berubah": true
+      }
+    },
+    {
+      "nama": "Status sekarang tidak tetap: tahun tetap menjumlah item tetap, ditandai berubah",
+      "masa": "2026-02",
+      "status": "tidak_tetap",
+      "items": [
+        {
+          "masa": "2026-02",
+          "gross_salary": 5000000,
+          "pph21_amount": 50000,
+          "salary_type": "HOURLY",
+          "breakdown_snapshot": "{\"pajak\":{\"bruto_pajak\":5000000,\"status\":\"tetap\"},\"bpjs_masa\":{\"dasar_run\":5000000},\"bpjs\":[{\"code\":\"JP_EMP\",\"nominal\":50000}]}"
+        }
+      ],
+      "harapan": {
+        "bruto_masa": 5000000,
+        "pph_masa": 50000,
+        "dasar_bpjs_masa": 5000000,
+        "bpjs_masa": {
+          "JP_EMP": 50000
+        },
+        "run_masa": 1,
+        "bruto_tahun": 5000000,
+        "pph_tahun": 50000,
+        "iuran_pensiun_tahun": 50000,
+        "masa_berbruto_lain": 0,
+        "rumus_lama_masa": false,
+        "rumus_lama_tahun": false,
+        "status_berubah": true
+      }
+    }
+  ],
+  "persen_ke_basis": [
+    [0, 0],
+    [0.25, 25],
+    [1.75, 175],
+    [3.7, 370],
+    [0.54, 54],
+    [34, 3400],
+    [0.125, null],
+    [-1, null]
+  ],
+  "status": [
+    ["Pegawai", "HOURLY", "tetap"],
+    ["Kontrak", "FLAT_DAILY", "tetap"],
+    ["Harian", "HOURLY", "tidak_tetap"],
+    ["Magang", "FLAT_DAILY", "tidak_tetap"],
+    ["Magang", "HOURLY", "tetap"],
+    [null, "FLAT_DAILY", "tidak_tetap"],
+    [null, "HOURLY", "tetap"]
+  ],
+  "ptkp": [
+    ["TK/0", "TER_A", 54000000],
+    ["TK/1", "TER_A", 58500000],
+    ["K/0", "TER_A", 58500000],
+    ["TK/2", "TER_B", 63000000],
+    ["TK/3", "TER_B", 67500000],
+    ["K/1", "TER_B", 63000000],
+    ["K/2", "TER_B", 67500000],
+    ["K/3", "TER_C", 72000000],
+    [" k/1 ", "TER_B", 63000000],
+    ["K/4", "TER_A", 54000000],
+    ["", "TER_A", 54000000]
+  ],
+  "bulan_penuh": [
+    ["2026-02-01", "2026-02-28", true],
+    ["2028-02-01", "2028-02-29", true],
+    ["2028-02-01", "2028-02-28", false],
+    ["2100-02-01", "2100-02-28", true],
+    ["2026-01-01", "2026-01-15", false],
+    ["2026-01-02", "2026-01-31", false],
+    ["2026-01-01", "2026-02-28", false]
+  ]
+}

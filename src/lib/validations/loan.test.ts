@@ -244,6 +244,29 @@ describe("susunJurnalPayroll", () => {
     ]);
   });
 
+  test("pengembalian PPh masa terakhir masuk debit utang PPh 21, vektor kembar Rust", () => {
+    expect(
+      susunJurnalPayroll(
+        [
+          {
+            gross: 17_500_000,
+            net: 21_020_000,
+            pph21: -3_620_000,
+            bpjs_karyawan: 100_000,
+            bpjs_perusahaan: 0,
+            kasbon: 0,
+          },
+        ],
+        "akun-kas",
+      ),
+    ).toEqual([
+      { id_akun: "akun-beban-gaji", debit: 17_500_000, kredit: 0 },
+      { id_akun: "akun-kas", debit: 0, kredit: 21_020_000 },
+      { id_akun: "akun-utang-pph21", debit: 3_620_000, kredit: 0 },
+      { id_akun: "akun-utang-bpjs", debit: 0, kredit: 100_000 },
+    ]);
+  });
+
   test("seimbang, potongan komponen adalah selisihnya", () => {
     expect(
       susunJurnalPayroll(

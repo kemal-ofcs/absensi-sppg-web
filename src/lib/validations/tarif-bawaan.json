@@ -1,0 +1,1461 @@
+{
+  "catatan": "Tarif bawaan PPh 21 (PP 58/2023: TER A 44 lapis, B 40, C 41; Pasal 17 UU HPP) dan BPJS. Satu sumber untuk payroll_seed.rs (include_str!) dan validations/tarif-bawaan.ts. Batas atas lapis inklusif, bracket_min = batas atas lapis sebelumnya. koreksi_v45 = nilai seed lama yang dikoreksi skema v45 hanya bila barisnya belum disunting.",
+  "pajak": [
+    {
+      "id": "tax_p17_1",
+      "category": "PASAL_17",
+      "bracket_min": 0,
+      "bracket_max": 60000000,
+      "rate_percentage": 5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_p17_2",
+      "category": "PASAL_17",
+      "bracket_min": 60000000,
+      "bracket_max": 250000000,
+      "rate_percentage": 15,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_p17_3",
+      "category": "PASAL_17",
+      "bracket_min": 250000000,
+      "bracket_max": 500000000,
+      "rate_percentage": 25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_p17_4",
+      "category": "PASAL_17",
+      "bracket_min": 500000000,
+      "bracket_max": 5000000000,
+      "rate_percentage": 30,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_p17_5",
+      "category": "PASAL_17",
+      "bracket_min": 5000000000,
+      "bracket_max": null,
+      "rate_percentage": 35,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_1",
+      "category": "TER_A",
+      "bracket_min": 0,
+      "bracket_max": 5400000,
+      "rate_percentage": 0,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_2",
+      "category": "TER_A",
+      "bracket_min": 5400000,
+      "bracket_max": 5650000,
+      "rate_percentage": 0.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_3",
+      "category": "TER_A",
+      "bracket_min": 5650000,
+      "bracket_max": 5950000,
+      "rate_percentage": 0.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_4",
+      "category": "TER_A",
+      "bracket_min": 5950000,
+      "bracket_max": 6300000,
+      "rate_percentage": 0.75,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_5",
+      "category": "TER_A",
+      "bracket_min": 6300000,
+      "bracket_max": 6750000,
+      "rate_percentage": 1,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_6",
+      "category": "TER_A",
+      "bracket_min": 6750000,
+      "bracket_max": 7500000,
+      "rate_percentage": 1.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_7",
+      "category": "TER_A",
+      "bracket_min": 7500000,
+      "bracket_max": 8550000,
+      "rate_percentage": 1.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_8",
+      "category": "TER_A",
+      "bracket_min": 8550000,
+      "bracket_max": 9650000,
+      "rate_percentage": 1.75,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_9",
+      "category": "TER_A",
+      "bracket_min": 9650000,
+      "bracket_max": 10050000,
+      "rate_percentage": 2,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_10",
+      "category": "TER_A",
+      "bracket_min": 10050000,
+      "bracket_max": 10350000,
+      "rate_percentage": 2.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_11",
+      "category": "TER_A",
+      "bracket_min": 10350000,
+      "bracket_max": 10700000,
+      "rate_percentage": 2.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_12",
+      "category": "TER_A",
+      "bracket_min": 10700000,
+      "bracket_max": 11050000,
+      "rate_percentage": 3,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_13",
+      "category": "TER_A",
+      "bracket_min": 11050000,
+      "bracket_max": 11600000,
+      "rate_percentage": 3.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_14",
+      "category": "TER_A",
+      "bracket_min": 11600000,
+      "bracket_max": 12500000,
+      "rate_percentage": 4,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_15",
+      "category": "TER_A",
+      "bracket_min": 12500000,
+      "bracket_max": 13750000,
+      "rate_percentage": 5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_16",
+      "category": "TER_A",
+      "bracket_min": 13750000,
+      "bracket_max": 15100000,
+      "rate_percentage": 6,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_17",
+      "category": "TER_A",
+      "bracket_min": 15100000,
+      "bracket_max": 16950000,
+      "rate_percentage": 7,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_18",
+      "category": "TER_A",
+      "bracket_min": 16950000,
+      "bracket_max": 19750000,
+      "rate_percentage": 8,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_19",
+      "category": "TER_A",
+      "bracket_min": 19750000,
+      "bracket_max": 24150000,
+      "rate_percentage": 9,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_20",
+      "category": "TER_A",
+      "bracket_min": 24150000,
+      "bracket_max": 26450000,
+      "rate_percentage": 10,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_21",
+      "category": "TER_A",
+      "bracket_min": 26450000,
+      "bracket_max": 28000000,
+      "rate_percentage": 11,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_22",
+      "category": "TER_A",
+      "bracket_min": 28000000,
+      "bracket_max": 30050000,
+      "rate_percentage": 12,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_23",
+      "category": "TER_A",
+      "bracket_min": 30050000,
+      "bracket_max": 32400000,
+      "rate_percentage": 13,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_24",
+      "category": "TER_A",
+      "bracket_min": 32400000,
+      "bracket_max": 35400000,
+      "rate_percentage": 14,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_25",
+      "category": "TER_A",
+      "bracket_min": 35400000,
+      "bracket_max": 39100000,
+      "rate_percentage": 15,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_26",
+      "category": "TER_A",
+      "bracket_min": 39100000,
+      "bracket_max": 43850000,
+      "rate_percentage": 16,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_27",
+      "category": "TER_A",
+      "bracket_min": 43850000,
+      "bracket_max": 47800000,
+      "rate_percentage": 17,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_28",
+      "category": "TER_A",
+      "bracket_min": 47800000,
+      "bracket_max": 51400000,
+      "rate_percentage": 18,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_29",
+      "category": "TER_A",
+      "bracket_min": 51400000,
+      "bracket_max": 56300000,
+      "rate_percentage": 19,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_30",
+      "category": "TER_A",
+      "bracket_min": 56300000,
+      "bracket_max": 62200000,
+      "rate_percentage": 20,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_31",
+      "category": "TER_A",
+      "bracket_min": 62200000,
+      "bracket_max": 68600000,
+      "rate_percentage": 21,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_32",
+      "category": "TER_A",
+      "bracket_min": 68600000,
+      "bracket_max": 77500000,
+      "rate_percentage": 22,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_33",
+      "category": "TER_A",
+      "bracket_min": 77500000,
+      "bracket_max": 89000000,
+      "rate_percentage": 23,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_34",
+      "category": "TER_A",
+      "bracket_min": 89000000,
+      "bracket_max": 103000000,
+      "rate_percentage": 24,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_35",
+      "category": "TER_A",
+      "bracket_min": 103000000,
+      "bracket_max": 125000000,
+      "rate_percentage": 25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_36",
+      "category": "TER_A",
+      "bracket_min": 125000000,
+      "bracket_max": 157000000,
+      "rate_percentage": 26,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_37",
+      "category": "TER_A",
+      "bracket_min": 157000000,
+      "bracket_max": 206000000,
+      "rate_percentage": 27,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_38",
+      "category": "TER_A",
+      "bracket_min": 206000000,
+      "bracket_max": 337000000,
+      "rate_percentage": 28,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_39",
+      "category": "TER_A",
+      "bracket_min": 337000000,
+      "bracket_max": 454000000,
+      "rate_percentage": 29,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_40",
+      "category": "TER_A",
+      "bracket_min": 454000000,
+      "bracket_max": 550000000,
+      "rate_percentage": 30,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_41",
+      "category": "TER_A",
+      "bracket_min": 550000000,
+      "bracket_max": 695000000,
+      "rate_percentage": 31,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_42",
+      "category": "TER_A",
+      "bracket_min": 695000000,
+      "bracket_max": 910000000,
+      "rate_percentage": 32,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_43",
+      "category": "TER_A",
+      "bracket_min": 910000000,
+      "bracket_max": 1400000000,
+      "rate_percentage": 33,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_a_44",
+      "category": "TER_A",
+      "bracket_min": 1400000000,
+      "bracket_max": null,
+      "rate_percentage": 34,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_1",
+      "category": "TER_B",
+      "bracket_min": 0,
+      "bracket_max": 6200000,
+      "rate_percentage": 0,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_2",
+      "category": "TER_B",
+      "bracket_min": 6200000,
+      "bracket_max": 6500000,
+      "rate_percentage": 0.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_3",
+      "category": "TER_B",
+      "bracket_min": 6500000,
+      "bracket_max": 6850000,
+      "rate_percentage": 0.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_4",
+      "category": "TER_B",
+      "bracket_min": 6850000,
+      "bracket_max": 7300000,
+      "rate_percentage": 0.75,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_5",
+      "category": "TER_B",
+      "bracket_min": 7300000,
+      "bracket_max": 9200000,
+      "rate_percentage": 1,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_6",
+      "category": "TER_B",
+      "bracket_min": 9200000,
+      "bracket_max": 10750000,
+      "rate_percentage": 1.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_7",
+      "category": "TER_B",
+      "bracket_min": 10750000,
+      "bracket_max": 11250000,
+      "rate_percentage": 2,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_8",
+      "category": "TER_B",
+      "bracket_min": 11250000,
+      "bracket_max": 11600000,
+      "rate_percentage": 2.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_9",
+      "category": "TER_B",
+      "bracket_min": 11600000,
+      "bracket_max": 12600000,
+      "rate_percentage": 3,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_10",
+      "category": "TER_B",
+      "bracket_min": 12600000,
+      "bracket_max": 13600000,
+      "rate_percentage": 4,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_11",
+      "category": "TER_B",
+      "bracket_min": 13600000,
+      "bracket_max": 14950000,
+      "rate_percentage": 5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_12",
+      "category": "TER_B",
+      "bracket_min": 14950000,
+      "bracket_max": 16400000,
+      "rate_percentage": 6,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_13",
+      "category": "TER_B",
+      "bracket_min": 16400000,
+      "bracket_max": 18450000,
+      "rate_percentage": 7,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_14",
+      "category": "TER_B",
+      "bracket_min": 18450000,
+      "bracket_max": 21850000,
+      "rate_percentage": 8,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_15",
+      "category": "TER_B",
+      "bracket_min": 21850000,
+      "bracket_max": 26000000,
+      "rate_percentage": 9,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_16",
+      "category": "TER_B",
+      "bracket_min": 26000000,
+      "bracket_max": 27700000,
+      "rate_percentage": 10,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_17",
+      "category": "TER_B",
+      "bracket_min": 27700000,
+      "bracket_max": 29350000,
+      "rate_percentage": 11,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_18",
+      "category": "TER_B",
+      "bracket_min": 29350000,
+      "bracket_max": 31450000,
+      "rate_percentage": 12,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_19",
+      "category": "TER_B",
+      "bracket_min": 31450000,
+      "bracket_max": 33950000,
+      "rate_percentage": 13,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_20",
+      "category": "TER_B",
+      "bracket_min": 33950000,
+      "bracket_max": 37100000,
+      "rate_percentage": 14,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_21",
+      "category": "TER_B",
+      "bracket_min": 37100000,
+      "bracket_max": 41100000,
+      "rate_percentage": 15,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_22",
+      "category": "TER_B",
+      "bracket_min": 41100000,
+      "bracket_max": 45800000,
+      "rate_percentage": 16,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_23",
+      "category": "TER_B",
+      "bracket_min": 45800000,
+      "bracket_max": 49500000,
+      "rate_percentage": 17,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_24",
+      "category": "TER_B",
+      "bracket_min": 49500000,
+      "bracket_max": 53800000,
+      "rate_percentage": 18,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_25",
+      "category": "TER_B",
+      "bracket_min": 53800000,
+      "bracket_max": 58500000,
+      "rate_percentage": 19,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_26",
+      "category": "TER_B",
+      "bracket_min": 58500000,
+      "bracket_max": 64000000,
+      "rate_percentage": 20,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_27",
+      "category": "TER_B",
+      "bracket_min": 64000000,
+      "bracket_max": 71000000,
+      "rate_percentage": 21,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_28",
+      "category": "TER_B",
+      "bracket_min": 71000000,
+      "bracket_max": 80000000,
+      "rate_percentage": 22,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_29",
+      "category": "TER_B",
+      "bracket_min": 80000000,
+      "bracket_max": 93000000,
+      "rate_percentage": 23,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_30",
+      "category": "TER_B",
+      "bracket_min": 93000000,
+      "bracket_max": 109000000,
+      "rate_percentage": 24,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_31",
+      "category": "TER_B",
+      "bracket_min": 109000000,
+      "bracket_max": 129000000,
+      "rate_percentage": 25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_32",
+      "category": "TER_B",
+      "bracket_min": 129000000,
+      "bracket_max": 163000000,
+      "rate_percentage": 26,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_33",
+      "category": "TER_B",
+      "bracket_min": 163000000,
+      "bracket_max": 211000000,
+      "rate_percentage": 27,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_34",
+      "category": "TER_B",
+      "bracket_min": 211000000,
+      "bracket_max": 374000000,
+      "rate_percentage": 28,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_35",
+      "category": "TER_B",
+      "bracket_min": 374000000,
+      "bracket_max": 459000000,
+      "rate_percentage": 29,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_36",
+      "category": "TER_B",
+      "bracket_min": 459000000,
+      "bracket_max": 555000000,
+      "rate_percentage": 30,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_37",
+      "category": "TER_B",
+      "bracket_min": 555000000,
+      "bracket_max": 704000000,
+      "rate_percentage": 31,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_38",
+      "category": "TER_B",
+      "bracket_min": 704000000,
+      "bracket_max": 957000000,
+      "rate_percentage": 32,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_39",
+      "category": "TER_B",
+      "bracket_min": 957000000,
+      "bracket_max": 1405000000,
+      "rate_percentage": 33,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_b_40",
+      "category": "TER_B",
+      "bracket_min": 1405000000,
+      "bracket_max": null,
+      "rate_percentage": 34,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_1",
+      "category": "TER_C",
+      "bracket_min": 0,
+      "bracket_max": 6600000,
+      "rate_percentage": 0,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_2",
+      "category": "TER_C",
+      "bracket_min": 6600000,
+      "bracket_max": 6950000,
+      "rate_percentage": 0.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_3",
+      "category": "TER_C",
+      "bracket_min": 6950000,
+      "bracket_max": 7350000,
+      "rate_percentage": 0.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_4",
+      "category": "TER_C",
+      "bracket_min": 7350000,
+      "bracket_max": 7800000,
+      "rate_percentage": 0.75,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_5",
+      "category": "TER_C",
+      "bracket_min": 7800000,
+      "bracket_max": 8850000,
+      "rate_percentage": 1,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_6",
+      "category": "TER_C",
+      "bracket_min": 8850000,
+      "bracket_max": 9800000,
+      "rate_percentage": 1.25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_7",
+      "category": "TER_C",
+      "bracket_min": 9800000,
+      "bracket_max": 10950000,
+      "rate_percentage": 1.5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_8",
+      "category": "TER_C",
+      "bracket_min": 10950000,
+      "bracket_max": 11200000,
+      "rate_percentage": 1.75,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_9",
+      "category": "TER_C",
+      "bracket_min": 11200000,
+      "bracket_max": 12050000,
+      "rate_percentage": 2,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_10",
+      "category": "TER_C",
+      "bracket_min": 12050000,
+      "bracket_max": 12950000,
+      "rate_percentage": 3,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_11",
+      "category": "TER_C",
+      "bracket_min": 12950000,
+      "bracket_max": 14150000,
+      "rate_percentage": 4,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_12",
+      "category": "TER_C",
+      "bracket_min": 14150000,
+      "bracket_max": 15550000,
+      "rate_percentage": 5,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_13",
+      "category": "TER_C",
+      "bracket_min": 15550000,
+      "bracket_max": 17050000,
+      "rate_percentage": 6,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_14",
+      "category": "TER_C",
+      "bracket_min": 17050000,
+      "bracket_max": 19500000,
+      "rate_percentage": 7,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_15",
+      "category": "TER_C",
+      "bracket_min": 19500000,
+      "bracket_max": 22700000,
+      "rate_percentage": 8,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_16",
+      "category": "TER_C",
+      "bracket_min": 22700000,
+      "bracket_max": 26600000,
+      "rate_percentage": 9,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_17",
+      "category": "TER_C",
+      "bracket_min": 26600000,
+      "bracket_max": 28100000,
+      "rate_percentage": 10,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_18",
+      "category": "TER_C",
+      "bracket_min": 28100000,
+      "bracket_max": 30100000,
+      "rate_percentage": 11,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_19",
+      "category": "TER_C",
+      "bracket_min": 30100000,
+      "bracket_max": 32600000,
+      "rate_percentage": 12,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_20",
+      "category": "TER_C",
+      "bracket_min": 32600000,
+      "bracket_max": 35400000,
+      "rate_percentage": 13,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_21",
+      "category": "TER_C",
+      "bracket_min": 35400000,
+      "bracket_max": 38900000,
+      "rate_percentage": 14,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_22",
+      "category": "TER_C",
+      "bracket_min": 38900000,
+      "bracket_max": 43000000,
+      "rate_percentage": 15,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_23",
+      "category": "TER_C",
+      "bracket_min": 43000000,
+      "bracket_max": 47400000,
+      "rate_percentage": 16,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_24",
+      "category": "TER_C",
+      "bracket_min": 47400000,
+      "bracket_max": 51200000,
+      "rate_percentage": 17,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_25",
+      "category": "TER_C",
+      "bracket_min": 51200000,
+      "bracket_max": 55800000,
+      "rate_percentage": 18,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_26",
+      "category": "TER_C",
+      "bracket_min": 55800000,
+      "bracket_max": 60400000,
+      "rate_percentage": 19,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_27",
+      "category": "TER_C",
+      "bracket_min": 60400000,
+      "bracket_max": 66700000,
+      "rate_percentage": 20,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_28",
+      "category": "TER_C",
+      "bracket_min": 66700000,
+      "bracket_max": 74500000,
+      "rate_percentage": 21,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_29",
+      "category": "TER_C",
+      "bracket_min": 74500000,
+      "bracket_max": 83200000,
+      "rate_percentage": 22,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_30",
+      "category": "TER_C",
+      "bracket_min": 83200000,
+      "bracket_max": 95600000,
+      "rate_percentage": 23,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_31",
+      "category": "TER_C",
+      "bracket_min": 95600000,
+      "bracket_max": 110000000,
+      "rate_percentage": 24,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_32",
+      "category": "TER_C",
+      "bracket_min": 110000000,
+      "bracket_max": 134000000,
+      "rate_percentage": 25,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_33",
+      "category": "TER_C",
+      "bracket_min": 134000000,
+      "bracket_max": 169000000,
+      "rate_percentage": 26,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_34",
+      "category": "TER_C",
+      "bracket_min": 169000000,
+      "bracket_max": 221000000,
+      "rate_percentage": 27,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_35",
+      "category": "TER_C",
+      "bracket_min": 221000000,
+      "bracket_max": 390000000,
+      "rate_percentage": 28,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_36",
+      "category": "TER_C",
+      "bracket_min": 390000000,
+      "bracket_max": 463000000,
+      "rate_percentage": 29,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_37",
+      "category": "TER_C",
+      "bracket_min": 463000000,
+      "bracket_max": 561000000,
+      "rate_percentage": 30,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_38",
+      "category": "TER_C",
+      "bracket_min": 561000000,
+      "bracket_max": 709000000,
+      "rate_percentage": 31,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_39",
+      "category": "TER_C",
+      "bracket_min": 709000000,
+      "bracket_max": 965000000,
+      "rate_percentage": 32,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_40",
+      "category": "TER_C",
+      "bracket_min": 965000000,
+      "bracket_max": 1419000000,
+      "rate_percentage": 33,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "tax_ter_c_41",
+      "category": "TER_C",
+      "bracket_min": 1419000000,
+      "bracket_max": null,
+      "rate_percentage": 34,
+      "effective_date": "2026-01-01"
+    }
+  ],
+  "bpjs": [
+    {
+      "id": "bpjs_jht_emp",
+      "component_code": "JHT_EMP",
+      "component_name": "JHT Tenaga Kerja (Pekerja)",
+      "rate_percentage": 2,
+      "wage_cap": null,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "bpjs_jht_co",
+      "component_code": "JHT_CO",
+      "component_name": "JHT Tenaga Kerja (Perusahaan)",
+      "rate_percentage": 3.7,
+      "wage_cap": null,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "bpjs_jp_emp",
+      "component_code": "JP_EMP",
+      "component_name": "Jaminan Pensiun (Pekerja)",
+      "rate_percentage": 1,
+      "wage_cap": 11086300,
+      "effective_date": "2026-03-01"
+    },
+    {
+      "id": "bpjs_jp_co",
+      "component_code": "JP_CO",
+      "component_name": "Jaminan Pensiun (Perusahaan)",
+      "rate_percentage": 2,
+      "wage_cap": 11086300,
+      "effective_date": "2026-03-01"
+    },
+    {
+      "id": "bpjs_jkk_co",
+      "component_code": "JKK_CO",
+      "component_name": "JKK Risiko Sedang (Perusahaan)",
+      "rate_percentage": 0.54,
+      "wage_cap": null,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "bpjs_jkm_co",
+      "component_code": "JKM_CO",
+      "component_name": "Jaminan Kematian (Perusahaan)",
+      "rate_percentage": 0.3,
+      "wage_cap": null,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "bpjs_kes_emp",
+      "component_code": "BPJS_KES_EMP",
+      "component_name": "BPJS Kesehatan (Pekerja)",
+      "rate_percentage": 1,
+      "wage_cap": 12000000,
+      "effective_date": "2026-01-01"
+    },
+    {
+      "id": "bpjs_kes_co",
+      "component_code": "BPJS_KES_CO",
+      "component_name": "BPJS Kesehatan (Perusahaan)",
+      "rate_percentage": 4,
+      "wage_cap": 12000000,
+      "effective_date": "2026-01-01"
+    }
+  ],
+  "id_lama": [
+    "tax-p17-1",
+    "tax-p17-2",
+    "tax-p17-3",
+    "tax-p17-4",
+    "tax-p17-5",
+    "bpjs-jht-emp",
+    "bpjs-jht-co",
+    "bpjs-jp-emp",
+    "bpjs-jp-co",
+    "bpjs-jkk",
+    "bpjs-jkm",
+    "bpjs-kes-emp",
+    "bpjs-kes-co"
+  ],
+  "koreksi_v45": {
+    "pajak_lama": [
+      {
+        "id": "tax_ter_b_7",
+        "bracket_min": 10750000,
+        "bracket_max": 12500000,
+        "rate_percentage": 2
+      },
+      {
+        "id": "tax_ter_b_8",
+        "bracket_min": 12500000,
+        "bracket_max": 13750000,
+        "rate_percentage": 3
+      },
+      {
+        "id": "tax_ter_b_9",
+        "bracket_min": 13750000,
+        "bracket_max": 15100000,
+        "rate_percentage": 4
+      },
+      {
+        "id": "tax_ter_b_10",
+        "bracket_min": 15100000,
+        "bracket_max": 16950000,
+        "rate_percentage": 5
+      },
+      {
+        "id": "tax_ter_b_11",
+        "bracket_min": 16950000,
+        "bracket_max": 19750000,
+        "rate_percentage": 6
+      },
+      {
+        "id": "tax_ter_b_12",
+        "bracket_min": 19750000,
+        "bracket_max": 24150000,
+        "rate_percentage": 7
+      },
+      {
+        "id": "tax_ter_b_13",
+        "bracket_min": 24150000,
+        "bracket_max": 26450000,
+        "rate_percentage": 8
+      },
+      {
+        "id": "tax_ter_b_14",
+        "bracket_min": 26450000,
+        "bracket_max": 28000000,
+        "rate_percentage": 9
+      },
+      {
+        "id": "tax_ter_b_15",
+        "bracket_min": 28000000,
+        "bracket_max": 30050000,
+        "rate_percentage": 10
+      },
+      {
+        "id": "tax_ter_b_16",
+        "bracket_min": 30050000,
+        "bracket_max": 32400000,
+        "rate_percentage": 11
+      },
+      {
+        "id": "tax_ter_b_17",
+        "bracket_min": 32400000,
+        "bracket_max": 35400000,
+        "rate_percentage": 12
+      },
+      {
+        "id": "tax_ter_b_18",
+        "bracket_min": 35400000,
+        "bracket_max": 39100000,
+        "rate_percentage": 13
+      },
+      {
+        "id": "tax_ter_b_19",
+        "bracket_min": 39100000,
+        "bracket_max": 43850000,
+        "rate_percentage": 14
+      },
+      {
+        "id": "tax_ter_b_20",
+        "bracket_min": 43850000,
+        "bracket_max": 47800000,
+        "rate_percentage": 15
+      },
+      {
+        "id": "tax_ter_b_21",
+        "bracket_min": 47800000,
+        "bracket_max": 51400000,
+        "rate_percentage": 16
+      },
+      {
+        "id": "tax_ter_b_22",
+        "bracket_min": 51400000,
+        "bracket_max": 56300000,
+        "rate_percentage": 17
+      },
+      {
+        "id": "tax_ter_b_23",
+        "bracket_min": 56300000,
+        "bracket_max": 62200000,
+        "rate_percentage": 18
+      },
+      {
+        "id": "tax_ter_b_24",
+        "bracket_min": 62200000,
+        "bracket_max": 68600000,
+        "rate_percentage": 19
+      },
+      {
+        "id": "tax_ter_b_25",
+        "bracket_min": 68600000,
+        "bracket_max": 77500000,
+        "rate_percentage": 20
+      },
+      {
+        "id": "tax_ter_b_26",
+        "bracket_min": 77500000,
+        "bracket_max": 89000000,
+        "rate_percentage": 21
+      },
+      {
+        "id": "tax_ter_b_27",
+        "bracket_min": 89000000,
+        "bracket_max": 103000000,
+        "rate_percentage": 22
+      },
+      {
+        "id": "tax_ter_b_28",
+        "bracket_min": 103000000,
+        "bracket_max": 125000000,
+        "rate_percentage": 23
+      },
+      {
+        "id": "tax_ter_b_29",
+        "bracket_min": 125000000,
+        "bracket_max": 157000000,
+        "rate_percentage": 24
+      },
+      {
+        "id": "tax_ter_b_30",
+        "bracket_min": 157000000,
+        "bracket_max": 206000000,
+        "rate_percentage": 25
+      },
+      {
+        "id": "tax_ter_b_31",
+        "bracket_min": 206000000,
+        "bracket_max": 337000000,
+        "rate_percentage": 26
+      },
+      {
+        "id": "tax_ter_b_32",
+        "bracket_min": 337000000,
+        "bracket_max": 454000000,
+        "rate_percentage": 27
+      },
+      {
+        "id": "tax_ter_b_33",
+        "bracket_min": 454000000,
+        "bracket_max": 550000000,
+        "rate_percentage": 28
+      },
+      {
+        "id": "tax_ter_b_34",
+        "bracket_min": 550000000,
+        "bracket_max": 695000000,
+        "rate_percentage": 29
+      },
+      {
+        "id": "tax_ter_b_35",
+        "bracket_min": 695000000,
+        "bracket_max": 910000000,
+        "rate_percentage": 30
+      },
+      {
+        "id": "tax_ter_b_36",
+        "bracket_min": 910000000,
+        "bracket_max": 1400000000,
+        "rate_percentage": 31
+      },
+      {
+        "id": "tax_ter_b_37",
+        "bracket_min": 1400000000,
+        "bracket_max": null,
+        "rate_percentage": 32
+      },
+      {
+        "id": "tax_ter_c_16",
+        "bracket_min": 22700000,
+        "bracket_max": 24700000,
+        "rate_percentage": 9
+      },
+      {
+        "id": "tax_ter_c_17",
+        "bracket_min": 24700000,
+        "bracket_max": 27500000,
+        "rate_percentage": 10
+      },
+      {
+        "id": "tax_ter_c_18",
+        "bracket_min": 27500000,
+        "bracket_max": 30000000,
+        "rate_percentage": 11
+      },
+      {
+        "id": "tax_ter_c_19",
+        "bracket_min": 30000000,
+        "bracket_max": 34100000,
+        "rate_percentage": 12
+      },
+      {
+        "id": "tax_ter_c_20",
+        "bracket_min": 34100000,
+        "bracket_max": 37600000,
+        "rate_percentage": 13
+      },
+      {
+        "id": "tax_ter_c_21",
+        "bracket_min": 37600000,
+        "bracket_max": 42700000,
+        "rate_percentage": 14
+      },
+      {
+        "id": "tax_ter_c_22",
+        "bracket_min": 42700000,
+        "bracket_max": 47400000,
+        "rate_percentage": 15
+      },
+      {
+        "id": "tax_ter_c_23",
+        "bracket_min": 47400000,
+        "bracket_max": 52100000,
+        "rate_percentage": 16
+      },
+      {
+        "id": "tax_ter_c_24",
+        "bracket_min": 52100000,
+        "bracket_max": 56300000,
+        "rate_percentage": 17
+      },
+      {
+        "id": "tax_ter_c_25",
+        "bracket_min": 56300000,
+        "bracket_max": 62200000,
+        "rate_percentage": 18
+      },
+      {
+        "id": "tax_ter_c_26",
+        "bracket_min": 62200000,
+        "bracket_max": 68600000,
+        "rate_percentage": 19
+      },
+      {
+        "id": "tax_ter_c_27",
+        "bracket_min": 68600000,
+        "bracket_max": 77500000,
+        "rate_percentage": 20
+      },
+      {
+        "id": "tax_ter_c_28",
+        "bracket_min": 77500000,
+        "bracket_max": 89000000,
+        "rate_percentage": 21
+      },
+      {
+        "id": "tax_ter_c_29",
+        "bracket_min": 89000000,
+        "bracket_max": 103000000,
+        "rate_percentage": 22
+      },
+      {
+        "id": "tax_ter_c_30",
+        "bracket_min": 103000000,
+        "bracket_max": 125000000,
+        "rate_percentage": 23
+      },
+      {
+        "id": "tax_ter_c_31",
+        "bracket_min": 125000000,
+        "bracket_max": 157000000,
+        "rate_percentage": 24
+      },
+      {
+        "id": "tax_ter_c_32",
+        "bracket_min": 157000000,
+        "bracket_max": 206000000,
+        "rate_percentage": 25
+      },
+      {
+        "id": "tax_ter_c_33",
+        "bracket_min": 206000000,
+        "bracket_max": 337000000,
+        "rate_percentage": 26
+      },
+      {
+        "id": "tax_ter_c_34",
+        "bracket_min": 337000000,
+        "bracket_max": 454000000,
+        "rate_percentage": 27
+      },
+      {
+        "id": "tax_ter_c_35",
+        "bracket_min": 454000000,
+        "bracket_max": 550000000,
+        "rate_percentage": 28
+      },
+      {
+        "id": "tax_ter_c_36",
+        "bracket_min": 550000000,
+        "bracket_max": 695000000,
+        "rate_percentage": 29
+      },
+      {
+        "id": "tax_ter_c_37",
+        "bracket_min": 695000000,
+        "bracket_max": 910000000,
+        "rate_percentage": 30
+      },
+      {
+        "id": "tax_ter_c_38",
+        "bracket_min": 910000000,
+        "bracket_max": 1400000000,
+        "rate_percentage": 31
+      },
+      {
+        "id": "tax_ter_c_39",
+        "bracket_min": 1400000000,
+        "bracket_max": null,
+        "rate_percentage": 32
+      }
+    ],
+    "jp_wage_cap_lama": 10042300
+  }
+}

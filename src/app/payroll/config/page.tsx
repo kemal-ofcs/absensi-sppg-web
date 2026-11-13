@@ -78,6 +78,7 @@ export default function PayrollConfigPage() {
     default_value: 0,
     applies_to: "ALL",
     is_active: 1,
+    dasar_bpjs: 0,
   });
 
   const [feedback, setFeedback] = useState<{
@@ -320,6 +321,15 @@ export default function PayrollConfigPage() {
                 )?.nama ?? String(draftComp.applies_to),
               ),
       },
+      ...(draftComp.category === "ALLOWANCE"
+        ? [
+            {
+              label: "Dasar BPJS",
+              nilai:
+                draftComp.dasar_bpjs === 1 ? "Ya, tunjangan tetap" : "Tidak",
+            },
+          ]
+        : []),
     ]);
     if (!lanjut) return;
     try {
@@ -670,6 +680,7 @@ export default function PayrollConfigPage() {
                     default_value: 0,
                     applies_to: "ALL",
                     is_active: 1,
+                    dasar_bpjs: 0,
                   });
                   setModalCompOpen(true);
                 }}
@@ -1221,6 +1232,33 @@ export default function PayrollConfigPage() {
                   karyawan.
                 </p>
               </div>
+
+              {draftComp.category === "ALLOWANCE" ? (
+                <div>
+                  <label
+                    htmlFor="component-dasar-bpjs"
+                    className="flex items-start gap-2 text-sm text-slate-300"
+                  >
+                    <input
+                      id="component-dasar-bpjs"
+                      type="checkbox"
+                      checked={draftComp.dasar_bpjs === 1}
+                      onChange={(e) =>
+                        setDraftComp((prev) => ({
+                          ...prev,
+                          dasar_bpjs: e.target.checked ? 1 : 0,
+                        }))
+                      }
+                      className="mt-0.5"
+                    />
+                    <span>Tunjangan tetap (dasar BPJS)</span>
+                  </label>
+                  <p className="mt-1 text-xs text-slate-500">
+                    BPJS dihitung dari gaji pokok ditambah tunjangan yang
+                    dicentang. Lembur dan tunjangan tidak tetap tidak ikut.
+                  </p>
+                </div>
+              ) : null}
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
                 <button

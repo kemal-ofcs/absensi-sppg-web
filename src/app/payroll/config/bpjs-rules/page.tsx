@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { CatatanBatasJp } from "@/components/payroll/KonstantaPajak";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
@@ -223,6 +224,7 @@ export default function BpjsRulesPage() {
             </div>
           }
         />
+        <CatatanBatasJp />
 
         {feedback ? (
           <FeedbackBanner

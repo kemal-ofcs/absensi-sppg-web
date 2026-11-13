@@ -18,6 +18,15 @@ import {
 import { HARI_HADIR_SQL } from "@/lib/validations/driver";
 import { karyawanRekap } from "@/lib/validations/hr-keluar";
 import { komponenKasbon, potongKasbon } from "@/lib/validations/loan";
+import {
+  type HasilPph,
+  type ItemPembanding,
+  KOLOM_PAJAK_SQL,
+  masa,
+  RUN_TAHUN_SQL,
+  ringkasPembanding,
+  statusPph,
+} from "@/lib/validations/pajak";
 
 export interface PayrollRecapRow {
   id_karyawan: string;
@@ -73,6 +82,12 @@ export interface PayrollRecapRow {
    * setelah kasbon; tidak ikut bruto, PPh 21, dan BPJS.
    */
   est_reimburse: number;
+  /** Konteks masa pajak (fase 13), dibaca `KOLOM_PAJAK_SQL`; cermin Rust. */
+  jenis_personil: string | null;
+  keluar_pada: string | null;
+  ptkp_awal_tahun: string;
+  /** Hasil `hitungPph` (metode, kategori, tanda) untuk layar rekap. */
+  pajak: HasilPph;
   // Extra fields (not part of the Rust PayrollRecapRow response shape, but
   // needed by run creation to build payroll_items without recomputing).
   breakdown_snapshot: string;
@@ -105,7 +120,7 @@ async function loadPayrollComponents(
   client: Client,
 ): Promise<PayrollComponent[]> {
   const result = await client.execute(
-    `SELECT id, name, category, calc_type, default_value, applies_to, is_active
+    `SELECT id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
      FROM payroll_components
      WHERE is_active = 1
      ORDER BY category, name ASC;`,
@@ -118,7 +133,36 @@ async function loadPayrollComponents(
     default_value: Number(row.default_value),
     applies_to: String(row.applies_to),
     is_active: Number(row.is_active),
+    dasar_bpjs: Number(row.dasar_bpjs ?? 0),
   }));
+}
+
+/**
+ * Item run pembanding per karyawan (`RUN_TAHUN_SQL`, kembar Rust
+ * `muat_pembanding`). Dibaca sebelum run baru ditulis.
+ */
+async function loadPembanding(
+  client: Client,
+  periodStart: string,
+): Promise<Map<string, ItemPembanding[]>> {
+  const result = await client.execute({
+    sql: RUN_TAHUN_SQL,
+    args: [periodStart],
+  });
+  const hasil = new Map<string, ItemPembanding[]>();
+  for (const row of result.rows) {
+    const id = String(row.id_karyawan);
+    const daftar = hasil.get(id) ?? [];
+    daftar.push({
+      masa: String(row.masa),
+      gross_salary: Number(row.gross_salary),
+      pph21_amount: Number(row.pph21_amount),
+      salary_type: String(row.salary_type),
+      breakdown_snapshot: String(row.breakdown_snapshot),
+    });
+    hasil.set(id, daftar);
+  }
+  return hasil;
 }
 
 /**
@@ -126,7 +170,7 @@ async function loadPayrollComponents(
  *
  * `effective_date` sudah ada di skema dan didokumentasikan sebagai kunci
  * generasi tarif, tetapi tidak pernah dipakai menyaring: tabelnya dibaca utuh,
- * lalu `calculatePph21Ter` memakai bracket PERTAMA yang cocok. Menambahkan
+ * lalu pencarian tarif (kini `tarifTer`) memakai bracket PERTAMA yang cocok. Menambahkan
  * tabel TER tahun depan membuat periode berjalan memakai bracket yang
  * urutannya tidak ditentukan siapa pun. Bahkan tanpa generasi ganda, tarif
  * yang berlakunya masih di MASA DEPAN pun ikut terpakai hari ini.
@@ -207,6 +251,7 @@ export async function computePayrollRecap(
     cuti,
     spl,
     reimburse,
+    pembanding,
   ] = await Promise.all([
     loadOvertimeTiers(client, "HARI_KERJA"),
     // Jenjang lembur hari libur dikonfigurasi terpisah oleh user di menu
@@ -238,7 +283,9 @@ export async function computePayrollRecap(
             -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
             -- applyHolidayFallback bila jenjang HARI_LIBUR tidak aktif.
             COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
-              THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit
+              THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit,
+            -- Status, tanggal keluar, dan PTKP awal tahun untuk masa pajak (v45).
+            ${KOLOM_PAJAK_SQL}
           FROM master_data md
           LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
             AND sc.effective_date = (
@@ -276,7 +323,10 @@ export async function computePayrollRecap(
     lemburSpl(client, periodStart, periodEnd),
     // Reimbursement mode `gaji` (§19.4): cermin `hr_pengajuan::reimburse_gaji`.
     reimburseGaji(client, periodEnd),
+    // Run lain di tahun pajak yang sama sampai masa ini (fase 13, §29.3).
+    loadPembanding(client, periodStart),
   ]);
+  const masaRun = masa(periodStart);
 
   return aggResult.rows.map((row) => {
     const idKaryawan = String(row.id_unik);
@@ -306,13 +356,17 @@ export async function computePayrollRecap(
     const regHours = jamKerjaMenit / 60;
     const otHours = lemburMenit / 60;
     const holidayHours = liburMenit / 60;
+    const jenisPersonil =
+      row.jenis_personil === null ? null : String(row.jenis_personil);
+    const keluarPada =
+      row.keluar_pada === null ? null : String(row.keluar_pada);
+    const ptkpAwalTahun = String(row.ptkp_awal_tahun || "TK/0");
 
     // Satu fungsi untuk kedua skema, cerminan `calculate_employee_pay` di
     // payroll/engine.rs. Hasilnya dipakai pratinjau DAN pembekuan run.
     const pay = calculateEmployeePay(
       {
         idKaryawan,
-        ptkpStatus,
         salaryType,
         ratePerHour,
         dailyRate,
@@ -320,6 +374,18 @@ export async function computePayrollRecap(
         regularMinutes: jamKerjaMenit,
         overtimeMinutes: lemburMenit,
         holidayMinutes: liburMenit,
+        pajak: {
+          periodStart,
+          periodEnd,
+          jenisPersonil,
+          ptkpAwalTahun,
+          keluarPada,
+          pembanding: ringkasPembanding(
+            pembanding.get(idKaryawan) ?? [],
+            masaRun,
+            statusPph(jenisPersonil, salaryType),
+          ),
+        },
       },
       { overtimeTiers, holidayTiers, components, taxRules, bpjsRules },
     );
@@ -355,7 +421,9 @@ export async function computePayrollRecap(
       overtime_salary: pay.overtime,
       components: [...pay.components, ...komponenKasbon(kasbon.rincian)],
       bpjs: pay.bpjs,
+      bpjs_masa: pay.bpjsMasa,
       tax: pay.tax,
+      pajak: pay.pajak,
       kasbon: kasbon.rincian,
       reimburse: klaimReimburse.map(([id, nominal]) => ({
         id_pengajuan: id,
@@ -395,6 +463,10 @@ export async function computePayrollRecap(
       lembur_tanpa_spl_menit: lemburTanpaSpl,
       lembur_dipotong_menit: lemburDipotong,
       est_reimburse: estReimburse,
+      jenis_personil: jenisPersonil,
+      keluar_pada: keluarPada,
+      ptkp_awal_tahun: ptkpAwalTahun,
+      pajak: pay.pajak,
       breakdown_snapshot: breakdownSnapshot,
       bpjs_company_total: pay.bpjsCompany,
     };

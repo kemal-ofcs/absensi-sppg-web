@@ -1,10 +1,13 @@
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use tauri::State;
 
-use super::engine::{PayInput, PayRules, PayrollCalculator};
+use super::engine::{KonteksPajak, PayInput, PayRules, PayrollCalculator};
+use super::pajak::{self, ItemPembanding};
 use super::models::{
     BpjsRule, OvertimeTierRule, PayrollAuditLog, PayrollComponent, PayrollItem, PayrollRecapRow,
     PayrollRun, PayrollStatus, SalaryConfig, TaxRule, SALARY_TYPE_FLAT_DAILY,
@@ -518,7 +521,7 @@ pub async fn desktop_get_payroll_components(
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, name, category, calc_type, default_value, applies_to, is_active
+            SELECT id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
             FROM payroll_components
             ORDER BY category, name ASC;
             "#,
@@ -535,6 +538,7 @@ pub async fn desktop_get_payroll_components(
                 default_value: row.get(4)?,
                 applies_to: row.get(5)?,
                 is_active: row.get(6)?,
+                dasar_bpjs: row.get(7)?,
             })
         })
         .map_err(|_| CommandError::internal())?;
@@ -562,19 +566,26 @@ pub async fn desktop_save_payroll_component(
     } else {
         draft.id.clone()
     };
+    // Cermin CHECK `dasar_bpjs IN (0, 1)` (aturan 43); potongan tidak pernah
+    // menjadi dasar BPJS.
+    if !matches!(draft.dasar_bpjs, 0 | 1) {
+        return Err(CommandError::new("VALIDATION_ERROR", "Penanda dasar BPJS harus 0 atau 1."));
+    }
+    let dasar_bpjs = if draft.category == "ALLOWANCE" { draft.dasar_bpjs } else { 0 };
 
     tx.execute(
         r#"
         INSERT INTO payroll_components (
-            id, name, category, calc_type, default_value, applies_to, is_active
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             category = excluded.category,
             calc_type = excluded.calc_type,
             default_value = excluded.default_value,
             applies_to = excluded.applies_to,
-            is_active = excluded.is_active;
+            is_active = excluded.is_active,
+            dasar_bpjs = excluded.dasar_bpjs;
         "#,
         params![
             comp_id,
@@ -583,7 +594,8 @@ pub async fn desktop_save_payroll_component(
             draft.calc_type,
             draft.default_value,
             draft.applies_to,
-            draft.is_active
+            draft.is_active,
+            dasar_bpjs
         ],
     )
     .map_err(|_| CommandError::new("SAVE_FAILED", "Gagal menyimpan komponen payroll."))?;
@@ -603,6 +615,7 @@ pub async fn desktop_save_payroll_component(
             "default_value": draft.default_value,
             "applies_to": draft.applies_to.clone(),
             "is_active": draft.is_active,
+            "dasar_bpjs": dasar_bpjs,
         }),
         None,
     )?;
@@ -683,6 +696,7 @@ pub async fn desktop_save_tax_rule(
     draft: TaxRule,
 ) -> Result<bool, CommandError> {
     require_permission(&state, "payroll.config.manage")?;
+    pajak::periksa_tarif(draft.rate_percentage).map_err(|pesan| CommandError::new("VALIDATION_ERROR", pesan))?;
     let mut conn = storage::database(&state.data_dir)?;
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
@@ -775,6 +789,9 @@ pub async fn desktop_save_tax_rules(
     rules: Vec<TaxRule>,
 ) -> Result<bool, CommandError> {
     require_permission(&state, "payroll.config.manage")?;
+    for rule in &rules {
+        pajak::periksa_tarif(rule.rate_percentage).map_err(|pesan| CommandError::new("VALIDATION_ERROR", pesan))?;
+    }
     let mut conn = storage::database(&state.data_dir)?;
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
     let client_id = sync::ensure_client_id(&state)?;
@@ -842,6 +859,7 @@ pub async fn desktop_save_bpjs_rule(
     draft: BpjsRule,
 ) -> Result<bool, CommandError> {
     require_permission(&state, "payroll.config.manage")?;
+    pajak::periksa_tarif(draft.rate_percentage).map_err(|pesan| CommandError::new("VALIDATION_ERROR", pesan))?;
     let mut conn = storage::database(&state.data_dir)?;
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
@@ -968,6 +986,9 @@ pub async fn desktop_save_bpjs_rules(
     rules: Vec<BpjsRule>,
 ) -> Result<bool, CommandError> {
     require_permission(&state, "payroll.config.manage")?;
+    for rule in &rules {
+        pajak::periksa_tarif(rule.rate_percentage).map_err(|pesan| CommandError::new("VALIDATION_ERROR", pesan))?;
+    }
     let mut conn = storage::database(&state.data_dir)?;
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
     let client_id = sync::ensure_client_id(&state)?;
@@ -1053,6 +1074,9 @@ pub async fn desktop_get_payroll_recap(
     let (lembur_mode, lembur_potong) = crate::desktop::hr_pengajuan::lembur_spl(&conn, &period_start, &period_end)?;
     // Reimbursement mode `gaji` (HRIS v39). Cermin `reimburseGaji` di `computePayrollRecap`.
     let reimburse = crate::desktop::hr_pengajuan::reimburse_gaji(&conn, &period_end)?;
+    // Run lain di tahun pajak yang sama sampai masa ini (fase 13, §29.3).
+    let pembanding = muat_pembanding(&conn, &period_start)?;
+    let masa = pajak::masa(&period_start);
 
     let mut stmt = conn
         .prepare(&format!(
@@ -1077,7 +1101,9 @@ pub async fn desktop_get_payroll_recap(
                 -- Jam kerja (tanpa lembur) yang jatuh pada hari libur; dipakai
                 -- `apply_holiday_fallback` bila jenjang HARI_LIBUR tidak aktif.
                 COALESCE(SUM(CASE WHEN (hl.tanggal IS NOT NULL OR COALESCE(instr(COALESCE(NULLIF(TRIM(sh.hari_kerja), ''), '1,2,3,4,5,6,7'), replace(strftime('%w', ah.tanggal), '0', '7')), 1) = 0)
-                    THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit
+                    THEN COALESCE(ah.jam_kerja, 0) ELSE 0 END), 0) AS total_libur_jam_kerja_menit,
+                -- Status, tanggal keluar, dan PTKP awal tahun untuk masa pajak (v45).
+                {kolom_pajak}
             FROM master_data md
             LEFT JOIN salary_configs sc ON sc.id_karyawan = md.id_unik
                 AND sc.effective_date = (
@@ -1103,7 +1129,8 @@ pub async fn desktop_get_payroll_recap(
             ORDER BY md.nama ASC;
             "#,
             karyawan = crate::desktop::hr_keluar::karyawan_rekap("?1"),
-            hari_hadir = super::super::driver::HARI_HADIR_SQL
+            hari_hadir = super::super::driver::HARI_HADIR_SQL,
+            kolom_pajak = pajak::KOLOM_PAJAK_SQL
         ))
         .map_err(|_| CommandError::internal())?;
 
@@ -1122,6 +1149,9 @@ pub async fn desktop_get_payroll_recap(
         daily_rate: i64,
         days_present: i64,
         libur_jam_kerja_menit: i64,
+        jenis_personil: Option<String>,
+        keluar_pada: Option<String>,
+        ptkp_awal_tahun: String,
     }
 
     let rows = stmt
@@ -1141,6 +1171,9 @@ pub async fn desktop_get_payroll_recap(
                 daily_rate: row.get(11)?,
                 days_present: row.get(12)?,
                 libur_jam_kerja_menit: row.get(13)?,
+                jenis_personil: row.get(14)?,
+                keluar_pada: row.get(15)?,
+                ptkp_awal_tahun: row.get(16)?,
             })
         })
         .map_err(|_| CommandError::internal())?;
@@ -1175,10 +1208,14 @@ pub async fn desktop_get_payroll_recap(
             let reg_hours = Decimal::from(jam_kerja_menit) / Decimal::from(60);
             let ot_hours = Decimal::from(lembur_menit) / Decimal::from(60);
             let holiday_hours = Decimal::from(libur_menit) / Decimal::from(60);
+            let ringkas = pajak::ringkas_pembanding(
+                pembanding.get(&agg.id_unik).map(Vec::as_slice).unwrap_or(&[]),
+                &masa,
+                pajak::status_pph(agg.jenis_personil.as_deref(), &agg.salary_type),
+            );
             let pay = PayrollCalculator::calculate_employee_pay(
                 &PayInput {
                     id_karyawan: &agg.id_unik,
-                    ptkp_status: &agg.ptkp_status,
                     salary_type: &agg.salary_type,
                     rate_per_hour: agg.rate_per_hour,
                     daily_rate: agg.daily_rate,
@@ -1186,6 +1223,14 @@ pub async fn desktop_get_payroll_recap(
                     regular_minutes: jam_kerja_menit,
                     overtime_minutes: lembur_menit,
                     holiday_minutes: libur_menit,
+                    pajak: KonteksPajak {
+                        period_start: &period_start,
+                        period_end: &period_end,
+                        jenis_personil: agg.jenis_personil.as_deref(),
+                        ptkp_awal_tahun: &agg.ptkp_awal_tahun,
+                        keluar_pada: agg.keluar_pada.as_deref(),
+                        pembanding: &ringkas,
+                    },
                 },
                 &rules,
             );
@@ -1252,6 +1297,10 @@ pub async fn desktop_get_payroll_recap(
                 lembur_tanpa_spl_menit: potong.tanpa_spl,
                 lembur_dipotong_menit: potong.lembur + potong.libur_total,
                 est_reimburse,
+                jenis_personil: agg.jenis_personil,
+                keluar_pada: agg.keluar_pada,
+                ptkp_awal_tahun: agg.ptkp_awal_tahun,
+                pajak: serde_json::to_value(&pay.pajak).unwrap_or_default(),
             });
         }
     }
@@ -1313,6 +1362,8 @@ pub async fn desktop_create_payroll_run(
     let kasbon_aktif =
         loan::pinjaman_aktif(&conn, &period_start.chars().take(7).collect::<String>())?;
     let reimburse = crate::desktop::hr_pengajuan::reimburse_gaji(&conn, &period_end)?;
+    let pembanding = muat_pembanding(&conn, &period_start)?;
+    let masa = pajak::masa(&period_start);
 
     let tx = conn.transaction().map_err(|_| CommandError::internal())?;
 
@@ -1337,10 +1388,14 @@ pub async fn desktop_create_payroll_run(
         // `desktop_get_payroll_recap`, bukan dari jam `f64` yang presisinya
         // sudah hilang — angka yang DISETUJUI admin harus sama dengan angka
         // yang DIBEKUKAN, sampai titik tengah pembulatannya.
+        let ringkas = pajak::ringkas_pembanding(
+            pembanding.get(&row.id_karyawan).map(Vec::as_slice).unwrap_or(&[]),
+            &masa,
+            pajak::status_pph(row.jenis_personil.as_deref(), &row.salary_type),
+        );
         let pay = PayrollCalculator::calculate_employee_pay(
             &PayInput {
                 id_karyawan: &row.id_karyawan,
-                ptkp_status: &row.ptkp_status,
                 salary_type: &row.salary_type,
                 rate_per_hour: row.rate_per_hour,
                 daily_rate: row.daily_rate,
@@ -1348,6 +1403,14 @@ pub async fn desktop_create_payroll_run(
                 regular_minutes: row.total_regular_minutes,
                 overtime_minutes: row.total_overtime_minutes,
                 holiday_minutes: row.total_holiday_minutes,
+                pajak: KonteksPajak {
+                    period_start: &period_start,
+                    period_end: &period_end,
+                    jenis_personil: row.jenis_personil.as_deref(),
+                    ptkp_awal_tahun: &row.ptkp_awal_tahun,
+                    keluar_pada: row.keluar_pada.as_deref(),
+                    pembanding: &ringkas,
+                },
             },
             &rules,
         );
@@ -1399,7 +1462,9 @@ pub async fn desktop_create_payroll_run(
             "overtime_salary": overtime_salary.to_i64().unwrap_or(0),
             "components": components_snapshot,
             "bpjs": pay.bpjs,
+            "bpjs_masa": pay.bpjs_masa,
             "tax": pay.tax,
+            "pajak": pay.pajak,
             "kasbon": loan::rincian_kasbon_json(&rincian_kasbon),
             "reimburse": crate::desktop::hr_pengajuan::rincian_reimburse_json(&klaim_reimburse),
             "calculated_at": now.clone()
@@ -1980,11 +2045,43 @@ fn load_overtime_tiers(conn: &Connection, rule_type: &str) -> Result<Vec<Overtim
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Item run pembanding per karyawan (`pajak::RUN_TAHUN_SQL`). Dibaca dari
+/// SQLite lokal: run perangkat lain yang belum tersinkron tidak terlihat,
+/// jadi gateway menjalankan `syncNow()` sebelum membuat run.
+fn muat_pembanding(
+    conn: &Connection,
+    period_start: &str,
+) -> Result<HashMap<String, Vec<ItemPembanding>>, CommandError> {
+    let mut stmt = conn
+        .prepare(pajak::RUN_TAHUN_SQL)
+        .map_err(|_| CommandError::internal())?;
+    let rows = stmt
+        .query_map(params![period_start], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ItemPembanding {
+                    masa: row.get(1)?,
+                    gross_salary: row.get(2)?,
+                    pph21_amount: row.get(3)?,
+                    salary_type: row.get(4)?,
+                    breakdown_snapshot: row.get(5)?,
+                },
+            ))
+        })
+        .map_err(|_| CommandError::internal())?;
+    let mut hasil: HashMap<String, Vec<ItemPembanding>> = HashMap::new();
+    for row in rows {
+        let (id_karyawan, item) = row.map_err(|_| CommandError::internal())?;
+        hasil.entry(id_karyawan).or_default().push(item);
+    }
+    Ok(hasil)
+}
+
 fn load_payroll_components(conn: &Connection) -> Result<Vec<PayrollComponent>, CommandError> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, name, category, calc_type, default_value, applies_to, is_active
+            SELECT id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
             FROM payroll_components
             WHERE is_active = 1
             ORDER BY category, name ASC;
@@ -2002,6 +2099,7 @@ fn load_payroll_components(conn: &Connection) -> Result<Vec<PayrollComponent>, C
                 default_value: row.get(4)?,
                 applies_to: row.get(5)?,
                 is_active: row.get(6)?,
+                dasar_bpjs: row.get(7)?,
             })
         })
         .map_err(|_| CommandError::internal())?;
@@ -2013,7 +2111,7 @@ fn load_payroll_components(conn: &Connection) -> Result<Vec<PayrollComponent>, C
 ///
 /// `effective_date` sudah ada di skema sejak awal dan didokumentasikan sebagai
 /// kunci generasi tarif, tetapi tidak pernah dipakai menyaring: tabelnya dibaca
-/// utuh, lalu `calculate_pph21_ter` memakai `.find()` — bracket PERTAMA yang
+/// utuh, lalu pencarian tarif (kini `pajak::tarif_ter`) memakai `.find()` — bracket PERTAMA yang
 /// cocok. Begitu admin menambahkan tabel TER tahun depan, periode berjalan
 /// memakai bracket yang urutannya tidak ditentukan siapa pun, karena dua baris
 /// dengan `bracket_min` sama diurutkan sembarang oleh SQLite.
@@ -2111,5 +2209,215 @@ mod tests {
         let suffix = id.rsplit('-').next().unwrap_or_default();
         assert_eq!(suffix.len(), 12);
         assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
+/// Fase 13 (§29.9 langkah 3): `RUN_TAHUN_SQL` dan `KOLOM_PAJAK_SQL` pada
+/// skema SQLite lokal, lalu rumus masa lewat `calculate_employee_pay`.
+#[cfg(test)]
+mod tests_pajak {
+    use super::super::engine::{EmployeePay, KonteksPajak, PayInput, PayRules, PayrollCalculator};
+    use super::super::models::{BpjsRule, TaxRule};
+    use super::super::pajak::{self, Pembanding};
+    use super::muat_pembanding;
+    use crate::desktop::storage;
+    use rusqlite::{params, Connection};
+    use rust_decimal::Decimal;
+    use serde_json::json;
+
+    fn db() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().expect("direktori sementara");
+        storage::initialize(dir.path()).expect("skema lokal");
+        let conn = storage::database(dir.path()).expect("database lokal");
+        (dir, conn)
+    }
+
+    fn run(conn: &Connection, id: &str, mulai: &str, akhir: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO payroll_runs (id, idempotency_key, period_start, period_end, status, created_by, created_at, updated_at)
+             VALUES (?1, ?1, ?2, ?3, ?4, 'uji', '2026-01-01', '2026-01-01');",
+            params![id, mulai, akhir, status],
+        )
+        .expect("run");
+    }
+
+    fn item(conn: &Connection, run: &str, karyawan: &str, gross: i64, pph: i64, snapshot: serde_json::Value) {
+        conn.execute(
+            "INSERT INTO payroll_items (id, payroll_run_id, id_karyawan, nama_karyawan, divisi,
+                 total_regular_hours, total_overtime_hours, total_overtime_index, rate_per_hour,
+                 basic_salary, overtime_salary, gross_salary, pph21_amount, net_salary, breakdown_snapshot, created_at)
+             VALUES (?1 || '-' || ?2, ?1, ?2, 'Uji', 'Umum', 0, 0, 0, 0, ?3, 0, ?3, ?4, ?3, ?5, '2026-01-01');",
+            params![run, karyawan, gross, pph, snapshot.to_string()],
+        )
+        .expect("item");
+    }
+
+    /// Item hasil rumus baru (kunci `pajak` dan `bpjs_masa`).
+    fn snapshot_baru(bruto: i64, bpjs: serde_json::Value) -> serde_json::Value {
+        json!({"pajak": {"bruto_pajak": bruto, "status": "tetap"}, "bpjs_masa": {"dasar_run": bruto}, "bpjs": bpjs})
+    }
+
+    fn lapis() -> Vec<TaxRule> {
+        crate::desktop::payroll_seed::tarif_bawaan()
+            .pajak
+            .iter()
+            .map(|t| TaxRule {
+                id: t.id.clone(),
+                category: t.category.clone(),
+                bracket_min: t.bracket_min,
+                bracket_max: t.bracket_max,
+                rate_percentage: t.rate_percentage,
+                effective_date: t.effective_date.clone(),
+            })
+            .collect()
+    }
+
+    /// Gaji per jam sebesar `gross` (tarif × 160 jam) untuk satu run.
+    fn bayar(
+        gross: i64,
+        periode: (&str, &str),
+        ptkp: &str,
+        keluar_pada: Option<&str>,
+        pembanding: &Pembanding,
+        bpjs: &[BpjsRule],
+    ) -> EmployeePay {
+        let tax = lapis();
+        let rules = PayRules {
+            overtime_tiers: &[],
+            holiday_tiers: &[],
+            components: &[],
+            tax_rules: &tax,
+            bpjs_rules: bpjs,
+        };
+        PayrollCalculator::calculate_employee_pay(
+            &PayInput {
+                id_karyawan: "K1",
+                salary_type: "HOURLY",
+                rate_per_hour: gross / 160,
+                daily_rate: 0,
+                days_present: 20,
+                regular_minutes: 9_600,
+                overtime_minutes: 0,
+                holiday_minutes: 0,
+                pajak: KonteksPajak {
+                    period_start: periode.0,
+                    period_end: periode.1,
+                    jenis_personil: Some("Pegawai"),
+                    ptkp_awal_tahun: ptkp,
+                    keluar_pada,
+                    pembanding,
+                },
+            },
+            &rules,
+        )
+    }
+
+    fn jp_emp() -> Vec<BpjsRule> {
+        vec![BpjsRule {
+            id: "bpjs_jp_emp".into(),
+            component_code: "JP_EMP".into(),
+            component_name: "JP".into(),
+            rate_percentage: 1.0,
+            wage_cap: Some(11_086_300),
+            effective_date: "2026-03-01".into(),
+        }]
+    }
+
+    /// Dua run sebulan (V10/V11 dengan 8.000.000): run kedua menambal PPh dan
+    /// JP masa; run `REJECTED`, tahun lalu, dan masa sesudahnya tidak dihitung.
+    #[test]
+    fn pajak_dua_run_sebulan_dan_rejected_diabaikan() {
+        let (_dir, conn) = db();
+        let jp = json!([{"code": "JP_EMP", "nominal": 80_000}]);
+        run(&conn, "R1", "2026-01-01", "2026-01-15", "DRAFT");
+        item(&conn, "R1", "K1", 8_000_000, 120_000, snapshot_baru(8_000_000, jp.clone()));
+        run(&conn, "RX", "2026-01-01", "2026-01-15", "REJECTED");
+        item(&conn, "RX", "K1", 8_000_000, 999_999, snapshot_baru(8_000_000, jp.clone()));
+        run(&conn, "R0", "2025-12-01", "2025-12-31", "PAID");
+        item(&conn, "R0", "K1", 8_000_000, 120_000, snapshot_baru(8_000_000, jp.clone()));
+        run(&conn, "RF", "2026-02-01", "2026-02-28", "DRAFT");
+        item(&conn, "RF", "K1", 8_000_000, 120_000, snapshot_baru(8_000_000, jp));
+
+        let semua = muat_pembanding(&conn, "2026-01-16").expect("pembanding");
+        let items = semua.get("K1").expect("item K1");
+        assert_eq!(items.len(), 1, "REJECTED, tahun lalu, atau Februari ikut terbaca");
+        let pembanding = pajak::ringkas_pembanding(items, "2026-01", pajak::STATUS_TETAP);
+        assert_eq!((pembanding.bruto_masa, pembanding.pph_masa, pembanding.run_masa), (8_000_000, 120_000, 1));
+
+        let pay = bayar(8_000_000, ("2026-01-16", "2026-01-31"), "TK/0", None, &pembanding, &jp_emp());
+        // JP masa 1% × 11.086.300 = 110.863, dikurangi 80.000.
+        assert_eq!(pay.bpjs_employee, Decimal::from(30_863));
+        // TER A masa 16.000.000 = 7% → 1.120.000, dikurangi 120.000.
+        assert_eq!(pay.pph21, Decimal::from(1_000_000));
+        assert_eq!((pay.pajak.bruto_masa, pay.pajak.tarif), (Some(16_000_000), Some(700)));
+        assert_eq!(pay.net, Decimal::from(8_000_000 - 30_863 - 1_000_000));
+        assert!(pay.pajak.tanda.is_empty(), "{:?}", pay.pajak.tanda);
+    }
+
+    /// Masa Desember: Pasal 17 setahun dikurangi PPh Januari–November; run
+    /// Januari dibuat rumus lama (tanpa `pajak`) tetap terhitung dan ditandai.
+    #[test]
+    fn pajak_masa_desember_menghitung_ulang_setahun_termasuk_run_lama() {
+        let (_dir, conn) = db();
+        let jht = json!([{"code": "JHT_EMP", "nominal": 100_000}]);
+        for bulan in 1..=11 {
+            let id = format!("R{bulan:02}");
+            run(&conn, &id, &format!("2026-{bulan:02}-01"), &format!("2026-{bulan:02}-28"), "PAID");
+            let snapshot = if bulan == 1 {
+                json!({"bpjs": jht.clone()})
+            } else {
+                snapshot_baru(10_000_000, jht.clone())
+            };
+            item(&conn, &id, "K1", 10_000_000, 200_000, snapshot);
+        }
+        let semua = muat_pembanding(&conn, "2026-12-01").expect("pembanding");
+        let pembanding = pajak::ringkas_pembanding(&semua["K1"], "2026-12", pajak::STATUS_TETAP);
+        assert_eq!((pembanding.bruto_tahun, pembanding.masa_berbruto_lain), (110_000_000, 11));
+
+        let pay = bayar(10_000_000, ("2026-12-01", "2026-12-31"), "K/0", None, &pembanding, &[]);
+        let p = &pay.pajak;
+        assert_eq!(p.metode, pajak::METODE_PASAL_17_TERAKHIR);
+        // 120.000.000 − 6.000.000 − 1.100.000 − 58.500.000 = 54.400.000.
+        assert_eq!((p.biaya_jabatan, p.iuran_pensiun, p.pkp), (Some(6_000_000), Some(1_100_000), Some(54_400_000)));
+        assert_eq!((p.pph_setahun, p.pph), (Some(2_720_000), 520_000));
+        assert_eq!(p.tanda, vec!["rumus_lama"]);
+    }
+
+    /// `KOLOM_PAJAK_SQL`: PTKP awal tahun (Q-180) dan tanggal keluar hanya
+    /// bila `id_keluar` terisi; bulan keluar menjadi masa terakhir.
+    #[test]
+    fn pajak_kolom_konteks_dan_karyawan_keluar() {
+        let (_dir, conn) = db();
+        conn.execute_batch(
+            "INSERT INTO master_data (id_unik, nama, divisi, id_shift, jenis_personil, id_keluar, tanggal_selesai_aktif)
+               VALUES ('K3', 'Keluar', 'Umum', 1, 'Kontrak', 'klr-1', '2026-08-20'),
+                      ('K4', 'Baru', 'Umum', 1, NULL, NULL, NULL),
+                      ('K5', 'Selesai', 'Umum', 1, 'Harian', NULL, '2026-08-20');
+             INSERT INTO salary_configs (id, id_karyawan, rate_per_hour, ptkp_status, effective_date, created_by, created_at) VALUES
+               ('s1', 'K3', 1, 'K/1', '2025-06-01', 'uji', '2025-06-01'),
+               ('s2', 'K3', 1, 'K/2', '2026-05-01', 'uji', '2026-05-01'),
+               ('s3', 'K4', 1, 'TK/1', '2026-03-01', 'uji', '2026-03-01'),
+               ('s4', 'K4', 1, 'K/0', '2026-07-01', 'uji', '2026-07-01');",
+        )
+        .expect("data karyawan");
+        let baca = |id: &str| -> (Option<String>, Option<String>, String) {
+            conn.query_row(
+                &format!("SELECT {} FROM master_data md WHERE md.id_unik = ?3;", pajak::KOLOM_PAJAK_SQL),
+                params!["2026-08-01", "2026-08-31", id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("kolom pajak")
+        };
+        assert_eq!(baca("K3"), (Some("Kontrak".into()), Some("2026-08-20".into()), "K/1".into()));
+        assert_eq!(baca("K4"), (None, None, "TK/1".into()));
+        assert_eq!(baca("K5"), (Some("Harian".into()), None, "TK/0".into()));
+
+        let (_, keluar, ptkp) = baca("K3");
+        let pembanding = Pembanding::default();
+        let agustus = bayar(17_500_000, ("2026-08-01", "2026-08-31"), &ptkp, keluar.as_deref(), &pembanding, &[]);
+        assert_eq!(agustus.pajak.metode, pajak::METODE_PASAL_17_TERAKHIR);
+        assert_eq!(agustus.pajak.ptkp, Some(63_000_000));
+        let juli = bayar(17_500_000, ("2026-07-01", "2026-07-31"), &ptkp, keluar.as_deref(), &pembanding, &[]);
+        assert_eq!(juli.pajak.metode, pajak::METODE_TER_BULANAN);
     }
 }

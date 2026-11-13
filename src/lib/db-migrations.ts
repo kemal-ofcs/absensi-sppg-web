@@ -20,6 +20,19 @@ import {
   SEED_JENIS_DOKUMEN_SQL,
 } from "@/lib/validations/hris";
 import {
+  BPJS_RULES_SEED_SQL,
+  KOREKSI_JP_SQL,
+  KOREKSI_PAJAK_SQL,
+  koreksiJpArgs,
+  koreksiPajakArgs,
+  LEGACY_RATE_IDS,
+  seedBpjsArgs,
+  seedPajakArgs,
+  TARIF_BPJS_BAWAAN,
+  TARIF_PAJAK_BAWAAN,
+  TAX_RULES_SEED_SQL,
+} from "@/lib/validations/tarif-bawaan";
+import {
   BANK_BAWAAN,
   SEED_BANK_SQL,
   seedBankArgs,
@@ -69,6 +82,7 @@ const HRIS_KINERJA_MIGRATION_VERSION = 41;
 const HRIS_REKRUTMEN_MIGRATION_VERSION = 42;
 const HRIS_PELATIHAN_RENCANA_MIGRATION_VERSION = 43;
 const PAYROLL_TRANSFER_MIGRATION_VERSION = 44;
+const PAYROLL_TAX_PERIOD_MIGRATION_VERSION = 45;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -800,7 +814,8 @@ export async function runDatabaseMigrations(client: Client) {
       default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
       applies_to TEXT NOT NULL DEFAULT 'ALL',
       is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1))
     );
   `);
 
@@ -899,30 +914,32 @@ export async function runDatabaseMigrations(client: Client) {
       ('ot-holiday-3', 'HARI_LIBUR', 3, 9.0, NULL, 4.0, 1);
   `);
 
-  // Default BPJS Rules
-  await client.execute(`
-    INSERT OR IGNORE INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date)
-    VALUES
-      ('bpjs-jht-emp', 'JHT_EMP', 'JHT Karyawan', 2.0, NULL, '2024-01-01'),
-      ('bpjs-jht-co', 'JHT_CO', 'JHT Perusahaan', 3.7, NULL, '2024-01-01'),
-      ('bpjs-jp-emp', 'JP_EMP', 'Jaminan Pensiun Karyawan', 1.0, 10042300, '2024-01-01'),
-      ('bpjs-jp-co', 'JP_CO', 'Jaminan Pensiun Perusahaan', 2.0, 10042300, '2024-01-01'),
-      ('bpjs-jkk', 'JKK', 'Jaminan Kecelakaan Kerja', 0.24, NULL, '2024-01-01'),
-      ('bpjs-jkm', 'JKM', 'Jaminan Kematian', 0.30, NULL, '2024-01-01'),
-      ('bpjs-kes-emp', 'KES_EMP', 'BPJS Kesehatan Karyawan', 1.0, 12000000, '2024-01-01'),
-      ('bpjs-kes-co', 'KES_CO', 'BPJS Kesehatan Perusahaan', 4.0, 12000000, '2024-01-01');
-  `);
-
-  // Default Tax Rules (Pasal 17 UU HPP)
-  await client.execute(`
-    INSERT OR IGNORE INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date)
-    VALUES
-      ('tax-p17-1', 'PASAL_17', 0, 60000000, 5.0, '2024-01-01'),
-      ('tax-p17-2', 'PASAL_17', 60000000, 250000000, 15.0, '2024-01-01'),
-      ('tax-p17-3', 'PASAL_17', 250000000, 500000000, 25.0, '2024-01-01'),
-      ('tax-p17-4', 'PASAL_17', 500000000, 5000000000, 30.0, '2024-01-01'),
-      ('tax-p17-5', 'PASAL_17', 5000000000, NULL, 35.0, '2024-01-01');
-  `);
+  // Tarif bawaan (TER, Pasal 17, BPJS) dari `tarif-bawaan.json`, berkas yang
+  // sama dengan seed Rust. Id seed lama Web (`tax-p17-*`, `bpjs-jkk`, …)
+  // dibuang LEBIH DULU: `bpjs-jht-emp` dan kawan-kawan memegang
+  // `component_code` UNIQUE yang sama dengan seed baru.
+  const idLama = LEGACY_RATE_IDS.map(() => "?").join(", ");
+  await client.batch(
+    [
+      ...["tax_rules", "bpjs_rules", "overtime_tier_rules"].map((tabel) => ({
+        sql: `DELETE FROM ${tabel} WHERE id IN (${idLama});`,
+        args: [...LEGACY_RATE_IDS],
+      })),
+      {
+        sql: `DELETE FROM sync_changelog WHERE domain = 'payroll' AND entity_key IN (${idLama});`,
+        args: [...LEGACY_RATE_IDS],
+      },
+      ...TARIF_PAJAK_BAWAAN.map((tarif) => ({
+        sql: TAX_RULES_SEED_SQL,
+        args: seedPajakArgs(tarif),
+      })),
+      ...TARIF_BPJS_BAWAAN.map((tarif) => ({
+        sql: BPJS_RULES_SEED_SQL,
+        args: seedBpjsArgs(tarif),
+      })),
+    ],
+    "write",
+  );
 
   await client.execute({
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
@@ -2754,6 +2771,34 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'payroll-transfer', ?);`,
     args: [PAYROLL_TRANSFER_MIGRATION_VERSION, now],
+  });
+
+  // ── v45: perbaikan rumus PPh 21 dan BPJS (fase 13, §29.5) ──
+  // Tunjangan tetap = dasar BPJS (Q-181 (a)); bawaan tidak ditandai.
+  if (!(await hasColumn(client, "payroll_components", "dasar_bpjs"))) {
+    await client.execute(
+      "ALTER TABLE payroll_components ADD COLUMN dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1));",
+    );
+  }
+  // Koreksi TER B/C dan batas JP seed lama, sekali per database dan hanya
+  // baris yang belum disunting admin (Q-186 (a)). Kembar blok v45 `turso.rs`.
+  const koreksiTarif = await client.execute({
+    sql: "SELECT COUNT(*) AS total FROM schema_migration WHERE version = ?;",
+    args: [PAYROLL_TAX_PERIOD_MIGRATION_VERSION],
+  });
+  if (Number(koreksiTarif.rows[0]?.total ?? 0) === 0) {
+    await client.batch(
+      [
+        ...koreksiPajakArgs().map((args) => ({ sql: KOREKSI_PAJAK_SQL, args })),
+        ...koreksiJpArgs().map((args) => ({ sql: KOREKSI_JP_SQL, args })),
+      ],
+      "write",
+    );
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'payroll-pajak-masa', ?);`,
+    args: [PAYROLL_TAX_PERIOD_MIGRATION_VERSION, now],
   });
 
   await client.execute(

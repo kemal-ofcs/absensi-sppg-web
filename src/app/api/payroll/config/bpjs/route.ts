@@ -6,11 +6,13 @@ import {
   getServerDatabase,
 } from "@/lib/server/db";
 import {
+  ApiRequestError,
   noStoreJson,
   readJsonBody,
   toApiErrorResponse,
 } from "@/lib/server/http/api-response";
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
+import { PESAN_TARIF_TIDAK_SAH, persenKeBasis } from "@/lib/validations/pajak";
 
 export const runtime = "nodejs";
 
@@ -42,6 +44,12 @@ export async function PUT(request: NextRequest) {
     }>(request);
 
     const rules = body.rules || (body.draft ? [body.draft] : []);
+    // §29.3: tarif dengan lebih dari dua desimal tidak pernah masuk tabel.
+    if (
+      rules.some((rule) => persenKeBasis(Number(rule.rate_percentage)) === null)
+    ) {
+      throw new ApiRequestError(PESAN_TARIF_TIDAK_SAH, 400);
+    }
 
     for (const rule of rules) {
       const ruleId =

@@ -23,6 +23,12 @@ import {
   transitionPayrollStatus,
 } from "@/lib/gateways/payroll";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import {
+  bacaPajakSnapshot,
+  catatanPajakRun,
+  LABEL_TANDA_PAJAK,
+  labelPph,
+} from "@/lib/validations/pajak";
 import { IZIN_UNDUH, STATUS_RUN_TRANSFER } from "@/lib/validations/transfer";
 
 const IDR = new Intl.NumberFormat("id-ID", {
@@ -162,6 +168,9 @@ export default function RunDetailClient() {
   const canTransfer =
     IZIN_UNDUH.every((izin) => hasPermission(user, izin)) &&
     (STATUS_RUN_TRANSFER as readonly string[]).includes(currentStatus);
+  const catatanPajak = catatanPajakRun(
+    items.map((it) => it.breakdown_snapshot || "{}"),
+  );
 
   return (
     <AppShell contentClassName="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
@@ -332,6 +341,15 @@ export default function RunDetailClient() {
           <BerkasTransferPanel runId={runId} status={currentStatus} />
         ) : null}
 
+        {activeTab === "items" && catatanPajak ? (
+          <p
+            id="catatan-pajak-run"
+            className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100"
+          >
+            {catatanPajak}
+          </p>
+        ) : null}
+
         {/* Tab Content: Items */}
         {activeTab === "items" && (
           <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60 shadow-lg">
@@ -410,6 +428,11 @@ export default function RunDetailClient() {
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-rose-400">
                         {IDR.format(it.pph21_amount)}
+                        <SelPajak
+                          snapshot={it.breakdown_snapshot}
+                          pph={it.pph21_amount}
+                          ptkp={it.ptkp_status}
+                        />
                       </td>
                       <td className="py-3 px-4 text-right font-mono font-bold text-emerald-400">
                         {IDR.format(it.net_salary)}
@@ -525,5 +548,29 @@ export default function RunDetailClient() {
         ) : null}
       </div>
     </AppShell>
+  );
+}
+
+/** Metode PPh 21 dan tanda pajak di bawah angka PPh (§29.7). */
+function SelPajak({
+  snapshot,
+  pph,
+  ptkp,
+}: {
+  snapshot: string;
+  pph: number;
+  ptkp: string;
+}) {
+  const pajak = bacaPajakSnapshot(snapshot || "{}");
+  if (!pajak) return null;
+  return (
+    <span className="mt-0.5 block font-sans text-[11px] font-normal text-slate-400">
+      {labelPph(pajak, pph, ptkp)}
+      {pajak.tanda.map((t) => (
+        <span key={t} className="block text-amber-200">
+          {LABEL_TANDA_PAJAK[t]}
+        </span>
+      ))}
+    </span>
   );
 }

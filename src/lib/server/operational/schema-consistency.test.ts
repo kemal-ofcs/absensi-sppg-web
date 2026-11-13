@@ -9,6 +9,11 @@ import {
   isDatabaseSchemaReady,
   REQUIRED_TABLE_COUNT,
 } from "@/lib/db-schema";
+import {
+  koreksiPajakArgs,
+  LEGACY_RATE_IDS,
+  TARIF_PAJAK_BAWAAN,
+} from "@/lib/validations/tarif-bawaan";
 
 let client: Client;
 
@@ -70,5 +75,106 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
     // Assert: versi dan table count tidak boleh drift
     expect(CURRENT_SCHEMA_VERSION).toBe(maxMigrationVersion);
     expect(await isDatabaseSchemaReady(client)).toBe(true);
+  });
+
+  test("v45: database baru punya 125 lapis TER dan tarif bawaan ber-id baru", async () => {
+    const tarif = await client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM tax_rules WHERE category LIKE 'TER_%') AS ter,
+        (SELECT COUNT(*) FROM tax_rules WHERE category = 'PASAL_17') AS p17,
+        (SELECT COUNT(*) FROM bpjs_rules) AS bpjs,
+        (SELECT wage_cap FROM bpjs_rules WHERE component_code = 'JP_EMP') AS jp,
+        (SELECT COUNT(*) FROM pragma_table_info('payroll_components') WHERE name = 'dasar_bpjs') AS kolom;
+    `);
+    expect({ ...tarif.rows[0] } as Record<string, unknown>).toEqual({
+      ter: TARIF_PAJAK_BAWAAN.length - 5,
+      p17: 5,
+      bpjs: 8,
+      jp: 11_086_300,
+      kolom: 1,
+    });
+    expect(TARIF_PAJAK_BAWAAN.length - 5).toBe(125);
+    const lama = await client.execute({
+      sql: `SELECT COUNT(*) AS total FROM tax_rules WHERE id IN (${LEGACY_RATE_IDS.map(() => "?").join(", ")})`,
+      args: [...LEGACY_RATE_IDS],
+    });
+    expect(Number(lama.rows[0]?.total)).toBe(0);
+  });
+
+  test("v45: database v44 dikoreksi hanya pada baris seed lama", async () => {
+    const lama = createClient({ url: "file::memory:" });
+    try {
+      await initDatabaseSchema(lama);
+      // Keadaan v44 milik Web: seed lama Web, TER B/C seed lama, satu lapis
+      // dan satu batas JP disunting admin.
+      await lama.batch(
+        [
+          ...koreksiPajakArgs().map((args) => ({
+            sql: "UPDATE tax_rules SET bracket_min = ?, bracket_max = ?, rate_percentage = ? WHERE id = ?;",
+            args: [args[4], args[5], args[6], args[3]],
+          })),
+          "DELETE FROM tax_rules WHERE id IN ('tax_ter_b_38', 'tax_ter_b_39', 'tax_ter_b_40', 'tax_ter_c_40', 'tax_ter_c_41');",
+          "UPDATE tax_rules SET rate_percentage = 2.75 WHERE id = 'tax_ter_b_8';",
+          "UPDATE bpjs_rules SET wage_cap = 10042300, effective_date = '2026-01-01' WHERE component_code = 'JP_EMP';",
+          "UPDATE bpjs_rules SET wage_cap = 9999999, effective_date = '2026-01-01' WHERE component_code = 'JP_CO';",
+          "DELETE FROM bpjs_rules WHERE component_code = 'JHT_EMP';",
+          "INSERT INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date) VALUES ('bpjs-jht-emp', 'JHT_EMP', 'JHT Karyawan', 2.0, NULL, '2024-01-01');",
+          "INSERT INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date) VALUES ('tax-p17-1', 'PASAL_17', 0, 60000000, 5.0, '2024-01-01');",
+          "DELETE FROM schema_migration WHERE version = 45;",
+        ],
+        "write",
+      );
+      expect(await isDatabaseSchemaReady(lama)).toBe(false);
+      await initDatabaseSchema(lama);
+
+      const baris = await lama.execute(
+        "SELECT id, bracket_min, bracket_max, rate_percentage FROM tax_rules;",
+      );
+      const peta = new Map(baris.rows.map((r) => [String(r.id), r]));
+      expect(peta.size).toBe(TARIF_PAJAK_BAWAAN.length);
+      for (const t of TARIF_PAJAK_BAWAAN) {
+        const r = peta.get(t.id);
+        const harapan =
+          t.id === "tax_ter_b_8"
+            ? [12_500_000, 13_750_000, 2.75]
+            : [t.bracket_min, t.bracket_max, t.rate_percentage];
+        expect([
+          r?.bracket_min,
+          r?.bracket_max,
+          Number(r?.rate_percentage),
+        ]).toEqual(harapan);
+      }
+      const bpjs = await lama.execute(
+        "SELECT id, component_code, wage_cap, effective_date FROM bpjs_rules WHERE component_code IN ('JP_EMP', 'JP_CO', 'JHT_EMP') ORDER BY component_code;",
+      );
+      expect(
+        bpjs.rows.map((r) => ({ ...r }) as Record<string, unknown>),
+      ).toEqual([
+        {
+          id: "bpjs_jht_emp",
+          component_code: "JHT_EMP",
+          wage_cap: null,
+          effective_date: "2026-01-01",
+        },
+        {
+          id: "bpjs_jp_co",
+          component_code: "JP_CO",
+          wage_cap: 9_999_999,
+          effective_date: "2026-01-01",
+        },
+        {
+          id: "bpjs_jp_emp",
+          component_code: "JP_EMP",
+          wage_cap: 11_086_300,
+          effective_date: "2026-03-01",
+        },
+      ]);
+      const p17Lama = await lama.execute(
+        "SELECT COUNT(*) AS total FROM tax_rules WHERE id = 'tax-p17-1';",
+      );
+      expect(Number(p17Lama.rows[0]?.total)).toBe(0);
+    } finally {
+      lama.close();
+    }
   });
 });

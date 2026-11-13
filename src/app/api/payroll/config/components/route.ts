@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { z } from "zod";
 import { requireWebPermission } from "@/lib/server/auth/authorize";
 import {
   ensureServerDatabaseInitialized,
@@ -13,6 +14,29 @@ import {
 import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 
 export const runtime = "nodejs";
+
+/**
+ * Cermin validasi `desktop_save_payroll_component` (CHECK cloud). `created_at`
+ * boleh terbawa dari baris yang sedang disunting, tetapi diabaikan. Potongan
+ * tidak pernah menjadi dasar BPJS (v45, Q-181 (a)).
+ */
+const componentDraftSchema = z
+  .object({
+    id: z.string().max(128).optional(),
+    name: z.string().trim().min(1, "Nama komponen wajib diisi.").max(255),
+    category: z.enum(["ALLOWANCE", "DEDUCTION"]),
+    calc_type: z.enum(["FIXED", "PERCENTAGE"]),
+    default_value: z.number().min(0).default(0),
+    applies_to: z.string().trim().min(1).max(128).default("ALL"),
+    is_active: z.union([z.literal(0), z.literal(1)]).default(1),
+    dasar_bpjs: z.union([z.literal(0), z.literal(1)]).default(0),
+    created_at: z.string().optional(),
+  })
+  .strict()
+  .transform((draft) => ({
+    ...draft,
+    dasar_bpjs: draft.category === "ALLOWANCE" ? draft.dasar_bpjs : 0,
+  }));
 
 export async function POST(request: NextRequest) {
   try {
@@ -36,43 +60,41 @@ export async function PUT(request: NextRequest) {
     await ensureServerDatabaseInitialized();
     const client = getServerDatabase();
 
-    const body = await readJsonBody<{ draft?: Record<string, unknown> }>(
-      request,
-    );
-    const draft = body.draft;
-    if (!draft || !draft.name || !draft.category || !draft.calc_type) {
+    const body = await readJsonBody<{ draft?: unknown }>(request);
+    const parsed = componentDraftSchema.safeParse(body.draft);
+    if (!parsed.success) {
       throw new ApiRequestError(
-        "name, category, dan calc_type wajib diisi.",
+        parsed.error.issues[0]?.message ?? "Data komponen payroll tidak valid.",
         400,
       );
     }
+    const draft = parsed.data;
 
-    const compId =
-      typeof draft.id === "string" && draft.id.trim()
-        ? draft.id.trim()
-        : `comp-${Date.now()}`;
+    const compId = draft.id?.trim() ? draft.id.trim() : `comp-${Date.now()}`;
 
     await client.execute({
       sql: `
         INSERT INTO payroll_components (
-          id, name, category, calc_type, default_value, applies_to, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           category = excluded.category,
           calc_type = excluded.calc_type,
           default_value = excluded.default_value,
           applies_to = excluded.applies_to,
-          is_active = excluded.is_active;
+          is_active = excluded.is_active,
+          dasar_bpjs = excluded.dasar_bpjs;
       `,
       args: [
         compId,
-        String(draft.name),
-        String(draft.category),
-        String(draft.calc_type),
-        Number(draft.default_value || 0),
-        String(draft.applies_to || "ALL"),
-        Number(draft.is_active ?? 1),
+        draft.name,
+        draft.category,
+        draft.calc_type,
+        draft.default_value,
+        draft.applies_to,
+        draft.is_active,
+        draft.dasar_bpjs,
       ],
     });
 

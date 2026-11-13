@@ -92,6 +92,7 @@ function komponen(
     default_value: value,
     applies_to: appliesTo,
     is_active: 1,
+    dasar_bpjs: 0,
   };
 }
 
@@ -105,6 +106,19 @@ const BPJS_JHT = [
     effective_date: "2024-01-01",
   },
 ];
+
+/** Cermin `konteks` di tes engine.rs: Januari penuh, tanpa run pembanding. */
+async function konteks() {
+  const { PEMBANDING_KOSONG } = await import("@/lib/validations/pajak");
+  return {
+    periodStart: "2026-01-01",
+    periodEnd: "2026-01-31",
+    jenisPersonil: null,
+    ptkpAwalTahun: "TK/0",
+    keluarPada: null,
+    pembanding: { ...PEMBANDING_KOSONG, bpjs_masa: {} },
+  };
+}
 
 describe("gaji harian tetap", () => {
   test("mengabaikan durasi, lembur, BPJS, dan komponen umum", async () => {
@@ -131,7 +145,6 @@ describe("gaji harian tetap", () => {
       const pay = calculateEmployeePay(
         {
           idKaryawan: "K001",
-          ptkpStatus: "TK/0",
           salaryType: "FLAT_DAILY",
           ratePerHour: 50000,
           dailyRate: tarif,
@@ -140,6 +153,7 @@ describe("gaji harian tetap", () => {
           regularMinutes: hari * 480,
           overtimeMinutes: hari * 360,
           holidayMinutes: 600,
+          pajak: await konteks(),
         },
         {
           overtimeTiers: [],
@@ -157,32 +171,45 @@ describe("gaji harian tetap", () => {
     }
   });
 
+  // Sejak fase 13 dasar BPJS = gaji pokok + tunjangan bertanda tetap
+  // (Q-181 (a)), bukan bruto; tunjangan tanpa tanda tidak ikut.
   test("gaji per jam tetap memotong BPJS dan memakai komponen umum", async () => {
     const { calculateEmployeePay } = await import("./payroll-calculator");
-    const pay = calculateEmployeePay(
-      {
-        idKaryawan: "K001",
-        ptkpStatus: "TK/0",
-        salaryType: "HOURLY",
-        ratePerHour: 18750,
-        dailyRate: 150000,
-        daysPresent: 1,
-        regularMinutes: 480,
-        overtimeMinutes: 0,
-        holidayMinutes: 0,
-      },
-      {
-        overtimeTiers: [],
-        holidayTiers: [],
-        components: [komponen("umum", "ALLOWANCE", 100000, "ALL")],
-        taxRules: [],
-        bpjsRules: BPJS_JHT,
-      },
-    );
-    expect(pay.basic).toBe(150000);
-    expect(pay.gross).toBe(250000);
-    expect(pay.bpjsEmployee).toBe(5000);
-    expect(pay.net).toBe(245000);
+    for (const [dasarBpjs, iuran] of [
+      [0, 3000],
+      [1, 5000],
+    ]) {
+      const umum = {
+        ...komponen("umum", "ALLOWANCE", 100000, "ALL"),
+        dasar_bpjs: dasarBpjs,
+      };
+      const pay = calculateEmployeePay(
+        {
+          idKaryawan: "K001",
+          salaryType: "HOURLY",
+          ratePerHour: 18750,
+          dailyRate: 150000,
+          daysPresent: 1,
+          regularMinutes: 480,
+          overtimeMinutes: 0,
+          holidayMinutes: 0,
+          pajak: await konteks(),
+        },
+        {
+          overtimeTiers: [],
+          holidayTiers: [],
+          components: [umum],
+          taxRules: [],
+          bpjsRules: BPJS_JHT,
+        },
+      );
+      expect(pay.basic).toBe(150000);
+      expect(pay.gross).toBe(250000);
+      expect(pay.bpjsEmployee).toBe(iuran);
+      // Tanpa lapis tarif: PPh 0, ditandai, tidak diam-diam.
+      expect(pay.pajak.tanda).toEqual(["tarif_tidak_ada"]);
+      expect(pay.net).toBe(250000 - iuran);
+    }
   });
 });
 

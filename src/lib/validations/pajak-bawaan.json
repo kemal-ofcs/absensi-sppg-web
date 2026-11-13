@@ -1,0 +1,20 @@
+{
+  "catatan": "Konstanta PPh 21 yang jarang berubah (Q-187 (a)). Tarif dalam basis per sepuluh ribu: 500 = 5%. TER bulanan dan Pasal 17 tetap di tabel tax_rules. Dibaca desktop/payroll/pajak.rs (include_str!) dan validations/pajak.ts.",
+  "ptkp": {
+    "dasar": 54000000,
+    "kawin": 4500000,
+    "per_tanggungan": 4500000,
+    "maks_tanggungan": 3
+  },
+  "biaya_jabatan": {
+    "basis": 500,
+    "maks_per_masa": 500000
+  },
+  "ter_harian": {
+    "batas_nol": 450000,
+    "batas_tarif": 2500000,
+    "basis": 50,
+    "basis_dasar_pasal_17": 5000
+  },
+  "pembulatan_pkp": 1000
+}

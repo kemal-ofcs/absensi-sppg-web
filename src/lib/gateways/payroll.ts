@@ -2,7 +2,7 @@
 
 import { requestWebApi } from "@/lib/client/api-client";
 import type { SalaryType } from "@/lib/constants/payroll";
-import { requestSyncNow } from "@/lib/gateways/sync-status";
+import { requestSyncNow, syncNow } from "@/lib/gateways/sync-status";
 import { isDesktopRuntime, isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
 
@@ -42,6 +42,8 @@ export interface PayrollComponentRow {
   default_value: number;
   applies_to: string;
   is_active: number;
+  /** 1 = tunjangan tetap, ikut dasar BPJS (v45). Hanya ALLOWANCE. */
+  dasar_bpjs: number;
 }
 
 export interface TaxRuleRow {
@@ -517,6 +519,14 @@ export async function createPayrollRun(
   periodEnd: string,
 ): Promise<PayrollRunRow> {
   if (isDesktopRuntime()) {
+    // PPh 21 dan BPJS per masa membaca run lain di bulan dan tahun yang sama
+    // dari SQLite lokal (fase 13, §29.3). Tarik dulu run perangkat lain; bila
+    // offline, run tetap dibuat dan masa terakhir yang mengoreksi.
+    try {
+      await syncNow();
+    } catch {
+      // Sengaja diteruskan: offline-first.
+    }
     const result = await invokeDesktop<PayrollRunRow>(
       "desktop_create_payroll_run",
       {

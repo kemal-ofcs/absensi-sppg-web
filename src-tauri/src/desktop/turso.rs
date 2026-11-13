@@ -3771,7 +3771,8 @@ impl TursoClient {
                     default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
                     applies_to TEXT NOT NULL DEFAULT 'ALL',
                     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1))
                 );"#,
                 vec![],
             ),
@@ -3868,10 +3869,6 @@ impl TursoClient {
             Statement::new("CREATE INDEX IF NOT EXISTS idx_payroll_items_karyawan ON payroll_items(id_karyawan);", vec![]),
             // Seed Default Overtime Rules
             Statement::new(crate::desktop::payroll_seed::OVERTIME_TIER_RULES_SEED_SQL, vec![]),
-            // Seed Default Tax Rules (Pasal 17 & TER Baseline)
-            Statement::new(crate::desktop::payroll_seed::TAX_RULES_SEED_SQL, vec![]),
-            // Seed Default BPJS Rules
-            Statement::new(crate::desktop::payroll_seed::BPJS_RULES_SEED_SQL, vec![]),
             // Seed Schema Migration
             Statement::new(
                 r#"INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES
@@ -3997,6 +3994,8 @@ impl TursoClient {
             ("tax_rules", "created_at", "ALTER TABLE tax_rules ADD COLUMN created_at TEXT;"),
             ("bpjs_rules", "created_at", "ALTER TABLE bpjs_rules ADD COLUMN created_at TEXT;"),
             ("payroll_components", "created_at", "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;"),
+            // Tunjangan tetap = dasar BPJS (v45, Q-181 (a)). Bawaan tidak ditandai.
+            ("payroll_components", "dasar_bpjs", "ALTER TABLE payroll_components ADD COLUMN dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1));"),
             // Pemisahan jam kerja hari libur (schema versi 14). Database cloud
             // yang sudah ada sudah memiliki payroll_items, sehingga CREATE TABLE
             // IF NOT EXISTS di pipeline tidak akan menambahkan kolomnya.
@@ -4121,6 +4120,10 @@ impl TursoClient {
 
         self.ensure_sync_pulse().await?;
         self.purge_legacy_rate_rows().await?;
+        // Tarif bawaan SESUDAH id lama dibuang: baris lama Web (`bpjs-jht-emp`,
+        // …) memegang `component_code` UNIQUE yang sama, jadi seed sebelum
+        // pembersihan dilewati lalu barisnya ikut hilang (JHT dan JP kosong).
+        self.seed_tarif_bawaan().await?;
         self.repair_web_owned_tables().await?;
 
         // v16 — aturan jam scan baru. Data migration sekali jalan yang dijaga
@@ -4537,7 +4540,69 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // Fase 13 (v45): koreksi TER B/C dan batas JP seed lama, sekali per
+        // database dan hanya baris yang belum disunting admin (Q-186 (a)).
+        // Kolom `payroll_components.dasar_bpjs` ada di loop `ensure_column`.
+        let koreksi_tarif_selesai = self
+            .query_one(
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = 45;",
+                vec![],
+            )
+            .await?
+            .to_objects()
+            .into_iter()
+            .next()
+            .and_then(|row| row.get("total").cloned())
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            > 0;
+        if !koreksi_tarif_selesai {
+            let mut koreksi: Vec<Statement> = crate::desktop::payroll_seed::koreksi_pajak_args()
+                .into_iter()
+                .map(|args| Statement::new(crate::desktop::payroll_seed::KOREKSI_PAJAK_SQL, args))
+                .collect();
+            koreksi.extend(
+                crate::desktop::payroll_seed::koreksi_jp_args()
+                    .into_iter()
+                    .map(|args| Statement::new(crate::desktop::payroll_seed::KOREKSI_JP_SQL, args)),
+            );
+            self.execute_pipeline(koreksi).await?;
+        }
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (45, 'payroll-pajak-masa', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2041, 'payroll-pajak-masa-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
+        Ok(())
+    }
+
+    /// TER, Pasal 17, dan BPJS bawaan dari `tarif-bawaan.json`, berkas yang
+    /// sama dengan seed Web. `INSERT OR IGNORE`: tarif yang disunting tetap.
+    async fn seed_tarif_bawaan(&self) -> Result<(), CommandError> {
+        let seed = crate::desktop::payroll_seed::tarif_bawaan();
+        let mut statements: Vec<Statement> = seed
+            .pajak
+            .iter()
+            .map(|tarif| {
+                Statement::new(
+                    crate::desktop::payroll_seed::TAX_RULES_SEED_SQL,
+                    crate::desktop::payroll_seed::seed_pajak_args(tarif),
+                )
+            })
+            .collect();
+        statements.extend(seed.bpjs.iter().map(|tarif| {
+            Statement::new(
+                crate::desktop::payroll_seed::BPJS_RULES_SEED_SQL,
+                crate::desktop::payroll_seed::seed_bpjs_args(tarif),
+            )
+        }));
+        self.execute_pipeline(statements).await?;
         Ok(())
     }
 
@@ -4751,7 +4816,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2040;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2041;",
                 vec![],
             )
             .await
@@ -9375,16 +9440,20 @@ async fn apply_event_to_turso(
             if !id.is_empty() {
                 let sql = r#"
                     INSERT INTO payroll_components (
-                        id, name, category, calc_type, default_value, applies_to, is_active
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        id, name, category, calc_type, default_value, applies_to, is_active, dasar_bpjs
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                     ON CONFLICT(id) DO UPDATE SET
                         name = excluded.name,
                         category = excluded.category,
                         calc_type = excluded.calc_type,
                         default_value = excluded.default_value,
                         applies_to = excluded.applies_to,
-                        is_active = excluded.is_active;
+                        is_active = excluded.is_active,
+                        dasar_bpjs = CASE WHEN ?9 = 1 THEN excluded.dasar_bpjs ELSE payroll_components.dasar_bpjs END;
                 "#;
+                // Perangkat v44 tidak mengenal kolomnya: kunci absen = tidak dibawa.
+                let bawa_dasar_bpjs = row.get("dasar_bpjs").is_some_and(|value| !value.is_null());
+                let dasar_bpjs = i64::from(row.get("dasar_bpjs").and_then(Value::as_i64) == Some(1));
                 turso
                     .query_one(
                         sql,
@@ -9402,6 +9471,8 @@ async fn apply_event_to_turso(
                                 .and_then(Value::as_str)
                                 .unwrap_or("ALL")),
                             json!(row.get("is_active").and_then(Value::as_i64).unwrap_or(1)),
+                            json!(dasar_bpjs),
+                            json!(i64::from(bawa_dasar_bpjs)),
                         ],
                     )
                     .await?;
@@ -12491,7 +12562,7 @@ mod tests {
                     "DROP TABLE drv_upah_bayar;
                      DROP TABLE drv_upah_bayar_baris;
                      ALTER TABLE drv_laporan DROP COLUMN lokasi_palsu;
-                     DELETE FROM schema_migration WHERE version IN (35, 36, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (35, 36, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -12534,7 +12605,7 @@ mod tests {
                      ALTER TABLE hr_pengajuan DROP COLUMN id_shift_asal;
                      ALTER TABLE hr_pengajuan DROP COLUMN id_shift_tukar;
                      DELETE FROM hr_jenis_pengajuan WHERE id_jenis IN ('jns-lembur', 'jns-tukar-shift', 'jns-dinas-luar');
-                     DELETE FROM schema_migration WHERE version IN (38, 39, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (38, 39, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -12578,7 +12649,7 @@ mod tests {
                      ALTER TABLE hr_pengajuan_keputusan DROP COLUMN nominal_disetujui;
                      DELETE FROM hr_jenis_pengajuan WHERE kelompok = 'Reimburse';
                      DELETE FROM keu_akun WHERE id_akun = 'akun-beban-reimburse';
-                     DELETE FROM schema_migration WHERE version IN (39, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (39, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -12728,7 +12799,7 @@ mod tests {
                     "DROP TABLE hr_sp; DROP TABLE hr_keluar; DROP TABLE hr_keluar_rincian;
                      DROP TABLE hr_keluar_alasan;
                      ALTER TABLE master_data DROP COLUMN id_keluar;
-                     DELETE FROM schema_migration WHERE version IN (40, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (40, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -12959,7 +13030,7 @@ mod tests {
                     "DROP TABLE hr_kinerja_template; DROP TABLE hr_kinerja_aspek;
                      DROP TABLE hr_kinerja_jabatan; DROP TABLE hr_kinerja_penilaian;
                      DROP TABLE hr_kinerja_nilai; DROP TABLE hr_kinerja_keputusan;
-                     DELETE FROM schema_migration WHERE version IN (41, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (41, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13007,7 +13078,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE hr_lowongan; DROP TABLE hr_pelamar; DROP TABLE hr_pelamar_tahap;
                      DROP TABLE hr_pelamar_berkas; DROP TABLE hr_pelatihan; DROP TABLE hr_pelatihan_peserta;
-                     DELETE FROM schema_migration WHERE version IN (42, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (42, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13057,7 +13128,7 @@ mod tests {
                      ALTER TABLE hr_pelatihan DROP COLUMN id_rencana;
                      INSERT INTO hr_pelatihan (id_pelatihan, nama, tanggal_mulai, tanggal_selesai, biaya, dicatat_oleh)
                        VALUES ('plt-lama', 'K3 Dasar', '2026-03-02', '2026-03-03', 1500000, 'hrd');
-                     DELETE FROM schema_migration WHERE version IN (43, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (43, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13109,7 +13180,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE app_bank; DROP TABLE app_bank_rekening; DROP TABLE app_bank_format;
-                     DELETE FROM schema_migration WHERE version IN (44, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (44, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13138,7 +13209,7 @@ mod tests {
             connection
                 .execute_batch(
                     "UPDATE app_bank SET nama = 'Bank BCA', kode = NULL WHERE id_bank = 'bnk-014';
-                     DELETE FROM schema_migration WHERE version IN (44, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (44, -2040, -2041);",
                 )
                 .expect("sunting bank bawaan");
             client.ensure_schema_current().await.expect("skema dijalankan ulang");
@@ -13148,6 +13219,139 @@ mod tests {
                 })
                 .expect("bank BCA");
             assert_eq!((nama.as_str(), kode), ("Bank BCA", None), "seed menimpa bank yang disunting");
+        });
+    }
+
+    /// Database bersentinel `-2040` (v44) dengan seed tarif lama: TER B/C dan
+    /// batas JP dikoreksi hanya pada baris yang masih bernilai seed lama, lapis
+    /// yang hilang ditanam, baris lama Web diganti seed baru (termasuk JHT/JP
+    /// yang kodenya bentrok), dan kolom `dasar_bpjs` lahir (Q-181, Q-186).
+    #[test]
+    fn sentinel_2040_mengoreksi_tarif() {
+        use crate::desktop::payroll_seed::tarif_bawaan;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2040.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+
+            // Keadaan v44: seed lama, satu lapis dan satu batas JP disunting admin,
+            // dan baris JHT_EMP milik seed lama Web.
+            let seed = tarif_bawaan();
+            for lama in &seed.koreksi_v45.pajak_lama {
+                connection
+                    .execute(
+                        "UPDATE tax_rules SET bracket_min = ?1, bracket_max = ?2, rate_percentage = ?3 WHERE id = ?4;",
+                        rusqlite::params![lama.bracket_min, lama.bracket_max, lama.rate_percentage, lama.id],
+                    )
+                    .expect("tarif lama");
+            }
+            connection
+                .execute_batch(
+                    "DELETE FROM tax_rules WHERE id IN ('tax_ter_b_38', 'tax_ter_b_39', 'tax_ter_b_40', 'tax_ter_c_40', 'tax_ter_c_41');
+                     UPDATE tax_rules SET rate_percentage = 2.75 WHERE id = 'tax_ter_b_8';
+                     UPDATE bpjs_rules SET wage_cap = 10042300, effective_date = '2026-01-01' WHERE component_code = 'JP_EMP';
+                     UPDATE bpjs_rules SET wage_cap = 9999999, effective_date = '2026-01-01' WHERE component_code = 'JP_CO';
+                     DELETE FROM bpjs_rules WHERE component_code = 'JHT_EMP';
+                     INSERT INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date)
+                       VALUES ('bpjs-jht-emp', 'JHT_EMP', 'JHT Karyawan', 2.0, NULL, '2024-01-01');
+                     ALTER TABLE payroll_components DROP COLUMN dasar_bpjs;
+                     DELETE FROM schema_migration WHERE version IN (45, -2041);",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+
+            let ter: i64 = connection
+                .query_row("SELECT COUNT(*) FROM tax_rules WHERE category LIKE 'TER_%';", [], |row| row.get(0))
+                .expect("hitung TER");
+            assert_eq!(ter, 125, "TER A 44 + B 40 + C 41");
+            for baru in seed.pajak.iter().filter(|t| t.id != "tax_ter_b_8") {
+                // Kolom cloud REAL, jadi dibaca f64.
+                let baris: (f64, Option<f64>, f64) = connection
+                    .query_row(
+                        "SELECT bracket_min, bracket_max, rate_percentage FROM tax_rules WHERE id = ?1;",
+                        [&baru.id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .expect("lapis seed");
+                let harapan = (baru.bracket_min as f64, baru.bracket_max.map(|m| m as f64), baru.rate_percentage);
+                assert_eq!(baris, harapan, "{}", baru.id);
+            }
+            let disunting: (f64, Option<f64>, f64) = connection
+                .query_row(
+                    "SELECT bracket_min, bracket_max, rate_percentage FROM tax_rules WHERE id = 'tax_ter_b_8';",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("lapis disunting");
+            assert_eq!(disunting, (12_500_000.0, Some(13_750_000.0), 2.75), "lapis yang disunting admin ditimpa");
+
+            let jp = |kode: &str| -> (Option<f64>, String) {
+                connection
+                    .query_row(
+                        "SELECT wage_cap, effective_date FROM bpjs_rules WHERE component_code = ?1;",
+                        [kode],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .expect("baris JP")
+            };
+            assert_eq!(jp("JP_EMP"), (Some(11_086_300.0), "2026-03-01".to_owned()));
+            assert_eq!(jp("JP_CO"), (Some(9_999_999.0), "2026-01-01".to_owned()), "batas JP yang disunting ditimpa");
+
+            let jht: Vec<String> = connection
+                .prepare("SELECT id FROM bpjs_rules WHERE component_code = 'JHT_EMP';")
+                .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+                .expect("baris JHT");
+            assert_eq!(jht, vec!["bpjs_jht_emp".to_owned()], "baris lama Web tidak diganti seed baru");
+
+            let kolom: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('payroll_components') WHERE name = 'dasar_bpjs';",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("kolom dasar_bpjs");
+            assert_eq!(kolom, 1);
+
+            // Handler komponen: kunci absen (perangkat v44) mempertahankan penanda.
+            let terapkan = |payload: Value| {
+                let client = &client;
+                async move {
+                    let collector = StatementCollector::default();
+                    apply_event_to_turso(&collector, "payroll", "payroll-component", "comp-1", &payload)
+                        .await
+                        .expect("event komponen");
+                    client.execute_atomic(collector.finish().expect("mutasi")).await.expect("tulis komponen");
+                }
+            };
+            let komponen = json!({"id": "comp-1", "name": "Tunjangan Jabatan", "category": "ALLOWANCE",
+                                  "calc_type": "FIXED", "default_value": 500000.0, "applies_to": "ALL", "is_active": 1});
+            let mut bertanda = komponen.clone();
+            bertanda["dasar_bpjs"] = json!(1);
+            let dasar = || -> i64 {
+                connection
+                    .query_row("SELECT dasar_bpjs FROM payroll_components WHERE id = 'comp-1';", [], |row| row.get(0))
+                    .expect("komponen")
+            };
+            terapkan(komponen.clone()).await;
+            assert_eq!(dasar(), 0);
+            terapkan(bertanda).await;
+            assert_eq!(dasar(), 1);
+            terapkan(komponen.clone()).await;
+            assert_eq!(dasar(), 1, "event tanpa kunci dasar_bpjs menghapus penanda");
+            let mut dilepas = komponen;
+            dilepas["dasar_bpjs"] = json!(0);
+            terapkan(dilepas).await;
+            assert_eq!(dasar(), 0);
         });
     }
 
@@ -13179,7 +13383,7 @@ mod tests {
                      ALTER TABLE master_data DROP COLUMN id_divisi;
                      ALTER TABLE master_data DROP COLUMN id_jabatan;
                      ALTER TABLE master_data DROP COLUMN id_atasan;
-                     DELETE FROM schema_migration WHERE version IN (36, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);
+                     DELETE FROM schema_migration WHERE version IN (36, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);
                      INSERT INTO master_data (id_unik, kode_karyawan, nama, divisi, jabatan_status, id_shift) VALUES
                        ('K1', 'K1', 'Ana', 'Gudang', 'Staff', 1),
                        ('K2', 'K2', 'Budi', ' gudang ', '-', 1);
@@ -13252,7 +13456,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13292,7 +13496,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13331,7 +13535,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13371,7 +13575,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13408,7 +13612,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 
@@ -13446,7 +13650,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040, -2041);",
                 )
                 .expect("siapkan database lama");
 

@@ -1,5 +1,20 @@
 import "server-only";
 
+import {
+  type HasilPph,
+  hitungBpjsMasa,
+  hitungPph,
+  jumlahKode,
+  KODE_IURAN_PENSIUN,
+  KODE_PREMI,
+  masa,
+  masaTerakhir,
+  type Pembanding,
+  type RincianBpjs,
+  STATUS_TETAP,
+  statusPph,
+} from "@/lib/validations/pajak";
+
 // TS port of src-tauri/src/desktop/payroll/engine.rs + the PayrollStatus state
 // machine in models.rs, so the web (Vercel) runtime computes payroll identically
 // to the Tauri Desktop runtime. Rate/multiplier values are already f64 in the
@@ -24,6 +39,8 @@ export interface PayrollComponent {
   default_value: number;
   applies_to: string; // "ALL" | id_karyawan
   is_active: number;
+  /** 1 = tunjangan tetap, ikut dasar BPJS (v45, Q-181 (a)). */
+  dasar_bpjs: number;
 }
 
 export interface TaxRule {
@@ -96,6 +113,7 @@ export interface ComponentBreakdownEntry {
   nominal: number;
 }
 
+/** Cermin `calculate_components`; `dasarBpjs` = tunjangan bertanda tetap. */
 export function calculateComponents(
   basicSalary: number,
   components: PayrollComponent[],
@@ -103,10 +121,12 @@ export function calculateComponents(
 ): {
   allowance: number;
   deduction: number;
+  dasarBpjs: number;
   breakdown: ComponentBreakdownEntry[];
 } {
   let totalAllowance = 0;
   let totalDeduction = 0;
+  let dasarBpjs = 0;
   const breakdown: ComponentBreakdownEntry[] = [];
 
   for (const comp of components) {
@@ -120,6 +140,7 @@ export function calculateComponents(
 
     if (comp.category === "ALLOWANCE") {
       totalAllowance += nominal;
+      if (comp.dasar_bpjs === 1) dasarBpjs += nominal;
     } else {
       totalDeduction += nominal;
     }
@@ -134,124 +155,37 @@ export function calculateComponents(
     });
   }
 
-  return { allowance: totalAllowance, deduction: totalDeduction, breakdown };
+  return {
+    allowance: totalAllowance,
+    deduction: totalDeduction,
+    dasarBpjs,
+    breakdown,
+  };
 }
 
-export interface BpjsBreakdownEntry {
-  code: string;
-  name: string;
-  rate: number;
-  wage_cap: number | null;
-  nominal: number;
-  is_employee: boolean;
-}
-
-export function calculateBpjs(
-  grossSalary: number,
-  bpjsRules: BpjsRule[],
-): { employee: number; company: number; breakdown: BpjsBreakdownEntry[] } {
-  let totalEmployee = 0;
-  let totalCompany = 0;
-  const breakdown: BpjsBreakdownEntry[] = [];
-
-  for (const rule of bpjsRules) {
-    const basis =
-      rule.wage_cap !== null && rule.wage_cap !== undefined && rule.wage_cap > 0
-        ? Math.min(grossSalary, rule.wage_cap)
-        : grossSalary;
-
-    const nominal = roundMoney(basis * (rule.rate_percentage / 100));
-    const isEmployee = rule.component_code.endsWith("_EMP");
-    if (isEmployee) {
-      totalEmployee += nominal;
-    } else {
-      totalCompany += nominal;
-    }
-
-    breakdown.push({
-      code: rule.component_code,
-      name: rule.component_name,
-      rate: rule.rate_percentage,
-      wage_cap: rule.wage_cap,
-      nominal,
-      is_employee: isEmployee,
-    });
-  }
-
-  return { employee: totalEmployee, company: totalCompany, breakdown };
-}
-
+/** Kunci `breakdown_snapshot.tax` bentuk lama, untuk slip lama. */
 export interface Pph21Breakdown {
-  method: "TER";
-  category: string;
+  method: string;
+  category: string | null;
   ptkp_status: string;
-  rate_percentage: number;
+  rate_percentage: number | null;
   pph21_amount: number;
 }
 
-export function calculatePph21Ter(
-  grossSalary: number,
-  ptkpStatus: string,
-  taxRules: TaxRule[],
-): { pph21Amount: number; breakdown: Pph21Breakdown } {
-  const terCategory = (() => {
-    switch (ptkpStatus.trim().toUpperCase()) {
-      case "TK/0":
-      case "TK/1":
-      case "K/0":
-        return "TER_A";
-      case "TK/2":
-      case "TK/3":
-      case "K/1":
-      case "K/2":
-        return "TER_B";
-      case "K/3":
-        return "TER_C";
-      default:
-        return "TER_A";
-    }
-  })();
-
-  const grossInt = Math.trunc(grossSalary);
-  const rule = taxRules.find((r) => {
-    if (r.category !== terCategory) return false;
-    const minOk = grossInt >= r.bracket_min;
-    const maxOk =
-      r.bracket_max === null || r.bracket_max === undefined
-        ? true
-        : grossInt <= r.bracket_max;
-    return minOk && maxOk;
-  });
-
-  if (rule) {
-    const pph21 = roundMoney(grossSalary * (rule.rate_percentage / 100));
-    return {
-      pph21Amount: pph21,
-      breakdown: {
-        method: "TER",
-        category: terCategory,
-        ptkp_status: ptkpStatus,
-        rate_percentage: rule.rate_percentage,
-        pph21_amount: pph21,
-      },
-    };
-  }
-
-  return {
-    pph21Amount: 0,
-    breakdown: {
-      method: "TER",
-      category: terCategory,
-      ptkp_status: ptkpStatus,
-      rate_percentage: 0,
-      pph21_amount: 0,
-    },
-  };
+/** Konteks masa pajak satu karyawan; cermin `KonteksPajak` di engine.rs. */
+export interface KonteksPajak {
+  periodStart: string;
+  periodEnd: string;
+  jenisPersonil: string | null;
+  /** PTKP yang berlaku 1 Januari (Q-180), dari `KOLOM_PAJAK_SQL`. */
+  ptkpAwalTahun: string;
+  /** `tanggal_selesai_aktif` bila `id_keluar` terisi. */
+  keluarPada: string | null;
+  pembanding: Pembanding;
 }
 
 export interface PayInput {
   idKaryawan: string;
-  ptkpStatus: string;
   salaryType: string;
   ratePerHour: number;
   dailyRate: number;
@@ -259,6 +193,7 @@ export interface PayInput {
   regularMinutes: number;
   overtimeMinutes: number;
   holidayMinutes: number;
+  pajak: KonteksPajak;
 }
 
 export interface PayRules {
@@ -279,87 +214,127 @@ export interface EmployeePay {
   gross: number;
   bpjsEmployee: number;
   bpjsCompany: number;
+  /** Boleh negatif di masa terakhir (pengembalian, Q-189). */
   pph21: number;
   net: number;
   components: ComponentBreakdownEntry[];
-  bpjs: BpjsBreakdownEntry[];
-  tax: Pph21Breakdown | null;
+  bpjs: RincianBpjs[];
+  tax: Pph21Breakdown;
+  /** Kunci `breakdown_snapshot.pajak`. */
+  pajak: HasilPph;
+  /** Kunci `breakdown_snapshot.bpjs_masa`. */
+  bpjsMasa: { dasar_run: number; dasar_masa: number; tanda: string[] };
 }
 
 /**
  * Gaji satu karyawan untuk satu periode. Cerminan persis
- * `PayrollCalculator::calculate_employee_pay` di `payroll/engine.rs`.
+ * `PayrollCalculator::calculate_employee_pay` di `payroll/engine.rs`: sejak
+ * fase 13 BPJS dan PPh 21 dihitung per masa pajak (`hitungBpjsMasa`,
+ * `hitungPph`).
  */
 export function calculateEmployeePay(
   input: PayInput,
   rules: PayRules,
 ): EmployeePay {
-  if (input.salaryType === "FLAT_DAILY") {
-    // Upah harian tetap: durasi kerja, lembur, BPJS, dan PPh 21 tidak ikut.
-    // Hanya komponen milik karyawan ini sendiri yang berlaku; komponen 'ALL'
-    // dirancang untuk skema per jam. Hasil kalinya bilangan bulat eksak.
-    const basic = Math.max(0, input.daysPresent) * Math.max(0, input.dailyRate);
-    const personal = rules.components.filter(
-      (comp) => comp.applies_to === input.idKaryawan,
-    );
-    const { allowance, deduction, breakdown } = calculateComponents(
+  const flat = input.salaryType === "FLAT_DAILY";
+  let overtimeIndex = 0;
+  let holidayIndex = 0;
+  let basic: number;
+  let overtime = 0;
+  let hasilKomponen: ReturnType<typeof calculateComponents>;
+  if (flat) {
+    // Upah harian tetap: durasi kerja dan lembur tidak ikut. Hanya komponen
+    // milik karyawan ini sendiri yang berlaku; komponen 'ALL' dirancang untuk
+    // skema per jam. Hasil kalinya bilangan bulat eksak.
+    basic = Math.max(0, input.daysPresent) * Math.max(0, input.dailyRate);
+    hasilKomponen = calculateComponents(
       basic,
-      personal,
+      rules.components.filter((comp) => comp.applies_to === input.idKaryawan),
       input.idKaryawan,
     );
-    const gross = basic + allowance;
-    return {
-      overtimeIndex: 0,
-      holidayIndex: 0,
+  } else {
+    // Dua indeks, dua jenjang: jam lembur hari biasa memakai HARI_KERJA,
+    // seluruh jam pada tanggal libur memakai HARI_LIBUR.
+    overtimeIndex = calculateOvertimeIndex(
+      input.overtimeMinutes / 60,
+      rules.overtimeTiers,
+    );
+    holidayIndex = calculateOvertimeIndex(
+      input.holidayMinutes / 60,
+      rules.holidayTiers,
+    );
+    // Uang diturunkan dari MENIT BULAT, bukan dari jam yang sudah dibagi:
+    // `menit * tarif` bilangan bulat eksak, sehingga titik tengahnya terwakili
+    // persis dan `roundMoney` sepakat dengan `Decimal` di Rust.
+    basic = roundMoney((input.regularMinutes * input.ratePerHour) / 60);
+    // Indeks sudah dibulatkan ke 2 desimal, jadi seratus kalinya bilangan bulat
+    // dan perkaliannya menjadi eksak.
+    const indeksRatusan = Math.round((overtimeIndex + holidayIndex) * 100);
+    overtime = roundMoney((indeksRatusan * input.ratePerHour) / 100);
+    hasilKomponen = calculateComponents(
       basic,
-      overtime: 0,
-      allowance,
-      deduction,
-      gross,
-      bpjsEmployee: 0,
-      bpjsCompany: 0,
-      pph21: 0,
-      net: Math.max(0, gross - deduction),
-      components: breakdown,
-      bpjs: [],
-      tax: null,
-    };
+      rules.components,
+      input.idKaryawan,
+    );
   }
-
-  // Dua indeks, dua jenjang: jam lembur hari biasa memakai HARI_KERJA,
-  // seluruh jam pada tanggal libur memakai HARI_LIBUR.
-  const overtimeIndex = calculateOvertimeIndex(
-    input.overtimeMinutes / 60,
-    rules.overtimeTiers,
-  );
-  const holidayIndex = calculateOvertimeIndex(
-    input.holidayMinutes / 60,
-    rules.holidayTiers,
-  );
-  // Uang diturunkan dari MENIT BULAT, bukan dari jam yang sudah dibagi:
-  // `menit * tarif` bilangan bulat eksak, sehingga titik tengahnya terwakili
-  // persis dan `roundMoney` sepakat dengan `Decimal` di Rust.
-  const basic = roundMoney((input.regularMinutes * input.ratePerHour) / 60);
-  // Indeks sudah dibulatkan ke 2 desimal, jadi seratus kalinya bilangan bulat
-  // dan perkaliannya menjadi eksak.
-  const indeksRatusan = Math.round((overtimeIndex + holidayIndex) * 100);
-  const overtime = roundMoney((indeksRatusan * input.ratePerHour) / 100);
   const {
     allowance,
     deduction,
+    dasarBpjs,
     breakdown: components,
-  } = calculateComponents(basic, rules.components, input.idKaryawan);
+  } = hasilKomponen;
   const gross = basic + overtime + allowance;
-  const {
-    employee: bpjsEmployee,
-    company: bpjsCompany,
-    breakdown: bpjs,
-  } = calculateBpjs(gross, rules.bpjsRules);
-  const { pph21Amount: pph21, breakdown: tax } = calculatePph21Ter(
-    gross,
-    input.ptkpStatus,
+  const konteks = input.pajak;
+  const pembanding = konteks.pembanding;
+
+  // BPJS per masa atas gaji pokok + tunjangan tetap, tanpa lembur
+  // (Q-181 (a)). `FLAT_DAILY` tetap tanpa BPJS (Q-182).
+  const bpjs = flat
+    ? hitungBpjsMasa(0, 0, [], {})
+    : hitungBpjsMasa(
+        basic + dasarBpjs,
+        pembanding.dasar_bpjs_masa,
+        rules.bpjsRules,
+        pembanding.bpjs_masa,
+      );
+  const premi = jumlahKode(bpjs.rincian, KODE_PREMI);
+  const iuranPensiunRun = jumlahKode(bpjs.rincian, KODE_IURAN_PENSIUN);
+
+  const status = statusPph(konteks.jenisPersonil, input.salaryType);
+  const terakhir =
+    status === STATUS_TETAP &&
+    masaTerakhir(masa(konteks.periodStart), konteks.keluarPada);
+  // Q-184 (a): komponen FIXED tetap per run, ditandai bila bulan ini sudah
+  // punya run lain.
+  const komponenTetap = components.some(
+    (c) => c.calc_type === "FIXED" && c.nominal > 0,
+  );
+  const pajak = hitungPph(
+    {
+      period_start: konteks.periodStart,
+      period_end: konteks.periodEnd,
+      jenis_personil: konteks.jenisPersonil,
+      salary_type: input.salaryType,
+      ptkp_status: konteks.ptkpAwalTahun,
+      gross,
+      premi,
+      hari: input.daysPresent,
+      keluar_pada: konteks.keluarPada,
+      bruto_masa_sebelum: pembanding.bruto_masa,
+      pph_masa_sebelum: pembanding.pph_masa,
+      bruto_tahun_sebelum: pembanding.bruto_tahun,
+      pph_tahun_sebelum: pembanding.pph_tahun,
+      iuran_pensiun_sebelum: pembanding.iuran_pensiun_tahun,
+      iuran_pensiun_run: iuranPensiunRun,
+      masa_berbruto_lain: pembanding.masa_berbruto_lain,
+      rumus_lama:
+        pembanding.rumus_lama_masa || (terakhir && pembanding.rumus_lama_tahun),
+      status_pajak_berubah: terakhir && pembanding.status_berubah,
+      komponen_per_run: pembanding.run_masa > 0 && komponenTetap,
+    },
     rules.taxRules,
   );
+
   return {
     overtimeIndex,
     holidayIndex,
@@ -368,13 +343,26 @@ export function calculateEmployeePay(
     allowance,
     deduction,
     gross,
-    bpjsEmployee,
-    bpjsCompany,
-    pph21,
-    net: Math.max(0, gross - deduction - bpjsEmployee - pph21),
+    bpjsEmployee: bpjs.karyawan,
+    bpjsCompany: bpjs.perusahaan,
+    pph21: pajak.pph,
+    // PPh negatif (pengembalian) menambah gaji bersih.
+    net: Math.max(0, gross - deduction - bpjs.karyawan - pajak.pph),
     components,
-    bpjs,
-    tax,
+    bpjs: bpjs.rincian,
+    tax: {
+      method: pajak.metode,
+      category: pajak.kategori,
+      ptkp_status: konteks.ptkpAwalTahun,
+      rate_percentage: pajak.tarif === null ? null : pajak.tarif / 100,
+      pph21_amount: pajak.pph,
+    },
+    pajak,
+    bpjsMasa: {
+      dasar_run: bpjs.dasar_run,
+      dasar_masa: bpjs.dasar_masa,
+      tanda: bpjs.tanda,
+    },
   };
 }
 

@@ -110,15 +110,10 @@ fn seed_payroll_rate_tables(connection: &Connection) -> Result<(), String> {
         ))
         .map_err(|_| "Seed tarif payroll lama tidak dapat dibersihkan.".to_owned())?;
 
-    for statement in [
-        payroll_seed::OVERTIME_TIER_RULES_SEED_SQL,
-        payroll_seed::TAX_RULES_SEED_SQL,
-        payroll_seed::BPJS_RULES_SEED_SQL,
-    ] {
-        connection
-            .execute_batch(statement)
-            .map_err(|_| "Tarif default payroll tidak dapat disiapkan.".to_owned())?;
-    }
+    connection
+        .execute_batch(payroll_seed::OVERTIME_TIER_RULES_SEED_SQL)
+        .and_then(|_| payroll_seed::seed_tarif_lokal(connection))
+        .map_err(|_| "Tarif default payroll tidak dapat disiapkan.".to_owned())?;
     Ok(())
 }
 
@@ -598,7 +593,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         default_value REAL NOT NULL DEFAULT 0 CHECK (default_value >= 0),
         applies_to TEXT NOT NULL DEFAULT 'ALL',
         is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1))
       );
       CREATE TABLE IF NOT EXISTS tax_rules (
         id TEXT PRIMARY KEY,
@@ -1528,6 +1524,12 @@ pub fn initialize(path: &Path) -> Result<(), String> {
             "payroll_components",
             "created_at",
             "ALTER TABLE payroll_components ADD COLUMN created_at TEXT;",
+        ),
+        // Tunjangan tetap = dasar BPJS (v45, Q-181 (a)). Bawaan tidak ditandai.
+        (
+            "payroll_components",
+            "dasar_bpjs",
+            "ALTER TABLE payroll_components ADD COLUMN dasar_bpjs INTEGER NOT NULL DEFAULT 0 CHECK (dasar_bpjs IN (0, 1));",
         ),
     ] {
         ensure_column(&connection, table, column, sql)?;

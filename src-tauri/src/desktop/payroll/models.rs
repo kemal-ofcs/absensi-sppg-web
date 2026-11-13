@@ -95,6 +95,9 @@ pub struct PayrollComponent {
     pub applies_to: String, // "ALL" | id_karyawan
     #[serde(default = "default_active")]
     pub is_active: i64,
+    /// 1 = tunjangan tetap, ikut dasar BPJS (v45, Q-181 (a)). Hanya ALLOWANCE.
+    #[serde(default)]
+    pub dasar_bpjs: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +332,17 @@ pub struct PayrollRecapRow {
     /// setelah kasbon; tidak ikut bruto, PPh 21, dan BPJS.
     #[serde(default)]
     pub est_reimburse: i64,
+    /// Konteks masa pajak (fase 13), dibaca `KOLOM_PAJAK_SQL`. Pembekuan
+    /// menghitung ulang dari angka yang sama.
+    #[serde(default)]
+    pub jenis_personil: Option<String>,
+    #[serde(default)]
+    pub keluar_pada: Option<String>,
+    #[serde(default)]
+    pub ptkp_awal_tahun: String,
+    /// Hasil `pajak::hitung_pph` (metode, kategori, tanda) untuk layar rekap.
+    #[serde(default)]
+    pub pajak: serde_json::Value,
 }
 
 #[cfg(test)]
