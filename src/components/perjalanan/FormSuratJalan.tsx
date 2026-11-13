@@ -98,6 +98,18 @@ export function FormSuratJalan({
       j.id_jenis ===
       master.kendaraan.find((k) => k.id_kendaraan === kendaraan)?.id_jenis,
   );
+  // Tempat muatan dipilih dari lokasi terdaftar supaya ejaannya sama dengan
+  // `nama_lokasi` laporan Tiba: layar driver mencentang barang dengan
+  // mencocokkan keduanya. Nilai lama di luar daftar tetap bisa dipertahankan.
+  const namaLokasi = (jenis: "Muat" | "Bongkar") => [
+    ...new Set(
+      master.lokasi
+        .filter((l) => l.jenis === jenis && l.status_aktif === 1)
+        .map((l) => l.nama),
+    ),
+  ];
+  const lokasiMuat = namaLokasi("Muat");
+  const lokasiBongkar = namaLokasi("Bongkar");
   const kategoriTerpilih = master.kategori.find(
     (k) => k.id_kategori === kategori,
   );
@@ -288,6 +300,21 @@ export function FormSuratJalan({
           <legend className="text-sm font-semibold text-slate-100">
             Muatan
           </legend>
+          {lokasiMuat.length === 0 || lokasiBongkar.length === 0 ? (
+            <p
+              id="muatan-lokasi-kosong"
+              className="rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-sm text-amber-100"
+            >
+              Tempat muat dan bongkar dipilih dari lokasi terdaftar. Belum ada
+              lokasi aktif berjenis{" "}
+              {lokasiMuat.length === 0 && lokasiBongkar.length === 0
+                ? "Muat maupun Bongkar"
+                : lokasiMuat.length === 0
+                  ? "Muat"
+                  : "Bongkar"}
+              ; tambahkan di tab Armada &amp; lokasi.
+            </p>
+          ) : null}
           {baris.map((b, i) => (
             <div
               // biome-ignore lint/suspicious/noArrayIndexKey: baris isian tanpa id sampai disimpan
@@ -296,8 +323,40 @@ export function FormSuratJalan({
             >
               {(
                 [
-                  ["tempat_muat", "Tempat muat", 120],
-                  ["tempat_bongkar", "Tempat bongkar", 120],
+                  ["tempat_muat", "Tempat muat", lokasiMuat],
+                  ["tempat_bongkar", "Tempat bongkar", lokasiBongkar],
+                ] as const
+              ).map(([kunci, label, pilihan]) => (
+                <div key={kunci}>
+                  <label className={LABEL} htmlFor={`muatan-${i}-${kunci}`}>
+                    {label}
+                  </label>
+                  <PilihCari
+                    id={`muatan-${i}-${kunci}`}
+                    className={INPUT}
+                    value={b[kunci]}
+                    onChange={(e) => ubahBaris(i, kunci, e.target.value)}
+                  >
+                    <option value="">
+                      {kunci === "tempat_muat"
+                        ? "Pilih tempat muat"
+                        : "Belum ditentukan"}
+                    </option>
+                    {pilihan.map((nama) => (
+                      <option key={nama} value={nama}>
+                        {nama}
+                      </option>
+                    ))}
+                    {b[kunci] && !pilihan.includes(b[kunci]) ? (
+                      <option value={b[kunci]}>
+                        {b[kunci]} (tidak terdaftar)
+                      </option>
+                    ) : null}
+                  </PilihCari>
+                </div>
+              ))}
+              {(
+                [
                   ["nama_barang", "Nama barang", 120],
                   ["jenis_barang", "Jenis barang", 60],
                   ["qty", "Jumlah", 12],
