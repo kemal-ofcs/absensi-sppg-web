@@ -1,9 +1,10 @@
 "use client";
 
 // Tab Pelatihan di /hris dan tab Pelatihan rincian karyawan (PRD HRIS §22.7,
-// Web/Desktop). Khusus cloud. Sertifikat = dokumen karyawan berjenis
-// Sertifikat, jadi ikut tampil di tab Dokumen. Biaya per peserta hanya
-// pembagian tampilan; tidak disimpan dan tidak dijurnal (Q-98).
+// ketiga versi sejak fase 10). Khusus cloud. Sertifikat = dokumen karyawan
+// berjenis Sertifikat, jadi ikut tampil di tab Dokumen. Biaya per peserta
+// hanya pembagian tampilan; tidak disimpan dan tidak dijurnal (Q-98). Fase 11
+// (§26): pilihan "Rencana dan anggaran" dan tautan pelatihan ke rencananya.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -14,23 +15,33 @@ import {
 } from "@/components/hris/berkas";
 import { DaftarRincian } from "@/components/hris/DaftarRincian";
 import type { BarisKaryawan } from "@/components/hris/HrisWorkspace";
+import {
+  bacaRupiah,
+  RencanaPelatihan,
+} from "@/components/hris/RencanaPelatihan";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
 import {
   ambilBerkasSertifikat,
   ambilPelatihan,
+  ambilRencanaPelatihan,
   ambilRincianPelatihan,
   ambilRiwayatPelatihan,
   type Pelatihan,
   type Peserta,
+  type RencanaTahunan,
+  type RencanaPelatihan as RencanaTertaut,
   type RiwayatPelatihan,
   simpanPelatihan,
   simpanPeserta,
   simpanSertifikat,
 } from "@/lib/gateways/hr-pelatihan";
+import type { Divisi } from "@/lib/gateways/hris";
 import { formatRupiah } from "@/lib/validations/accounting";
 import {
   HASIL_PESERTA,
+  KELOMPOK_UMUM,
+  PESAN_RENCANA_TAHUN,
   PESAN_SERTIFIKAT_NONAKTIF,
 } from "@/lib/validations/hr-pelatihan";
 import { MAKS_BERKAS_PER_DOKUMEN } from "@/lib/validations/hris";
@@ -43,6 +54,8 @@ const TOMBOL =
 const TOMBOL_KEDUA =
   "min-h-9 rounded-xl border border-slate-700 px-3 text-xs font-bold text-slate-200 disabled:opacity-50";
 const KARTU = "rounded-2xl border border-slate-800 bg-slate-900 p-4";
+const TOMBOL_MODE =
+  "min-h-10 shrink-0 rounded-xl px-4 text-sm font-bold transition-colors";
 
 const WARNA_STATUS: Record<string, string> = {
   Dijadwalkan: "text-sky-200",
@@ -55,10 +68,11 @@ type Isian = Record<string, string>;
 
 const pesanGalat = (error: unknown, cadangan: string) =>
   error instanceof Error ? error.message : cadangan;
-const bacaRupiah = (teks: string) => {
-  const digit = teks.replace(/\D/g, "");
-  return digit === "" ? 0 : Number(digit);
-};
+
+/** Kunci kelompok anggaran pelatihan: divisi rencananya, tanpa rencana = Umum. */
+const kunciKelompok = (data: RencanaTahunan, idRencana: string | undefined) =>
+  data.rencana.find((r) => r.id_rencana === idRencana)?.id_divisi ??
+  KELOMPOK_UMUM;
 
 function useKirim(setPesan: (pesan: string) => void) {
   const kirimRef = useRef(false);
@@ -86,11 +100,14 @@ function useKirim(setPesan: (pesan: string) => void) {
 
 export function PelatihanWorkspace({
   karyawan,
+  divisi,
   bolehUbah,
 }: {
   karyawan: BarisKaryawan[];
+  divisi: Divisi[];
   bolehUbah: boolean;
 }) {
+  const [mode, setMode] = useState<"pelatihan" | "rencana">("pelatihan");
   const [tahun, setTahun] = useState<number | null>(null);
   const [daftar, setDaftar] = useState<Pelatihan[]>([]);
   const [dipilih, setDipilih] = useState<string | null>(null);
@@ -115,128 +132,160 @@ export function PelatihanWorkspace({
   const pilihanTahun = Array.from({ length: 6 }, (_, i) => tahunIni + 1 - i);
 
   return (
-    <DaftarRincian
-      adaPilihan={Boolean(form || dipilih)}
-      onKembali={() => {
-        setForm(null);
-        setDipilih(null);
-      }}
-      daftar={
-        <div className={`${KARTU} space-y-3`}>
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <label htmlFor="pelatihan-tahun" className={LABEL}>
-                Tahun
-              </label>
-              <select
-                id="pelatihan-tahun"
-                value={tahun ?? tahunIni}
-                onChange={(e) => {
-                  setDipilih(null);
-                  setTahun(Number(e.target.value));
-                }}
-                className={KELAS}
-              >
-                {pilihanTahun.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {bolehUbah ? (
-              <button
-                id="pelatihan-baru"
-                type="button"
-                className={TOMBOL_KEDUA}
-                onClick={() => {
-                  setDipilih(null);
-                  setForm({
-                    tanggal_mulai: hariIni,
-                    tanggal_selesai: hariIni,
-                    biaya: "",
-                  });
-                }}
-              >
-                Pelatihan baru
-              </button>
-            ) : null}
-          </div>
-          {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
-          <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
-            {daftar.map((p) => (
-              <li key={p.id_pelatihan}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setForm(null);
-                    setDipilih(p.id_pelatihan);
-                  }}
-                  className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_pelatihan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
-                >
-                  <span className="block truncate font-semibold text-white">
-                    {p.nama}
-                  </span>
-                  <span className="block truncate text-xs text-slate-400">
-                    <span className={WARNA_STATUS[p.status] ?? ""}>
-                      {p.status}
-                    </span>{" "}
-                    • {p.tanggal_mulai}
-                    {p.tanggal_selesai !== p.tanggal_mulai
-                      ? ` s.d. ${p.tanggal_selesai}`
-                      : ""}{" "}
-                    • {p.jumlah_peserta ?? 0} peserta
-                  </span>
-                </button>
-              </li>
-            ))}
-            {daftar.length === 0 ? (
-              <li className="text-sm text-slate-400">
-                Belum ada pelatihan di tahun ini.
-              </li>
-            ) : null}
-          </ul>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div role="tablist" className="flex flex-wrap gap-2">
+          {(
+            [
+              ["pelatihan", "Pelatihan"],
+              ["rencana", "Rencana dan anggaran"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              id={`pelatihan-mode-${id}`}
+              type="button"
+              role="tab"
+              aria-selected={mode === id}
+              onClick={() => setMode(id)}
+              className={`${TOMBOL_MODE} ${mode === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-      }
-    >
-      <div className="min-w-0">
-        {form ? (
-          <FormPelatihan
-            awal={form}
-            onBatal={() => setForm(null)}
-            onTersimpan={(id) => {
-              setForm(null);
-              setDipilih(id);
-              muat();
+        <div>
+          <label htmlFor="pelatihan-tahun" className={LABEL}>
+            Tahun
+          </label>
+          <select
+            id="pelatihan-tahun"
+            value={tahun ?? tahunIni}
+            onChange={(e) => {
+              setDipilih(null);
+              setTahun(Number(e.target.value));
             }}
-          />
-        ) : dipilih ? (
-          <RincianPelatihan
-            key={dipilih}
-            idPelatihan={dipilih}
-            karyawan={karyawan}
-            bolehUbah={bolehUbah}
-            onUbah={(p) =>
-              setForm({
-                id_pelatihan: p.id_pelatihan,
-                nama: p.nama,
-                penyelenggara: p.penyelenggara ?? "",
-                lokasi: p.lokasi ?? "",
-                tanggal_mulai: p.tanggal_mulai,
-                tanggal_selesai: p.tanggal_selesai,
-                biaya: p.biaya ? p.biaya.toLocaleString("id-ID") : "",
-                keterangan: p.keterangan ?? "",
-              })
-            }
-            onBerubah={muat}
-          />
-        ) : (
-          <p className={`${KARTU} text-sm text-slate-400`}>
-            Pilih pelatihan untuk melihat pesertanya.
-          </p>
-        )}
+            className={KELAS}
+          >
+            {pilihanTahun.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
-    </DaftarRincian>
+      {mode === "rencana" ? (
+        <RencanaPelatihan tahun={tahun} divisi={divisi} bolehUbah={bolehUbah} />
+      ) : (
+        <DaftarRincian
+          adaPilihan={Boolean(form || dipilih)}
+          onKembali={() => {
+            setForm(null);
+            setDipilih(null);
+          }}
+          daftar={
+            <div className={`${KARTU} space-y-3`}>
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <h3 className="text-sm font-bold text-white">
+                  Pelatihan ({daftar.length})
+                </h3>
+                {bolehUbah ? (
+                  <button
+                    id="pelatihan-baru"
+                    type="button"
+                    className={TOMBOL_KEDUA}
+                    onClick={() => {
+                      setDipilih(null);
+                      setForm({
+                        tanggal_mulai: hariIni,
+                        tanggal_selesai: hariIni,
+                        biaya: "",
+                      });
+                    }}
+                  >
+                    Pelatihan baru
+                  </button>
+                ) : null}
+              </div>
+              {pesan ? <p className="text-sm text-amber-200">{pesan}</p> : null}
+              <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
+                {daftar.map((p) => (
+                  <li key={p.id_pelatihan}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm(null);
+                        setDipilih(p.id_pelatihan);
+                      }}
+                      className={`w-full rounded-xl px-3 py-2 text-left ${dipilih === p.id_pelatihan ? "bg-sky-500/20" : "hover:bg-slate-800"}`}
+                    >
+                      <span className="block truncate font-semibold text-white">
+                        {p.nama}
+                      </span>
+                      <span className="block truncate text-xs text-slate-400">
+                        <span className={WARNA_STATUS[p.status] ?? ""}>
+                          {p.status}
+                        </span>{" "}
+                        • {p.tanggal_mulai}
+                        {p.tanggal_selesai !== p.tanggal_mulai
+                          ? ` s.d. ${p.tanggal_selesai}`
+                          : ""}{" "}
+                        • {p.jumlah_peserta ?? 0} peserta
+                      </span>
+                    </button>
+                  </li>
+                ))}
+                {daftar.length === 0 ? (
+                  <li className="text-sm text-slate-400">
+                    Belum ada pelatihan di tahun ini.
+                  </li>
+                ) : null}
+              </ul>
+            </div>
+          }
+        >
+          <div className="min-w-0">
+            {form ? (
+              <FormPelatihan
+                awal={form}
+                onBatal={() => setForm(null)}
+                onTersimpan={(id) => {
+                  setForm(null);
+                  setDipilih(id);
+                  muat();
+                }}
+              />
+            ) : dipilih ? (
+              <RincianPelatihan
+                key={dipilih}
+                idPelatihan={dipilih}
+                karyawan={karyawan}
+                bolehUbah={bolehUbah}
+                onUbah={(p) =>
+                  setForm({
+                    id_pelatihan: p.id_pelatihan,
+                    nama: p.nama,
+                    penyelenggara: p.penyelenggara ?? "",
+                    lokasi: p.lokasi ?? "",
+                    tanggal_mulai: p.tanggal_mulai,
+                    tanggal_selesai: p.tanggal_selesai,
+                    biaya: p.biaya ? p.biaya.toLocaleString("id-ID") : "",
+                    keterangan: p.keterangan ?? "",
+                    id_rencana: p.id_rencana ?? "",
+                  })
+                }
+                onBerubah={muat}
+              />
+            ) : (
+              <p className={`${KARTU} text-sm text-slate-400`}>
+                Pilih pelatihan untuk melihat pesertanya.
+              </p>
+            )}
+          </div>
+        </DaftarRincian>
+      )}
+    </div>
   );
 }
 
@@ -251,20 +300,77 @@ function FormPelatihan({
 }) {
   const [isi, setIsi] = useState<Isian>(awal);
   const [pesan, setPesan] = useState("");
+  const [anggaran, setAnggaran] = useState<RencanaTahunan | null>(null);
   const { sibuk, jalankan } = useKirim(setPesan);
   const ubah = (kunci: string, nilai: string) =>
     setIsi((lama) => ({ ...lama, [kunci]: nilai }));
 
+  // Rencana dan sisa pagu dibaca untuk tahun tanggal mulai (§26.3, §26.4).
+  const tahunMulai = Number((isi.tanggal_mulai ?? "").slice(0, 4)) || 0;
+  useEffect(() => {
+    let aktif = true;
+    setAnggaran(null);
+    if (tahunMulai < 2000 || tahunMulai > 2100) return;
+    ambilRencanaPelatihan(tahunMulai)
+      .then((d) => {
+        if (aktif) setAnggaran(d);
+      })
+      .catch(() => undefined);
+    return () => {
+      aktif = false;
+    };
+  }, [tahunMulai]);
+
+  const pilihanRencana =
+    anggaran?.rencana.filter((r) => r.status !== "Dibatalkan") ?? [];
+  const rencanaTahunLain = Boolean(
+    anggaran &&
+      isi.id_rencana &&
+      !pilihanRencana.some((r) => r.id_rencana === isi.id_rencana),
+  );
+  const biayaBaru = bacaRupiah(isi.biaya ?? "");
+  const kelompok = anggaran
+    ? anggaran.kelompok.find(
+        (k) => k.kunci === kunciKelompok(anggaran, isi.id_rencana),
+      )
+    : undefined;
+  // Pelatihan yang diubah sudah terhitung di kelompok yang sama: biaya lamanya
+  // dikembalikan dulu supaya tidak terhitung dua kali.
+  const biayaLama =
+    anggaran &&
+    kelompok &&
+    awal.id_pelatihan &&
+    Number((awal.tanggal_mulai ?? "").slice(0, 4)) === tahunMulai &&
+    kunciKelompok(anggaran, awal.id_rencana) === kelompok.kunci
+      ? bacaRupiah(awal.biaya ?? "")
+      : 0;
+  const sisaSesudah =
+    kelompok && kelompok.sisa !== null
+      ? kelompok.sisa + biayaLama - biayaBaru
+      : null;
+  const lewatPagu = sisaSesudah !== null && sisaSesudah < 0;
+
   const simpan = async () => {
+    const rencana = pilihanRencana.find((r) => r.id_rencana === isi.id_rencana);
     const lanjut = await konfirmasiData([
       { label: "Nama", nilai: isi.nama },
       { label: "Penyelenggara", nilai: isi.penyelenggara },
       { label: "Mulai", nilai: isi.tanggal_mulai },
       { label: "Selesai", nilai: isi.tanggal_selesai },
+      { label: "Biaya total", nilai: formatRupiah(biayaBaru) },
       {
-        label: "Biaya total",
-        nilai: formatRupiah(bacaRupiah(isi.biaya ?? "")),
+        label: "Rencana",
+        nilai: rencana ? rencana.nama : "Di luar rencana (Umum)",
       },
+      ...(lewatPagu
+        ? [
+            {
+              label: "Pagu",
+              nilai: `Melewati pagu ${kelompok?.nama ?? ""} sebesar ${formatRupiah(-(sisaSesudah ?? 0))}; tetap disimpan dan ditandai.`,
+              peringatan: true,
+            },
+          ]
+        : []),
     ]);
     if (!lanjut) return;
     let id = "";
@@ -272,7 +378,8 @@ function FormPelatihan({
       id = (
         await simpanPelatihan({
           ...isi,
-          biaya: bacaRupiah(isi.biaya ?? ""),
+          biaya: biayaBaru,
+          id_rencana: isi.id_rencana || null,
         })
       ).id_pelatihan;
       return "Pelatihan tersimpan.";
@@ -332,6 +439,40 @@ function FormPelatihan({
           />
         </div>
         <div className="sm:col-span-2">
+          <label htmlFor="pelatihan-rencana" className={LABEL}>
+            Rencana (tahun {tahunMulai || "-"})
+          </label>
+          <PilihCari
+            id="pelatihan-rencana"
+            value={isi.id_rencana ?? ""}
+            onChange={(e) => ubah("id_rencana", e.target.value)}
+            className={KELAS}
+          >
+            <option value="">Di luar rencana (dibebankan ke Umum)</option>
+            {pilihanRencana.map((r) => (
+              <option key={r.id_rencana} value={r.id_rencana}>
+                {r.nama} • {r.nama_divisi ?? "Umum"}
+              </option>
+            ))}
+          </PilihCari>
+          {rencanaTahunLain ? (
+            <p className="mt-1 text-xs text-amber-200">{PESAN_RENCANA_TAHUN}</p>
+          ) : null}
+          {kelompok ? (
+            <p
+              id="pelatihan-sisa-pagu"
+              className={`mt-1 text-xs ${lewatPagu ? "text-amber-200" : "text-slate-400"}`}
+            >
+              {kelompok.pagu === null
+                ? `${kelompok.nama} belum punya pagu tahun ${tahunMulai}.`
+                : `Sisa pagu ${kelompok.nama} ${tahunMulai}: ${formatRupiah(kelompok.sisa ?? 0)}; sesudah disimpan ${formatRupiah(sisaSesudah ?? 0)}.`}
+              {lewatPagu
+                ? " Simpanan ini melewati pagu; tetap disimpan dan ditandai."
+                : ""}
+            </p>
+          ) : null}
+        </div>
+        <div className="sm:col-span-2">
           <label htmlFor="pelatihan-keterangan" className={LABEL}>
             Keterangan
           </label>
@@ -380,6 +521,7 @@ function RincianPelatihan({
   onBerubah: () => void;
 }) {
   const [data, setData] = useState<Pelatihan | null>(null);
+  const [rencana, setRencana] = useState<RencanaTertaut | null>(null);
   const [peserta, setPeserta] = useState<Peserta[]>([]);
   const [sertifikatAktif, setSertifikatAktif] = useState(true);
   const [tambah, setTambah] = useState("");
@@ -392,6 +534,7 @@ function RincianPelatihan({
     ambilRincianPelatihan(idPelatihan)
       .then((d) => {
         setData(d.pelatihan);
+        setRencana(d.rencana);
         setPeserta(d.peserta);
         setSertifikatAktif(d.sertifikat_aktif);
       })
@@ -471,6 +614,11 @@ function RincianPelatihan({
             {peserta.length > 0 && data.biaya > 0
               ? ` • ±${formatRupiah(Math.round(data.biaya / peserta.length))} per peserta`
               : ""}
+          </p>
+          <p className="text-xs text-slate-400">
+            {rencana
+              ? `Rencana: ${rencana.nama} • ${rencana.status} • ${rencana.nama_divisi ?? "Umum"}`
+              : "Di luar rencana (dibebankan ke Umum)"}
           </p>
           {dibatalkan ? (
             <p className="text-xs text-slate-400">

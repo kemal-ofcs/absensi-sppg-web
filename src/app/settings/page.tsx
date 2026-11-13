@@ -9,6 +9,7 @@ import { LicenseCard } from "@/components/license/LicenseCard";
 import { MailSettingsCard } from "@/components/MailSettingsCard";
 import { NotifikasiTelegramCard } from "@/components/NotifikasiTelegramCard";
 import { PasswordRecoveryCard } from "@/components/PasswordRecoveryCard";
+import { TransferBankCard } from "@/components/TransferBankCard";
 import { TwoFactorCard } from "@/components/TwoFactorCard";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon } from "@/components/ui/Icon";
@@ -142,6 +143,7 @@ const SETTINGS_TABS = [
   { id: "absensi", icon: "scanner", label: "Absensi" },
   { id: "data", icon: "database", label: "Data & Sinkronisasi" },
   { id: "notifikasi", icon: "share", label: "Notifikasi" },
+  { id: "transfer", icon: "upload", label: "Transfer Bank" },
   { id: "lisensi", icon: "document", label: "Lisensi" },
 ] as const;
 
@@ -1181,6 +1183,9 @@ export default function SettingsPage() {
     }
     // Konfigurasi Telegram memegang token bot: hanya Superadmin.
     if (id === "notifikasi") return isSuperadmin;
+    // Bank, rekening debet, dan format berkas transfer gaji (prd-hris.md
+    // §27.5): `payroll.config.manage`, khusus Superadmin.
+    if (id === "transfer") return hasPermission(user, "payroll.config.manage");
     // LicenseCard tidak merender apa pun pada build Web tanpa penegakan lisensi.
     if (id === "lisensi") return isSuperadmin && Boolean(licenseStatus);
     return true;
@@ -1400,6 +1405,11 @@ export default function SettingsPage() {
             <div hidden={activeTab !== "notifikasi"}>
               <NotifikasiTelegramCard />
             </div>
+          ) : null}
+
+          {hasPermission(user, "payroll.config.manage") &&
+          activeTab === "transfer" ? (
+            <TransferBankCard />
           ) : null}
 
           {hasPermission(user, "settings.manage") ? (

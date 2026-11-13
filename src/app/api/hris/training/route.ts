@@ -18,10 +18,12 @@ import { assertSameOriginMutation } from "@/lib/server/http/request-security";
 import {
   berkasSertifikat,
   daftarPelatihan,
+  rencanaTahun,
   rincianPelatihan,
   riwayatPelatihan,
   simpanPelatihan,
   simpanPeserta,
+  simpanRencana,
   simpanSertifikat,
 } from "@/lib/services/hr-pelatihan";
 
@@ -42,10 +44,19 @@ const IZIN = {
   simpan: ["hr.training.manage"],
   peserta: ["hr.training.manage"],
   sertifikat: ["hr.training.manage"],
+  // Fase 11 (§26.6, Q-145): tanpa izin baru.
+  rencana: BACA,
+  rencana_simpan: ["hr.training.manage"],
 } as const satisfies Record<string, readonly PermissionKey[]>;
 type Aksi = keyof typeof IZIN;
 
-const AKSI_BACA = new Set<Aksi>(["daftar", "rincian", "riwayat", "berkas"]);
+const AKSI_BACA = new Set<Aksi>([
+  "daftar",
+  "rincian",
+  "riwayat",
+  "berkas",
+  "rencana",
+]);
 
 const bodySchema = z
   .object({
@@ -90,6 +101,10 @@ export async function POST(request: NextRequest) {
         return noStoreJson(await simpanPeserta(db, actor, draft));
       case "sertifikat":
         return noStoreJson(await simpanSertifikat(db, actor, draft));
+      case "rencana":
+        return noStoreJson(await rencanaTahun(db, tahun ?? null));
+      case "rencana_simpan":
+        return noStoreJson(await simpanRencana(db, actor, draft));
     }
   } catch (error) {
     return toApiErrorResponse(error);

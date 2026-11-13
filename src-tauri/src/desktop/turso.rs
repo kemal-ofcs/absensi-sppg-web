@@ -2534,6 +2534,7 @@ impl TursoClient {
                   dibatalkan_oleh TEXT,
                   dibatalkan_pada TEXT,
                   alasan_batal TEXT,
+                  id_rencana TEXT,
                   CHECK (tanggal_selesai >= tanggal_mulai)
                 );"#,
                 vec![],
@@ -2565,6 +2566,106 @@ impl TursoClient {
             ),
             Statement::new(
                 "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_peserta_dokumen ON hr_pelatihan_peserta(id_dokumen);",
+                vec![],
+            ),
+            // HRIS fase 11 (v43): pagu dan rencana pelatihan, KHUSUS CLOUD
+            // seperti induknya. Status, realisasi, dan tanda tidak disimpan.
+            // Indeks `hr_pelatihan.id_rencana` dibuat sesudah `ensure_column`
+            // (aturan 20). DDL WAJIB identik dengan `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_pelatihan_anggaran (
+                  id_anggaran TEXT PRIMARY KEY,
+                  tahun INTEGER NOT NULL CHECK (tahun BETWEEN 2000 AND 2100),
+                  id_divisi TEXT,
+                  nominal INTEGER NOT NULL CHECK (nominal >= 0),
+                  catatan TEXT,
+                  dicatat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  diubah_oleh TEXT,
+                  diubah_pada TEXT
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_anggaran_tahun ON hr_pelatihan_anggaran(tahun);",
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS hr_pelatihan_rencana (
+                  id_rencana TEXT PRIMARY KEY,
+                  tahun INTEGER NOT NULL CHECK (tahun BETWEEN 2000 AND 2100),
+                  nama TEXT NOT NULL,
+                  id_divisi TEXT,
+                  bulan INTEGER CHECK (bulan IS NULL OR bulan BETWEEN 1 AND 12),
+                  peserta_rencana INTEGER NOT NULL DEFAULT 0 CHECK (peserta_rencana >= 0),
+                  biaya_rencana INTEGER NOT NULL DEFAULT 0 CHECK (biaya_rencana >= 0),
+                  penyelenggara TEXT,
+                  keterangan TEXT,
+                  dicatat_oleh TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  diubah_oleh TEXT,
+                  diubah_pada TEXT,
+                  dibatalkan_oleh TEXT,
+                  dibatalkan_pada TEXT,
+                  alasan_batal TEXT
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_rencana_tahun ON hr_pelatihan_rencana(tahun);",
+                vec![],
+            ),
+            // HRIS fase 12 (v44): Pengaturan transfer bank, KHUSUS CLOUD (pola
+            // `app_telegram_setting`). Tanpa UNIQUE selain PK; nama unik
+            // ditegakkan aplikasi. Tidak ada hapus bank: `hr_profil.bank`
+            // merujuk namanya. DDL WAJIB identik dengan `db-migrations.ts`.
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS app_bank (
+                  id_bank TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  kode TEXT CHECK (kode IS NULL OR (length(kode) = 3 AND kode NOT GLOB '*[^0-9]*')),
+                  alias TEXT NOT NULL DEFAULT '[]',
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  is_bawaan INTEGER NOT NULL DEFAULT 0 CHECK (is_bawaan IN (0, 1)),
+                  diubah_oleh TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS app_bank_rekening (
+                  id_rekening TEXT PRIMARY KEY,
+                  id_bank TEXT NOT NULL,
+                  no_rekening TEXT NOT NULL CHECK (length(no_rekening) BETWEEN 5 AND 20 AND no_rekening NOT GLOB '*[^0-9]*'),
+                  nama_rekening TEXT NOT NULL,
+                  keterangan TEXT,
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  diubah_oleh TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );"#,
+                vec![],
+            ),
+            Statement::new(
+                r#"CREATE TABLE IF NOT EXISTS app_bank_format (
+                  id_format TEXT PRIMARY KEY,
+                  nama TEXT NOT NULL,
+                  id_bank TEXT,
+                  jenis TEXT NOT NULL CHECK (jenis IN ('csv', 'txt', 'xlsx')),
+                  pemisah TEXT CHECK (pemisah IS NULL OR pemisah IN (',', ';', char(9), '|')),
+                  pakai_judul INTEGER NOT NULL DEFAULT 1 CHECK (pakai_judul IN (0, 1)),
+                  kutip INTEGER NOT NULL DEFAULT 0 CHECK (kutip IN (0, 1)),
+                  desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1)),
+                  cakupan TEXT NOT NULL DEFAULT 'semua' CHECK (cakupan IN ('semua', 'sesama', 'antarbank')),
+                  kolom TEXT NOT NULL,
+                  maks_berita INTEGER CHECK (maks_berita IS NULL OR maks_berita > 0),
+                  is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+                  diubah_oleh TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  CHECK ((jenis = 'xlsx') = (pemisah IS NULL))
+                );"#,
                 vec![],
             ),
             Statement::new(
@@ -3932,12 +4033,19 @@ impl TursoClient {
             ("hr_pengajuan_keputusan", "nominal_disetujui", "ALTER TABLE hr_pengajuan_keputusan ADD COLUMN nominal_disetujui INTEGER;"),
             // Karyawan keluar (v40). Hanya ditulis transaksi cloud Berlakukan/Batal.
             ("master_data", "id_keluar", "ALTER TABLE master_data ADD COLUMN id_keluar TEXT;"),
+            // Tautan pelatihan ke rencananya (v43). NULL = di luar rencana.
+            ("hr_pelatihan", "id_rencana", "ALTER TABLE hr_pelatihan ADD COLUMN id_rencana TEXT;"),
         ] {
             self.ensure_column(table, column, sql).await?;
         }
         // Sesudah loop di atas (aturan 20): kolomnya baru lahir di sana.
         self.query_one(
             "CREATE INDEX IF NOT EXISTS idx_hr_pengajuan_tukar ON hr_pengajuan(id_karyawan_tukar, tanggal_mulai);",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_rencana ON hr_pelatihan(id_rencana);",
             vec![],
         )
         .await?;
@@ -4397,6 +4505,38 @@ impl TursoClient {
             vec![],
         )
         .await?;
+        // HRIS fase 11 (v43): pagu dan rencana pelatihan, dua tabel khusus
+        // cloud dan kolom `hr_pelatihan.id_rencana`. Tanpa seed.
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (43, 'hris-pelatihan-rencana', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2039, 'hris-pelatihan-rencana-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        // HRIS fase 12 (v44): Pengaturan transfer bank, tiga tabel khusus
+        // cloud. Bank bawaan dari berkas JSON yang sama dengan Web; yang sudah
+        // disunting tidak ditimpa. Tanpa seed rekening dan format (§27.2).
+        self.execute_pipeline(
+            super::transfer::bank_bawaan()
+                .iter()
+                .map(|bank| Statement::new(super::transfer::SEED_BANK_SQL, super::transfer::seed_bank_args(bank)))
+                .collect(),
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (44, 'payroll-transfer', datetime('now'));",
+            vec![],
+        )
+        .await?;
+        self.query_one(
+            "INSERT OR IGNORE INTO schema_migration (version, name, applied_at) VALUES (-2040, 'payroll-transfer-v1', datetime('now'));",
+            vec![],
+        )
+        .await?;
 
         Ok(())
     }
@@ -4611,7 +4751,7 @@ impl TursoClient {
                 // Sentinel WAJIB dinaikkan setiap kali ensure_schema menambah
                 // tabel atau kolom — nilainya di sini dan pada INSERT di atas
                 // harus selalu sama.
-                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2038;",
+                "SELECT COUNT(*) AS total FROM schema_migration WHERE version = -2040;",
                 vec![],
             )
             .await
@@ -12351,7 +12491,7 @@ mod tests {
                     "DROP TABLE drv_upah_bayar;
                      DROP TABLE drv_upah_bayar_baris;
                      ALTER TABLE drv_laporan DROP COLUMN lokasi_palsu;
-                     DELETE FROM schema_migration WHERE version IN (35, 36, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (35, 36, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12394,7 +12534,7 @@ mod tests {
                      ALTER TABLE hr_pengajuan DROP COLUMN id_shift_asal;
                      ALTER TABLE hr_pengajuan DROP COLUMN id_shift_tukar;
                      DELETE FROM hr_jenis_pengajuan WHERE id_jenis IN ('jns-lembur', 'jns-tukar-shift', 'jns-dinas-luar');
-                     DELETE FROM schema_migration WHERE version IN (38, 39, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (38, 39, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12438,7 +12578,7 @@ mod tests {
                      ALTER TABLE hr_pengajuan_keputusan DROP COLUMN nominal_disetujui;
                      DELETE FROM hr_jenis_pengajuan WHERE kelompok = 'Reimburse';
                      DELETE FROM keu_akun WHERE id_akun = 'akun-beban-reimburse';
-                     DELETE FROM schema_migration WHERE version IN (39, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (39, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12588,7 +12728,7 @@ mod tests {
                     "DROP TABLE hr_sp; DROP TABLE hr_keluar; DROP TABLE hr_keluar_rincian;
                      DROP TABLE hr_keluar_alasan;
                      ALTER TABLE master_data DROP COLUMN id_keluar;
-                     DELETE FROM schema_migration WHERE version IN (40, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (40, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12819,7 +12959,7 @@ mod tests {
                     "DROP TABLE hr_kinerja_template; DROP TABLE hr_kinerja_aspek;
                      DROP TABLE hr_kinerja_jabatan; DROP TABLE hr_kinerja_penilaian;
                      DROP TABLE hr_kinerja_nilai; DROP TABLE hr_kinerja_keputusan;
-                     DELETE FROM schema_migration WHERE version IN (41, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (41, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12867,7 +13007,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE hr_lowongan; DROP TABLE hr_pelamar; DROP TABLE hr_pelamar_tahap;
                      DROP TABLE hr_pelamar_berkas; DROP TABLE hr_pelatihan; DROP TABLE hr_pelatihan_peserta;
-                     DELETE FROM schema_migration WHERE version IN (42, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (42, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -12881,7 +13021,133 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .expect("cek skema");
-            assert_eq!((tabel, indeks, isi), (6, 9, 0), "database bersentinel -2037 tidak diperbarui");
+            // 9 indeks v42 + 3 indeks pola `idx_hr_pelatihan_%` milik v43.
+            assert_eq!((tabel, indeks, isi), (6, 12, 0), "database bersentinel -2037 tidak diperbarui");
+        });
+    }
+
+    /// Database bersentinel `-2038` (v42) menerima dua tabel rencana dan pagu
+    /// pelatihan, kolom `hr_pelatihan.id_rencana`, dan ketiga indeksnya, tanpa
+    /// menyentuh pelatihan yang sudah ada (khusus cloud, Q-138).
+    #[test]
+    fn sentinel_2038_memicu_skema_rencana_pelatihan() {
+        assert!(
+            ["hr_pelatihan_anggaran", "hr_pelatihan_rencana"]
+                .iter()
+                .all(|tabel| SNAPSHOT_SOURCES.iter().all(|s| s.table != *tabel)),
+            "tabel rencana/pagu pelatihan khusus cloud, tidak boleh ikut snapshot"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2038.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+            connection
+                .execute_batch(
+                    "DROP TABLE hr_pelatihan_anggaran; DROP TABLE hr_pelatihan_rencana;
+                     DROP INDEX idx_hr_pelatihan_rencana;
+                     ALTER TABLE hr_pelatihan DROP COLUMN id_rencana;
+                     INSERT INTO hr_pelatihan (id_pelatihan, nama, tanggal_mulai, tanggal_selesai, biaya, dicatat_oleh)
+                       VALUES ('plt-lama', 'K3 Dasar', '2026-03-02', '2026-03-03', 1500000, 'hrd');
+                     DELETE FROM schema_migration WHERE version IN (43, -2039, -2040);",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+            let (tabel, kolom, indeks): (i64, i64, i64) = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('hr_pelatihan_anggaran', 'hr_pelatihan_rencana')),
+                            (SELECT COUNT(*) FROM pragma_table_info('hr_pelatihan') WHERE name = 'id_rencana'),
+                            (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('idx_hr_pelatihan_anggaran_tahun', 'idx_hr_pelatihan_rencana_tahun', 'idx_hr_pelatihan_rencana'));",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("cek skema");
+            assert_eq!((tabel, kolom, indeks), (2, 1, 3), "database bersentinel -2038 tidak diperbarui");
+            let (nama, biaya, rencana): (String, i64, Option<String>) = connection
+                .query_row(
+                    "SELECT nama, biaya, id_rencana FROM hr_pelatihan WHERE id_pelatihan = 'plt-lama';",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("pelatihan lama");
+            assert_eq!((nama.as_str(), biaya, rencana), ("K3 Dasar", 1_500_000, None));
+        });
+    }
+
+    /// Database bersentinel `-2039` (v43) menerima tiga tabel Pengaturan
+    /// transfer dan seed bank bawaan; bank yang sudah disunting tidak ditimpa
+    /// saat skema dijalankan ulang (khusus cloud, §27.2).
+    #[test]
+    fn sentinel_2039_memicu_skema_transfer() {
+        const TABEL: [&str; 3] = ["app_bank", "app_bank_rekening", "app_bank_format"];
+        assert!(
+            TABEL.iter().all(|tabel| SNAPSHOT_SOURCES.iter().all(|s| s.table != *tabel)),
+            "tabel Pengaturan transfer khusus cloud, tidak boleh ikut snapshot"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime uji");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("direktori sementara");
+            let hub = dir.path().join("sppg-hub.db");
+            let client = TursoClient::local_file(
+                Url::parse("https://sentinel-2039.sppg.invalid").expect("origin uji"),
+                &hub,
+                Client::new(),
+            );
+            client.ensure_schema().await.expect("provisioning lokal");
+            let connection = rusqlite::Connection::open(&hub).expect("buka hub");
+            connection
+                .execute_batch(
+                    "DROP TABLE app_bank; DROP TABLE app_bank_rekening; DROP TABLE app_bank_format;
+                     DELETE FROM schema_migration WHERE version IN (44, -2040);",
+                )
+                .expect("siapkan database lama");
+
+            client.ensure_schema_current().await.expect("skema mutakhir");
+            let (tabel, bank): (i64, i64) = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('app_bank', 'app_bank_rekening', 'app_bank_format')),
+                            (SELECT COUNT(*) FROM app_bank WHERE is_bawaan = 1 AND is_aktif = 1);",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("cek skema");
+            assert_eq!(
+                (tabel, bank),
+                (3, crate::desktop::transfer::bank_bawaan().len() as i64),
+                "database bersentinel -2039 tidak diperbarui"
+            );
+            for kode in ["014", "008", "451"] {
+                let alias: String = connection
+                    .query_row("SELECT alias FROM app_bank WHERE kode = ?1;", [kode], |row| row.get(0))
+                    .expect("bank wajib BCA, Mandiri, BSI (Q-150)");
+                let alias: Vec<String> = serde_json::from_str(&alias).expect("alias larik JSON");
+                assert!(!alias.is_empty());
+            }
+
+            connection
+                .execute_batch(
+                    "UPDATE app_bank SET nama = 'Bank BCA', kode = NULL WHERE id_bank = 'bnk-014';
+                     DELETE FROM schema_migration WHERE version IN (44, -2040);",
+                )
+                .expect("sunting bank bawaan");
+            client.ensure_schema_current().await.expect("skema dijalankan ulang");
+            let (nama, kode): (String, Option<String>) = connection
+                .query_row("SELECT nama, kode FROM app_bank WHERE id_bank = 'bnk-014';", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .expect("bank BCA");
+            assert_eq!((nama.as_str(), kode), ("Bank BCA", None), "seed menimpa bank yang disunting");
         });
     }
 
@@ -12913,7 +13179,7 @@ mod tests {
                      ALTER TABLE master_data DROP COLUMN id_divisi;
                      ALTER TABLE master_data DROP COLUMN id_jabatan;
                      ALTER TABLE master_data DROP COLUMN id_atasan;
-                     DELETE FROM schema_migration WHERE version IN (36, -2032, -2033, -2034, -2035, -2036, -2037, -2038);
+                     DELETE FROM schema_migration WHERE version IN (36, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);
                      INSERT INTO master_data (id_unik, kode_karyawan, nama, divisi, jabatan_status, id_shift) VALUES
                        ('K1', 'K1', 'Ana', 'Gudang', 'Staff', 1),
                        ('K2', 'K2', 'Budi', ' gudang ', '-', 1);
@@ -12986,7 +13252,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE personil_wajah;
                      ALTER TABLE absensi_foto DROP COLUMN wajah_vonis;
-                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2015, -2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -13026,7 +13292,7 @@ mod tests {
                      DROP TABLE inventory_barang;
                      DROP TABLE inventory_mutasi;
                      DROP TABLE inventory_unit;
-                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2016, -2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -13065,7 +13331,7 @@ mod tests {
                     "DROP TABLE keu_akun;
                      DROP TABLE keu_jurnal;
                      DROP TABLE keu_jurnal_baris;
-                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2017, -2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -13105,7 +13371,7 @@ mod tests {
                     "DROP TABLE keu_pinjaman;
                      DROP TABLE keu_pinjaman_mutasi;
                      DROP TABLE keu_pinjaman_tunda;
-                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2018, -2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -13142,7 +13408,7 @@ mod tests {
             connection
                 .execute_batch(
                     "DROP TABLE keu_tutup_buku;
-                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2019, -2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 
@@ -13180,7 +13446,7 @@ mod tests {
                     "ALTER TABLE tbl_shift DROP COLUMN hari_kerja;
                      INSERT INTO tbl_shift (kode_shift, nama_shift, jam_masuk, jam_pulang, jam_kerja_normal_menit)
                      VALUES (77, 'Lama', '07:00', '15:00', 480);
-                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038);",
+                     DELETE FROM schema_migration WHERE version IN (-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028, -2029, -2030, -2031, -2032, -2033, -2034, -2035, -2036, -2037, -2038, -2039, -2040);",
                 )
                 .expect("siapkan database lama");
 

@@ -7,7 +7,7 @@ use super::{
     portability,
     administration,
     config::DesktopState,
-    accounting, cicilan, driver, face_match, hr_keluar, hr_kinerja, hr_pelatihan, hr_pengajuan, hr_rekrutmen, hris, inventory, inventory_pengajuan, license, loan,
+    accounting, cicilan, driver, face_match, hr_keluar, hr_kinerja, hr_pelatihan, hr_pengajuan, hr_rekrutmen, hris, inventory, inventory_pengajuan, license, loan, transfer,
     tutup_buku,
     models::{
         CommandError, DesktopLoginResult, DesktopRuntimeStatus, DesktopSession, DesktopSyncStatus,
@@ -4057,4 +4057,68 @@ pub async fn desktop_hr_training_certificate_file(state: State<'_, DesktopState>
     require_any_permission(&state, &IZIN_PELATIHAN_BACA)?;
     let turso = state.get_turso_client()?;
     hr_pelatihan::berkas_sertifikat(&turso, &id_berkas).await
+}
+
+/// Rencana dan anggaran pelatihan satu tahun: pagu, rencana beserta status
+/// dan tandanya, dan ringkasan per kelompok (`prd-hris.md` §26.4).
+#[tauri::command]
+pub async fn desktop_hr_training_plan(state: State<'_, DesktopState>, tahun: Option<i64>) -> Result<Value, CommandError> {
+    require_any_permission(&state, &IZIN_PELATIHAN_BACA)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::rencana_tahun(&turso, tahun).await
+}
+
+/// Simpan atau batalkan rencana, simpan atau hapus pagu (`hr.training.manage`).
+#[tauri::command]
+pub async fn desktop_hr_training_plan_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, hr_pelatihan::IZIN_MANAGE)?;
+    let turso = state.get_turso_client()?;
+    hr_pelatihan::simpan_rencana(&turso, &operator.username, &draft).await
+}
+
+/// Pengaturan transfer bank (`prd-hris.md` §27.5). Daftar bank aktif cukup
+/// sesi karena dipakai isian profil keuangan; rekening debet dan format aktif
+/// untuk pemegang kedua izin unduh; semuanya untuk `payroll.config.manage`.
+#[tauri::command]
+pub async fn desktop_transfer_settings(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    let operator = require_session(&state)?;
+    let atur = punya_izin(&operator, transfer::IZIN_PENGATURAN);
+    if atur {
+        require_permission(&state, transfer::IZIN_PENGATURAN)?;
+    }
+    let unduh = transfer::IZIN_UNDUH.iter().all(|izin| punya_izin(&operator, izin));
+    if unduh {
+        for izin in transfer::IZIN_UNDUH {
+            require_permission(&state, izin)?;
+        }
+    }
+    let turso = state.get_turso_client()?;
+    transfer::pengaturan(&turso, atur, unduh).await
+}
+
+/// Simpan atau nonaktifkan satu bank, rekening debet, atau format
+/// (`jenis`), khusus `payroll.config.manage` (Q-173 (a)).
+#[tauri::command]
+pub async fn desktop_transfer_settings_save(
+    state: State<'_, DesktopState>,
+    jenis: String,
+    id: Option<String>,
+    draft: Value,
+) -> Result<Value, CommandError> {
+    let operator = require_permission(&state, transfer::IZIN_PENGATURAN)?;
+    let turso = state.get_turso_client()?;
+    transfer::simpan_pengaturan(&turso, &operator.username, &jenis, id.as_deref(), &draft).await
+}
+
+/// Baris berkas transfer gaji satu run, wajib KEDUA izin unduh (Q-157 (a)):
+/// berkasnya membuka nomor rekening semua karyawan.
+#[tauri::command]
+pub async fn desktop_payroll_transfer(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
+    let mut operator = None;
+    for izin in transfer::IZIN_UNDUH {
+        operator = Some(require_permission(&state, izin)?);
+    }
+    let operator = operator.ok_or_else(CommandError::internal)?;
+    let turso = state.get_turso_client()?;
+    transfer::berkas_transfer(&turso, &operator.username, &draft).await
 }

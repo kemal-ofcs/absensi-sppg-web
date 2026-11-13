@@ -1,0 +1,2659 @@
+{
+  "keterangan": "Vektor uji transfer.rs ↔ transfer.ts (prd-hris.md §27.3). Dibaca transfer.rs (include_str!) dan transfer.test.ts.",
+  "bank": [
+    {
+      "masukan": {
+        "nama": "  Bank  Contoh ",
+        "kode": " 123 ",
+        "alias": [
+          "Contoh",
+          " contoh ",
+          "BANK CONTOH",
+          "",
+          "PT  Bank Contoh Tbk"
+        ]
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "Bank Contoh",
+          "kode": "123",
+          "alias": ["Contoh", "PT Bank Contoh Tbk"],
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": ["Bank Central Asia"]
+      },
+      "nama_lama": "Bank BCA",
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA",
+          "kode": null,
+          "alias": ["Bank Central Asia", "Bank BCA"],
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": []
+      },
+      "nama_lama": " bca ",
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA",
+          "kode": null,
+          "alias": [],
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "kode": ""
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA",
+          "kode": null,
+          "alias": [],
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "kode": "12"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Kode bank harus 3 digit angka."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "kode": "12a"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Kode bank harus 3 digit angka."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "kode": 14
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Kode bank tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "kode": "014"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Nama bank wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Nama bank maksimal 100 karakter."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": "Bank BCA"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Alias tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": ["Bank BCA", 1]
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Alias tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": [
+          "Alias 0",
+          "Alias 1",
+          "Alias 2",
+          "Alias 3",
+          "Alias 4",
+          "Alias 5",
+          "Alias 6",
+          "Alias 7",
+          "Alias 8",
+          "Alias 9",
+          "Alias 10",
+          "Alias 11",
+          "Alias 12",
+          "Alias 13",
+          "Alias 14",
+          "Alias 15",
+          "Alias 16",
+          "Alias 17",
+          "Alias 18",
+          "Alias 19",
+          "Alias 20"
+        ]
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Alias maksimal 20 nama."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": [
+          "Alias 0",
+          "Alias 1",
+          "Alias 2",
+          "Alias 3",
+          "Alias 4",
+          "Alias 5",
+          "Alias 6",
+          "Alias 7",
+          "Alias 8",
+          "Alias 9",
+          "Alias 10",
+          "Alias 11",
+          "Alias 12",
+          "Alias 13",
+          "Alias 14",
+          "Alias 15",
+          "Alias 16",
+          "Alias 17",
+          "Alias 18",
+          "Alias 19"
+        ]
+      },
+      "nama_lama": "Bank Lama",
+      "harapan": {
+        "ok": false,
+        "pesan": "Alias maksimal 20 nama."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "alias": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Alias maksimal 100 karakter."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "warna": "biru"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian 'warna' tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "is_aktif": false
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA",
+          "kode": null,
+          "alias": [],
+          "is_aktif": 0
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "is_aktif": 0
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA",
+          "kode": null,
+          "alias": [],
+          "is_aktif": 0
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "BCA",
+        "is_aktif": "1"
+      },
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Status aktif tidak valid."
+      }
+    },
+    {
+      "masukan": [],
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian tidak valid."
+      }
+    },
+    {
+      "masukan": null,
+      "nama_lama": null,
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian tidak valid."
+      }
+    }
+  ],
+  "rekening": [
+    {
+      "masukan": {
+        "id_bank": " bnk-014 ",
+        "no_rekening": "123-456.7890",
+        "nama_rekening": " PT  Maju ",
+        "keterangan": " Gaji "
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "id_bank": "bnk-014",
+          "no_rekening": "1234567890",
+          "nama_rekening": "PT Maju",
+          "keterangan": "Gaji",
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "12345",
+        "nama_rekening": "PT Maju",
+        "is_aktif": false
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "id_bank": "bnk-014",
+          "no_rekening": "12345",
+          "nama_rekening": "PT Maju",
+          "keterangan": null,
+          "is_aktif": 0
+        }
+      }
+    },
+    {
+      "masukan": {
+        "no_rekening": "1234567890",
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Bank wajib dipilih."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nomor rekening wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": null,
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nomor rekening wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "12a45",
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nomor rekening hanya boleh berisi angka."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "1234",
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nomor rekening harus 5–20 digit."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": 1234567890,
+        "nama_rekening": "PT Maju"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nomor rekening tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "1234567890"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nama pemilik rekening wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "1234567890",
+        "nama_rekening": "PT Maju",
+        "keterangan": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Keterangan maksimal 255 karakter."
+      }
+    },
+    {
+      "masukan": {
+        "id_bank": "bnk-014",
+        "no_rekening": "1234567890",
+        "nama_rekening": "PT Maju",
+        "cabang": "Pusat"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian 'cabang' tidak dikenal."
+      }
+    }
+  ],
+  "format": [
+    {
+      "masukan": {
+        "nama": " BCA  Payroll ",
+        "id_bank": "bnk-014",
+        "jenis": "csv",
+        "pemisah": ";",
+        "kutip": true,
+        "desimal": 0,
+        "cakupan": "sesama",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": " No Rek "
+          },
+          {
+            "isian": "nominal",
+            "judul": "Amount",
+            "teks": null
+          },
+          {
+            "isian": "teks_tetap",
+            "judul": "Kode",
+            "teks": " PAYROLL "
+          },
+          {
+            "isian": "teks_tetap",
+            "judul": "Kosong"
+          }
+        ],
+        "maks_berita": 18
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "BCA Payroll",
+          "id_bank": "bnk-014",
+          "jenis": "csv",
+          "pemisah": ";",
+          "pakai_judul": 1,
+          "kutip": 1,
+          "desimal": 0,
+          "cakupan": "sesama",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "nominal",
+              "judul": "Amount",
+              "teks": null
+            },
+            {
+              "isian": "teks_tetap",
+              "judul": "Kode",
+              "teks": "PAYROLL"
+            },
+            {
+              "isian": "teks_tetap",
+              "judul": "Kosong",
+              "teks": ""
+            }
+          ],
+          "maks_berita": 18,
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "Excel",
+        "jenis": "xlsx",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "Excel",
+          "id_bank": null,
+          "jenis": "xlsx",
+          "pemisah": null,
+          "pakai_judul": 1,
+          "kutip": 0,
+          "desimal": 0,
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            }
+          ],
+          "maks_berita": null,
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "Excel",
+        "jenis": "xlsx",
+        "pemisah": "",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "pakai_judul": 0
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "Excel",
+          "id_bank": null,
+          "jenis": "xlsx",
+          "pemisah": null,
+          "pakai_judul": 0,
+          "kutip": 0,
+          "desimal": 0,
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            }
+          ],
+          "maks_berita": null,
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "Excel",
+        "jenis": "xlsx",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Berkas Excel tidak memakai pemisah."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "Tab",
+        "jenis": "txt",
+        "pemisah": "\t",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "desimal": 1,
+        "is_aktif": false
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "Tab",
+          "id_bank": null,
+          "jenis": "txt",
+          "pemisah": "\t",
+          "pakai_judul": 1,
+          "kutip": 0,
+          "desimal": 1,
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            }
+          ],
+          "maks_berita": null,
+          "is_aktif": 0
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Pemisah tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": " ; ",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Pemisah tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "PDF",
+        "jenis": "pdf",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Jenis berkas tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "cakupan": "lain",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Cakupan tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": []
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Format wajib punya 1–30 kolom."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Format wajib punya 1–30 kolom."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "CSV",
+          "id_bank": null,
+          "jenis": "csv",
+          "pemisah": ",",
+          "pakai_judul": 1,
+          "kutip": 0,
+          "desimal": 0,
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            },
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            }
+          ],
+          "maks_berita": null,
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": "no_rekening"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Format wajib punya 1–30 kolom."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "gaji",
+            "judul": "Gaji"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: isian tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          },
+          {
+            "isian": "nominal"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-2: judul wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "nominal",
+            "judul": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: judul maksimal 60 karakter."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "nominal",
+            "judul": "A\tB"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: judul tidak boleh berisi tab atau baris baru."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "nominal",
+            "judul": 5
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: judul tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "nominal",
+            "judul": "Nominal",
+            "teks": "1"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: teks hanya untuk isian teks tetap."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "teks_tetap",
+            "judul": "Kode",
+            "teks": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: teks maksimal 100 karakter."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "teks_tetap",
+            "judul": "Kode",
+            "teks": "a\nb"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: teks tidak boleh berisi tab atau baris baru."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "teks_tetap",
+            "judul": "Kode",
+            "teks": 7
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: teks tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "nominal",
+            "judul": "Nominal",
+            "lebar": 12
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: Isian 'lebar' tidak dikenal."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": ["nominal"]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kolom ke-1: Isian tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "maks_berita": 0
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Panjang berita harus bilangan bulat 1–200."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "maks_berita": 201
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Panjang berita harus bilangan bulat 1–200."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "maks_berita": 1.5
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Panjang berita harus bilangan bulat 1–200."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "maks_berita": 200
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "nama": "CSV",
+          "id_bank": null,
+          "jenis": "csv",
+          "pemisah": ",",
+          "pakai_judul": 1,
+          "kutip": 0,
+          "desimal": 0,
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "no_rekening",
+              "judul": "No Rek",
+              "teks": null
+            }
+          ],
+          "maks_berita": 200,
+          "is_aktif": 1
+        }
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "kutip": "ya"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Kutip tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ]
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Nama format wajib diisi."
+      }
+    },
+    {
+      "masukan": {
+        "nama": "CSV",
+        "jenis": "csv",
+        "pemisah": ",",
+        "kolom": [
+          {
+            "isian": "no_rekening",
+            "judul": "No Rek"
+          }
+        ],
+        "urutan": 1
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian 'urutan' tidak dikenal."
+      }
+    }
+  ],
+  "kolom_teks": [
+    {
+      "kolom": [
+        {
+          "isian": "teks_tetap",
+          "judul": "Kode \"Layanan\"",
+          "teks": "Bayar \\ é / ü"
+        },
+        {
+          "isian": "nominal",
+          "judul": "Nominal"
+        }
+      ],
+      "harapan": "[{\"isian\":\"teks_tetap\",\"judul\":\"Kode \\\"Layanan\\\"\",\"teks\":\"Bayar \\\\ é / ü\"},{\"isian\":\"nominal\",\"judul\":\"Nominal\",\"teks\":null}]"
+    }
+  ],
+  "cocok": {
+    "bank": [
+      {
+        "id_bank": "bnk-014",
+        "nama": "BCA",
+        "kode": "014",
+        "alias": "[\"Bank BCA\",\"Bank Central Asia\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-008",
+        "nama": "Mandiri",
+        "kode": "008",
+        "alias": "[\"Bank Mandiri\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-y",
+        "nama": "Sinar Jaya",
+        "kode": null,
+        "alias": "[\"SINAR\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-x",
+        "nama": "Sinar",
+        "kode": null,
+        "alias": "[]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-lama",
+        "nama": "Bank Lama",
+        "kode": "999",
+        "alias": "[\"Lama\"]",
+        "is_aktif": 0
+      },
+      {
+        "id_bank": "bnk-rusak",
+        "nama": "Rusak",
+        "kode": null,
+        "alias": "bukan json",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-kosong",
+        "nama": "Kosong",
+        "kode": null,
+        "alias": null,
+        "is_aktif": 1
+      }
+    ],
+    "kasus": [
+      {
+        "teks": " bank  central asia ",
+        "harapan": "bnk-014"
+      },
+      {
+        "teks": "BCA",
+        "harapan": "bnk-014"
+      },
+      {
+        "teks": "bca ",
+        "harapan": "bnk-014"
+      },
+      {
+        "teks": "Bank BCA",
+        "harapan": "bnk-014"
+      },
+      {
+        "teks": "",
+        "harapan": null
+      },
+      {
+        "teks": "   ",
+        "harapan": null
+      },
+      {
+        "teks": null,
+        "harapan": null
+      },
+      {
+        "teks": "Bank Tidak Ada",
+        "harapan": null
+      },
+      {
+        "teks": "lama",
+        "harapan": "bnk-lama"
+      },
+      {
+        "teks": "sinar",
+        "harapan": "bnk-x"
+      },
+      {
+        "teks": "Sinar Jaya",
+        "harapan": "bnk-y"
+      },
+      {
+        "teks": "Rusak",
+        "harapan": "bnk-rusak"
+      }
+    ],
+    "bentrok": [
+      {
+        "id": null,
+        "masukan": {
+          "nama": "Bank Central Asia"
+        },
+        "harapan": "BCA"
+      },
+      {
+        "id": "bnk-014",
+        "masukan": {
+          "nama": "BCA",
+          "alias": ["Bank BCA"]
+        },
+        "harapan": null
+      },
+      {
+        "id": null,
+        "masukan": {
+          "nama": "Baru",
+          "alias": ["bca"]
+        },
+        "harapan": "BCA"
+      },
+      {
+        "id": null,
+        "masukan": {
+          "nama": "Baru"
+        },
+        "harapan": null
+      },
+      {
+        "id": null,
+        "masukan": {
+          "nama": "lama"
+        },
+        "harapan": "Bank Lama"
+      }
+    ]
+  },
+  "rekening_bentrok": {
+    "rekening": [
+      {
+        "id_rekening": "rek-1",
+        "id_bank": "bnk-014",
+        "no_rekening": "1234567890"
+      }
+    ],
+    "kasus": [
+      {
+        "id": null,
+        "masukan": {
+          "id_bank": "bnk-014",
+          "no_rekening": "123 456 7890",
+          "nama_rekening": "PT Maju"
+        },
+        "harapan": true
+      },
+      {
+        "id": "rek-1",
+        "masukan": {
+          "id_bank": "bnk-014",
+          "no_rekening": "1234567890",
+          "nama_rekening": "PT Maju"
+        },
+        "harapan": false
+      },
+      {
+        "id": null,
+        "masukan": {
+          "id_bank": "bnk-008",
+          "no_rekening": "1234567890",
+          "nama_rekening": "PT Maju"
+        },
+        "harapan": false
+      }
+    ]
+  },
+  "susun": {
+    "run": {
+      "period_start": "2026-10-01",
+      "period_end": "2026-10-31"
+    },
+    "debet": {
+      "id_bank": "bnk-014",
+      "no_rekening": "8800112233",
+      "nama_rekening": "PT Contoh Sejahtera"
+    },
+    "tanggal_efektif": "2026-11-02",
+    "bank": [
+      {
+        "id_bank": "bnk-014",
+        "nama": "BCA",
+        "kode": "014",
+        "alias": "[\"Bank BCA\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-008",
+        "nama": "Mandiri",
+        "kode": "008",
+        "alias": "[\"Bank Mandiri\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-451",
+        "nama": "BSI",
+        "kode": "451",
+        "alias": "[\"Bank Syariah Indonesia\"]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-daerah",
+        "nama": "Bank Daerah",
+        "kode": null,
+        "alias": "[]",
+        "is_aktif": 1
+      },
+      {
+        "id_bank": "bnk-lama",
+        "nama": "Bank Lama",
+        "kode": "999",
+        "alias": "[]",
+        "is_aktif": 0
+      }
+    ],
+    "item": [
+      {
+        "id_item": "pi-1",
+        "id_karyawan": "K1",
+        "nama_karyawan": "Ana",
+        "kode_karyawan": "EMP-1",
+        "net_salary": 5000000,
+        "id_keluar": null,
+        "bank": " bca ",
+        "no_rekening": "1111111111",
+        "nama_rekening": "ANA  "
+      },
+      {
+        "id_item": "pi-2",
+        "id_karyawan": "K2",
+        "nama_karyawan": "Budi",
+        "kode_karyawan": "EMP-2",
+        "net_salary": 4250000,
+        "id_keluar": null,
+        "bank": "Bank Mandiri",
+        "no_rekening": "2222222222",
+        "nama_rekening": "Siti"
+      },
+      {
+        "id_item": "pi-3",
+        "id_karyawan": "K3",
+        "nama_karyawan": "Citra",
+        "kode_karyawan": "EMP-3",
+        "net_salary": 3000000,
+        "id_keluar": null,
+        "bank": null,
+        "no_rekening": null,
+        "nama_rekening": null
+      },
+      {
+        "id_item": "pi-4",
+        "id_karyawan": "K4",
+        "nama_karyawan": "Dedi",
+        "kode_karyawan": "EMP-4",
+        "net_salary": 2000000,
+        "id_keluar": null,
+        "bank": "Bank Lama",
+        "no_rekening": "4444444444",
+        "nama_rekening": "Dedi"
+      },
+      {
+        "id_item": "pi-5",
+        "id_karyawan": "K5",
+        "nama_karyawan": "Eka",
+        "kode_karyawan": "EMP-5",
+        "net_salary": 0,
+        "id_keluar": null,
+        "bank": "BCA",
+        "no_rekening": "5555555555",
+        "nama_rekening": "Eka"
+      },
+      {
+        "id_item": "pi-6",
+        "id_karyawan": "K6",
+        "nama_karyawan": "Fajar",
+        "kode_karyawan": "EMP-6",
+        "net_salary": 1500000,
+        "id_keluar": "klr-1",
+        "bank": "Bank Daerah",
+        "no_rekening": "6666666666",
+        "nama_rekening": "Fajar"
+      },
+      {
+        "id_item": "pi-7",
+        "id_karyawan": "K7",
+        "nama_karyawan": "Gita",
+        "kode_karyawan": "EMP-7",
+        "net_salary": 3750000,
+        "id_keluar": " ",
+        "bank": "bank syariah indonesia",
+        "no_rekening": "7777777777",
+        "nama_rekening": null
+      },
+      {
+        "id_item": "pi-8",
+        "id_karyawan": "K8",
+        "nama_karyawan": "Hadi",
+        "kode_karyawan": null,
+        "net_salary": 0,
+        "id_keluar": null,
+        "bank": "XYZ Bank",
+        "no_rekening": "8888888888",
+        "nama_rekening": "Hadi"
+      },
+      {
+        "id_item": "pi-9",
+        "id_karyawan": "K9",
+        "nama_karyawan": "Indah",
+        "kode_karyawan": "EMP-9",
+        "net_salary": 2500000,
+        "id_keluar": null,
+        "bank": "BCA",
+        "no_rekening": "  ",
+        "nama_rekening": "Indah"
+      }
+    ],
+    "format": null,
+    "kasus": [
+      {
+        "nama": "Excel umum",
+        "format": null,
+        "harapan": {
+          "berita": "Gaji 2026-10-01 s.d. 2026-10-31",
+          "rekening_debet": "8800112233",
+          "nama_debet": "PT Contoh Sejahtera",
+          "tanggal_efektif": "2026-11-02",
+          "baris": [
+            {
+              "nomor_urut": 1,
+              "id_karyawan": "K1",
+              "nama_karyawan": "Ana",
+              "kode_karyawan": "EMP-1",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "1111111111",
+              "nama_rekening": "ANA",
+              "nominal": 5000000,
+              "jenis": "sesama",
+              "tanda": []
+            },
+            {
+              "nomor_urut": 2,
+              "id_karyawan": "K2",
+              "nama_karyawan": "Budi",
+              "kode_karyawan": "EMP-2",
+              "nama_bank": "Mandiri",
+              "kode_bank": "008",
+              "no_rekening": "2222222222",
+              "nama_rekening": "Siti",
+              "nominal": 4250000,
+              "jenis": "antarbank",
+              "tanda": ["nama_berbeda"]
+            },
+            {
+              "nomor_urut": 3,
+              "id_karyawan": "K6",
+              "nama_karyawan": "Fajar",
+              "kode_karyawan": "EMP-6",
+              "nama_bank": "Bank Daerah",
+              "kode_bank": null,
+              "no_rekening": "6666666666",
+              "nama_rekening": "Fajar",
+              "nominal": 1500000,
+              "jenis": "antarbank",
+              "tanda": ["karyawan_keluar"]
+            },
+            {
+              "nomor_urut": 4,
+              "id_karyawan": "K7",
+              "nama_karyawan": "Gita",
+              "kode_karyawan": "EMP-7",
+              "nama_bank": "BSI",
+              "kode_bank": "451",
+              "no_rekening": "7777777777",
+              "nama_rekening": null,
+              "nominal": 3750000,
+              "jenis": "antarbank",
+              "tanda": []
+            }
+          ],
+          "manual": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K3",
+              "nama_karyawan": "Citra",
+              "kode_karyawan": "EMP-3",
+              "nama_bank": null,
+              "kode_bank": null,
+              "no_rekening": null,
+              "nama_rekening": null,
+              "nominal": 3000000,
+              "jenis": null,
+              "tanda": ["tanpa_rekening"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K4",
+              "nama_karyawan": "Dedi",
+              "kode_karyawan": "EMP-4",
+              "nama_bank": "Bank Lama",
+              "kode_bank": "999",
+              "no_rekening": "4444444444",
+              "nama_rekening": "Dedi",
+              "nominal": 2000000,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K5",
+              "nama_karyawan": "Eka",
+              "kode_karyawan": "EMP-5",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "5555555555",
+              "nama_rekening": "Eka",
+              "nominal": 0,
+              "jenis": "sesama",
+              "tanda": ["nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K8",
+              "nama_karyawan": "Hadi",
+              "kode_karyawan": null,
+              "nama_bank": "XYZ Bank",
+              "kode_bank": null,
+              "no_rekening": "8888888888",
+              "nama_rekening": "Hadi",
+              "nominal": 0,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal", "nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K9",
+              "nama_karyawan": "Indah",
+              "kode_karyawan": "EMP-9",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": null,
+              "nama_rekening": "Indah",
+              "nominal": 2500000,
+              "jenis": "sesama",
+              "tanda": ["tanpa_rekening"]
+            }
+          ],
+          "luar_cakupan": [],
+          "ringkasan": {
+            "jumlah_baris": 4,
+            "total": 14500000,
+            "total_run": 22000000,
+            "selisih": 7500000,
+            "jumlah_manual": 5,
+            "total_manual": 7500000,
+            "jumlah_luar_cakupan": 0,
+            "total_luar_cakupan": 0,
+            "per_bank": [
+              {
+                "nama_bank": "BCA",
+                "jumlah": 1,
+                "total": 5000000
+              },
+              {
+                "nama_bank": "Mandiri",
+                "jumlah": 1,
+                "total": 4250000
+              },
+              {
+                "nama_bank": "Bank Daerah",
+                "jumlah": 1,
+                "total": 1500000
+              },
+              {
+                "nama_bank": "BSI",
+                "jumlah": 1,
+                "total": 3750000
+              }
+            ],
+            "per_jenis": {
+              "sesama": {
+                "jumlah": 1,
+                "total": 5000000
+              },
+              "antarbank": {
+                "jumlah": 3,
+                "total": 9500000
+              }
+            }
+          }
+        }
+      },
+      {
+        "nama": "sesama berkode",
+        "format": {
+          "cakupan": "sesama",
+          "kolom": [
+            {
+              "isian": "kode_bank"
+            },
+            {
+              "isian": "no_rekening"
+            },
+            {
+              "isian": "nominal"
+            }
+          ],
+          "maks_berita": 10
+        },
+        "harapan": {
+          "berita": "Gaji 2026-",
+          "rekening_debet": "8800112233",
+          "nama_debet": "PT Contoh Sejahtera",
+          "tanggal_efektif": "2026-11-02",
+          "baris": [
+            {
+              "nomor_urut": 1,
+              "id_karyawan": "K1",
+              "nama_karyawan": "Ana",
+              "kode_karyawan": "EMP-1",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "1111111111",
+              "nama_rekening": "ANA",
+              "nominal": 5000000,
+              "jenis": "sesama",
+              "tanda": []
+            }
+          ],
+          "manual": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K3",
+              "nama_karyawan": "Citra",
+              "kode_karyawan": "EMP-3",
+              "nama_bank": null,
+              "kode_bank": null,
+              "no_rekening": null,
+              "nama_rekening": null,
+              "nominal": 3000000,
+              "jenis": null,
+              "tanda": ["tanpa_rekening"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K4",
+              "nama_karyawan": "Dedi",
+              "kode_karyawan": "EMP-4",
+              "nama_bank": "Bank Lama",
+              "kode_bank": "999",
+              "no_rekening": "4444444444",
+              "nama_rekening": "Dedi",
+              "nominal": 2000000,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K5",
+              "nama_karyawan": "Eka",
+              "kode_karyawan": "EMP-5",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "5555555555",
+              "nama_rekening": "Eka",
+              "nominal": 0,
+              "jenis": "sesama",
+              "tanda": ["nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K8",
+              "nama_karyawan": "Hadi",
+              "kode_karyawan": null,
+              "nama_bank": "XYZ Bank",
+              "kode_bank": null,
+              "no_rekening": "8888888888",
+              "nama_rekening": "Hadi",
+              "nominal": 0,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal", "nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K9",
+              "nama_karyawan": "Indah",
+              "kode_karyawan": "EMP-9",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": null,
+              "nama_rekening": "Indah",
+              "nominal": 2500000,
+              "jenis": "sesama",
+              "tanda": ["tanpa_rekening"]
+            }
+          ],
+          "luar_cakupan": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K2",
+              "nama_karyawan": "Budi",
+              "kode_karyawan": "EMP-2",
+              "nama_bank": "Mandiri",
+              "kode_bank": "008",
+              "no_rekening": "2222222222",
+              "nama_rekening": "Siti",
+              "nominal": 4250000,
+              "jenis": "antarbank",
+              "tanda": ["nama_berbeda"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K6",
+              "nama_karyawan": "Fajar",
+              "kode_karyawan": "EMP-6",
+              "nama_bank": "Bank Daerah",
+              "kode_bank": null,
+              "no_rekening": "6666666666",
+              "nama_rekening": "Fajar",
+              "nominal": 1500000,
+              "jenis": "antarbank",
+              "tanda": ["karyawan_keluar"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K7",
+              "nama_karyawan": "Gita",
+              "kode_karyawan": "EMP-7",
+              "nama_bank": "BSI",
+              "kode_bank": "451",
+              "no_rekening": "7777777777",
+              "nama_rekening": null,
+              "nominal": 3750000,
+              "jenis": "antarbank",
+              "tanda": []
+            }
+          ],
+          "ringkasan": {
+            "jumlah_baris": 1,
+            "total": 5000000,
+            "total_run": 22000000,
+            "selisih": 17000000,
+            "jumlah_manual": 5,
+            "total_manual": 7500000,
+            "jumlah_luar_cakupan": 3,
+            "total_luar_cakupan": 9500000,
+            "per_bank": [
+              {
+                "nama_bank": "BCA",
+                "jumlah": 1,
+                "total": 5000000
+              }
+            ],
+            "per_jenis": {
+              "sesama": {
+                "jumlah": 1,
+                "total": 5000000
+              },
+              "antarbank": {
+                "jumlah": 0,
+                "total": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "nama": "antarbank berkode",
+        "format": {
+          "cakupan": "antarbank",
+          "kolom": [
+            {
+              "isian": "kode_bank"
+            },
+            {
+              "isian": "no_rekening"
+            },
+            {
+              "isian": "nominal"
+            }
+          ],
+          "maks_berita": null
+        },
+        "harapan": {
+          "berita": "Gaji 2026-10-01 s.d. 2026-10-31",
+          "rekening_debet": "8800112233",
+          "nama_debet": "PT Contoh Sejahtera",
+          "tanggal_efektif": "2026-11-02",
+          "baris": [
+            {
+              "nomor_urut": 1,
+              "id_karyawan": "K2",
+              "nama_karyawan": "Budi",
+              "kode_karyawan": "EMP-2",
+              "nama_bank": "Mandiri",
+              "kode_bank": "008",
+              "no_rekening": "2222222222",
+              "nama_rekening": "Siti",
+              "nominal": 4250000,
+              "jenis": "antarbank",
+              "tanda": ["nama_berbeda"]
+            },
+            {
+              "nomor_urut": 2,
+              "id_karyawan": "K7",
+              "nama_karyawan": "Gita",
+              "kode_karyawan": "EMP-7",
+              "nama_bank": "BSI",
+              "kode_bank": "451",
+              "no_rekening": "7777777777",
+              "nama_rekening": null,
+              "nominal": 3750000,
+              "jenis": "antarbank",
+              "tanda": []
+            }
+          ],
+          "manual": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K3",
+              "nama_karyawan": "Citra",
+              "kode_karyawan": "EMP-3",
+              "nama_bank": null,
+              "kode_bank": null,
+              "no_rekening": null,
+              "nama_rekening": null,
+              "nominal": 3000000,
+              "jenis": null,
+              "tanda": ["tanpa_rekening"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K4",
+              "nama_karyawan": "Dedi",
+              "kode_karyawan": "EMP-4",
+              "nama_bank": "Bank Lama",
+              "kode_bank": "999",
+              "no_rekening": "4444444444",
+              "nama_rekening": "Dedi",
+              "nominal": 2000000,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K5",
+              "nama_karyawan": "Eka",
+              "kode_karyawan": "EMP-5",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "5555555555",
+              "nama_rekening": "Eka",
+              "nominal": 0,
+              "jenis": "sesama",
+              "tanda": ["nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K6",
+              "nama_karyawan": "Fajar",
+              "kode_karyawan": "EMP-6",
+              "nama_bank": "Bank Daerah",
+              "kode_bank": null,
+              "no_rekening": "6666666666",
+              "nama_rekening": "Fajar",
+              "nominal": 1500000,
+              "jenis": "antarbank",
+              "tanda": ["tanpa_kode_bank", "karyawan_keluar"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K8",
+              "nama_karyawan": "Hadi",
+              "kode_karyawan": null,
+              "nama_bank": "XYZ Bank",
+              "kode_bank": null,
+              "no_rekening": "8888888888",
+              "nama_rekening": "Hadi",
+              "nominal": 0,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal", "nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K9",
+              "nama_karyawan": "Indah",
+              "kode_karyawan": "EMP-9",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": null,
+              "nama_rekening": "Indah",
+              "nominal": 2500000,
+              "jenis": "sesama",
+              "tanda": ["tanpa_rekening"]
+            }
+          ],
+          "luar_cakupan": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K1",
+              "nama_karyawan": "Ana",
+              "kode_karyawan": "EMP-1",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "1111111111",
+              "nama_rekening": "ANA",
+              "nominal": 5000000,
+              "jenis": "sesama",
+              "tanda": []
+            }
+          ],
+          "ringkasan": {
+            "jumlah_baris": 2,
+            "total": 8000000,
+            "total_run": 22000000,
+            "selisih": 14000000,
+            "jumlah_manual": 6,
+            "total_manual": 9000000,
+            "jumlah_luar_cakupan": 1,
+            "total_luar_cakupan": 5000000,
+            "per_bank": [
+              {
+                "nama_bank": "Mandiri",
+                "jumlah": 1,
+                "total": 4250000
+              },
+              {
+                "nama_bank": "BSI",
+                "jumlah": 1,
+                "total": 3750000
+              }
+            ],
+            "per_jenis": {
+              "sesama": {
+                "jumlah": 0,
+                "total": 0
+              },
+              "antarbank": {
+                "jumlah": 2,
+                "total": 8000000
+              }
+            }
+          }
+        }
+      },
+      {
+        "nama": "semua tanpa kode",
+        "format": {
+          "cakupan": "semua",
+          "kolom": [
+            {
+              "isian": "nominal"
+            }
+          ],
+          "maks_berita": 4
+        },
+        "harapan": {
+          "berita": "Gaji",
+          "rekening_debet": "8800112233",
+          "nama_debet": "PT Contoh Sejahtera",
+          "tanggal_efektif": "2026-11-02",
+          "baris": [
+            {
+              "nomor_urut": 1,
+              "id_karyawan": "K1",
+              "nama_karyawan": "Ana",
+              "kode_karyawan": "EMP-1",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "1111111111",
+              "nama_rekening": "ANA",
+              "nominal": 5000000,
+              "jenis": "sesama",
+              "tanda": []
+            },
+            {
+              "nomor_urut": 2,
+              "id_karyawan": "K2",
+              "nama_karyawan": "Budi",
+              "kode_karyawan": "EMP-2",
+              "nama_bank": "Mandiri",
+              "kode_bank": "008",
+              "no_rekening": "2222222222",
+              "nama_rekening": "Siti",
+              "nominal": 4250000,
+              "jenis": "antarbank",
+              "tanda": ["nama_berbeda"]
+            },
+            {
+              "nomor_urut": 3,
+              "id_karyawan": "K6",
+              "nama_karyawan": "Fajar",
+              "kode_karyawan": "EMP-6",
+              "nama_bank": "Bank Daerah",
+              "kode_bank": null,
+              "no_rekening": "6666666666",
+              "nama_rekening": "Fajar",
+              "nominal": 1500000,
+              "jenis": "antarbank",
+              "tanda": ["karyawan_keluar"]
+            },
+            {
+              "nomor_urut": 4,
+              "id_karyawan": "K7",
+              "nama_karyawan": "Gita",
+              "kode_karyawan": "EMP-7",
+              "nama_bank": "BSI",
+              "kode_bank": "451",
+              "no_rekening": "7777777777",
+              "nama_rekening": null,
+              "nominal": 3750000,
+              "jenis": "antarbank",
+              "tanda": []
+            }
+          ],
+          "manual": [
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K3",
+              "nama_karyawan": "Citra",
+              "kode_karyawan": "EMP-3",
+              "nama_bank": null,
+              "kode_bank": null,
+              "no_rekening": null,
+              "nama_rekening": null,
+              "nominal": 3000000,
+              "jenis": null,
+              "tanda": ["tanpa_rekening"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K4",
+              "nama_karyawan": "Dedi",
+              "kode_karyawan": "EMP-4",
+              "nama_bank": "Bank Lama",
+              "kode_bank": "999",
+              "no_rekening": "4444444444",
+              "nama_rekening": "Dedi",
+              "nominal": 2000000,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K5",
+              "nama_karyawan": "Eka",
+              "kode_karyawan": "EMP-5",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": "5555555555",
+              "nama_rekening": "Eka",
+              "nominal": 0,
+              "jenis": "sesama",
+              "tanda": ["nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K8",
+              "nama_karyawan": "Hadi",
+              "kode_karyawan": null,
+              "nama_bank": "XYZ Bank",
+              "kode_bank": null,
+              "no_rekening": "8888888888",
+              "nama_rekening": "Hadi",
+              "nominal": 0,
+              "jenis": null,
+              "tanda": ["bank_tidak_dikenal", "nominal_nol"]
+            },
+            {
+              "nomor_urut": null,
+              "id_karyawan": "K9",
+              "nama_karyawan": "Indah",
+              "kode_karyawan": "EMP-9",
+              "nama_bank": "BCA",
+              "kode_bank": "014",
+              "no_rekening": null,
+              "nama_rekening": "Indah",
+              "nominal": 2500000,
+              "jenis": "sesama",
+              "tanda": ["tanpa_rekening"]
+            }
+          ],
+          "luar_cakupan": [],
+          "ringkasan": {
+            "jumlah_baris": 4,
+            "total": 14500000,
+            "total_run": 22000000,
+            "selisih": 7500000,
+            "jumlah_manual": 5,
+            "total_manual": 7500000,
+            "jumlah_luar_cakupan": 0,
+            "total_luar_cakupan": 0,
+            "per_bank": [
+              {
+                "nama_bank": "BCA",
+                "jumlah": 1,
+                "total": 5000000
+              },
+              {
+                "nama_bank": "Mandiri",
+                "jumlah": 1,
+                "total": 4250000
+              },
+              {
+                "nama_bank": "Bank Daerah",
+                "jumlah": 1,
+                "total": 1500000
+              },
+              {
+                "nama_bank": "BSI",
+                "jumlah": 1,
+                "total": 3750000
+              }
+            ],
+            "per_jenis": {
+              "sesama": {
+                "jumlah": 1,
+                "total": 5000000
+              },
+              "antarbank": {
+                "jumlah": 3,
+                "total": 9500000
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "pilihan": [
+    {
+      "masukan": {
+        "run_id": " run-1 ",
+        "id_rekening": "rek-1"
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "run_id": "run-1",
+          "id_rekening": "rek-1",
+          "id_format": null,
+          "tanggal_efektif": null,
+          "catat": false
+        }
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1",
+        "id_rekening": "rek-1",
+        "id_format": "fmt-1",
+        "tanggal_efektif": "2026-11-02",
+        "catat": true
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "run_id": "run-1",
+          "id_rekening": "rek-1",
+          "id_format": "fmt-1",
+          "tanggal_efektif": "2026-11-02",
+          "catat": true
+        }
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1",
+        "id_rekening": "rek-1",
+        "id_format": "",
+        "tanggal_efektif": "",
+        "catat": null
+      },
+      "harapan": {
+        "ok": true,
+        "nilai": {
+          "run_id": "run-1",
+          "id_rekening": "rek-1",
+          "id_format": null,
+          "tanggal_efektif": null,
+          "catat": false
+        }
+      }
+    },
+    {
+      "masukan": {
+        "id_rekening": "rek-1"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Proses gaji wajib dipilih."
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Rekening debet wajib dipilih."
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1",
+        "id_rekening": "rek-1",
+        "tanggal_efektif": "2026-02-30"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Tanggal efektif tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1",
+        "id_rekening": "rek-1",
+        "catat": "ya"
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Catat unduhan tidak valid."
+      }
+    },
+    {
+      "masukan": {
+        "run_id": "run-1",
+        "id_rekening": "rek-1",
+        "lain": 1
+      },
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian 'lain' tidak dikenal."
+      }
+    },
+    {
+      "masukan": [],
+      "harapan": {
+        "ok": false,
+        "pesan": "Isian tidak valid."
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PilihAkunBayar } from "@/components/keuangan/PilihAkunBayar";
 import { AuditTrailTimeline } from "@/components/payroll/AuditTrailTimeline";
+import { BerkasTransferPanel } from "@/components/payroll/BerkasTransfer";
 import { RunStatusBadge } from "@/components/payroll/RunStatusBadge";
 import { SlipGajiPrintView } from "@/components/payroll/SlipGajiPrintView";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
@@ -22,6 +23,7 @@ import {
   transitionPayrollStatus,
 } from "@/lib/gateways/payroll";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { IZIN_UNDUH, STATUS_RUN_TRANSFER } from "@/lib/validations/transfer";
 
 const IDR = new Intl.NumberFormat("id-ID", {
   style: "currency",
@@ -38,7 +40,9 @@ export default function RunDetailClient() {
 
   const [detail, setDetail] = useState<PayrollRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"items" | "audit">("items");
+  const [activeTab, setActiveTab] = useState<"items" | "audit" | "transfer">(
+    "items",
+  );
   const [selectedSlip, setSelectedSlip] = useState<PayrollItemRow | null>(null);
 
   const [transitionModalOpen, setTransitionModalOpen] = useState(false);
@@ -154,6 +158,10 @@ export default function RunDetailClient() {
   const canReject =
     hasPermission(user, "payroll.run.review") &&
     (currentStatus === "SUBMITTED" || currentStatus === "REVIEWED");
+  // Berkas transfer (prd-hris.md §27.5): kedua izin unduh, run APPROVED/PAID.
+  const canTransfer =
+    IZIN_UNDUH.every((izin) => hasPermission(user, izin)) &&
+    (STATUS_RUN_TRANSFER as readonly string[]).includes(currentStatus);
 
   return (
     <AppShell contentClassName="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
@@ -305,7 +313,24 @@ export default function RunDetailClient() {
           >
             Audit Trail ({auditLogs.length})
           </button>
+          {canTransfer ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("transfer")}
+              className={`pb-3 text-sm font-semibold border-b-2 transition ${
+                activeTab === "transfer"
+                  ? "border-sky-500 text-sky-400"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Berkas Transfer
+            </button>
+          ) : null}
         </div>
+
+        {activeTab === "transfer" && canTransfer ? (
+          <BerkasTransferPanel runId={runId} status={currentStatus} />
+        ) : null}
 
         {/* Tab Content: Items */}
         {activeTab === "items" && (

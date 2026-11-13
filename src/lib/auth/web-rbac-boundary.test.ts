@@ -19,8 +19,10 @@ import {
 import { WEB_SESSION_TTL_SECONDS } from "@/lib/auth/web-session";
 import { initDatabaseSchema } from "@/lib/db-schema";
 import { editOperator } from "@/lib/operators/operator-admin";
+import { SUPERADMIN_ONLY_PERMISSIONS } from "@/lib/rbac/catalog";
 import { replaceRolePermissions } from "@/lib/rbac/role-admin";
 import { IZIN_PERHATIAN, izinPerhatian } from "@/lib/validations/telegram";
+import { IZIN_PENGATURAN, IZIN_UNDUH } from "@/lib/validations/transfer";
 
 interface Fixture {
   client: Client;
@@ -359,6 +361,50 @@ describe("Web RBAC trusted boundary", () => {
           "hr.recruit.delete",
           true,
         ),
+      ).toThrow(AuthorizationError);
+    } finally {
+      client.close();
+    }
+  });
+
+  // HRIS fase 12 (§27.5): unduh berkas transfer wajib KEDUA izin (Q-157 (a));
+  // tidak ada paket bawaan yang memegang keduanya, dan Pengaturan transfer
+  // (`payroll.config.manage`) khusus Superadmin (Q-173 (a)).
+  test("izin berkas transfer: kedua izin unduh, Pengaturan khusus Superadmin", async () => {
+    const { client } = await createFixture();
+    try {
+      const pemegang = async (izin: string) =>
+        (
+          await client.execute({
+            sql: `SELECT r.role_key FROM role_permission rp JOIN app_role r ON r.id = rp.role_id
+                  WHERE rp.permission_key = ?1 AND rp.is_allowed = 1 ORDER BY r.role_key;`,
+            args: [izin],
+          })
+        ).rows.map((row) => String(row.role_key));
+      expect(await pemegang("payroll.run.disburse")).toEqual(["admin"]);
+      expect(await pemegang("hr.finance.view")).toEqual(["hrd"]);
+      expect(await pemegang(IZIN_PENGATURAN)).toEqual([]);
+      expect(SUPERADMIN_ONLY_PERMISSIONS.has(IZIN_PENGATURAN)).toBe(true);
+
+      const aktor = (permissions: string[]) =>
+        ({
+          id: 9,
+          username: "uji",
+          isSuperadmin: false,
+          permissions,
+        }) as unknown as OperatorUser;
+      const bolehUnduh = (actor: OperatorUser) => {
+        for (const izin of IZIN_UNDUH) assertActorPermission(actor, izin);
+      };
+      expect(() => bolehUnduh(aktor(["payroll.run.disburse"]))).toThrow(
+        AuthorizationError,
+      );
+      expect(() => bolehUnduh(aktor(["hr.finance.view"]))).toThrow(
+        AuthorizationError,
+      );
+      expect(() => bolehUnduh(aktor([...IZIN_UNDUH]))).not.toThrow();
+      expect(() =>
+        assertActorPermission(aktor([...IZIN_UNDUH]), IZIN_PENGATURAN),
       ).toThrow(AuthorizationError);
     } finally {
       client.close();

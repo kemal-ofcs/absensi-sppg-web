@@ -41,4 +41,19 @@ describe("buildXlsxWorkbook", () => {
     expect(xml).toContain('<pane xSplit="2" ySplit="1" topLeftCell="C2"');
     expect(xml).toContain('<col min="2" max="2" width="30" customWidth="1"/>');
   });
+
+  test("tanpaJudul: data mulai di baris 1", async () => {
+    const bytes = buildXlsxWorkbook([
+      {
+        nama: "Bank",
+        headers: ["Rek", "Nominal"],
+        rows: [["0012", new AngkaExcel(5)]],
+        tanpaJudul: true,
+      },
+    ]);
+    const { rows } = await readWorkbookTable(
+      new File([bytes as unknown as BlobPart], "uji.xlsx"),
+    );
+    expect(rows).toEqual([["0012", "5"]]);
+  });
 });

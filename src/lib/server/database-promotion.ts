@@ -370,12 +370,25 @@ export const PROMOTION_PLAN: readonly PromotionTable[] = [
   { table: "hr_pelamar", uniqueColumns: [], dependsOn: ["hr_lowongan"] },
   { table: "hr_pelamar_tahap", uniqueColumns: [], dependsOn: ["hr_pelamar"] },
   { table: "hr_pelamar_berkas", uniqueColumns: [], dependsOn: ["hr_pelamar"] },
-  { table: "hr_pelatihan", uniqueColumns: [], dependsOn: [] },
+  // v43 — pagu dan rencana pelatihan, khusus cloud. Rencana lebih dulu
+  // karena `hr_pelatihan.id_rencana` menunjuknya.
+  { table: "hr_pelatihan_anggaran", uniqueColumns: [], dependsOn: [] },
+  { table: "hr_pelatihan_rencana", uniqueColumns: [], dependsOn: [] },
+  {
+    table: "hr_pelatihan",
+    uniqueColumns: [],
+    dependsOn: ["hr_pelatihan_rencana"],
+  },
   {
     table: "hr_pelatihan_peserta",
     uniqueColumns: [],
     dependsOn: ["hr_pelatihan", "master_data", "hr_dokumen"],
   },
+  // v44 — Pengaturan transfer bank, khusus cloud. Rekening debet dan format
+  // menunjuk `app_bank`.
+  { table: "app_bank", uniqueColumns: [], dependsOn: [] },
+  { table: "app_bank_rekening", uniqueColumns: [], dependsOn: ["app_bank"] },
+  { table: "app_bank_format", uniqueColumns: [], dependsOn: ["app_bank"] },
 ];
 
 /**

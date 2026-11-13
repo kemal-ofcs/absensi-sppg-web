@@ -329,6 +329,7 @@ export function HrisWorkspace() {
       {tab === "pelatihan" && bolehPelatihan ? (
         <PelatihanWorkspace
           karyawan={karyawan}
+          divisi={org?.divisi ?? []}
           bolehUbah={hasPermission(user, "hr.training.manage")}
         />
       ) : null}

@@ -3,6 +3,7 @@ import "server-only";
 // HRIS fase 7 (v42), jalur Web. Kembaran `desktop/hr_pelatihan.rs`:
 // pelatihan, peserta, dan sertifikat (= `hr_dokumen` berjenis
 // `dok-sertifikat`, Q-97). KHUSUS CLOUD (Q-87). Biaya tanpa jurnal (Q-98).
+// Fase 11 (v43): rencana dan pagu pelatihan, juga khusus cloud (Q-138).
 
 import type { Client, InStatement } from "@libsql/client";
 import type { OperatorUser } from "@/lib/auth/operator-user";
@@ -10,26 +11,49 @@ import { hapusDokumen } from "@/lib/services/hris";
 import { type Executor, newHexId, wibToday } from "@/lib/services/inventory";
 import {
   BATAL_PELATIHAN_SQL,
+  BATAL_RENCANA_SQL,
   BERKAS_PESERTA_SQL,
   BERKAS_SERTIFIKAT_SQL,
   DAFTAR_PELATIHAN_SQL,
+  HAPUS_PAGU_SQL,
   HASIL_PESERTA_SQL,
   INSERT_PELATIHAN_SQL,
+  INSERT_RENCANA_SQL,
+  idAnggaran,
   idPeserta,
   JENIS_SERTIFIKAT,
   LEPAS_PESERTA_SQL,
+  PAGU_SQL,
   PESAN_PELATIHAN_BATAL,
   PESAN_PESERTA_BERSERTIFIKAT,
+  PESAN_RENCANA_BATAL,
+  PESAN_RENCANA_TAHUN_TERKUNCI,
+  PESAN_RENCANA_TERTAUT,
   PESAN_SERTIFIKAT_NONAKTIF,
   PESERTA_SQL,
+  periksaRencanaPelatihan,
+  periksaUbahRencana,
+  REALISASI_SQL,
+  RENCANA_SATU_SQL,
+  RENCANA_SQL,
   RIWAYAT_SQL,
+  ringkasAnggaran,
+  SIMPAN_PAGU_SQL,
+  type StatusPelatihan,
+  type StatusRencana,
   statusPelatihan,
+  statusRencana,
   TAMBAH_PESERTA_SQL,
   TAUT_SERTIFIKAT_SQL,
+  TAUTAN_RENCANA_SQL,
   UBAH_PELATIHAN_SQL,
+  UBAH_RENCANA_SQL,
   validasiBatalPelatihan,
+  validasiBatalRencana,
+  validasiPagu,
   validasiPelatihan,
   validasiPeserta,
+  validasiRencana,
 } from "@/lib/validations/hr-pelatihan";
 import {
   INSERT_BERKAS_DOKUMEN_SQL,
@@ -110,6 +134,21 @@ export async function rincianPelatihan(db: Executor, idPelatihan: string) {
     "SELECT is_aktif FROM hr_dokumen_jenis WHERE id_jenis = ?1;",
     [JENIS_SERTIFIKAT],
   );
+  const idRencana = teks(data.id_rencana);
+  const r = idRencana ? await satu(db, RENCANA_SATU_SQL, [idRencana]) : null;
+  const rencana: (Baris & { status: StatusRencana }) | null =
+    r && idRencana
+      ? {
+          ...r,
+          status: statusRencana(
+            teks(r.dibatalkan_pada) !== null,
+            angka(r.tahun),
+            r.bulan == null ? null : angka(r.bulan),
+            await statusTautan(db, idRencana, hariIni),
+            hariIni,
+          ),
+        }
+      : null;
   return {
     pelatihan: data,
     peserta: peserta.map((p) => ({
@@ -119,8 +158,176 @@ export async function rincianPelatihan(db: Executor, idPelatihan: string) {
           ? []
           : berkas.filter((b) => b.id_dokumen === p.id_dokumen),
     })),
+    rencana,
     sertifikat_aktif: angka(jenis?.is_aktif) === 1,
   };
+}
+
+// ── Rencana dan pagu (fase 11) ─────────────────────────────────────────────
+
+async function rencanaSatu(db: Executor, id: string): Promise<Baris> {
+  const r = await satu(db, RENCANA_SATU_SQL, [id]);
+  if (!r) throw takDitemukan("Rencana");
+  return r;
+}
+
+/** Cermin `status_tautan`. */
+async function statusTautan(
+  db: Executor,
+  id: string,
+  hariIni: string,
+): Promise<StatusPelatihan[]> {
+  return (await objek(db, TAUTAN_RENCANA_SQL, [id])).map((l) =>
+    statusPelatihan(
+      String(l.tanggal_mulai ?? ""),
+      String(l.tanggal_selesai ?? ""),
+      teks(l.dibatalkan_pada) !== null,
+      hariIni,
+    ),
+  );
+}
+
+const jumlahTertaut = (status: readonly StatusPelatihan[]) =>
+  status.filter((s) => s !== "Dibatalkan").length;
+
+/** Cermin `periksa_divisi`. */
+async function periksaDivisi(
+  db: Executor,
+  idDivisi: string | null,
+  tetap: boolean,
+) {
+  if (!idDivisi) return;
+  const d = await satu(
+    db,
+    "SELECT is_aktif FROM hr_divisi WHERE id_divisi = ?1;",
+    [idDivisi],
+  );
+  if (!d) throw takDitemukan("Divisi");
+  if (!tetap && angka(d.is_aktif) !== 1)
+    throw new Error("Divisi sudah nonaktif.");
+}
+
+/** Cermin `rencana_tahun`: pagu, rencana, dan ringkasan satu tahun. */
+export async function rencanaTahun(db: Executor, tahun: number | null) {
+  const hariIni = await wibToday(db);
+  const t = tahun ?? (Number.parseInt(hariIni.slice(0, 4), 10) || 0);
+  if (!Number.isSafeInteger(t) || t < 2000 || t > 2100)
+    throw new Error("Tahun harus 2000–2100.");
+  const [pagu, rencana, pelatihan] = await Promise.all([
+    objek(db, PAGU_SQL, [t]),
+    objek(db, RENCANA_SQL, [t]),
+    objek(db, REALISASI_SQL, [t]),
+  ]);
+  return {
+    ...ringkasAnggaran(pagu, rencana, pelatihan, t, hariIni),
+    tahun: t,
+    hari_ini: hariIni,
+  };
+}
+
+/** Cermin `simpan_rencana`: `simpan`, `batal`, `pagu`, atau `hapus_pagu`. */
+export async function simpanRencana(
+  client: Client,
+  actor: OperatorUser,
+  raw: unknown,
+) {
+  const draft = (raw ?? {}) as Baris;
+  const aksi = teks(draft.aksi) ?? "simpan";
+  if (aksi === "pagu") {
+    const sah = validasiPagu(draft);
+    if (!sah.ok) throw new Error(sah.pesan);
+    const v = sah.nilai;
+    const id = idAnggaran(v.tahun, v.id_divisi);
+    const ada = await satu(
+      client,
+      "SELECT 1 AS ada FROM hr_pelatihan_anggaran WHERE id_anggaran = ?1;",
+      [id],
+    );
+    await periksaDivisi(client, v.id_divisi, ada !== null);
+    await client.execute({
+      sql: SIMPAN_PAGU_SQL,
+      args: [id, v.tahun, v.id_divisi, v.nominal, v.catatan, actor.username],
+    });
+    return { sukses: true as const, id_anggaran: id };
+  }
+  if (aksi === "hapus_pagu") {
+    const sah = validasiPagu({ ...draft, nominal: 0, catatan: null });
+    if (!sah.ok) throw new Error(sah.pesan);
+    const id = idAnggaran(sah.nilai.tahun, teks(draft.id_divisi));
+    const hasil = await client.execute({ sql: HAPUS_PAGU_SQL, args: [id] });
+    if (hasil.rowsAffected === 0) throw takDitemukan("Pagu");
+    return { sukses: true as const, id_anggaran: id };
+  }
+  if (aksi !== "simpan" && aksi !== "batal")
+    throw new Error("Aksi rencana tidak dikenal.");
+  const hariIni = await wibToday(client);
+  const idMasuk = teks(draft.id_rencana);
+  const lama = idMasuk ? await rencanaSatu(client, idMasuk) : null;
+  const idLama = lama ? teks(lama.id_rencana) : null;
+  const dibatalkan = teks(lama?.dibatalkan_pada) !== null;
+  const tertaut = idLama
+    ? jumlahTertaut(await statusTautan(client, idLama, hariIni))
+    : 0;
+  if (aksi === "batal") {
+    if (!idLama) throw takDitemukan("Rencana");
+    const alasan = validasiBatalRencana(draft, dibatalkan, tertaut);
+    if (!alasan.ok) throw new Error(alasan.pesan);
+    const hasil = await client.execute({
+      sql: BATAL_RENCANA_SQL,
+      args: [idLama, actor.username, alasan.nilai],
+    });
+    if (hasil.rowsAffected === 0) {
+      const ulang = await rencanaSatu(client, idLama);
+      throw new Error(
+        teks(ulang.dibatalkan_pada)
+          ? PESAN_RENCANA_BATAL
+          : PESAN_RENCANA_TERTAUT,
+      );
+    }
+    return { sukses: true as const, id_rencana: idLama };
+  }
+  const sah = validasiRencana(draft);
+  if (!sah.ok) throw new Error(sah.pesan);
+  const v = sah.nilai;
+  if (lama) {
+    const ubah = periksaUbahRencana(
+      angka(lama.tahun),
+      v.tahun,
+      dibatalkan,
+      tertaut,
+    );
+    if (!ubah.ok) throw new Error(ubah.pesan);
+  }
+  await periksaDivisi(
+    client,
+    v.id_divisi,
+    lama !== null && teks(lama.id_divisi) === v.id_divisi,
+  );
+  const id = idLama ?? newHexId("rcn-");
+  const hasil = await client.execute({
+    sql: idLama ? UBAH_RENCANA_SQL : INSERT_RENCANA_SQL,
+    args: [
+      id,
+      v.tahun,
+      v.nama,
+      v.id_divisi,
+      v.bulan,
+      v.peserta_rencana,
+      v.biaya_rencana,
+      v.penyelenggara,
+      v.keterangan,
+      actor.username,
+    ],
+  });
+  if (hasil.rowsAffected === 0) {
+    const ulang = await rencanaSatu(client, id);
+    throw new Error(
+      teks(ulang.dibatalkan_pada)
+        ? PESAN_RENCANA_BATAL
+        : PESAN_RENCANA_TAHUN_TERKUNCI,
+    );
+  }
+  return { sukses: true as const, id_rencana: id };
 }
 
 /** Cermin `riwayat`. */
@@ -156,6 +363,16 @@ export async function simpanPelatihan(
   if (!hasil.ok) throw new Error(hasil.pesan);
   if (dibatalkan) throw new Error(PESAN_PELATIHAN_BATAL);
   const v = hasil.nilai;
+  // Juga saat tautannya tetap: tanggal yang pindah tahun ditolak (§26.3).
+  if (v.id_rencana) {
+    const r = await rencanaSatu(client, v.id_rencana);
+    const cek = periksaRencanaPelatihan(
+      v.tanggal_mulai,
+      angka(r.tahun),
+      teks(r.dibatalkan_pada) !== null,
+    );
+    if (!cek.ok) throw new Error(cek.pesan);
+  }
   const id = idMasuk ?? newHexId("plt-");
   await client.execute({
     sql: idMasuk ? UBAH_PELATIHAN_SQL : INSERT_PELATIHAN_SQL,
@@ -169,6 +386,7 @@ export async function simpanPelatihan(
       v.biaya,
       v.keterangan,
       actor.username,
+      v.id_rencana,
     ],
   });
   return { sukses: true as const, id_pelatihan: id };

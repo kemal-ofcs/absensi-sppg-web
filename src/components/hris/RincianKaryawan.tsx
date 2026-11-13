@@ -8,6 +8,7 @@ import { RiwayatKinerjaKaryawan } from "@/components/hris/KinerjaWorkspace";
 import { RiwayatPelatihanKaryawan } from "@/components/hris/PelatihanWorkspace";
 import { SuratPeringatanPanel } from "@/components/hris/SuratPeringatanPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { PilihCari } from "@/components/ui/PilihCari";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -29,6 +30,10 @@ import {
   tambahBerkas,
 } from "@/lib/gateways/hris";
 import {
+  ambilPengaturanTransfer,
+  type BankTransfer,
+} from "@/lib/gateways/transfer";
+import {
   AGAMA,
   JENIS_KONTRAK,
   LABEL_TANDA_HRIS,
@@ -37,6 +42,7 @@ import {
   STATUS_NIKAH,
 } from "@/lib/validations/hris";
 import type { TabRincian } from "@/lib/validations/telegram";
+import { cocokBank } from "@/lib/validations/transfer";
 
 type Tab = TabRincian;
 type Isian = Record<string, string>;
@@ -128,6 +134,68 @@ function Bidang({
           className={KELAS}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Isian bank profil keuangan (prd-hris.md §27.6): daftar bank aktif dari
+ * Pengaturan transfer, menyimpan `nama`-nya. Nilai lama yang tidak ada di
+ * daftar tetap tampil apa adanya dan diberi tahu nasibnya di berkas transfer.
+ */
+function IsianBank({
+  id,
+  nilai,
+  bank,
+  nonaktif,
+  onUbah,
+}: {
+  id: string;
+  nilai: string;
+  bank: BankTransfer[];
+  nonaktif: boolean;
+  onUbah: (v: string) => void;
+}) {
+  const ada = bank.some((b) => b.nama === nilai);
+  const cocok =
+    nilai && !ada
+      ? cocokBank(
+          nilai,
+          bank.map((b) => ({ ...b, alias: JSON.stringify(b.alias) })),
+        )
+      : null;
+  return (
+    <div className="min-w-0">
+      <label
+        htmlFor={id}
+        className="mb-1 block text-xs font-semibold text-slate-400"
+      >
+        Bank
+      </label>
+      <PilihCari
+        id={id}
+        value={nilai}
+        disabled={nonaktif}
+        onChange={(e) => onUbah(e.target.value)}
+        className={KELAS}
+      >
+        <option value="">-</option>
+        {nilai && !ada ? (
+          <option value={nilai}>{`${nilai} (tersimpan)`}</option>
+        ) : null}
+        {bank.map((b) => (
+          <option key={b.id_bank} value={b.nama}>
+            {b.kode ? `${b.nama} (${b.kode})` : b.nama}
+          </option>
+        ))}
+      </PilihCari>
+      {nilai && !ada ? (
+        <p className="mt-1 text-xs text-amber-200">
+          {cocok
+            ? `Dikenali sebagai ${cocok.nama} di berkas transfer.`
+            : "Tidak ada di daftar bank Pengaturan; berkas transfer memasukkannya ke Perlu dibayar manual."}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -315,6 +383,23 @@ function ProfilForm({
   const [jejak, setJejak] = useState("");
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
+  // Null = daftar bank tidak bisa dimuat (database lama tanpa v44): isian teks.
+  const [daftarBank, setDaftarBank] = useState<BankTransfer[] | null>(null);
+
+  useEffect(() => {
+    if (kelompok !== "keuangan") return;
+    let batal = false;
+    ambilPengaturanTransfer()
+      .then((p) => {
+        if (!batal) setDaftarBank(p.bank);
+      })
+      .catch(() => {
+        if (!batal) setDaftarBank(null);
+      });
+    return () => {
+      batal = true;
+    };
+  }, [kelompok]);
 
   useEffect(() => {
     ambilProfil(id)
@@ -357,17 +442,28 @@ function ProfilForm({
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {kolom.map(([k, label, jenis]) => (
-          <Bidang
-            key={k}
-            id={`hris-${kelompok}-${k}`}
-            label={label}
-            jenis={jenis}
-            nilai={isi[k] ?? ""}
-            nonaktif={!bolehUbah}
-            onUbah={(v) => setIsi((lama) => ({ ...lama, [k]: v }))}
-          />
-        ))}
+        {kolom.map(([k, label, jenis]) =>
+          k === "bank" && daftarBank ? (
+            <IsianBank
+              key={k}
+              id={`hris-${kelompok}-${k}`}
+              nilai={isi[k] ?? ""}
+              bank={daftarBank}
+              nonaktif={!bolehUbah}
+              onUbah={(v) => setIsi((lama) => ({ ...lama, [k]: v }))}
+            />
+          ) : (
+            <Bidang
+              key={k}
+              id={`hris-${kelompok}-${k}`}
+              label={label}
+              jenis={jenis}
+              nilai={isi[k] ?? ""}
+              nonaktif={!bolehUbah}
+              onUbah={(v) => setIsi((lama) => ({ ...lama, [k]: v }))}
+            />
+          ),
+        )}
       </div>
       {jejak ? <p className="text-xs text-slate-500">{jejak}</p> : null}
       {pesan ? <p className="text-sm text-slate-300">{pesan}</p> : null}

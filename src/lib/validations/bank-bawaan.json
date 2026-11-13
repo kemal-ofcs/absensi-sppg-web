@@ -1,0 +1,150 @@
+[
+  {
+    "id_bank": "bnk-014",
+    "nama": "BCA",
+    "kode": "014",
+    "alias": ["Bank BCA", "Bank Central Asia", "PT Bank Central Asia Tbk"]
+  },
+  {
+    "id_bank": "bnk-008",
+    "nama": "Mandiri",
+    "kode": "008",
+    "alias": ["Bank Mandiri", "PT Bank Mandiri (Persero) Tbk"]
+  },
+  {
+    "id_bank": "bnk-451",
+    "nama": "BSI",
+    "kode": "451",
+    "alias": [
+      "Bank BSI",
+      "Bank Syariah Indonesia",
+      "PT Bank Syariah Indonesia Tbk",
+      "BSM",
+      "Bank Syariah Mandiri",
+      "Mandiri Syariah",
+      "BNI Syariah",
+      "BRI Syariah"
+    ]
+  },
+  {
+    "id_bank": "bnk-002",
+    "nama": "BRI",
+    "kode": "002",
+    "alias": [
+      "Bank BRI",
+      "Bank Rakyat Indonesia",
+      "PT Bank Rakyat Indonesia (Persero) Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-009",
+    "nama": "BNI",
+    "kode": "009",
+    "alias": [
+      "Bank BNI",
+      "Bank Negara Indonesia",
+      "PT Bank Negara Indonesia (Persero) Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-200",
+    "nama": "BTN",
+    "kode": "200",
+    "alias": [
+      "Bank BTN",
+      "Bank Tabungan Negara",
+      "PT Bank Tabungan Negara (Persero) Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-022",
+    "nama": "CIMB Niaga",
+    "kode": "022",
+    "alias": ["Bank CIMB Niaga", "CIMB", "PT Bank CIMB Niaga Tbk"]
+  },
+  {
+    "id_bank": "bnk-011",
+    "nama": "Danamon",
+    "kode": "011",
+    "alias": ["Bank Danamon", "PT Bank Danamon Indonesia Tbk"]
+  },
+  {
+    "id_bank": "bnk-013",
+    "nama": "Permata",
+    "kode": "013",
+    "alias": ["Bank Permata", "PermataBank", "PT Bank Permata Tbk"]
+  },
+  {
+    "id_bank": "bnk-028",
+    "nama": "OCBC",
+    "kode": "028",
+    "alias": ["OCBC NISP", "Bank OCBC NISP", "PT Bank OCBC NISP Tbk"]
+  },
+  {
+    "id_bank": "bnk-019",
+    "nama": "Panin",
+    "kode": "019",
+    "alias": ["Bank Panin", "Panin Bank", "PT Bank Pan Indonesia Tbk"]
+  },
+  {
+    "id_bank": "bnk-016",
+    "nama": "Maybank",
+    "kode": "016",
+    "alias": [
+      "Maybank Indonesia",
+      "Bank Maybank",
+      "BII",
+      "PT Bank Maybank Indonesia Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-426",
+    "nama": "Bank Mega",
+    "kode": "426",
+    "alias": ["Mega", "PT Bank Mega Tbk"]
+  },
+  {
+    "id_bank": "bnk-536",
+    "nama": "BCA Syariah",
+    "kode": "536",
+    "alias": ["Bank BCA Syariah", "PT Bank BCA Syariah"]
+  },
+  {
+    "id_bank": "bnk-147",
+    "nama": "Muamalat",
+    "kode": "147",
+    "alias": [
+      "Bank Muamalat",
+      "Bank Muamalat Indonesia",
+      "PT Bank Muamalat Indonesia Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-111",
+    "nama": "Bank DKI",
+    "kode": "111",
+    "alias": ["DKI", "PT Bank DKI"]
+  },
+  {
+    "id_bank": "bnk-110",
+    "nama": "Bank BJB",
+    "kode": "110",
+    "alias": [
+      "BJB",
+      "Bank Jabar Banten",
+      "PT Bank Pembangunan Daerah Jawa Barat dan Banten Tbk"
+    ]
+  },
+  {
+    "id_bank": "bnk-542",
+    "nama": "Bank Jago",
+    "kode": "542",
+    "alias": ["Jago", "PT Bank Jago Tbk"]
+  },
+  {
+    "id_bank": "bnk-535",
+    "nama": "SeaBank",
+    "kode": "535",
+    "alias": ["Sea Bank", "Bank Seabank Indonesia", "PT Bank Seabank Indonesia"]
+  }
+]

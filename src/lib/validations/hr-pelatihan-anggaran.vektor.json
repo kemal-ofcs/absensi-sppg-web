@@ -1,0 +1,300 @@
+{
+  "keterangan": "Vektor uji ringkas_anggaran ↔ ringkasAnggaran (prd-hris.md §26.4). Dibaca hr_pelatihan.rs (include_str!) dan hr-pelatihan.test.ts.",
+  "tahun": 2026,
+  "hari_ini": "2026-11-12",
+  "pagu": [
+    {
+      "id_anggaran": "2026:div-a",
+      "tahun": 2026,
+      "id_divisi": "div-a",
+      "nominal": 5000000,
+      "catatan": "Gudang",
+      "nama_divisi": "Gudang",
+      "divisi_aktif": 1
+    },
+    {
+      "id_anggaran": "2026:umum",
+      "tahun": 2026,
+      "id_divisi": null,
+      "nominal": 1000000,
+      "catatan": null,
+      "nama_divisi": null,
+      "divisi_aktif": null
+    }
+  ],
+  "rencana": [
+    {
+      "id_rencana": "rcn-1",
+      "tahun": 2026,
+      "nama": "K3 Gudang",
+      "id_divisi": "div-a",
+      "bulan": 3,
+      "peserta_rencana": 10,
+      "biaya_rencana": 4000000,
+      "dibatalkan_pada": null,
+      "nama_divisi": "Gudang",
+      "divisi_aktif": 1
+    },
+    {
+      "id_rencana": "rcn-2",
+      "tahun": 2026,
+      "nama": "Excel",
+      "id_divisi": "div-b",
+      "bulan": 6,
+      "peserta_rencana": 5,
+      "biaya_rencana": 2000000,
+      "dibatalkan_pada": null,
+      "nama_divisi": "Admin",
+      "divisi_aktif": 0
+    },
+    {
+      "id_rencana": "rcn-3",
+      "tahun": 2026,
+      "nama": "Dibatalkan",
+      "id_divisi": "div-a",
+      "bulan": null,
+      "peserta_rencana": 4,
+      "biaya_rencana": 9000000,
+      "dibatalkan_pada": "2026-02-01 03:00:00",
+      "nama_divisi": "Gudang",
+      "divisi_aktif": 1
+    },
+    {
+      "id_rencana": "rcn-4",
+      "tahun": 2026,
+      "nama": "Etika Kerja",
+      "id_divisi": null,
+      "bulan": null,
+      "peserta_rencana": 2,
+      "biaya_rencana": 500000,
+      "dibatalkan_pada": null,
+      "nama_divisi": null,
+      "divisi_aktif": null
+    },
+    {
+      "id_rencana": "rcn-5",
+      "tahun": 2026,
+      "nama": "Mesin",
+      "id_divisi": "div-c",
+      "bulan": 12,
+      "peserta_rencana": 4,
+      "biaya_rencana": 0,
+      "dibatalkan_pada": null,
+      "nama_divisi": "Produksi",
+      "divisi_aktif": 1
+    }
+  ],
+  "pelatihan": [
+    {
+      "id_pelatihan": "plt-1",
+      "nama": "K3 gelombang 1",
+      "tanggal_mulai": "2026-03-02",
+      "tanggal_selesai": "2026-03-03",
+      "biaya": 3000000,
+      "dibatalkan_pada": null,
+      "id_rencana": "rcn-1",
+      "id_divisi": "div-a",
+      "nama_divisi": "Gudang",
+      "divisi_aktif": 1,
+      "jumlah_peserta": 8
+    },
+    {
+      "id_pelatihan": "plt-3",
+      "nama": "Di luar rencana",
+      "tanggal_mulai": "2026-05-10",
+      "tanggal_selesai": "2026-05-10",
+      "biaya": 800000,
+      "dibatalkan_pada": null,
+      "id_rencana": null,
+      "id_divisi": null,
+      "nama_divisi": null,
+      "divisi_aktif": null,
+      "jumlah_peserta": 3
+    },
+    {
+      "id_pelatihan": "plt-4",
+      "nama": "Batal",
+      "tanggal_mulai": "2026-07-01",
+      "tanggal_selesai": "2026-07-01",
+      "biaya": 400000,
+      "dibatalkan_pada": "2026-06-30 02:00:00",
+      "id_rencana": null,
+      "id_divisi": null,
+      "nama_divisi": null,
+      "divisi_aktif": null,
+      "jumlah_peserta": 0
+    },
+    {
+      "id_pelatihan": "plt-6",
+      "nama": "Mesin dasar",
+      "tanggal_mulai": "2026-11-10",
+      "tanggal_selesai": "2026-11-14",
+      "biaya": 1200000,
+      "dibatalkan_pada": null,
+      "id_rencana": "rcn-5",
+      "id_divisi": "div-c",
+      "nama_divisi": "Produksi",
+      "divisi_aktif": 1,
+      "jumlah_peserta": 4
+    },
+    {
+      "id_pelatihan": "plt-2",
+      "nama": "K3 gelombang 2",
+      "tanggal_mulai": "2026-12-01",
+      "tanggal_selesai": "2026-12-02",
+      "biaya": 2500000,
+      "dibatalkan_pada": null,
+      "id_rencana": "rcn-1",
+      "id_divisi": "div-a",
+      "nama_divisi": "Gudang",
+      "divisi_aktif": 1,
+      "jumlah_peserta": 0
+    },
+    {
+      "id_pelatihan": "plt-5",
+      "nama": "Etika, tahun berikutnya",
+      "tanggal_mulai": "2027-01-05",
+      "tanggal_selesai": "2027-01-05",
+      "biaya": 700000,
+      "dibatalkan_pada": null,
+      "id_rencana": "rcn-4",
+      "id_divisi": null,
+      "nama_divisi": null,
+      "divisi_aktif": null,
+      "jumlah_peserta": 2
+    }
+  ],
+  "harapan": {
+    "kelompok": [
+      {
+        "kunci": "umum",
+        "id_divisi": null,
+        "nama": "Umum",
+        "divisi_aktif": null,
+        "id_anggaran": "2026:umum",
+        "pagu": 1000000,
+        "catatan": null,
+        "direncanakan": 500000,
+        "terikat": 0,
+        "terpakai": 800000,
+        "sisa": 200000,
+        "tanda": []
+      },
+      {
+        "kunci": "div-b",
+        "id_divisi": "div-b",
+        "nama": "Admin",
+        "divisi_aktif": false,
+        "id_anggaran": null,
+        "pagu": null,
+        "catatan": null,
+        "direncanakan": 2000000,
+        "terikat": 0,
+        "terpakai": 0,
+        "sisa": null,
+        "tanda": []
+      },
+      {
+        "kunci": "div-a",
+        "id_divisi": "div-a",
+        "nama": "Gudang",
+        "divisi_aktif": true,
+        "id_anggaran": "2026:div-a",
+        "pagu": 5000000,
+        "catatan": "Gudang",
+        "direncanakan": 4000000,
+        "terikat": 2500000,
+        "terpakai": 3000000,
+        "sisa": -500000,
+        "tanda": ["lewat_pagu"]
+      },
+      {
+        "kunci": "div-c",
+        "id_divisi": "div-c",
+        "nama": "Produksi",
+        "divisi_aktif": true,
+        "id_anggaran": null,
+        "pagu": null,
+        "catatan": null,
+        "direncanakan": 0,
+        "terikat": 0,
+        "terpakai": 1200000,
+        "sisa": null,
+        "tanda": ["tanpa_pagu"]
+      }
+    ],
+    "total": {
+      "pagu": 6000000,
+      "direncanakan": 6500000,
+      "terikat": 2500000,
+      "terpakai": 5000000,
+      "sisa": -1500000,
+      "tanda": ["lewat_pagu", "rencana_lewat_pagu"]
+    },
+    "di_luar_rencana": {
+      "jumlah_pelatihan": 1,
+      "realisasi": 800000,
+      "peserta_aktual": 3
+    },
+    "rencana": [
+      {
+        "id_rencana": "rcn-1",
+        "status": "Terlaksana",
+        "realisasi": 5500000,
+        "jumlah_pelatihan": 2,
+        "peserta_aktual": 8,
+        "tanda": ["lewat_estimasi"]
+      },
+      {
+        "id_rencana": "rcn-2",
+        "status": "Terlewat",
+        "realisasi": 0,
+        "jumlah_pelatihan": 0,
+        "peserta_aktual": 0,
+        "tanda": []
+      },
+      {
+        "id_rencana": "rcn-3",
+        "status": "Dibatalkan",
+        "realisasi": 0,
+        "jumlah_pelatihan": 0,
+        "peserta_aktual": 0,
+        "tanda": []
+      },
+      {
+        "id_rencana": "rcn-4",
+        "status": "Dijadwalkan",
+        "realisasi": 700000,
+        "jumlah_pelatihan": 1,
+        "peserta_aktual": 2,
+        "tanda": ["lewat_estimasi", "beda_tahun"]
+      },
+      {
+        "id_rencana": "rcn-5",
+        "status": "Berlangsung",
+        "realisasi": 1200000,
+        "jumlah_pelatihan": 1,
+        "peserta_aktual": 4,
+        "tanda": ["lewat_estimasi"]
+      }
+    ],
+    "pelatihan_rcn_1": [
+      {
+        "id_pelatihan": "plt-1",
+        "nama": "K3 gelombang 1",
+        "tanggal_mulai": "2026-03-02",
+        "biaya": 3000000,
+        "jumlah_peserta": 8,
+        "status": "Selesai"
+      },
+      {
+        "id_pelatihan": "plt-2",
+        "nama": "K3 gelombang 2",
+        "tanggal_mulai": "2026-12-01",
+        "biaya": 2500000,
+        "jumlah_peserta": 0,
+        "status": "Dijadwalkan"
+      }
+    ]
+  }
+}

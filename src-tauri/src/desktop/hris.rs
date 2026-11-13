@@ -243,7 +243,7 @@ pub fn nomor_identitas(
     Ok(Some(digit))
 }
 
-const PANJANG_REKENING: [usize; 16] = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+pub const PANJANG_REKENING: [usize; 16] = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
 fn label_kolom(kolom: &str) -> &'static str {
     match kolom {

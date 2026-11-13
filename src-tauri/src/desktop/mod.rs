@@ -16,6 +16,7 @@ mod hr_keluar;
 mod hr_kinerja;
 mod hr_rekrutmen;
 mod hr_pelatihan;
+mod transfer;
 pub mod telegram;
 pub mod license;
 pub mod models;

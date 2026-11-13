@@ -19,6 +19,11 @@ import {
   MIGRASI_ORGANISASI_SQL,
   SEED_JENIS_DOKUMEN_SQL,
 } from "@/lib/validations/hris";
+import {
+  BANK_BAWAAN,
+  SEED_BANK_SQL,
+  seedBankArgs,
+} from "@/lib/validations/transfer";
 
 const RBAC_MIGRATION_VERSION = 1;
 const WEB_SESSION_MIGRATION_VERSION = 2;
@@ -62,6 +67,8 @@ const HRIS_REIMBURSE_MIGRATION_VERSION = 39;
 const HRIS_KELUAR_MIGRATION_VERSION = 40;
 const HRIS_KINERJA_MIGRATION_VERSION = 41;
 const HRIS_REKRUTMEN_MIGRATION_VERSION = 42;
+const HRIS_PELATIHAN_RENCANA_MIGRATION_VERSION = 43;
+const PAYROLL_TRANSFER_MIGRATION_VERSION = 44;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -2598,6 +2605,7 @@ export async function runDatabaseMigrations(client: Client) {
       dibatalkan_oleh TEXT,
       dibatalkan_pada TEXT,
       alasan_batal TEXT,
+      id_rencana TEXT,
       CHECK (tanggal_selesai >= tanggal_mulai)
     );
   `);
@@ -2629,6 +2637,123 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'hris-rekrutmen', ?);`,
     args: [HRIS_REKRUTMEN_MIGRATION_VERSION, now],
+  });
+
+  // v43: HRIS fase 11. Pagu dan rencana pelatihan, KHUSUS CLOUD seperti
+  // induknya (Q-138). DDL WAJIB identik dengan `turso.rs`. Indeks
+  // `id_rencana` sesudah kolomnya pasti ada (aturan 20, pola v38).
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelatihan_anggaran (
+      id_anggaran TEXT PRIMARY KEY,
+      tahun INTEGER NOT NULL CHECK (tahun BETWEEN 2000 AND 2100),
+      id_divisi TEXT,
+      nominal INTEGER NOT NULL CHECK (nominal >= 0),
+      catatan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_anggaran_tahun ON hr_pelatihan_anggaran(tahun);",
+  );
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS hr_pelatihan_rencana (
+      id_rencana TEXT PRIMARY KEY,
+      tahun INTEGER NOT NULL CHECK (tahun BETWEEN 2000 AND 2100),
+      nama TEXT NOT NULL,
+      id_divisi TEXT,
+      bulan INTEGER CHECK (bulan IS NULL OR bulan BETWEEN 1 AND 12),
+      peserta_rencana INTEGER NOT NULL DEFAULT 0 CHECK (peserta_rencana >= 0),
+      biaya_rencana INTEGER NOT NULL DEFAULT 0 CHECK (biaya_rencana >= 0),
+      penyelenggara TEXT,
+      keterangan TEXT,
+      dicatat_oleh TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      diubah_oleh TEXT,
+      diubah_pada TEXT,
+      dibatalkan_oleh TEXT,
+      dibatalkan_pada TEXT,
+      alasan_batal TEXT
+    );
+  `);
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_rencana_tahun ON hr_pelatihan_rencana(tahun);",
+  );
+  if (!(await hasColumn(client, "hr_pelatihan", "id_rencana"))) {
+    await client.execute(
+      "ALTER TABLE hr_pelatihan ADD COLUMN id_rencana TEXT;",
+    );
+  }
+  await client.execute(
+    "CREATE INDEX IF NOT EXISTS idx_hr_pelatihan_rencana ON hr_pelatihan(id_rencana);",
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'hris-pelatihan-rencana', ?);`,
+    args: [HRIS_PELATIHAN_RENCANA_MIGRATION_VERSION, now],
+  });
+
+  // v44: HRIS fase 12. Pengaturan transfer bank, KHUSUS CLOUD (§27.2). DDL
+  // WAJIB identik dengan `turso.rs`. Bank bawaan dari berkas JSON yang sama
+  // dengan seed Rust; tanpa seed rekening dan format.
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS app_bank (
+      id_bank TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      kode TEXT CHECK (kode IS NULL OR (length(kode) = 3 AND kode NOT GLOB '*[^0-9]*')),
+      alias TEXT NOT NULL DEFAULT '[]',
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      is_bawaan INTEGER NOT NULL DEFAULT 0 CHECK (is_bawaan IN (0, 1)),
+      diubah_oleh TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS app_bank_rekening (
+      id_rekening TEXT PRIMARY KEY,
+      id_bank TEXT NOT NULL,
+      no_rekening TEXT NOT NULL CHECK (length(no_rekening) BETWEEN 5 AND 20 AND no_rekening NOT GLOB '*[^0-9]*'),
+      nama_rekening TEXT NOT NULL,
+      keterangan TEXT,
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      diubah_oleh TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS app_bank_format (
+      id_format TEXT PRIMARY KEY,
+      nama TEXT NOT NULL,
+      id_bank TEXT,
+      jenis TEXT NOT NULL CHECK (jenis IN ('csv', 'txt', 'xlsx')),
+      pemisah TEXT CHECK (pemisah IS NULL OR pemisah IN (',', ';', char(9), '|')),
+      pakai_judul INTEGER NOT NULL DEFAULT 1 CHECK (pakai_judul IN (0, 1)),
+      kutip INTEGER NOT NULL DEFAULT 0 CHECK (kutip IN (0, 1)),
+      desimal INTEGER NOT NULL DEFAULT 0 CHECK (desimal IN (0, 1)),
+      cakupan TEXT NOT NULL DEFAULT 'semua' CHECK (cakupan IN ('semua', 'sesama', 'antarbank')),
+      kolom TEXT NOT NULL,
+      maks_berita INTEGER CHECK (maks_berita IS NULL OR maks_berita > 0),
+      is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
+      diubah_oleh TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK ((jenis = 'xlsx') = (pemisah IS NULL))
+    );
+  `);
+  await client.batch(
+    BANK_BAWAAN.map((bank) => ({
+      sql: SEED_BANK_SQL,
+      args: seedBankArgs(bank),
+    })),
+  );
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'payroll-transfer', ?);`,
+    args: [PAYROLL_TRANSFER_MIGRATION_VERSION, now],
   });
 
   await client.execute(
