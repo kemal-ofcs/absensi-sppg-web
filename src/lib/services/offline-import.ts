@@ -402,11 +402,11 @@ async function processRow(
       update_terakhir, menit_terlambat, menit_datang_awal, jam_kerja, lembur,
       jam_kerja_kurang, id_shift, bulan, tahun, id_sesi, mode_tugas, id_backup,
       id_karyawan_asal, tanggal_tugas)
-      VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ((SELECT id_absensi FROM absensi_harian WHERE id_sesi = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Import Offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id_absensi) DO UPDATE SET jam_masuk = excluded.jam_masuk,
       jam_pulang = excluded.jam_pulang, status_kehadiran = excluded.status_kehadiran,
       status_absen = excluded.status_absen, keterangan = excluded.keterangan,
-      sumber = 'Import Manual', update_terakhir = excluded.update_terakhir,
+      sumber = 'Import Offline', update_terakhir = excluded.update_terakhir,
       menit_terlambat = excluded.menit_terlambat, menit_datang_awal = excluded.menit_datang_awal,
       jam_kerja = excluded.jam_kerja, lembur = excluded.lembur,
       jam_kerja_kurang = excluded.jam_kerja_kurang;`,
@@ -454,7 +454,7 @@ async function processRow(
         id_karyawan, nama, divisi, jenis_scan, status_proses, sumber_data,
         catatan_sistem, keterangan, menit_terlambat, menit_datang_awal,
         id_referensi, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, 'Berhasil',
-        'Import Manual', ?, ?, ?, ?, ?, ?);`,
+        'Import Offline', ?, ?, ?, ?, ?, ?);`,
       args: [
         // Waktu pembuatan baris, bukan jam kerja yang diimpor.
         now,
