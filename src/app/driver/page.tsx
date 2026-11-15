@@ -10,6 +10,8 @@ import { useAuth } from "@/lib/context/AuthContext";
 export default function DriverPage() {
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  if (!isLoading && !isAuthenticated) redirect("/login");
+
   if (!isLoading && isAuthenticated && !canAccessArea(user, "driver")) {
     redirect("/forbidden");
   }

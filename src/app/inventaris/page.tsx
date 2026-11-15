@@ -10,6 +10,8 @@ import { useAuth } from "@/lib/context/AuthContext";
 export default function InventarisPage() {
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  if (!isLoading && !isAuthenticated) redirect("/login");
+
   if (!isLoading && isAuthenticated && !canAccessArea(user, "inventaris")) {
     redirect("/forbidden");
   }

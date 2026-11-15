@@ -10,6 +10,8 @@ import { useAuth } from "@/lib/context/AuthContext";
 export default function PerjalananPage() {
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  if (!isLoading && !isAuthenticated) redirect("/login");
+
   if (!isLoading && isAuthenticated && !canAccessArea(user, "perjalanan")) {
     redirect("/forbidden");
   }

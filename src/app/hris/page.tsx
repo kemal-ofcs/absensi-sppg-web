@@ -11,6 +11,8 @@ import { useAuth } from "@/lib/context/AuthContext";
 export default function HrisPage() {
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  if (!isLoading && !isAuthenticated) redirect("/login");
+
   if (!isLoading && isAuthenticated && !canAccessArea(user, "hris")) {
     redirect("/forbidden");
   }

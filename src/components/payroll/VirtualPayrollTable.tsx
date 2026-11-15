@@ -51,6 +51,7 @@ export function VirtualPayrollTable({
     let hadir = 0;
     let regHours = 0;
     let otHours = 0;
+    let liburHours = 0;
     let gross = 0;
     let net = 0;
 
@@ -58,11 +59,12 @@ export function VirtualPayrollTable({
       hadir += r.total_hadir;
       regHours += r.total_regular_hours;
       otHours += r.total_overtime_hours;
+      liburHours += r.total_holiday_hours;
       gross += r.est_gross_salary;
       net += r.est_net_salary;
     }
 
-    return { hadir, regHours, otHours, gross, net };
+    return { hadir, regHours, otHours, liburHours, gross, net };
   }, [filtered]);
 
   return (
@@ -105,6 +107,12 @@ export function VirtualPayrollTable({
               <th className="py-3 px-4 text-center">Hadir</th>
               <th className="py-3 px-4 text-right">Jam Reguler</th>
               <th className="py-3 px-4 text-right">Jam Lembur</th>
+              <th
+                className="py-3 px-4 text-right"
+                title="Jam di hari libur atau di luar hari kerja shift saat absen; dibayar di Upah Lembur."
+              >
+                Jam Libur
+              </th>
               <th className="py-3 px-4 text-right">Rate / Jam</th>
               <th className="py-3 px-4 text-right">Gaji Pokok</th>
               <th className="py-3 px-4 text-right">Upah Lembur</th>
@@ -115,13 +123,13 @@ export function VirtualPayrollTable({
           <tbody className="divide-y divide-slate-800">
             {isLoading ? (
               <tr>
-                <td colSpan={10} className="py-8 text-center text-slate-500">
+                <td colSpan={11} className="py-8 text-center text-slate-500">
                   Memuat data rekap payroll...
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-8 text-center text-slate-500">
+                <td colSpan={11} className="py-8 text-center text-slate-500">
                   Tidak ada data karyawan yang cocok.
                 </td>
               </tr>
@@ -167,6 +175,11 @@ export function VirtualPayrollTable({
                         tidak dibayar (SPL)
                       </div>
                     ) : null}
+                  </td>
+                  <td className="py-3 px-4 text-right font-mono text-rose-300">
+                    {row.salary_type === "FLAT_DAILY"
+                      ? "–"
+                      : `${row.total_holiday_hours.toFixed(1)} j`}
                   </td>
                   <td className="py-3 px-4 text-right font-mono text-slate-400">
                     {row.salary_type === "FLAT_DAILY" ? (
@@ -221,6 +234,9 @@ export function VirtualPayrollTable({
                 </td>
                 <td className="py-3 px-4 text-right font-mono text-amber-400">
                   {totals.otHours.toFixed(1)} j
+                </td>
+                <td className="py-3 px-4 text-right font-mono text-rose-300">
+                  {totals.liburHours.toFixed(1)} j
                 </td>
                 <td className="py-3 px-4 text-right">-</td>
                 <td className="py-3 px-4 text-right font-mono">-</td>

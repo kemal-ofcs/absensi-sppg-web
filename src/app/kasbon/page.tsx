@@ -10,6 +10,8 @@ import { useAuth } from "@/lib/context/AuthContext";
 export default function KasbonPage() {
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  if (!isLoading && !isAuthenticated) redirect("/login");
+
   if (!isLoading && isAuthenticated && !canAccessArea(user, "kasbon")) {
     redirect("/forbidden");
   }
