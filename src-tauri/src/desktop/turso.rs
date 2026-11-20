@@ -1515,6 +1515,57 @@ impl TursoClient {
         Ok(())
     }
 
+    /// 'Import Manual' baru masuk CHECK `sumber`/`sumber_data` pada
+    /// 2026-10-11; cloud yang lebih tua menolak setiap import manual. DDL lama
+    /// disalin apa adanya dan hanya daftarnya yang diperluas, supaya kolom
+    /// hasil ALTER ikut. Cermin blok yang sama di `db-migrations.ts`.
+    async fn ensure_import_manual_source(&self) -> Result<(), CommandError> {
+        const LAMA: &str = "'Import Offline', 'Generate Sistem'";
+        const BARU: &str = "'Import Offline', 'Import Manual', 'Generate Sistem'";
+        for tabel in ["absensi_harian", "log_scan"] {
+            let ddl = self
+                .query_one(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?;",
+                    vec![Value::String(tabel.to_owned())],
+                )
+                .await?
+                .to_objects()
+                .first()
+                .and_then(|row| row.get("sql").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_default();
+            if !ddl.contains(LAMA) {
+                continue;
+            }
+            let turunan: Vec<String> = self
+                .query_one(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name;",
+                    vec![Value::String(tabel.to_owned())],
+                )
+                .await?
+                .to_objects()
+                .iter()
+                .filter_map(|row| row.get("sql").and_then(Value::as_str).map(str::to_owned))
+                .collect();
+            let staging = format!("{tabel}{}", "__rebuild");
+            let mut statements = vec![
+                Statement::new(format!("DROP TABLE IF EXISTS {staging};"), vec![]),
+                Statement::new(
+                    ddl.replacen(tabel, &staging, 1).replacen(LAMA, BARU, 1),
+                    vec![],
+                ),
+                Statement::new(
+                    format!("INSERT INTO {staging} SELECT * FROM {tabel};"),
+                    vec![],
+                ),
+                Statement::new(format!("DROP TABLE {tabel};"), vec![]),
+                Statement::new(format!("ALTER TABLE {staging} RENAME TO {tabel};"), vec![]),
+            ];
+            statements.extend(turunan.into_iter().map(|sql| Statement::new(sql, vec![])));
+            self.execute_atomic(statements).await?;
+        }
+        Ok(())
+    }
+
     async fn ensure_column(
         &self,
         table: &str,
@@ -4117,6 +4168,7 @@ impl TursoClient {
         // v28: sumber jurnal `Inventaris`. SEBELUM `ensure_sync_pulse`, karena
         // bangun ulang tabel ikut membuang trigger pulse-nya.
         self.ensure_journal_source_values().await?;
+        self.ensure_import_manual_source().await?;
 
         self.ensure_sync_pulse().await?;
         self.purge_legacy_rate_rows().await?;
@@ -9145,9 +9197,21 @@ async fn apply_event_to_turso(
                 }
             }
 
-            // Terapkan logs jika disertakan dalam event import offline
+            // Terapkan logs jika disertakan dalam event import offline. Import
+            // ulang baris yang sama memakai ulang event_key dengan
+            // `timestamp_scan` baru, jadi log lama referensi yang sama dibuang
+            // dulu, persis DELETE di `administration::import_offline`.
             if let Some(logs) = payload.get("logs").and_then(Value::as_array) {
                 for log in logs {
+                    let field = |key: &str| json!(log.get(key).and_then(Value::as_str).unwrap_or(""));
+                    if log.get("id_referensi").and_then(Value::as_str).is_some_and(|r| !r.is_empty()) {
+                        turso
+                            .query_one(
+                                "DELETE FROM log_scan WHERE tanggal_kerja = ? AND id_karyawan = ? AND jenis_scan = ? AND sumber_data IN ('Import Offline', 'Import Manual') AND COALESCE(id_referensi, '') = ?;",
+                                vec![field("tanggal_kerja"), field("id_karyawan"), field("jenis_scan"), field("id_referensi")],
+                            )
+                            .await?;
+                    }
                     insert_log_if_missing(turso, log).await?;
                 }
             }

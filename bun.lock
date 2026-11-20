@@ -39,6 +39,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@vladmandic/human@3.3.6": "patches/@vladmandic%2Fhuman@3.3.6.patch",
+  },
   "overrides": {
     "uuid": "11.1.1",
   },

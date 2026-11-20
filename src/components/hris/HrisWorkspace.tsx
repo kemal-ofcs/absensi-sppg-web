@@ -8,6 +8,7 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BaganOrganisasi } from "@/components/hris/BaganOrganisasi";
 import { DaftarRincian } from "@/components/hris/DaftarRincian";
+import { ImporDataDiri } from "@/components/hris/ImporDataDiri";
 import { KeluarWorkspace } from "@/components/hris/KeluarWorkspace";
 import { KinerjaWorkspace } from "@/components/hris/KinerjaWorkspace";
 import { OrganisasiPanel } from "@/components/hris/OrganisasiPanel";
@@ -99,6 +100,10 @@ export function HrisWorkspace() {
       : "kerja",
   );
   const [galat, setGalat] = useState("");
+  const [impor, setImpor] = useState(false);
+  const bolehImpor =
+    hasPermission(user, "hr.personal.manage") ||
+    hasPermission(user, "hr.finance.manage");
 
   const muat = useCallback(async () => {
     try {
@@ -184,6 +189,14 @@ export function HrisWorkspace() {
 
       {galat ? <p className="text-sm text-rose-200">{galat}</p> : null}
 
+      {impor ? (
+        <ImporDataDiri
+          karyawan={karyawan}
+          onClose={() => setImpor(false)}
+          onSelesai={() => void muat()}
+        />
+      ) : null}
+
       {tab === "karyawan" && bolehPerhatian ? (
         <PerluPerhatian
           onPilihKaryawan={(idKaryawan, tabAwal) => {
@@ -211,6 +224,15 @@ export function HrisWorkspace() {
                 placeholder="Cari nama, kode, divisi, jabatan..."
                 className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500"
               />
+              {bolehImpor ? (
+                <button
+                  type="button"
+                  onClick={() => setImpor(true)}
+                  className="min-h-10 w-full rounded-xl border border-slate-700 px-3 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                >
+                  Impor data diri
+                </button>
+              ) : null}
               <ul className="max-h-[65vh] space-y-1 overflow-y-auto">
                 {tampil.map((k) => {
                   const id = String(k.id_unik);

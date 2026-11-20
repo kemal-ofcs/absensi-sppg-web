@@ -70,7 +70,12 @@ export function PilihPersonil({
     String(peta.get(idPersonil)?.nama ?? idPersonil);
 
   const keterangan = (row: Record<string, unknown>) =>
-    [String(row.id_unik ?? ""), String(row.divisi ?? "")]
+    [
+      String(row.id_unik ?? ""),
+      String(row.divisi ?? ""),
+      // Diisi pemanggil lewat `denganShift`; shift master yang aktif sekarang.
+      String(row.shift_tampil ?? ""),
+    ]
       .filter(Boolean)
       .join(" · ");
 

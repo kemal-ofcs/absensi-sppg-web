@@ -1,11 +1,12 @@
 "use client";
 
 import { redirect } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import {
   BATAS_IMPORT_MASSAL,
   BATAS_KOREKSI_MASSAL,
+  denganShift,
   jalankanBerurutan,
   ringkasHasil,
 } from "@/components/operational/aturanPilihPersonil";
@@ -39,6 +40,7 @@ import {
 import { getDaftarShift } from "@/lib/gateways/shift";
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { eventImportKembar } from "@/lib/validations/import-kembar";
 import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 type Tab = "correction" | "backup" | "import";
@@ -57,7 +59,13 @@ export default function OperationalPage() {
 
   const [employees, setEmployees] = useState<Record<string, unknown>[]>([]);
   const [shifts, setShifts] = useState<Record<string, unknown>[]>([]);
+  // Nama dan jam shift master tampil di samping divisi pada pemilih personil.
+  const personilShift = useMemo(
+    () => denganShift(employees, shifts),
+    [employees, shifts],
+  );
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
+  const importKembar = eventImportKembar(records);
   const [busy, setBusy] = useState(false);
   const isSubmittingRef = useRef(false);
 
@@ -674,7 +682,7 @@ export default function OperationalPage() {
               <PilihPersonil
                 id="koreksi-karyawan"
                 label="Pilih karyawan (bisa lebih dari satu)"
-                personil={employees}
+                personil={personilShift}
                 terpilih={correction.idPersonil}
                 onChange={(ids) =>
                   setCorrection((prev) => ({ ...prev, idPersonil: ids }))
@@ -866,7 +874,7 @@ export default function OperationalPage() {
               <PilihPersonil
                 id="backup-asal"
                 label="Karyawan asal (yang digantikan)"
-                personil={employees}
+                personil={personilShift}
                 terpilih={
                   backup.id_karyawan_asal ? [backup.id_karyawan_asal] : []
                 }
@@ -880,7 +888,7 @@ export default function OperationalPage() {
               <PilihPersonil
                 id="backup-pengganti"
                 label="Karyawan pengganti"
-                personil={employees}
+                personil={personilShift}
                 terpilih={
                   backup.id_karyawan_pengganti
                     ? [backup.id_karyawan_pengganti]
@@ -963,7 +971,7 @@ export default function OperationalPage() {
               <PilihPersonil
                 id="manual-karyawan"
                 label="Pilih karyawan (bisa lebih dari satu)"
-                personil={employees}
+                personil={personilShift}
                 terpilih={manualEntry.idPersonil}
                 onChange={(ids) =>
                   setManualEntry((prev) => ({ ...prev, idPersonil: ids }))
@@ -1381,6 +1389,14 @@ export default function OperationalPage() {
                       >
                         {String(item.status_proses || item.status_absen || "-")}
                       </span>
+                      {importKembar.has(String(item.event_key)) ? (
+                        <span
+                          className="ml-1 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-950 text-amber-300 border border-amber-800"
+                          title="Ada baris import lain yang sama persis. Hapus salah satunya agar log scan tidak dobel."
+                        >
+                          Dobel
+                        </span>
+                      ) : null}
                     </td>
                     <td
                       className="p-2.5 text-slate-400 max-w-xs truncate"

@@ -5,10 +5,12 @@ import type { InValue, Transaction } from "@libsql/client";
 import {
   aturanShiftDariBaris,
   diDalamJendelaScanMasuk,
+  formatTanggalOperasional,
   hitungUlangAbsensiDariJam,
   isShiftFleksibel,
 } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { periksaWaktuImport } from "@/lib/validations/waktu-import";
 
 export interface OfflineImportRow {
   tanggal: string;
@@ -79,6 +81,16 @@ export const STATUS_ABSEN_IMPORT = [
   "Datang Lebih Awal",
 ] as const;
 
+/**
+ * Import berhasil sebelumnya yang isinya sama persis. Dieja kembar dengan
+ * `SQL_IMPORT_KEMBAR` di `src-tauri/src/desktop/administration.rs`.
+ */
+export const SQL_IMPORT_KEMBAR = `SELECT event_key FROM import_offline
+  WHERE tanggal = ? AND id_unik = ? AND COALESCE(jam_masuk, '') = ?
+    AND COALESCE(jam_pulang, '') = ? AND COALESCE(status_kehadiran, '') = ?
+    AND status_proses = 'Sudah Diproses'
+  ORDER BY id_import DESC LIMIT 1;`;
+
 async function processRow(
   transaction: Transaction,
   input: OfflineImportRow,
@@ -92,7 +104,7 @@ async function processRow(
   const row: OfflineImportRow = tidakHadir
     ? { ...input, jam_masuk: undefined, jam_pulang: undefined }
     : input;
-  const eventKey = `IMP-${randomUUID()}`;
+  let eventKey = `IMP-${randomUUID()}`;
   const now = new Date().toISOString();
   let date = normalizeDate(row.tanggal);
   const fail = async (message: string) => {
@@ -138,6 +150,16 @@ async function processRow(
     (row.jam_pulang && !TIME.test(row.jam_pulang))
   )
     return fail("Jam masuk/pulang tidak valid.");
+  if (!tidakHadir) {
+    const salahWaktu = periksaWaktuImport(
+      date,
+      row.jam_masuk ?? "",
+      formatTanggalOperasional(Date.now()),
+      // WIB tanpa DST: geser +7 jam lalu baca jam UTC-nya.
+      new Date(Date.now() + 7 * 3_600_000).toISOString().slice(11, 16),
+    );
+    if (salahWaktu) return fail(salahWaktu);
+  }
   const employeeResult = await transaction.execute({
     sql: "SELECT id_unik, nama, divisi, id_shift, status_aktif FROM master_data WHERE id_unik = ? OR kode_karyawan = ? LIMIT 1;",
     args: [row.id_unik, row.id_unik],
@@ -395,6 +417,21 @@ async function processRow(
   const worked = hasil.jamKerja;
   const overtime = hasil.lembur;
   const shortage = hasil.jamKerjaKurang;
+  // Import ulang baris yang sama (mis. setelah "failed to fetch" padahal
+  // server sudah menyimpan) memakai ulang event lamanya, sehingga log scan
+  // dan riwayat import tertimpa, tidak dobel.
+  const kembar = await transaction.execute({
+    sql: SQL_IMPORT_KEMBAR,
+    args: [
+      date,
+      id,
+      row.jam_masuk ?? "",
+      row.jam_pulang ?? "",
+      statusAttendance,
+    ],
+  });
+  const eventLama = kembar.rows[0]?.event_key;
+  if (eventLama) eventKey = String(eventLama);
   const [year, month] = date.split("-").map(Number);
   await transaction.execute({
     sql: `INSERT INTO absensi_harian (id_absensi, tanggal, id_karyawan, nama, kelas_divisi,
@@ -480,11 +517,16 @@ async function processRow(
   }
 
   await transaction.execute({
-    sql: `INSERT INTO import_offline (event_key, timestamp_input, tanggal, id_unik,
+    sql: `INSERT INTO import_offline (id_import, event_key, timestamp_input, tanggal, id_unik,
       nama, divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen,
       keterangan, status_proses, diproses_pada, pesan_error, kode_operator)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, '', ?);`,
+      VALUES ((SELECT id_import FROM import_offline WHERE event_key = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, '', ?)
+      ON CONFLICT(id_import) DO UPDATE SET timestamp_input = excluded.timestamp_input,
+      nama = excluded.nama, divisi = excluded.divisi, status_absen = excluded.status_absen,
+      keterangan = excluded.keterangan, diproses_pada = excluded.diproses_pada,
+      kode_operator = excluded.kode_operator;`,
     args: [
+      eventKey,
       eventKey,
       now,
       date,
@@ -503,7 +545,9 @@ async function processRow(
   return {
     sukses: true,
     eventKey,
-    pesan: `Import ${id} berhasil diproses.`,
+    pesan: eventLama
+      ? `Import ${id} sudah pernah diimpor; data lamanya diperbarui.`
+      : `Import ${id} berhasil diproses.`,
     sessionId,
   };
 }

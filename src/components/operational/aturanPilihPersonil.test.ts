@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  denganShift,
   jalankanBerurutan,
   ringkasHasil,
   saringPersonil,
@@ -53,5 +54,26 @@ describe("aturanPilihPersonil", () => {
     expect(ringkasHasil({ berhasil: ["A"], gagal: [] }, String)).toBe(
       "1 berhasil, 0 gagal.",
     );
+  });
+});
+
+describe("denganShift", () => {
+  test("menempelkan nama dan jam shift master; shift tak dikenal dibiarkan", () => {
+    const hasil = denganShift(
+      [
+        { id_unik: "K1", id_shift: 6 },
+        { id_unik: "K2", id_shift: 9 },
+      ],
+      [
+        {
+          id_shift: 6,
+          nama_shift: "Malam",
+          jam_masuk: "22:00:00",
+          jam_pulang: "06:00",
+        },
+      ],
+    );
+    expect(hasil[0].shift_tampil).toBe("Malam (22:00 - 06:00)");
+    expect("shift_tampil" in hasil[1]).toBe(false);
   });
 });

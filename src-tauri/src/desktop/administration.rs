@@ -283,6 +283,14 @@ pub fn list_corrections(state: &DesktopState, filter: &Value) -> Result<Value, C
     )
 }
 
+/// Import berhasil sebelumnya yang isinya sama persis. Kembar dengan
+/// `SQL_IMPORT_KEMBAR` di `src/lib/services/offline-import.ts`.
+pub(crate) const SQL_IMPORT_KEMBAR: &str = "SELECT event_key FROM import_offline
+  WHERE tanggal = ? AND id_unik = ? AND COALESCE(jam_masuk, '') = ?
+    AND COALESCE(jam_pulang, '') = ? AND COALESCE(status_kehadiran, '') = ?
+    AND status_proses = 'Sudah Diproses'
+  ORDER BY id_import DESC LIMIT 1;";
+
 pub fn list_imports(state: &DesktopState, filter: &Value) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let date = text(filter, "tanggal").replace("'", "''");
@@ -1319,6 +1327,30 @@ pub fn delete_backup(
     Ok(json!({ "sukses": true, "pesan": format!("Penugasan backup '{id}' berhasil dihapus.") }))
 }
 
+/// Baris Hadir yang tanggal atau jam masuknya belum terjadi ditolak: shift
+/// malam yang diimpor pagi hari dengan tanggal pagi itu membuat sesi terbuka
+/// yang tidak pernah cocok dengan scan pulang. Jam berformat HH:mm[:ss] dua
+/// digit (sudah lolos `is_clock`). Kembar `periksaWaktuImport`.
+fn periksa_waktu_import(
+    tanggal: &str,
+    jam_masuk: &str,
+    hari_ini: &str,
+    jam_sekarang: &str,
+) -> Option<String> {
+    if tanggal > hari_ini {
+        return Some(format!(
+            "Tanggal {tanggal} belum terjadi; absensi berjam hanya boleh untuk hari ini atau sebelumnya."
+        ));
+    }
+    let masuk = jam_masuk.get(..5).unwrap_or("");
+    if tanggal == hari_ini && !masuk.is_empty() && masuk > jam_sekarang {
+        return Some(format!(
+            "Jam masuk {masuk} pada {tanggal} belum terjadi. Untuk shift malam, isi tanggal hari shift dimulai."
+        ));
+    }
+    None
+}
+
 pub fn import_offline(
     state: &DesktopState,
     rows: &[Value],
@@ -1330,6 +1362,13 @@ pub fn import_offline(
             "Import harus berisi 1 sampai 500 baris.",
         ));
     }
+    let detik_wib = storage::now_epoch_seconds() + 7 * 3600;
+    let hari_ini = super::time_policy::wib_date_from_epoch(storage::now_epoch_seconds());
+    let jam_sekarang = format!(
+        "{:02}:{:02}",
+        detik_wib.rem_euclid(86_400) / 3600,
+        detik_wib.rem_euclid(3600) / 60
+    );
     let client_id = sync::ensure_client_id(state)?;
     let mut results = Vec::new();
     for row in rows {
@@ -1388,6 +1427,13 @@ pub fn import_offline(
                     "OPERATIONAL_VALIDATION_FAILED",
                     format!("Status absen '{record_status_input}' tidak dikenal."),
                 ));
+            }
+            if !tidak_hadir {
+                if let Some(pesan) =
+                    periksa_waktu_import(&date, check_in_time, &hari_ini, &jam_sekarang)
+                {
+                    return Err(CommandError::new("OPERATIONAL_VALIDATION_FAILED", pesan));
+                }
             }
             let employee = transaction
                 .query_row(
@@ -1802,6 +1848,18 @@ pub fn import_offline(
             } else {
                 "Perlu Verifikasi"
             };
+            // Import ulang baris yang sama (mis. perangkat lain sudah mengimpornya
+            // dan hasilnya sudah tertarik) memakai ulang event lamanya, sehingga
+            // log scan dan riwayat import tertimpa, tidak dobel.
+            let event_lama: Option<String> = transaction
+                .query_row(
+                    SQL_IMPORT_KEMBAR,
+                    params![&date, id, check_in_time, check_out_time, attendance_status],
+                    |result| result.get(0),
+                )
+                .optional()
+                .map_err(|_| CommandError::internal())?;
+            let event_key = event_lama.clone().unwrap_or_else(|| event_key.clone());
             let (year, month): (i64, i64) = transaction
                 .query_row(
                     "SELECT CAST(substr(?,1,4) AS INTEGER), CAST(substr(?,6,2) AS INTEGER);",
@@ -1854,7 +1912,7 @@ pub fn import_offline(
                 logs.push(log);
             }
             let import = json!({ "event_key": event_key, "timestamp_input": now, "tanggal": &date, "id_unik": id, "nama": name, "divisi": division, "jam_masuk": check_in_time, "jam_pulang": check_out_time, "status_kehadiran": attendance_status, "status_absen": record_status, "keterangan": text(row, "keterangan"), "status_proses": "Sudah Diproses", "diproses_pada": now, "pesan_error": "", "kode_operator": operator });
-            transaction.execute("INSERT INTO import_offline (id_import, event_key, timestamp_input, tanggal, id_unik, nama, divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, status_proses, diproses_pada, pesan_error, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, '', ?);", params![sync::new_local_id(), event_key, now, &date, id, name, division, check_in_time, check_out_time, attendance_status, record_status, text(row, "keterangan"), now, operator]).map_err(|_| CommandError::internal())?;
+            transaction.execute("INSERT INTO import_offline (id_import, event_key, timestamp_input, tanggal, id_unik, nama, divisi, jam_masuk, jam_pulang, status_kehadiran, status_absen, keterangan, status_proses, diproses_pada, pesan_error, kode_operator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Sudah Diproses', ?, '', ?) ON CONFLICT(event_key) DO UPDATE SET timestamp_input = excluded.timestamp_input, nama = excluded.nama, divisi = excluded.divisi, status_absen = excluded.status_absen, keterangan = excluded.keterangan, diproses_pada = excluded.diproses_pada, kode_operator = excluded.kode_operator;", params![sync::new_local_id(), event_key, now, &date, id, name, division, check_in_time, check_out_time, attendance_status, record_status, text(row, "keterangan"), now, operator]).map_err(|_| CommandError::internal())?;
 
             sync::enqueue(
                 &transaction,
@@ -1866,7 +1924,7 @@ pub fn import_offline(
                 None,
             )?;
             Ok(
-                json!({ "sukses": true, "pesan": format!("Import {id} berhasil diproses."), "eventKey": event_key }),
+                json!({ "sukses": true, "pesan": if event_lama.is_some() { format!("Import {id} sudah pernah diimpor; data lamanya diperbarui.") } else { format!("Import {id} berhasil diproses.") }, "eventKey": event_key }),
             )
         })();
         match process {
@@ -3341,6 +3399,27 @@ mod tests {
         rekap_per_tanggal, storage, top_karyawan, validate_rentang_laporan, DesktopState,
     };
 
+    /// Vektor yang sama dengan `waktu-import.test.ts`.
+    #[test]
+    fn waktu_import_vektor_kembar() {
+        const HARI_INI: &str = "2026-10-23";
+        const JAM_SEKARANG: &str = "06:30";
+        let periksa = |tanggal: &str, masuk: &str| {
+            super::periksa_waktu_import(tanggal, masuk, HARI_INI, JAM_SEKARANG)
+        };
+        assert_eq!(periksa("2026-10-20", "22:00"), None);
+        assert_eq!(
+            periksa("2026-10-24", "07:00").as_deref(),
+            Some("Tanggal 2026-10-24 belum terjadi; absensi berjam hanya boleh untuk hari ini atau sebelumnya.")
+        );
+        assert_eq!(
+            periksa(HARI_INI, "22:00").as_deref(),
+            Some("Jam masuk 22:00 pada 2026-10-23 belum terjadi. Untuk shift malam, isi tanggal hari shift dimulai.")
+        );
+        assert_eq!(periksa(HARI_INI, "06:30:00"), None);
+        assert_eq!(periksa(HARI_INI, ""), None);
+    }
+
     #[test]
     fn jam_dan_shift_eksplisit_divalidasi_presisi() {
         assert!(is_clock("07:05", false));
@@ -3920,6 +3999,35 @@ INSERT INTO hr_pengajuan_keputusan (id_keputusan, id_pengajuan, jenis, sidik, ol
         let import_res = import_offline(&state, &rows, "SPD001").expect("import offline");
         assert_eq!(import_res["berhasil"], 2);
         assert_eq!(import_res["gagal"], 0);
+    }
+
+    #[test]
+    fn import_ulang_baris_sama_memakai_ulang_event_tanpa_dobel() {
+        let (_directory, state) = fixture();
+        let rows = vec![json!({
+            "tanggal": "14/08/2026",
+            "id_unik": "K001",
+            "jam_masuk": "07:00",
+            "jam_pulang": "15:00",
+            "status_kehadiran": "Hadir",
+        })];
+        let pertama = import_offline(&state, &rows, "SPD001").expect("import pertama");
+        let kedua = import_offline(&state, &rows, "SPD001").expect("import kedua");
+        assert_eq!(pertama["berhasil"], 1, "{pertama}");
+        assert_eq!(kedua["berhasil"], 1, "{kedua}");
+        assert_eq!(pertama["results"][0]["eventKey"], kedua["results"][0]["eventKey"]);
+
+        let connection = storage::database(&state.data_dir).expect("local database");
+        let hitung = |sql: &str| -> i64 { connection.query_row(sql, [], |row| row.get(0)).expect(sql) };
+        assert_eq!(
+            hitung("SELECT COUNT(*) FROM import_offline WHERE id_unik = 'K001' AND tanggal = '2026-08-14';"),
+            1
+        );
+        assert_eq!(
+            hitung("SELECT COUNT(*) FROM log_scan WHERE id_karyawan = 'K001' AND tanggal_kerja = '2026-08-14';"),
+            2,
+            "satu Masuk dan satu Pulang"
+        );
     }
 
     #[test]

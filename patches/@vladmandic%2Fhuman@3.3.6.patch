@@ -1,0 +1,12 @@
+diff --git a/dist/human.esm.js b/dist/human.esm.js
+index 7b100cd5de3450b83b1e4ea2297d67944cfa867e..9c22ef552ebe8f9ae6418e2530c70f46cc2f2544 100644
+--- a/dist/human.esm.js
++++ b/dist/human.esm.js
+@@ -612,6 +612,7 @@ var U0 = Kt((ple, W0) => {
+   var Vr = Nt(0, -2147483648, false);
+   kt.MIN_VALUE = Vr;
+   var de = kt.prototype;
++  Object.defineProperty(de, "toString", { value: null, writable: true, configurable: true, enumerable: false });
+   de.toInt = function() {
+     return this.unsigned ? this.low >>> 0 : this.low;
+   };
