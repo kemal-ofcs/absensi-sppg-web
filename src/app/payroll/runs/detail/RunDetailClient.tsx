@@ -15,6 +15,7 @@ import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { MemuatHalaman } from "@/components/ui/MemuatHalaman";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { TabBar } from "@/components/ui/TabBar";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -295,44 +296,20 @@ export default function RunDetailClient() {
           </div>
         )}
 
-        {/* Tabs Navigasi */}
-        <div className="flex border-b border-slate-800 gap-4">
-          <button
-            type="button"
-            onClick={() => setActiveTab("items")}
-            className={`pb-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === "items"
-                ? "border-sky-500 text-sky-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Rincian Slip Karyawan ({items.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("audit")}
-            className={`pb-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === "audit"
-                ? "border-sky-500 text-sky-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Audit Trail ({auditLogs.length})
-          </button>
-          {canTransfer ? (
-            <button
-              type="button"
-              onClick={() => setActiveTab("transfer")}
-              className={`pb-3 text-sm font-semibold border-b-2 transition ${
-                activeTab === "transfer"
-                  ? "border-sky-500 text-sky-400"
-                  : "border-transparent text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Berkas Transfer
-            </button>
-          ) : null}
-        </div>
+        <TabBar
+          ariaLabel="Bagian proses gaji"
+          idPrefix="proses-gaji"
+          panelId="panel-proses-gaji"
+          value={activeTab}
+          onChange={setActiveTab}
+          tabs={[
+            { id: "items", label: `Rincian Slip Karyawan (${items.length})` },
+            { id: "audit", label: `Audit Trail (${auditLogs.length})` },
+            ...(canTransfer
+              ? [{ id: "transfer" as const, label: "Berkas Transfer" }]
+              : []),
+          ]}
+        />
 
         {activeTab === "transfer" && canTransfer ? (
           <BerkasTransferPanel runId={runId} status={currentStatus} />

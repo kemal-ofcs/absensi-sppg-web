@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { exportToCsv, exportToExcel } from "@/lib/client/excel-export";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -714,41 +715,32 @@ export default function HistoryPage() {
         )}
       </div>
 
-      {/* Tab Switcher & Filter Toolbar */}
       <div className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/80 p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-          {/* Main Tabs */}
-          <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 self-start">
-            <button
-              type="button"
-              onClick={() => {
-                setTab("scan");
+          <div className="self-start">
+            <TabBar
+              ariaLabel="Jenis riwayat"
+              idPrefix="riwayat"
+              panelId="panel-riwayat"
+              value={tab}
+              onChange={(next) => {
+                setTab(next);
                 setPage(0);
                 setSelectedStatus("all");
               }}
-              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 ${
-                tab === "scan"
-                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <span>🔍</span> Log Scan
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTab("daily");
-                setPage(0);
-                setSelectedStatus("all");
-              }}
-              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 ${
-                tab === "daily"
-                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              <span>📋</span> Absensi Harian
-            </button>
+              tabs={[
+                {
+                  id: "scan",
+                  label: "Log Scan",
+                  icon: <span aria-hidden="true">🔍</span>,
+                },
+                {
+                  id: "daily",
+                  label: "Absensi Harian",
+                  icon: <span aria-hidden="true">📋</span>,
+                },
+              ]}
+            />
           </div>
 
           {/* Quick Date Presets */}

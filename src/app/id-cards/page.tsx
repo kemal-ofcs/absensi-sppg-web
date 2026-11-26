@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
 import { Sakelar } from "@/components/ui/Sakelar";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TabBar } from "@/components/ui/TabBar";
 import { canAccessArea } from "@/lib/auth/access";
 import { saveFileWithPicker } from "@/lib/client/download";
 import {
@@ -1098,50 +1099,30 @@ export default function IdCardsPage() {
         title="Dynamic ID Card Builder & Batch Print"
         description="Sistem generator ID Card beresolusi tinggi (CR80 300 DPI) dengan visual template builder, barcode QR otomatis, dan cetak lembar A4 dengan tanda potong."
         actions={
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setActiveTab("cards")}
-              className={`rounded-xl px-4 py-2 text-xs font-bold transition ${
-                activeTab === "cards"
-                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950/20"
-                  : "border border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Icon name="users" className="size-3.5" />
-                Daftar & Cetak Kartu
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("builder")}
-              className={`rounded-xl px-4 py-2 text-xs font-bold transition ${
-                activeTab === "builder"
-                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950/20"
-                  : "border border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Icon name="palette" className="size-3.5" />
-                Desain Template
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("layout")}
-              className={`rounded-xl px-4 py-2 text-xs font-bold transition ${
-                activeTab === "layout"
-                  ? "bg-violet-400 text-slate-950 shadow-md shadow-violet-950/20"
-                  : "border border-white/10 bg-slate-900 text-slate-300 hover:bg-slate-800"
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <Icon name="settings" className="size-3.5" />
-                Setting Layout
-              </span>
-            </button>
-          </div>
+          <TabBar
+            ariaLabel="Bagian kartu ID"
+            idPrefix="kartu-id"
+            panelId="panel-kartu-id"
+            value={activeTab}
+            onChange={setActiveTab}
+            tabs={[
+              {
+                id: "cards",
+                label: "Daftar & Cetak Kartu",
+                icon: <Icon name="users" className="size-3.5" />,
+              },
+              {
+                id: "builder",
+                label: "Desain Template",
+                icon: <Icon name="palette" className="size-3.5" />,
+              },
+              {
+                id: "layout",
+                label: "Setting Layout",
+                icon: <Icon name="settings" className="size-3.5" />,
+              },
+            ]}
+          />
         }
       />
 

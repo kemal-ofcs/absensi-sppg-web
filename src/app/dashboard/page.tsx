@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { EksporLaporanKehadiran } from "@/components/dashboard/EksporLaporanKehadiran";
 import { Icon } from "@/components/ui/Icon";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { AnimatedCounter } from "@/components/visual/AnimatedCounter";
 import { AttendanceGaugeGate } from "@/components/visual/AttendanceGaugeGate";
 import { AttendanceWeeklyTrend } from "@/components/visual/AttendanceWeeklyTrend";
@@ -602,51 +603,28 @@ export default function DashboardPage() {
 
         {/* Tab Navigation & Dynamic Filter Controls Bar */}
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-          <div className="bg-slate-900/60 p-1.5 border border-slate-800 rounded-2xl flex items-center gap-1.5 w-full xl:w-auto overflow-x-auto">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("harian");
+          <div className="w-full min-w-0 xl:w-auto">
+            <TabBar
+              ariaLabel="Jenis rekap kehadiran"
+              idPrefix="rekap"
+              panelId="panel-rekap"
+              value={activeTab}
+              onChange={(next) => {
+                setActiveTab(next);
                 setCurrentPage(1);
               }}
-              className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                activeTab === "harian"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              {filterMode === "single" || startDate === endDate
-                ? `Rekap Harian (${startDate})`
-                : `Rekap (${startDate} s/d ${endDate})`}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("bulanan");
-                setCurrentPage(1);
-              }}
-              className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                activeTab === "bulanan"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              Rekap Bulanan
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("leaderboard");
-                setCurrentPage(1);
-              }}
-              className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                activeTab === "leaderboard"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              Papan Peringkat (Leaderboard)
-            </button>
+              tabs={[
+                {
+                  id: "harian",
+                  label:
+                    filterMode === "single" || startDate === endDate
+                      ? `Rekap Harian (${startDate})`
+                      : `Rekap (${startDate} s/d ${endDate})`,
+                },
+                { id: "bulanan", label: "Rekap Bulanan" },
+                { id: "leaderboard", label: "Papan Peringkat (Leaderboard)" },
+              ]}
+            />
           </div>
 
           {/* Date Filter Controls Bar */}

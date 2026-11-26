@@ -2,8 +2,7 @@ mod desktop;
 
 use tauri::Manager;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run_with_context(context: tauri::Context<tauri::Wry>) {
     tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -333,7 +332,7 @@ pub fn run() {
             desktop::payroll::commands::desktop_get_payroll_run_detail,
             desktop::payroll::commands::desktop_transition_payroll_status,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .unwrap_or_else(|error| {
             eprintln!("Aplikasi Desktop berhenti karena runtime Tauri gagal: {error}");
             std::process::exit(1);

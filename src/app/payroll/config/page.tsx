@@ -12,6 +12,7 @@ import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
 import { QuickActionGrid } from "@/components/ui/QuickActionGrid";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { DAILY_RATE_MAX, DAILY_RATE_MIN } from "@/lib/constants/payroll";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -436,31 +437,23 @@ export default function PayrollConfigPage() {
           ]}
         />
 
-        {/* Tabs */}
-        <div className="flex border-b border-slate-800 gap-4">
-          <button
-            type="button"
-            onClick={() => setActiveTab("salary")}
-            className={`pb-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === "salary"
-                ? "border-sky-500 text-sky-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Rate Gaji Karyawan ({salaryConfigs.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("components")}
-            className={`pb-3 text-sm font-semibold border-b-2 transition ${
-              activeTab === "components"
-                ? "border-sky-500 text-sky-400"
-                : "border-transparent text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            Komponen Tunjangan & Potongan ({components.length})
-          </button>
-        </div>
+        <TabBar
+          ariaLabel="Bagian konfigurasi gaji"
+          idPrefix="konfigurasi-gaji"
+          panelId="panel-konfigurasi-gaji"
+          value={activeTab}
+          onChange={setActiveTab}
+          tabs={[
+            {
+              id: "salary",
+              label: `Rate Gaji Karyawan (${salaryConfigs.length})`,
+            },
+            {
+              id: "components",
+              label: `Komponen Tunjangan & Potongan (${components.length})`,
+            },
+          ]}
+        />
 
         {/* Tab Content: Salary */}
         {activeTab === "salary" && (

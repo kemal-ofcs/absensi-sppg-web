@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
@@ -409,24 +410,17 @@ export default function MasterOperatorPage() {
       ) : null}
 
       <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-950/70 p-1">
-          {(["operators", "roles"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`min-h-11 rounded-lg px-4 text-xs font-black transition ${
-                activeTab === tab
-                  ? "bg-sky-700 text-on-accent"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              {tab === "operators"
-                ? `Pengguna (${operators.length})`
-                : `Role & Akses (${roles.length})`}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          ariaLabel="Bagian operator"
+          idPrefix="operator"
+          panelId="panel-operator"
+          value={activeTab}
+          onChange={setActiveTab}
+          tabs={[
+            { id: "operators", label: `Pengguna (${operators.length})` },
+            { id: "roles", label: `Role & Akses (${roles.length})` },
+          ]}
+        />
         <button
           type="button"
           onClick={activeTab === "operators" ? openNewOperator : openNewRole}
