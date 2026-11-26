@@ -387,7 +387,7 @@ export default function HolidaysPage() {
                       colSpan={canManage ? 6 : 5}
                       className="px-6 py-12 text-center text-slate-400"
                     >
-                      <div className="flex items-center justify-center gap-3">
+                      <div className="sticky left-6 flex max-w-[calc(100vw-6rem)] items-center justify-center gap-3">
                         <Icon
                           name="clock"
                           className="size-5 animate-spin text-sky-400"
@@ -402,7 +402,9 @@ export default function HolidaysPage() {
                       colSpan={canManage ? 6 : 5}
                       className="px-6 py-12 text-center text-slate-500"
                     >
-                      <div className="flex flex-col items-center gap-2">
+                      {/* sticky + max-w: tabel bisa lebih lebar dari layar HP,
+                          dan teks di tengah tabel jatuh di luar layar. */}
+                      <div className="sticky left-6 flex max-w-[calc(100vw-6rem)] flex-col items-center gap-2">
                         <Icon
                           name="calendar"
                           className="size-8 text-slate-600"

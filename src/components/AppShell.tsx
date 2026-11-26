@@ -62,7 +62,10 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
         onSidebarPinnedChange={changeSidebarPinned}
       />
       <div
-        className={`flex min-h-0 flex-1 flex-col ${user && sidebarPinned ? "xl:pl-64" : ""}`}
+        // overflow-x-clip: satu elemen yang melebar tidak boleh membuat seluruh
+        // halaman di HP mengecil dan bisa digeser ke samping. `clip`, bukan
+        // `hidden`, supaya tidak membuat wadah gulir baru.
+        className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-x-clip ${user && sidebarPinned ? "xl:pl-64" : ""}`}
       >
         <LicenseNotice />
         <main
