@@ -13,14 +13,25 @@ import {
   withTransaction,
 } from "@/lib/services/inventory";
 import { HARI_HADIR_SQL } from "@/lib/validations/driver";
+import jenisPengajuanBawaan from "@/lib/validations/hr-jenis-bawaan.json";
 import {
   bulanPenuhTerakhir,
+  DIPAKAI_CABANG_CLOUD_SQL,
+  DIPAKAI_DIVISI_CLOUD_SQL,
+  DIPAKAI_JABATAN_CLOUD_SQL,
+  DIPAKAI_JENIS_PENGAJUAN_SQL,
   dalamSiklusAtasan,
+  HAPUS_CABANG_CLOUD_SQL,
+  HAPUS_DIVISI_CLOUD_SQL,
   HAPUS_DOKUMEN_SQL,
+  HAPUS_JABATAN_CLOUD_SQL,
+  HAPUS_JENIS_PENGAJUAN_SQL,
   INSERT_BERKAS_DOKUMEN_SQL,
   INSERT_KONTRAK_SQL,
   INSERT_NAMA_DIVISI_SQL,
   JENIS_DARI_KONTRAK_SQL,
+  JENIS_MASTER_HAPUS,
+  type JenisMasterHapus,
   KOLOM_KEUANGAN,
   KOLOM_PRIBADI,
   type Kontrak,
@@ -33,6 +44,7 @@ import {
   namaMaster,
   pengaturanDariPeta,
   periksaAtasan,
+  pesanHapusMaster,
   SELARASKAN_DIVISI_SQL,
   SELARASKAN_JABATAN_SQL,
   SIMPAN_DOKUMEN_SQL,
@@ -165,6 +177,82 @@ export async function simpanMaster(
         await tx.execute({ sql, args: [id] });
     }
     return { sukses: true as const, [master.kolomId]: id };
+  });
+}
+
+const MASTER_HAPUS: Record<
+  JenisMasterHapus,
+  {
+    label: string;
+    tabel: string;
+    kolom: string;
+    dipakai: string;
+    hapus: readonly string[];
+  }
+> = {
+  cabang: {
+    label: "Cabang",
+    tabel: "hr_cabang",
+    kolom: "id_cabang",
+    dipakai: DIPAKAI_CABANG_CLOUD_SQL,
+    hapus: HAPUS_CABANG_CLOUD_SQL,
+  },
+  divisi: {
+    label: "Divisi",
+    tabel: "hr_divisi",
+    kolom: "id_divisi",
+    dipakai: DIPAKAI_DIVISI_CLOUD_SQL,
+    hapus: HAPUS_DIVISI_CLOUD_SQL,
+  },
+  jabatan: {
+    label: "Jabatan",
+    tabel: "hr_jabatan",
+    kolom: "id_jabatan",
+    dipakai: DIPAKAI_JABATAN_CLOUD_SQL,
+    hapus: HAPUS_JABATAN_CLOUD_SQL,
+  },
+  jenis_pengajuan: {
+    label: "Jenis pengajuan",
+    tabel: "hr_jenis_pengajuan",
+    kolom: "id_jenis",
+    dipakai: DIPAKAI_JENIS_PENGAJUAN_SQL,
+    hapus: HAPUS_JENIS_PENGAJUAN_SQL,
+  },
+};
+
+/**
+ * Cermin `hapus_master`: hapus master yang bukan bawaan dan tidak pernah
+ * dipakai. Web menulis cloud langsung dengan SQL `_CLOUD_`; perangkat
+ * menghapus barisnya lewat `delete_missing` saat menarik.
+ */
+export async function hapusMasterOrganisasi(
+  client: Client,
+  jenisMentah: unknown,
+  idMentah: string,
+) {
+  const jenis = (JENIS_MASTER_HAPUS as readonly unknown[]).includes(jenisMentah)
+    ? (jenisMentah as JenisMasterHapus)
+    : null;
+  if (!jenis) throw new Error("Jenis data tidak dikenal.");
+  const m = MASTER_HAPUS[jenis];
+  const id = idMentah.trim();
+  return withTransaction(client, async (tx) => {
+    const ada = await tx.execute({
+      sql: `SELECT 1 FROM ${m.tabel} WHERE ${m.kolom} = ?1;`,
+      args: [id],
+    });
+    if (!id || ada.rows.length === 0)
+      throw new Error(`${m.label} tidak ditemukan.`);
+    const dipakai = Number(
+      (await tx.execute({ sql: m.dipakai, args: [id] })).rows[0]?.n ?? 0,
+    );
+    const bawaan =
+      jenis === "jenis_pengajuan" &&
+      jenisPengajuanBawaan.some((j) => j.id_jenis === id);
+    const pesan = pesanHapusMaster(jenis, bawaan, dipakai);
+    if (pesan) throw new Error(pesan);
+    for (const sql of m.hapus) await tx.execute({ sql, args: [id] });
+    return { sukses: true as const, jenis, id };
   });
 }
 

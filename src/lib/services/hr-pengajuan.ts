@@ -4,14 +4,23 @@ import { createHash } from "node:crypto";
 import type { Client } from "@libsql/client";
 import type { OperatorUser } from "@/lib/auth/operator-user";
 import { AuthorizationError } from "@/lib/auth/permission-assertion";
+import {
+  assertAkunBayar,
+  balikJurnalTx,
+  tulisJurnalTx,
+} from "@/lib/services/accounting";
 import { newHexId, withTransaction } from "@/lib/services/inventory";
 import type { HolidayWhitelistEntry } from "@/lib/validations/holiday-whitelist";
 import {
+  AKUN_BAYAR_BAWAAN,
   aturanCutiDariPeta,
+  aturanCutiJabatan,
+  aturanCutiKaryawan,
   aturanLemburDariPeta,
   BACKUP_TUKAR_SQL,
   type BarisReimburse,
   type BayarReimburse,
+  barisJurnalReimburse,
   bentrokPengajuan,
   CLOUD_INSERT_BARIS_REIMBURSE_SQL,
   CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
@@ -28,6 +37,7 @@ import {
   IZIN_PEMUTUS_AKTIF,
   idBarisReimburse,
   idBatalReimburse,
+  idJurnalReimburse,
   idUang,
   type Jadwal,
   type JenisPengajuan,
@@ -91,6 +101,7 @@ import {
   UPSERT_PENGAJUAN_SQL,
   upahHarian,
   validasiAturanCuti,
+  validasiAturanCutiJabatan,
   validasiAturanLembur,
   validasiAturanReimburse,
   validasiBayarReimburse,
@@ -1279,13 +1290,12 @@ export async function rincianPengajuan(
   return { keputusan: r.rows.map((x) => ({ ...x })) };
 }
 
-async function bacaAturan(db: Pembaca) {
+/** Semua kunci `hr_cuti_*`, termasuk aturan per jabatan (`:jab:<id>`). */
+async function bacaPetaCuti(db: Pembaca) {
   const r = await db.execute(
     "SELECT key, value FROM setting_gex_system WHERE key LIKE 'hr\\_cuti\\_%' ESCAPE '\\';",
   );
-  return aturanCutiDariPeta(
-    new Map(r.rows.map((x) => [String(x.key), String(x.value)])),
-  );
+  return new Map(r.rows.map((x) => [String(x.key), String(x.value)]));
 }
 
 async function bacaPenyesuaian(db: Pembaca, idKaryawan: string) {
@@ -1307,12 +1317,16 @@ async function bacaPenyesuaian(db: Pembaca, idKaryawan: string) {
 
 /** Cermin `hitung_jatah`. */
 async function hitungJatah(db: Pembaca, idKaryawan: string) {
-  const aturan = await bacaAturan(db);
   const m = await db.execute({
-    sql: "SELECT NULLIF(TRIM(tanggal_daftar), '') AS t FROM master_data WHERE id_unik = ?1;",
+    sql: "SELECT NULLIF(TRIM(tanggal_daftar), '') AS t, COALESCE(id_jabatan, '') AS jab FROM master_data WHERE id_unik = ?1;",
     args: [idKaryawan],
   });
   const masuk = teksId(m.rows[0]?.t);
+  // Aturan umum ditimpa aturan jabatan karyawan ini (bila ada).
+  const aturan = aturanCutiKaryawan(
+    await bacaPetaCuti(db),
+    String(m.rows[0]?.jab ?? ""),
+  );
   const berlaku = (await muatBerlaku(db, "0000-01-01", "9999-12-31")).filter(
     (p) => p.id_karyawan === idKaryawan && p.potong_jatah,
   );
@@ -1572,7 +1586,9 @@ export async function prosesAkhirPeriode(
 
 /** Cermin `akhir_periode`. */
 export async function akhirPeriode(client: Client) {
-  const aturan = await bacaAturan(client);
+  const peta = await bacaPetaCuti(client);
+  const aturan = aturanCutiDariPeta(peta);
+  const aturanJabatan = aturanCutiJabatan(peta);
   const belum: Array<{
     id_karyawan: string;
     nama: string;
@@ -1583,7 +1599,12 @@ export async function akhirPeriode(client: Client) {
     baris: Baris;
     status_bayar: StatusBayar | null;
   }> = [];
-  if (aturan.sisa === "diuangkan") {
+  // Aturan jabatan bisa "diuangkan" walau aturan umum tidak (dan sebaliknya):
+  // periode yang belum diproses dinilai dengan aturan karyawan itu sendiri.
+  if (
+    aturan.sisa === "diuangkan" ||
+    Object.values(aturanJabatan).some((a) => a.sisa === "diuangkan")
+  ) {
     const hariIni = await hariIniWib(client);
     const k = await client.execute(
       "SELECT id_unik, nama FROM master_data WHERE status_aktif = 'Aktif' ORDER BY nama;",
@@ -1591,8 +1612,9 @@ export async function akhirPeriode(client: Client) {
     for (const row of k.rows) {
       const id = String(row.id_unik);
       const nama = String(row.nama);
-      const { periode, penyesuaian } = await hitungJatah(client, id);
-      for (const p of periode) {
+      const jatah = await hitungJatah(client, id);
+      const { periode, penyesuaian } = jatah;
+      for (const p of jatah.aturan.sisa === "diuangkan" ? periode : []) {
         if (p.sebelum_berhak || p.selesai >= hariIni || p.sisa <= 0) continue;
         const kunci = idUang(id, p.mulai);
         if (!penyesuaian.some((x) => x.baris.id_penyesuaian === kunci)) {
@@ -1613,6 +1635,7 @@ export async function akhirPeriode(client: Client) {
   }
   return {
     aturan,
+    aturan_jabatan: aturanJabatan,
     aturan_lembur: await bacaAturanLembur(client),
     mode_reimburse: await bacaModeReimburse(client),
     belum_diproses: belum,
@@ -1628,11 +1651,14 @@ export async function simpanAturanCuti(client: Client, raw: unknown) {
   if (!lembur.ok) throw new Error(lembur.pesan);
   const reimburse = validasiAturanReimburse((raw ?? {}) as Baris);
   if (!reimburse.ok) throw new Error(reimburse.pesan);
+  const jabatan = validasiAturanCutiJabatan((raw ?? {}) as Baris);
+  if (!jabatan.ok) throw new Error(jabatan.pesan);
   await withTransaction(client, async (tx) => {
     for (const [kunci, nilai] of [
       ...hasil.nilai,
       ...lembur.nilai,
       ...reimburse.nilai,
+      ...jabatan.nilai,
     ]) {
       await tx.execute({
         sql: `INSERT INTO setting_gex_system (key, value) VALUES (?1, ?2)
@@ -1670,6 +1696,14 @@ export async function catatBayarReimburse(
     );
     if (!dibayar.ok) throw new Error(dibayar.pesan);
     const total = dibayar.nilai.reduce((n, k) => n + k.nominal, 0);
+    // Jurnal otomatis (v47): akun bayar wajib Aset aktif, diperiksa sebelum
+    // apa pun ditulis. Cermin `catat_bayar_reimburse`.
+    const draftBayar = (raw ?? {}) as Baris;
+    const akunBayar =
+      (typeof draftBayar.id_akun_bayar === "string"
+        ? draftBayar.id_akun_bayar.trim()
+        : "") || AKUN_BAYAR_BAWAAN;
+    await assertAkunBayar(tx, akunBayar);
     const idBayar = newHexId("rbb-");
     await tx.execute({
       sql: CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
@@ -1696,6 +1730,31 @@ export async function catatBayarReimburse(
           k.nominal,
         ],
       });
+    }
+    const idJurnal = idJurnalReimburse(idBayar);
+    const barisJurnal = barisJurnalReimburse(
+      idJurnal,
+      akunBayar,
+      dibayar.nilai,
+    );
+    if (barisJurnal.length > 0) {
+      const nama = await tx.execute({
+        sql: "SELECT nama FROM master_data WHERE id_unik = ?1;",
+        args: [valid.nilai.id_karyawan],
+      });
+      await tulisJurnalTx(
+        tx,
+        {
+          id_jurnal: idJurnal,
+          tanggal: valid.nilai.tanggal,
+          keterangan: `Pembayaran reimbursement ${String(nama.rows[0]?.nama ?? valid.nilai.id_karyawan)}`,
+          sumber: "Reimburse",
+          id_sumber: idBayar,
+          id_jurnal_batal: null,
+          dibuat_oleh: oleh,
+        },
+        barisJurnal,
+      );
     }
     return { sukses: true as const, id_bayar: idBayar, total };
   });
@@ -1735,6 +1794,13 @@ export async function batalBayarReimburse(
         null,
       ],
     });
+    // Pembalik jurnal otomatis (v47); pembayaran lama tanpa jurnal dilewati.
+    await balikJurnalTx(
+      tx,
+      idJurnalReimburse(idBayar),
+      "Pembatalan pembayaran reimbursement",
+      oleh,
+    );
     return { sukses: true as const, id_bayar: id };
   });
 }

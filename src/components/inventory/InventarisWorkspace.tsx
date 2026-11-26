@@ -11,6 +11,7 @@ import {
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -423,30 +424,13 @@ export function InventarisWorkspace({
 
   return (
     <div className="space-y-4">
-      <div
-        role="tablist"
-        aria-label="Bagian inventaris"
-        className="flex gap-1 p-1 rounded-xl border border-slate-800 bg-slate-900/60 overflow-x-auto"
-      >
-        {tabs.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            id={`tab-inventaris-${item.id}`}
-            aria-selected={tab === item.id}
-            aria-controls={`panel-inventaris-${item.id}`}
-            onClick={() => setTab(item.id)}
-            className={`min-h-11 flex-1 whitespace-nowrap px-4 py-2 text-sm font-medium rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              tab === item.id
-                ? "bg-sky-700 text-white"
-                : "text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        ariaLabel="Bagian inventaris"
+        idPrefix="inventaris"
+        value={tab}
+        onChange={setTab}
+        tabs={tabs}
+      />
 
       {feedback ? (
         <output
@@ -2211,7 +2195,7 @@ function FormMutasi({
               key={nilai}
               className={`min-h-11 flex-1 flex items-center justify-center rounded-md text-sm font-medium cursor-pointer focus-within:ring-2 focus-within:ring-sky-500 ${
                 jenis === nilai
-                  ? "bg-sky-700 text-white"
+                  ? "bg-sky-700 text-on-accent"
                   : "text-slate-300 hover:bg-slate-800"
               }`}
             >

@@ -35,8 +35,8 @@ const PHASE_STYLE: Record<
     label: "Tersinkron",
   },
   syncing: {
-    dot: "bg-sky-400",
-    pill: "border-sky-400/30 bg-sky-400/10 text-sky-200",
+    dot: "bg-cyan-400",
+    pill: "border-cyan-400/30 bg-cyan-400/10 text-cyan-200",
     label: "Menyinkronkan",
   },
   success: {
@@ -160,7 +160,7 @@ export function SyncPulse() {
         data-phase={phase}
       />
       {queued > 0 ? (
-        <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-bold text-white shadow-sm">
+        <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-700 px-1 text-[9px] font-bold text-on-accent shadow-sm">
           {queued > 99 ? "99+" : queued}
         </span>
       ) : null}

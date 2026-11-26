@@ -526,7 +526,7 @@ function HistoryCard({
               type="button"
               onClick={onOpenPhoto}
               disabled={busy}
-              className="min-h-10 rounded-xl bg-sky-400 px-3.5 text-xs font-black text-slate-950 transition hover:bg-sky-300 disabled:opacity-50"
+              className="min-h-10 rounded-xl bg-sky-700 px-3.5 text-xs font-black text-on-accent transition hover:bg-sky-600 disabled:opacity-50"
             >
               Lihat foto
             </button>

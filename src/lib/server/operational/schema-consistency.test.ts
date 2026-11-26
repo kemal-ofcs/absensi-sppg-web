@@ -120,7 +120,7 @@ describe("Schema Consistency & Zero-Drift Guard", () => {
           "DELETE FROM bpjs_rules WHERE component_code = 'JHT_EMP';",
           "INSERT INTO bpjs_rules (id, component_code, component_name, rate_percentage, wage_cap, effective_date) VALUES ('bpjs-jht-emp', 'JHT_EMP', 'JHT Karyawan', 2.0, NULL, '2024-01-01');",
           "INSERT INTO tax_rules (id, category, bracket_min, bracket_max, rate_percentage, effective_date) VALUES ('tax-p17-1', 'PASAL_17', 0, 60000000, 5.0, '2024-01-01');",
-          "DELETE FROM schema_migration WHERE version = 45;",
+          "DELETE FROM schema_migration WHERE version >= 45;",
         ],
         "write",
       );

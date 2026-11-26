@@ -768,7 +768,7 @@ export default function ScannerPage() {
                         faceHolding
                           ? "bg-emerald-400/20 text-emerald-200"
                           : faceVisible
-                            ? "bg-sky-400/20 text-sky-200"
+                            ? "bg-cyan-400/20 text-cyan-200"
                             : "bg-amber-400/20 text-amber-200"
                       }`}
                     >
@@ -872,7 +872,7 @@ export default function ScannerPage() {
               }}
               className={`flex-1 py-2.5 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-2 ${
                 mode === "camera"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md font-bold"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md font-bold"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -886,7 +886,7 @@ export default function ScannerPage() {
               }}
               className={`flex-1 py-2.5 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-2 ${
                 mode === "reader"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md font-bold"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md font-bold"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -938,7 +938,7 @@ export default function ScannerPage() {
                     className={`min-h-10 rounded-xl px-4 text-xs font-bold transition disabled:opacity-50 ${
                       cameraActive
                         ? "border border-rose-400/30 bg-rose-400/10 text-rose-200 hover:bg-rose-400/20"
-                        : "bg-sky-400 text-slate-950 hover:bg-sky-300 shadow-md shadow-sky-950"
+                        : "bg-sky-700 text-on-accent hover:bg-sky-600 shadow-md shadow-sky-950"
                     }`}
                   >
                     {cameraActive ? "Hentikan kamera" : "Mulai pindai QR"}
@@ -990,7 +990,7 @@ export default function ScannerPage() {
                       <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-sky-300"></div>
 
                       {/* Animated Laser Line */}
-                      <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-sky-400 to-transparent shadow-[0_0_8px_#38bdf8] animate-bounce"></div>
+                      <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-sky-400 to-transparent shadow-[0_0_8px_#7b93e3] animate-bounce"></div>
                     </div>
 
                     {/* Processing Overlay Indicator */}
@@ -1150,7 +1150,7 @@ export default function ScannerPage() {
                 <div
                   className={`animate-fadeIn space-y-4 rounded-2xl border p-4 backdrop-blur-xl transition sm:p-6 ${
                     lastResult.sukses
-                      ? "bg-sky-950/40 border-sky-500/60 shadow-lg shadow-sky-950/60"
+                      ? "bg-emerald-950/40 border-emerald-500/60 shadow-lg shadow-emerald-950/60"
                       : lastResult.pesan.includes("Scan ganda") ||
                           lastResult.pesan.includes("cooldown")
                         ? "bg-amber-950/40 border-amber-500/60 shadow-lg shadow-amber-950/60"
@@ -1170,7 +1170,7 @@ export default function ScannerPage() {
                       <div
                         className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-lg ${
                           lastResult.sukses
-                            ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
                             : lastResult.pesan.includes("Scan ganda") ||
                                 lastResult.pesan.includes("cooldown")
                               ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
@@ -1188,7 +1188,7 @@ export default function ScannerPage() {
                         <h2
                           className={`font-bold text-base ${
                             lastResult.sukses
-                              ? "text-sky-300"
+                              ? "text-emerald-300"
                               : lastResult.pesan.includes("Scan ganda") ||
                                   lastResult.pesan.includes("cooldown")
                                 ? "text-amber-300"
@@ -1283,7 +1283,7 @@ export default function ScannerPage() {
                     </div>
                     <span
                       className={`text-[10px] font-semibold ${
-                        item.sukses ? "text-sky-300" : "text-rose-400"
+                        item.sukses ? "text-emerald-300" : "text-rose-400"
                       }`}
                     >
                       {item.jenisScan}

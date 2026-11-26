@@ -8,6 +8,7 @@ import { initDatabaseSchema } from "@/lib/db-schema";
 mock.module("server-only", () => ({}));
 
 const {
+  deleteAccount,
   listAccounts,
   listJournals,
   ledger,
@@ -196,5 +197,62 @@ describe("akuntansi Web terhadap skema cloud asli", () => {
         is_aktif: false,
       }),
     ).rejects.toThrow("Akun sistem tidak bisa dinonaktifkan.");
+  });
+
+  // Cermin `hapus_akun_hanya_yang_belum_dipakai` di `desktop/accounting.rs`.
+  test("hapus akun hanya yang belum dipakai", async () => {
+    const akun = async (kode: string) =>
+      (
+        await saveAccount(client, {
+          kode,
+          nama: "Beban Salah",
+          kelompok: "Beban",
+          saldo_normal: "Debit",
+        })
+      ).id_akun;
+    const cari = async (id: string) =>
+      (await listAccounts(client)).items.find((item) => item.id_akun === id);
+    const salah = await akun("5-9800");
+    const dipakai = await akun("5-9801");
+    await jurnal("2026-10-12", dipakai, "akun-kas", 1_000);
+
+    expect((await cari(salah))?.bisa_dihapus).toBe(true);
+    expect((await cari(dipakai))?.bisa_dihapus).toBe(false);
+    expect((await cari("akun-kas"))?.bisa_dihapus).toBe(false);
+    await expect(deleteAccount(client, "akun-kas")).rejects.toThrow(
+      "Akun sistem tidak bisa dihapus.",
+    );
+    await expect(deleteAccount(client, dipakai)).rejects.toThrow(
+      "Akun sudah dipakai jurnal atau transaksi, jadi hanya bisa dinonaktifkan.",
+    );
+
+    await deleteAccount(client, salah);
+    expect(await cari(salah)).toBeUndefined();
+    const neraca = await trialBalance(client, "2099-12-31");
+    expect(neraca.items.some((item) => item.id_akun === salah)).toBe(false);
+    await expect(deleteAccount(client, salah)).rejects.toThrow(
+      "Akun ini sudah dihapus.",
+    );
+    await expect(
+      saveAccount(client, {
+        id_akun: salah,
+        kode: "5-9800",
+        nama: "x",
+        kelompok: "Beban",
+        saldo_normal: "Debit",
+      }),
+    ).rejects.toThrow("Akun ini sudah dihapus.");
+    await akun("5-9800");
+
+    // Jurnal dari perangkat yang offline saat penghapusan: akunnya tampil
+    // lagi sebagai nonaktif supaya neraca tetap seimbang.
+    await client.execute({
+      sql: "UPDATE keu_jurnal_baris SET id_akun = ? WHERE id_akun = ?;",
+      args: [salah, dipakai],
+    });
+    const muncul = await cari(salah);
+    expect(muncul?.dihapus).toBe(true);
+    expect(muncul?.is_aktif).toBe(false);
+    expect(muncul?.bisa_dihapus).toBe(false);
   });
 });

@@ -3,6 +3,11 @@ import "server-only";
 import { randomBytes } from "node:crypto";
 import type { Client, Transaction } from "@libsql/client";
 import { trialBalance } from "@/lib/services/accounting";
+import { tutupBukuSiap } from "@/lib/services/telegram";
+import {
+  antreanTutupBerubah,
+  TELEGRAM_INSERT_ANTREAN_SQL,
+} from "@/lib/validations/telegram";
 import {
   bandingSaldo,
   cekPeriodeTerbuka,
@@ -411,4 +416,39 @@ export async function reopen(
     });
     return { sukses: true as const, batas: await batasTutup(tx) };
   });
+}
+
+// ── Tahap 3: pemberitahuan saldo berubah ke grup Telegram Keuangan ─────────
+
+/** Cermin `ALASAN_PEMBERITAHUAN_MATI`. */
+export const ALASAN_PEMBERITAHUAN_MATI =
+  "Notifikasi Telegram tutup buku belum dinyalakan atau grup Keuangan belum diatur.";
+
+/**
+ * Cermin `notify`: catat tutup buku yang saldonya berubah ke antrean Telegram
+ * (kejadian `tutup_buku`); `drainTelegram` yang mengirimnya. Web membaca cloud
+ * langsung, jadi tidak perlu syarat sinkronisasi segar. Versi `Menunggu`
+ * tidak di sini: pesannya sudah dicatat `catatKejadian` saat tutup buku itu
+ * masuk cloud. `INSERT OR IGNORE` atas id deterministik, jadi dua tab yang
+ * mengetuk bersamaan tidak menggandakannya.
+ */
+export async function notify(
+  client: Client,
+): Promise<{ diantre: number; alasan: string | null }> {
+  if (!(await tutupBukuSiap(client))) {
+    return { diantre: 0, alasan: ALASAN_PEMBERITAHUAN_MATI };
+  }
+  const antrean = antreanTutupBerubah((await status(client)).riwayat);
+  if (antrean.length === 0) return { diantre: 0, alasan: null };
+  const hasil = await client.batch(
+    antrean.map(([id, isi]) => ({
+      sql: TELEGRAM_INSERT_ANTREAN_SQL,
+      args: [id, "tutup_buku", isi],
+    })),
+    "write",
+  );
+  return {
+    diantre: hasil.reduce((jumlah, baris) => jumlah + baris.rowsAffected, 0),
+    alasan: null,
+  };
 }

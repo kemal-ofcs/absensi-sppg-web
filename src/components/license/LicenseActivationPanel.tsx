@@ -211,7 +211,7 @@ export function LicenseActivationPanel({
         <button
           type="submit"
           disabled={isSubmitting}
-          className="flex-1 min-h-11 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 text-sm font-bold text-white shadow-lg shadow-emerald-950/50 transition hover:from-emerald-500 hover:to-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 min-h-11 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 text-sm font-bold text-on-accent shadow-lg shadow-emerald-950/50 transition hover:from-emerald-500 hover:to-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? "Memeriksa lisensi…" : "Aktifkan lisensi"}
         </button>

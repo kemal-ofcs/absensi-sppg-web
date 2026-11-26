@@ -12,6 +12,7 @@ import {
 } from "@/components/hris/PenilaianKinerja";
 import { TemplateKinerja } from "@/components/hris/TemplateKinerja";
 import { pesanGalat } from "@/components/inventory/gaya";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -44,25 +45,13 @@ export function KinerjaWorkspace() {
   return (
     <div className="space-y-4">
       {pilihan.length > 1 ? (
-        <div
-          className="flex flex-wrap gap-2"
-          role="tablist"
-          aria-label="Bagian kinerja"
-        >
-          {pilihan.map(([id, label]) => (
-            <button
-              key={id}
-              id={`kinerja-bagian-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={bagian === id}
-              onClick={() => setBagian(id)}
-              className={`min-h-9 rounded-xl px-3 text-xs font-bold ${bagian === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          ariaLabel="Bagian kinerja"
+          idPrefix="kinerja-bagian"
+          value={bagian}
+          onChange={setBagian}
+          tabs={pilihan.map(([id, label]) => ({ id, label }))}
+        />
       ) : null}
       {bagian === "penilaian" && bolehNilai ? <PenilaianKinerja /> : null}
       {bagian === "template" && bolehTemplate ? (

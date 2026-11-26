@@ -16,7 +16,7 @@ export function RunStatusBadge({ status }: RunStatusBadgeProps) {
       label = "Draft";
       break;
     case "SUBMITTED":
-      badgeColor = "bg-sky-500/10 text-sky-400 border-sky-500/30";
+      badgeColor = "bg-cyan-500/10 text-cyan-400 border-cyan-500/30";
       label = "Diajukan";
       break;
     case "REVIEWED":

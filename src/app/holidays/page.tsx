@@ -10,6 +10,7 @@ import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Sakelar } from "@/components/ui/Sakelar";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
@@ -613,20 +614,16 @@ export default function HolidaysPage() {
                     scanner dan Alfa.
                   </div>
                 </div>
-                <label className="relative inline-flex cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    checked={draft.status_aktif === 1}
-                    onChange={(e) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        status_aktif: e.target.checked ? 1 : 0,
-                      }))
-                    }
-                    className="sr-only peer"
-                  />
-                  <div className="h-6 w-11 rounded-full bg-slate-800 peer peer-checked:bg-sky-500 peer-focus:outline-none after:absolute after:top-0.5 after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white" />
-                </label>
+                <Sakelar
+                  checked={draft.status_aktif === 1}
+                  onChange={(aktif) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      status_aktif: aktif ? 1 : 0,
+                    }))
+                  }
+                  label="Status aktif hari libur"
+                />
               </div>
 
               <div className="flex justify-end gap-3 pt-2">

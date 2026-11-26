@@ -14,6 +14,7 @@ import {
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
+import { PilihAkunBayar } from "@/components/keuangan/PilihAkunBayar";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import {
   ambilRingkasanReimburse,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/gateways/hr-pengajuan";
 import { SYNC_COMPLETED_EVENT, syncNow } from "@/lib/gateways/sync-status";
 import { formatRupiah } from "@/lib/validations/accounting";
+import { AKUN_BAYAR_BAWAAN } from "@/lib/validations/hr-pengajuan";
 
 type KlaimBaris = RingkasanReimburse["belum_dibayar"][number];
 
@@ -38,6 +40,7 @@ export function PembayaranReimburse({
   const [pilih, setPilih] = useState<Set<string>>(new Set());
   const [tanggal, setTanggal] = useState("");
   const [keterangan, setKeterangan] = useState("");
+  const [akunBayar, setAkunBayar] = useState<string>(AKUN_BAYAR_BAWAAN);
   const [alasanBatal, setAlasanBatal] = useState<Record<string, string>>({});
   const [sibuk, setSibuk] = useState(false);
 
@@ -102,6 +105,7 @@ export function PembayaranReimburse({
           id_klaim: dipilih.map((k) => k.klaim.id_klaim),
           ...(tanggal ? { tanggal } : {}),
           ...(keterangan ? { keterangan } : {}),
+          id_akun_bayar: akunBayar,
         }),
       `Pembayaran ${formatRupiah(total)} tercatat.`,
     );
@@ -150,6 +154,19 @@ export function PembayaranReimburse({
                   value={keterangan}
                   onChange={(e) => setKeterangan(e.target.value)}
                 />
+              </div>
+              <div>
+                <PilihAkunBayar
+                  id="reimburse-akun-bayar"
+                  label="Dibayar dari akun"
+                  value={akunBayar}
+                  onChange={setAkunBayar}
+                  bawaan={AKUN_BAYAR_BAWAAN}
+                />
+                <p className="mt-1 text-xs text-slate-400">
+                  Jurnal otomatis: beban (reimbursement atau gaji untuk cuti
+                  diuangkan) di debit, akun ini di kredit.
+                </p>
               </div>
             </div>
             {perKaryawan.map(([idKaryawan, klaim]) => (

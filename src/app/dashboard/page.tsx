@@ -374,7 +374,7 @@ export default function DashboardPage() {
                   setExportMessage(null);
                   setEksporTerbuka(true);
                 }}
-                className="flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-2 text-xs font-bold text-white shadow-lg shadow-emerald-950/60 transition hover:from-emerald-500 hover:to-teal-500"
+                className="flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-2 text-xs font-bold text-on-accent shadow-lg shadow-emerald-950/60 transition hover:from-emerald-500 hover:to-teal-500"
               >
                 <Icon name="document" className="size-3.5" />
                 <span>Ekspor Laporan Excel</span>
@@ -446,16 +446,16 @@ export default function DashboardPage() {
           <FadeIn className="h-full" delaySeconds={0.06}>
             <TiltCard maxTilt={8} className="h-full">
               <SpotlightCard>
-                <div className="h-full bg-slate-900/80 border border-sky-500/40 rounded-3xl p-5 space-y-2">
+                <div className="h-full bg-slate-900/80 border border-emerald-500/40 rounded-3xl p-5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sky-400 text-xs font-medium uppercase tracking-wider">
+                    <span className="text-emerald-400 text-xs font-medium uppercase tracking-wider">
                       Hadir Hari Ini
                     </span>
-                    <span className="px-2 py-0.5 bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded-full text-[10px] font-mono font-bold">
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-full text-[10px] font-mono font-bold">
                       {metrics?.persentaseKehadiran || 0}% Rate
                     </span>
                   </div>
-                  <div className="text-2xl font-bold text-sky-300">
+                  <div className="text-2xl font-bold text-emerald-300">
                     {metricsPending ? (
                       <Skeleton className="h-7 w-28" />
                     ) : (
@@ -546,14 +546,16 @@ export default function DashboardPage() {
                 terlambat={metrics?.terlambatHariIni ?? 0}
                 sakitIzin={metrics?.sakitIzinHariIni ?? 0}
                 alfa={metrics?.alfaHariIni ?? 0}
-                total={metrics?.totalKaryawan ?? 1}
+                total={
+                  metrics?.wajibAbsenHariIni ?? metrics?.totalKaryawan ?? 1
+                }
                 persentase={metrics?.persentaseKehadiran ?? 0}
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-[11px] font-mono border-t border-white/5 pt-3">
-              <div className="flex items-center gap-1.5 text-sky-400">
-                <span className="size-2 rounded-full bg-sky-400" />
+              <div className="flex items-center gap-1.5 text-emerald-400">
+                <span className="size-2 rounded-full bg-emerald-400" />
                 <span>
                   Tepat Waktu:{" "}
                   {Math.max(
@@ -574,6 +576,17 @@ export default function DashboardPage() {
               <div className="flex items-center gap-1.5 text-rose-400">
                 <span className="size-2 rounded-full bg-rose-400" />
                 <span>Alfa: {metrics?.alfaHariIni ?? 0}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-rose-300">
+                <span className="size-2 rounded-full bg-rose-300" />
+                <span>Belum absen: {metrics?.belumAbsenHariIni ?? 0}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <span className="size-2 rounded-full bg-slate-400" />
+                <span>
+                  Libur: {metrics?.liburHariIni ?? 0} dari{" "}
+                  {metrics?.totalKaryawan ?? 0}
+                </span>
               </div>
             </div>
           </div>
@@ -598,7 +611,7 @@ export default function DashboardPage() {
               }}
               className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                 activeTab === "harian"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -614,7 +627,7 @@ export default function DashboardPage() {
               }}
               className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                 activeTab === "bulanan"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -628,7 +641,7 @@ export default function DashboardPage() {
               }}
               className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                 activeTab === "leaderboard"
-                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-white shadow-md shadow-sky-950"
+                  ? "bg-gradient-to-r from-sky-600 to-sky-500 text-on-accent shadow-md shadow-sky-950"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -645,7 +658,7 @@ export default function DashboardPage() {
                   onClick={() => setFilterMode("single")}
                   className={`px-2.5 py-1 rounded-lg font-bold transition ${
                     filterMode === "single"
-                      ? "bg-sky-500 text-white shadow-sm"
+                      ? "bg-sky-700 text-on-accent shadow-sm"
                       : "text-slate-400 hover:text-white"
                   }`}
                 >
@@ -656,7 +669,7 @@ export default function DashboardPage() {
                   onClick={() => setFilterMode("range")}
                   className={`px-2.5 py-1 rounded-lg font-bold transition ${
                     filterMode === "range"
-                      ? "bg-sky-500 text-white shadow-sm"
+                      ? "bg-sky-700 text-on-accent shadow-sm"
                       : "text-slate-400 hover:text-white"
                   }`}
                 >
@@ -962,7 +975,7 @@ export default function DashboardPage() {
                                   ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                                   : row.status_kehadiran === "Alfa"
                                     ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                                    : "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                                    : "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
                             }`}
                           >
                             {String(row.status_kehadiran || "-")}
@@ -1083,7 +1096,7 @@ export default function DashboardPage() {
                           {row.nama}
                         </td>
                         <td className="p-4 text-slate-300">{row.divisi}</td>
-                        <td className="p-4 text-sky-300 font-bold">
+                        <td className="p-4 text-emerald-300 font-bold">
                           {row.totalHadir} Hari
                         </td>
                         <td className="p-4 text-amber-300 font-bold">
@@ -1092,7 +1105,7 @@ export default function DashboardPage() {
                         <td className="p-4 text-slate-300">
                           {row.frekuensiTelat}x
                         </td>
-                        <td className="p-4 text-sky-300">{row.totalSakit}</td>
+                        <td className="p-4 text-cyan-300">{row.totalSakit}</td>
                         <td className="p-4 text-purple-300">{row.totalIzin}</td>
                         <td className="p-4 text-rose-400 font-bold">
                           {row.totalAlfa}

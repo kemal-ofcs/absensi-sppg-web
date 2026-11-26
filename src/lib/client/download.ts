@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { isDesktopRuntime, isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { invokeDesktop } from "@/lib/runtime/desktop-commands";
@@ -44,26 +44,28 @@ export async function saveFileWithPicker(
     blob = dataUrlOrBlob;
   }
 
-  // 1. Mobile Android SAF & Desktop Tauri Native Save
-  // Di Android WAJIB lewat dialog SAF (`mobile_save_file_to_device`). Di Desktop lewat `desktop_save_file`.
-  // Wajib diperiksa SEBELUM `showSaveFilePicker` karena WebView Android modern
-  // mengekspos `showSaveFilePicker` di window tetapi melempar `AbortError` saat dipanggil,
-  // yang menyebabkan ekspor batal tanpa memanggil dialog native Android.
-  if (isDesktopRuntime()) {
-    const dataUrl =
-      typeof dataUrlOrBlob === "string" && dataUrlOrBlob.startsWith("data:")
-        ? dataUrlOrBlob
-        : await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-    return await downloadDataUrl(dataUrl, defaultFilename);
+  const keDataUrl = async () =>
+    typeof dataUrlOrBlob === "string" && dataUrlOrBlob.startsWith("data:")
+      ? dataUrlOrBlob
+      : await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+  // 1. Mobile: WAJIB lewat dialog SAF (`mobile_save_file_to_device`), dan
+  // diperiksa SEBELUM `showSaveFilePicker` karena WebView Android mengekspos
+  // `showSaveFilePicker` tetapi melempar `AbortError` saat dipanggil, sehingga
+  // ekspor batal tanpa dialog. Guard positif, bentuk yang dikenali `audit:contract`.
+  if (isMobileRuntime()) {
+    return await downloadDataUrl(await keDataUrl(), defaultFilename);
   }
 
-  // 2. Web browser: Native File System Access API (showSaveFilePicker)
-  // Dipanggil langsung tanpa jeda async FileReader agar user activation (gesture klik) tetap valid di Chrome/Edge desktop.
+  // 2. Web dan Desktop Windows (WebView2): dialog "Simpan sebagai" lewat
+  // `showSaveFilePicker`. Dipanggil sebelum jeda async FileReader agar gesture
+  // klik masih berlaku. Desktop tanpa API ini (macOS/Linux) jatuh ke
+  // `desktop_save_file` di langkah 3.
   if (typeof window !== "undefined" && "showSaveFilePicker" in window) {
     try {
       const ext = defaultFilename.split(".").pop() || "png";
@@ -106,7 +108,7 @@ export async function saveFileWithPicker(
     }
   }
 
-  // 3. Web browser fallback: anchor click
+  // 3. Tanpa dialog: Desktop menulis ke folder Unduhan, browser lewat anchor.
   return await downloadBlob(blob, defaultFilename);
 }
 

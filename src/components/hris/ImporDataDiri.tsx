@@ -26,7 +26,7 @@ import {
 const TOMBOL =
   "min-h-10 rounded-xl border border-slate-700 px-4 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50";
 const TOMBOL_UTAMA =
-  "min-h-10 rounded-xl bg-sky-500 px-4 text-sm font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50";
+  "min-h-10 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent hover:bg-sky-600 disabled:opacity-50";
 
 const pesanGalat = (error: unknown) =>
   error instanceof Error ? error.message : "Permintaan gagal.";

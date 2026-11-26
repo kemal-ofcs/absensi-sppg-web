@@ -11,6 +11,7 @@ import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { Sakelar } from "@/components/ui/Sakelar";
 import {
   hitungJamKerjaNormalMenit,
   isShiftFleksibel,
@@ -737,22 +738,11 @@ export default function ShiftPage() {
                     tanpa keterlambatan dan tanpa batas jam pulang.
                   </span>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={modeFleksibel}
-                  aria-label="Jadikan shift ini fleksibel"
-                  onClick={() => setModeFleksibel(!modeFleksibel)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition ${
-                    modeFleksibel ? "bg-violet-500" : "bg-slate-700"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${
-                      modeFleksibel ? "left-[22px]" : "left-0.5"
-                    }`}
-                  />
-                </button>
+                <Sakelar
+                  checked={modeFleksibel}
+                  onChange={setModeFleksibel}
+                  label="Jadikan shift ini fleksibel"
+                />
               </div>
               {modeFleksibel ? (
                 <p className="mt-2 rounded-xl bg-slate-950/60 p-2 text-[10px] leading-4 text-violet-200">
@@ -1116,24 +1106,17 @@ export default function ShiftPage() {
                   form backup manual.
                 </p>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                <input
-                  id="shift-multi-session-toggle"
-                  type="checkbox"
-                  checked={
-                    Number(formData.izinkan_multi_sesi || 0) === 1 ||
-                    formData.izinkan_multi_sesi === true
-                  }
-                  onChange={(e) =>
-                    updateFormField(
-                      "izinkan_multi_sesi",
-                      e.target.checked ? 1 : 0,
-                    )
-                  }
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-              </label>
+              <Sakelar
+                id="shift-multi-session-toggle"
+                checked={
+                  Number(formData.izinkan_multi_sesi || 0) === 1 ||
+                  formData.izinkan_multi_sesi === true
+                }
+                onChange={(aktif) =>
+                  updateFormField("izinkan_multi_sesi", aktif ? 1 : 0)
+                }
+                label="Izinkan Auto Multi-Sesi (Turun Shift)"
+              />
             </div>
 
             {Number(formData.izinkan_multi_sesi || 0) === 1 ||

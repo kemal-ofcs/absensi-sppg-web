@@ -2019,7 +2019,12 @@ fn tren_mingguan(connection: &rusqlite::Connection) -> Result<Value, CommandErro
 
 /// Kartu KPI dasbor. Hitungannya memakai `rekap_per_tanggal` yang sama dengan
 /// tren mingguan, sehingga kartu dan batang hari ini tidak berselisih.
-fn dashboard_metrics(connection: &rusqlite::Connection) -> Result<Value, CommandError> {
+/// Jadwal masuk (wajib, belum absen, libur) dari `get_attendance_audit`, cermin
+/// `getDashboardMetrics`.
+fn dashboard_metrics(
+    state: &DesktopState,
+    connection: &rusqlite::Connection,
+) -> Result<Value, CommandError> {
     let (total, hari_ini): (i64, String) = connection
         .query_row(
             "SELECT (SELECT COUNT(*) FROM master_data WHERE status_aktif = 'Aktif'), date('now', '+7 hours');",
@@ -2037,8 +2042,13 @@ fn dashboard_metrics(connection: &rusqlite::Connection) -> Result<Value, Command
     };
     let terlambat = angka("terlambat");
     let hadir = angka("tepat_waktu") + terlambat;
-    let persentase = if total > 0 {
-        ((hadir as f64) * 100.0 / (total as f64)).round() as i64
+    let audit = super::operational::get_attendance_audit(state, Some(hari_ini.clone()))?;
+    let ringkas = |key: &str| audit["ringkasan"][key].as_i64().unwrap_or(0);
+    let wajib = ringkas("wajibAbsen");
+    let belum = ringkas("belumScanMasuk") + ringkas("menungguJamAbsen");
+    let libur = (ringkas("totalKaryawanAktif") - wajib - ringkas("shiftTidakValid")).max(0);
+    let persentase = if wajib > 0 {
+        (((hadir as f64) * 100.0 / (wajib as f64)).round() as i64).min(100)
     } else {
         0
     };
@@ -2049,6 +2059,9 @@ fn dashboard_metrics(connection: &rusqlite::Connection) -> Result<Value, Command
         "sakitIzinHariIni": angka("sakit_izin"),
         "alfaHariIni": angka("alfa"),
         "persentaseKehadiran": persentase,
+        "wajibAbsenHariIni": wajib,
+        "belumAbsenHariIni": belum,
+        "liburHariIni": libur,
     }))
 }
 
@@ -2310,7 +2323,7 @@ pub fn dashboard_data(
         );
     }
     if kind == "metrics" {
-        return dashboard_metrics(&connection);
+        return dashboard_metrics(state, &connection);
     }
     if kind == "weekly-trend" {
         return tren_mingguan(&connection);

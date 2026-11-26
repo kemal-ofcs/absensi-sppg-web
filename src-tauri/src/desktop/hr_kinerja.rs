@@ -19,6 +19,11 @@ use super::{hari_kerja, hris, inventory, scanner, time_policy};
 // ── Konstanta (WAJIB sama dengan CHECK DDL v41) ────────────────────────────
 
 pub const PERIODE_JENIS: [&str; 4] = ["Bulanan", "Kuartal", "Semester", "Tahunan"];
+/// Periode bebas penilaian (v47): tanggal mulai dan selesai dari layar.
+pub const PERIODE_RENTANG: &str = "Rentang Tanggal";
+pub const MAKS_HARI_PERIODE: i64 = 366;
+/// Jenis periode PENILAIAN; periode bawaan pengaturan tetap `PERIODE_JENIS`.
+pub const JENIS_PERIODE_PENILAIAN: [&str; 5] = ["Bulanan", "Kuartal", "Semester", "Tahunan", "Rentang Tanggal"];
 pub const TIPE_MANUAL: &str = "Manual";
 pub const TIPE_DISIPLIN: &str = "Otomatis Disiplin";
 pub const TIPE_ASPEK: [&str; 2] = [TIPE_MANUAL, TIPE_DISIPLIN];
@@ -322,7 +327,21 @@ fn tahun_bulan_hari(tanggal: &str) -> Option<(i64, i64, i64)> {
 
 /// Cermin `periodeRentang`: `(mulai, selesai)` kalender; tanggal mulai yang
 /// bukan awal periode ditolak.
-pub fn periode_rentang(jenis: &str, mulai: &str) -> Result<(String, String), String> {
+/// `selesai` hanya dipakai `Rentang Tanggal`. Cermin `periodeRentang`.
+pub fn periode_rentang(jenis: &str, mulai: &str, selesai: &str) -> Result<(String, String), String> {
+    if jenis == PERIODE_RENTANG {
+        if !inventory::is_valid_date(mulai) || !inventory::is_valid_date(selesai) {
+            return Err("Rentang tanggal periode tidak valid.".into());
+        }
+        if selesai < mulai {
+            return Err("Tanggal selesai periode sebelum tanggal mulai.".into());
+        }
+        let batas = time_policy::add_days(mulai, MAKS_HARI_PERIODE - 1)?;
+        if selesai > batas.as_str() {
+            return Err(format!("Periode paling panjang {MAKS_HARI_PERIODE} hari."));
+        }
+        return Ok((mulai.to_owned(), selesai.to_owned()));
+    }
     let n = bulan_periode(jenis).ok_or("Jenis periode harus Bulanan, Kuartal, Semester, atau Tahunan.")?;
     let ymd = inventory::is_valid_date(mulai).then(|| tahun_bulan_hari(mulai)).flatten();
     let Some((_, bulan, hari)) = ymd else {
@@ -466,7 +485,7 @@ pub fn validasi_penilaian(draft: &Value) -> Result<PenilaianSah, String> {
         return Err("Pilih karyawan.".into());
     }
     let periode_jenis = teks(draft, "periode_jenis");
-    let (periode_mulai, periode_selesai) = periode_rentang(&periode_jenis, &teks(draft, "periode_mulai"))?;
+    let (periode_mulai, periode_selesai) = periode_rentang(&periode_jenis, &teks(draft, "periode_mulai"), &teks(draft, "periode_selesai"))?;
     let catatan = opsional(draft, "catatan", "Catatan penilaian", MAKS_CATATAN)?;
     let id_ref = Some(teks(draft, "id_ref")).filter(|s| !s.is_empty());
     let alasan = opsional(draft, "alasan_koreksi", "Alasan koreksi", MAKS_ALASAN_KOREKSI)?;
@@ -1322,7 +1341,7 @@ pub fn cloud_template_statements(payload: &Value, entity_key: &str) -> Option<St
 pub fn cloud_penilaian_statements(payload: &Value, entity_key: &str) -> Option<Statements> {
     let p = payload.get("penilaian")?;
     let id = hris::id_dari(p, "id_penilaian", entity_key)?;
-    let jenis = inventory::payload_text(p, "periode_jenis").filter(|j| PERIODE_JENIS.contains(&j.as_str()))?;
+    let jenis = inventory::payload_text(p, "periode_jenis").filter(|j| JENIS_PERIODE_PENILAIAN.contains(&j.as_str()))?;
     let mulai = inventory::payload_text(p, "periode_mulai").filter(|t| inventory::is_valid_date(t))?;
     let selesai = inventory::payload_text(p, "periode_selesai").filter(|t| inventory::is_valid_date(t) && *t >= mulai)?;
     let mut hasil: Statements = vec![(
@@ -1899,7 +1918,8 @@ fn periode_filter(conn: &Connection, filter: &Value, pengaturan: &PengaturanKine
         None => awal_periode(&jenis, &hris::hari_ini_wib(conn)?)
             .ok_or_else(|| invalid("Jenis periode harus Bulanan, Kuartal, Semester, atau Tahunan."))?,
     };
-    let (mulai, selesai) = periode_rentang(&jenis, &mulai).map_err(invalid)?;
+    let selesai_isian = so(filter, "periode_selesai").unwrap_or_default();
+    let (mulai, selesai) = periode_rentang(&jenis, &mulai, &selesai_isian).map_err(invalid)?;
     Ok((jenis, mulai, selesai))
 }
 
@@ -2934,7 +2954,7 @@ mod tests {
 
     #[test]
     fn periode_dan_rentang_aktif() {
-        let r = |j: &str, m: &str| periode_rentang(j, m);
+        let r = |j: &str, m: &str| periode_rentang(j, m, "");
         assert_eq!(r("Bulanan", "2026-02-01"), Ok(("2026-02-01".into(), "2026-02-28".into())));
         assert_eq!(r("Kuartal", "2026-10-01"), Ok(("2026-10-01".into(), "2026-12-31".into())));
         assert_eq!(r("Semester", "2026-07-01"), Ok(("2026-07-01".into(), "2026-12-31".into())));
@@ -2946,6 +2966,16 @@ mod tests {
         assert_eq!(awal_periode("Semester", "2026-11-12").as_deref(), Some("2026-07-01"));
         assert_eq!(awal_periode("Kuartal", "2026-05-31").as_deref(), Some("2026-04-01"));
         assert_eq!(awal_periode("Tahunan", "2026-05-31").as_deref(), Some("2026-01-01"));
+        // Rentang Tanggal (v47), kembar `hr-kinerja.test.ts`.
+        let rt = |m: &str, s: &str| periode_rentang(PERIODE_RENTANG, m, s);
+        assert_eq!(rt("2024-01-01", "2024-12-31"), Ok(("2024-01-01".into(), "2024-12-31".into())));
+        assert_eq!(rt("2026-02-28", "2026-02-28"), Ok(("2026-02-28".into(), "2026-02-28".into())));
+        assert_eq!(pesan(rt("2024-01-01", "2025-01-01")), "Periode paling panjang 366 hari.");
+        assert_eq!(pesan(rt("2026-03-31", "2026-01-01")), "Tanggal selesai periode sebelum tanggal mulai.");
+        assert_eq!(pesan(rt("2026-02-30", "2026-03-31")), "Rentang tanggal periode tidak valid.");
+        assert_eq!(pesan(rt("2026-01-01", "")), "Rentang tanggal periode tidak valid.");
+        assert_eq!(awal_periode(PERIODE_RENTANG, "2026-05-31"), None);
+        assert!(JENIS_PERIODE_PENILAIAN.contains(&PERIODE_RENTANG) && !PERIODE_JENIS.contains(&PERIODE_RENTANG));
 
         let penuh = rentang_aktif("2026-01-01", "2026-06-30", Some("2020-01-01"), None).expect("aktif");
         assert!(penuh.penuh);

@@ -60,6 +60,18 @@ export async function simpanAkun(
   return requestWebApi("/api/accounting/accounts/save", "POST", draft);
 }
 
+export async function hapusAkun(idAkun: string): Promise<{ sukses: boolean }> {
+  if (isDesktopRuntime()) {
+    const result = await invokeDesktop<{ sukses: boolean }>(
+      "desktop_accounting_delete_account",
+      { idAkun },
+    );
+    kickDesktopSync();
+    return result;
+  }
+  return requestWebApi("/api/accounting/accounts/delete", "POST", { idAkun });
+}
+
 export async function daftarJurnal(
   dari: string,
   sampai: string,
@@ -268,4 +280,23 @@ export async function tutupUlangBuku(
     idTutup,
     catatan,
   });
+}
+
+/**
+ * Catat tutup buku yang saldonya berubah ke antrean Telegram Keuangan;
+ * dipanggil `AutoTutupBukuRunner`. Desktop/Mobile menghitung dari data lokal.
+ */
+export async function jalankanPemberitahuanTutupBuku(): Promise<{
+  diantre: number;
+  alasan: string | null;
+}> {
+  if (isDesktopRuntime()) {
+    const hasil = await invokeDesktop<{
+      diantre: number;
+      alasan: string | null;
+    }>("desktop_accounting_close_notify");
+    if (hasil.diantre > 0) kickDesktopSync();
+    return hasil;
+  }
+  return requestWebApi("/api/accounting/close-notify", "POST", {});
 }

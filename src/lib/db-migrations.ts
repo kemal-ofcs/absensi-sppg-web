@@ -83,6 +83,8 @@ const HRIS_REKRUTMEN_MIGRATION_VERSION = 42;
 const HRIS_PELATIHAN_RENCANA_MIGRATION_VERSION = 43;
 const PAYROLL_TRANSFER_MIGRATION_VERSION = 44;
 const PAYROLL_TAX_PERIOD_MIGRATION_VERSION = 45;
+const ACCOUNT_DELETE_MIGRATION_VERSION = 46;
+const KINERJA_REIMBURSE_MIGRATION_VERSION = 47;
 
 /**
  * v16 — aturan jam scan baru: Jam Kerja Normal = (Jam Pulang − Jam Masuk) −
@@ -1298,7 +1300,8 @@ export async function runDatabaseMigrations(client: Client) {
       saldo_normal TEXT NOT NULL CHECK (saldo_normal IN ('Debit', 'Kredit')),
       is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      dihapus_pada TEXT
     );
   `);
   await client.execute(`
@@ -1309,7 +1312,7 @@ export async function runDatabaseMigrations(client: Client) {
       nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
       nomor TEXT NOT NULL,
       keterangan TEXT NOT NULL,
-      sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
+      sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Reimburse', 'Pembatalan')),
       id_sumber TEXT,
       id_jurnal_batal TEXT,
       dibuat_oleh TEXT NOT NULL,
@@ -1505,7 +1508,7 @@ export async function runDatabaseMigrations(client: Client) {
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'keu_jurnal';",
   );
   const ddlJurnal = String(jurnalDdl.rows[0]?.sql ?? "");
-  if (ddlJurnal && !ddlJurnal.includes("'Cicilan'")) {
+  if (ddlJurnal && !ddlJurnal.includes("'Reimburse'")) {
     const turunan = await client.execute(
       "SELECT sql FROM sqlite_master WHERE tbl_name = 'keu_jurnal' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name;",
     );
@@ -1521,7 +1524,7 @@ export async function runDatabaseMigrations(client: Client) {
           nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
           nomor TEXT NOT NULL,
           keterangan TEXT NOT NULL,
-          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
+          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Reimburse', 'Pembatalan')),
           id_sumber TEXT,
           id_jurnal_batal TEXT,
           dibuat_oleh TEXT NOT NULL,
@@ -1544,7 +1547,16 @@ export async function runDatabaseMigrations(client: Client) {
   // cloud yang lebih tua menolak setiap import manual. DDL lama disalin apa
   // adanya dan hanya daftarnya yang diperluas, supaya kolom hasil ALTER ikut.
   // Cermin `ensure_import_manual_source` di `turso.rs`.
-  for (const tabel of ["absensi_harian", "log_scan"]) {
+  // Juga `hr_kinerja_penilaian.periode_jenis` (v47, `Rentang Tanggal`).
+  for (const [tabel, lama, baru] of [
+    ["absensi_harian", SUMBER_ABSENSI_LAMA, SUMBER_ABSENSI_BARU],
+    ["log_scan", SUMBER_ABSENSI_LAMA, SUMBER_ABSENSI_BARU],
+    [
+      "hr_kinerja_penilaian",
+      "'Semester', 'Tahunan')",
+      "'Semester', 'Tahunan', 'Rentang Tanggal')",
+    ],
+  ] as const) {
     const ddl = String(
       (
         await client.execute({
@@ -1553,7 +1565,7 @@ export async function runDatabaseMigrations(client: Client) {
         })
       ).rows[0]?.sql ?? "",
     );
-    if (!ddl.includes(SUMBER_ABSENSI_LAMA)) continue;
+    if (!ddl.includes(lama)) continue;
     const turunan = await client.execute({
       sql: "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name;",
       args: [tabel],
@@ -1562,9 +1574,7 @@ export async function runDatabaseMigrations(client: Client) {
     await client.batch(
       [
         `DROP TABLE IF EXISTS ${staging};`,
-        ddl
-          .replace(tabel, staging)
-          .replace(SUMBER_ABSENSI_LAMA, SUMBER_ABSENSI_BARU),
+        ddl.replace(tabel, staging).replace(lama, baru),
         `INSERT INTO ${staging} SELECT * FROM ${tabel};`,
         `DROP TABLE ${tabel};`,
         `ALTER TABLE ${staging} RENAME TO ${tabel};`,
@@ -2489,7 +2499,7 @@ export async function runDatabaseMigrations(client: Client) {
       id_karyawan TEXT NOT NULL,
       id_ref TEXT,
       alasan_koreksi TEXT,
-      periode_jenis TEXT NOT NULL CHECK (periode_jenis IN ('Bulanan', 'Kuartal', 'Semester', 'Tahunan')),
+      periode_jenis TEXT NOT NULL CHECK (periode_jenis IN ('Bulanan', 'Kuartal', 'Semester', 'Tahunan', 'Rentang Tanggal')),
       periode_mulai TEXT NOT NULL,
       periode_selesai TEXT NOT NULL,
       id_template TEXT NOT NULL,
@@ -2836,6 +2846,24 @@ export async function runDatabaseMigrations(client: Client) {
     sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
           VALUES (?, 'payroll-pajak-masa', ?);`,
     args: [PAYROLL_TAX_PERIOD_MIGRATION_VERSION, now],
+  });
+
+  // v46: hapus permanen akun yang belum dipakai. NULL = belum dihapus. Cermin
+  // `ensure_column` di `storage.rs`/`turso.rs`.
+  if (!(await hasColumn(client, "keu_akun", "dihapus_pada"))) {
+    await client.execute("ALTER TABLE keu_akun ADD COLUMN dihapus_pada TEXT;");
+  }
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'accounting-account-delete', ?);`,
+    args: [ACCOUNT_DELETE_MIGRATION_VERSION, now],
+  });
+  // v47: periode kinerja `Rentang Tanggal` dan sumber jurnal `Reimburse`; CHECK
+  // keduanya dibangun ulang oleh blok salin-DDL dan blok `keu_jurnal`.
+  await client.execute({
+    sql: `INSERT OR IGNORE INTO schema_migration (version, name, applied_at)
+          VALUES (?, 'kinerja-periode-reimburse-jurnal', ?);`,
+    args: [KINERJA_REIMBURSE_MIGRATION_VERSION, now],
   });
 
   await client.execute(

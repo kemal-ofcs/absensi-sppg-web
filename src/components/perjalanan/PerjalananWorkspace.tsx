@@ -7,6 +7,7 @@ import {
   pesanGalat,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -116,31 +117,13 @@ export function PerjalananWorkspace() {
 
   return (
     <div className="space-y-4">
-      <div
-        role="tablist"
-        aria-label="Bagian perjalanan"
-        className="flex flex-wrap gap-2"
-      >
-        {tabs
-          .filter((t) => t.tampil)
-          .map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              id={`tab-perjalanan-${t.id}`}
-              aria-selected={tab === t.id}
-              className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                tab === t.id
-                  ? "bg-sky-600 text-white"
-                  : "border border-slate-700 text-slate-200 hover:bg-slate-800"
-              }`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-      </div>
+      <TabBar
+        ariaLabel="Bagian perjalanan"
+        idPrefix="perjalanan"
+        value={tab}
+        onChange={setTab}
+        tabs={tabs.filter((t) => t.tampil)}
+      />
 
       {segeraDihapus && segeraDihapus.jumlah > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">

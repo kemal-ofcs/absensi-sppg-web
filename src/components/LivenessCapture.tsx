@@ -402,7 +402,7 @@ export function LivenessCapture({
                 (index === challengeIndex && phase === "confirmed")
                   ? "bg-emerald-400"
                   : index === challengeIndex
-                    ? "bg-sky-400"
+                    ? "bg-cyan-400"
                     : "bg-white/10"
               }`}
             />

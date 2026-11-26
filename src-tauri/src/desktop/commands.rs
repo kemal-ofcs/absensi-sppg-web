@@ -3119,6 +3119,16 @@ pub fn desktop_accounting_save_account(
     accounting::save_account(&state, draft)
 }
 
+/// Hapus permanen akun yang belum pernah dipakai jurnal atau transaksi.
+#[tauri::command]
+pub fn desktop_accounting_delete_account(
+    state: State<'_, DesktopState>,
+    id_akun: String,
+) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.account.delete")?;
+    accounting::delete_account(&state, &id_akun)
+}
+
 #[tauri::command]
 pub fn desktop_accounting_journals(
     state: State<'_, DesktopState>,
@@ -3362,6 +3372,14 @@ pub fn desktop_accounting_close_decide(
     tutup_buku::decide(&state, &operator.username, &id_tutup, &keputusan, &catatan)
 }
 
+/// Catat tutup buku yang saldonya berubah ke antrean Telegram Keuangan;
+/// dipanggil komponen latar tiap 30 menit.
+#[tauri::command]
+pub async fn desktop_accounting_close_notify(state: State<'_, DesktopState>) -> Result<Value, CommandError> {
+    require_permission(&state, "accounting.view")?;
+    tutup_buku::notify(&state).await
+}
+
 /// Tutup ulang tutup buku yang saldonya berubah sejak ditutup.
 #[tauri::command]
 pub fn desktop_accounting_close_revise(
@@ -3415,6 +3433,15 @@ pub fn desktop_hr_division_save(state: State<'_, DesktopState>, draft: Value) ->
 pub fn desktop_hr_position_save(state: State<'_, DesktopState>, draft: Value) -> Result<Value, CommandError> {
     require_permission(&state, "hr.org.manage")?;
     hris::simpan_master(&state, &hris::MASTER_JABATAN, &draft)
+}
+
+/// Hapus cabang, divisi, jabatan, atau jenis pengajuan yang bukan bawaan dan
+/// tidak pernah dipakai; selain itu ditolak dengan saran menonaktifkan
+/// (`hr.org.manage`).
+#[tauri::command]
+pub fn desktop_hr_master_delete(state: State<'_, DesktopState>, jenis: String, id: String) -> Result<Value, CommandError> {
+    require_permission(&state, "hr.org.manage")?;
+    hris::hapus_master(&state, &jenis, &id)
 }
 
 /// Simpan angka bawaan kontrak (`hr.org.manage`).

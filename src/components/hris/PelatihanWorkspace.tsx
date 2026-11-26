@@ -21,6 +21,7 @@ import {
 } from "@/components/hris/RencanaPelatihan";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import {
   ambilBerkasSertifikat,
   ambilPelatihan,
@@ -50,12 +51,10 @@ const KELAS =
   "min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500";
 const LABEL = "mb-1 block text-xs font-semibold text-slate-400";
 const TOMBOL =
-  "min-h-10 rounded-xl bg-sky-500 px-4 text-sm font-bold text-white disabled:opacity-50";
+  "min-h-10 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent disabled:opacity-50";
 const TOMBOL_KEDUA =
   "min-h-9 rounded-xl border border-slate-700 px-3 text-xs font-bold text-slate-200 disabled:opacity-50";
 const KARTU = "rounded-2xl border border-slate-800 bg-slate-900 p-4";
-const TOMBOL_MODE =
-  "min-h-10 shrink-0 rounded-xl px-4 text-sm font-bold transition-colors";
 
 const WARNA_STATUS: Record<string, string> = {
   Dijadwalkan: "text-sky-200",
@@ -134,26 +133,16 @@ export function PelatihanWorkspace({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
-        <div role="tablist" className="flex flex-wrap gap-2">
-          {(
-            [
-              ["pelatihan", "Pelatihan"],
-              ["rencana", "Rencana dan anggaran"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              id={`pelatihan-mode-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={mode === id}
-              onClick={() => setMode(id)}
-              className={`${TOMBOL_MODE} ${mode === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          ariaLabel="Bagian pelatihan"
+          idPrefix="pelatihan-mode"
+          value={mode}
+          onChange={setMode}
+          tabs={[
+            { id: "pelatihan", label: "Pelatihan" },
+            { id: "rencana", label: "Rencana dan anggaran" },
+          ]}
+        />
         <div>
           <label htmlFor="pelatihan-tahun" className={LABEL}>
             Tahun
@@ -524,7 +513,9 @@ function RincianPelatihan({
   const [rencana, setRencana] = useState<RencanaTertaut | null>(null);
   const [peserta, setPeserta] = useState<Peserta[]>([]);
   const [sertifikatAktif, setSertifikatAktif] = useState(true);
-  const [tambah, setTambah] = useState("");
+  const [tambah, setTambah] = useState<Set<string>>(() => new Set());
+  const [cariCalon, setCariCalon] = useState("");
+  const [dipilih, setDipilih] = useState<Set<string>>(() => new Set());
   const [alasanBatal, setAlasanBatal] = useState("");
   const [formSertifikat, setFormSertifikat] = useState<string | null>(null);
   const [pesan, setPesan] = useState("");
@@ -569,6 +560,82 @@ function RincianPelatihan({
       await simpanPeserta({ id_pelatihan: idPelatihan, ...isi });
       return sesudah(berhasil);
     }, "Peserta gagal diubah.");
+
+  const kata = cariCalon.trim().toLowerCase();
+  const calonTampil = kata
+    ? calon.filter((k) =>
+        `${String(k.nama)} ${String(k.divisi ?? "")}`
+          .toLowerCase()
+          .includes(kata),
+      )
+    : calon;
+  const pesertaDipilih = peserta.filter((p) => dipilih.has(p.id_karyawan));
+  const ubahPilihan = (
+    set: (fn: (lama: Set<string>) => Set<string>) => void,
+    ids: string[],
+    pilih: boolean,
+  ) =>
+    set((lama) => {
+      const baru = new Set(lama);
+      for (const id of ids) {
+        if (pilih) baru.add(id);
+        else baru.delete(id);
+      }
+      return baru;
+    });
+
+  // Hasil dan lepas masih per peserta di backend: dipanggil satu per satu,
+  // yang gagal (mis. bersertifikat) dilaporkan per nama tanpa menahan sisanya.
+  const massal = (
+    daftar: Peserta[],
+    isi: (p: Peserta) => Record<string, unknown>,
+    kataKerja: string,
+  ) =>
+    jalankan(async () => {
+      const gagal: string[] = [];
+      for (const p of daftar) {
+        try {
+          await simpanPeserta({ id_pelatihan: idPelatihan, ...isi(p) });
+        } catch (error) {
+          gagal.push(
+            `${p.nama ?? p.id_karyawan}: ${pesanGalat(error, "gagal")}`,
+          );
+        }
+      }
+      setDipilih(new Set());
+      const berhasil = daftar.length - gagal.length;
+      return sesudah(
+        `${berhasil} peserta ${kataKerja}.${gagal.length > 0 ? ` Gagal ${gagal.length}: ${gagal.join("; ")}` : ""}`,
+      );
+    }, "Peserta gagal diubah.");
+
+  const keluarkanMassal = async () => {
+    const bisa = pesertaDipilih.filter((p) => !p.id_dokumen);
+    const bersertifikat = pesertaDipilih.length - bisa.length;
+    const lanjut = await konfirmasiData([
+      { label: "Pelatihan", nilai: data.nama },
+      { label: "Dikeluarkan", nilai: `${bisa.length} peserta` },
+      ...(bersertifikat > 0
+        ? [
+            {
+              label: "Dilewati",
+              nilai: `${bersertifikat} peserta bersertifikat; hapus sertifikatnya dulu bila memang harus keluar.`,
+            },
+          ]
+        : []),
+      {
+        label: "Sesudah ini",
+        nilai: "Baris pesertanya dihapus dari riwayat pelatihan karyawan.",
+        peringatan: true,
+      },
+    ]);
+    if (!lanjut || bisa.length === 0) return;
+    await massal(
+      bisa,
+      (p) => ({ aksi: "lepas", id_karyawan: p.id_karyawan }),
+      "dikeluarkan",
+    );
+  };
 
   const batal = async () => {
     const lanjut = await konfirmasiData([
@@ -648,38 +715,125 @@ function RincianPelatihan({
           Peserta ({peserta.length})
         </h3>
         {ubahBoleh ? (
-          <div className="flex flex-wrap items-end gap-2">
-            <div className="min-w-0 flex-1">
-              <label htmlFor="pelatihan-tambah-peserta" className={LABEL}>
-                Tambah peserta (karyawan aktif)
-              </label>
-              <PilihCari
-                id="pelatihan-tambah-peserta"
-                value={tambah}
-                onChange={(e) => setTambah(e.target.value)}
-                className={KELAS}
+          <fieldset className="space-y-2">
+            <legend className={LABEL}>Tambah peserta (karyawan aktif)</legend>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                aria-label="Cari calon peserta"
+                placeholder="Cari nama atau divisi"
+                value={cariCalon}
+                onChange={(e) => setCariCalon(e.target.value)}
+                className={`${KELAS} min-w-0 flex-1`}
+              />
+              <button
+                type="button"
+                className={TOMBOL_KEDUA}
+                disabled={calonTampil.length === 0}
+                onClick={() => {
+                  const ids = calonTampil.map((k) => String(k.id_unik));
+                  ubahPilihan(
+                    setTambah,
+                    ids,
+                    !ids.every((id) => tambah.has(id)),
+                  );
+                }}
               >
-                <option value="">Pilih karyawan</option>
-                {calon.map((k) => (
-                  <option key={String(k.id_unik)} value={String(k.id_unik)}>
-                    {String(k.nama)} • {String(k.divisi || "-")}
-                  </option>
-                ))}
-              </PilihCari>
+                {calonTampil.length > 0 &&
+                calonTampil.every((k) => tambah.has(String(k.id_unik)))
+                  ? "Batal pilih semua"
+                  : "Pilih semua"}
+              </button>
             </div>
+            <ul className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-slate-800 p-2 text-sm">
+              {calonTampil.length === 0 ? (
+                <li className="text-slate-400">
+                  {calon.length === 0
+                    ? "Semua karyawan aktif sudah menjadi peserta."
+                    : "Tidak ada karyawan yang cocok."}
+                </li>
+              ) : null}
+              {calonTampil.map((k) => {
+                const id = String(k.id_unik);
+                return (
+                  <li key={id}>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={tambah.has(id)}
+                        onChange={(e) =>
+                          ubahPilihan(setTambah, [id], e.target.checked)
+                        }
+                      />
+                      <span className="text-white">{String(k.nama)}</span>
+                      <span className="text-slate-400">
+                        • {String(k.divisi || "-")}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
             <button
               id="pelatihan-tambah"
               type="button"
               className={TOMBOL}
-              disabled={sibuk || !tambah}
+              disabled={sibuk || tambah.size === 0}
               onClick={() =>
                 void aksiPeserta(
-                  { aksi: "tambah", id_karyawan: [tambah] },
-                  "Peserta ditambahkan.",
-                ).then(() => setTambah(""))
+                  { aksi: "tambah", id_karyawan: [...tambah] },
+                  `${tambah.size} peserta ditambahkan.`,
+                ).then((ok) => {
+                  if (ok) setTambah(new Set());
+                })
               }
             >
-              Tambah
+              Tambah {tambah.size > 0 ? `${tambah.size} ` : ""}peserta
+            </button>
+          </fieldset>
+        ) : null}
+        {ubahBoleh && peserta.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={pesertaDipilih.length === peserta.length}
+                onChange={(e) =>
+                  ubahPilihan(
+                    setDipilih,
+                    peserta.map((p) => p.id_karyawan),
+                    e.target.checked,
+                  )
+                }
+              />
+              Pilih semua peserta
+            </label>
+            <button
+              type="button"
+              className={TOMBOL_KEDUA}
+              disabled={sibuk || pesertaDipilih.length === 0}
+              onClick={() =>
+                void massal(
+                  pesertaDipilih,
+                  (p) => ({
+                    aksi: "hasil",
+                    id_karyawan: p.id_karyawan,
+                    hasil: "Lulus",
+                    catatan: p.catatan,
+                  }),
+                  "ditandai Lulus",
+                )
+              }
+            >
+              Lulus ({pesertaDipilih.length})
+            </button>
+            <button
+              type="button"
+              className={TOMBOL_KEDUA}
+              disabled={sibuk || pesertaDipilih.length === 0}
+              onClick={() => void keluarkanMassal()}
+            >
+              Keluarkan ({pesertaDipilih.length})
             </button>
           </div>
         ) : null}
@@ -690,14 +844,31 @@ function RincianPelatihan({
               className="space-y-2 rounded-xl border border-slate-800 p-3"
             >
               <div className="flex flex-wrap items-end justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="font-semibold text-white">
-                    {p.nama ?? p.id_karyawan}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {p.divisi ?? "-"} • {p.jabatan_status ?? "-"}
-                    {p.status_aktif !== "Aktif" ? " • Nonaktif" : ""}
-                  </p>
+                <div className="flex min-w-0 items-start gap-2">
+                  {ubahBoleh ? (
+                    <input
+                      type="checkbox"
+                      aria-label={`Pilih ${p.nama ?? p.id_karyawan}`}
+                      className="mt-1"
+                      checked={dipilih.has(p.id_karyawan)}
+                      onChange={(e) =>
+                        ubahPilihan(
+                          setDipilih,
+                          [p.id_karyawan],
+                          e.target.checked,
+                        )
+                      }
+                    />
+                  ) : null}
+                  <div className="min-w-0">
+                    <p className="font-semibold text-white">
+                      {p.nama ?? p.id_karyawan}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {p.divisi ?? "-"} • {p.jabatan_status ?? "-"}
+                      {p.status_aktif !== "Aktif" ? " • Nonaktif" : ""}
+                    </p>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-end gap-2">
                   <div>

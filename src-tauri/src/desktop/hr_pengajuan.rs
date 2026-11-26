@@ -885,6 +885,57 @@ pub const MODE_REIMBURSE: [&str; 2] = ["gaji", "terpisah"];
 pub const MODE_REIMBURSE_BAWAAN: &str = "terpisah";
 pub const SUMBER_REIMBURSE: &str = "Reimburse";
 pub const SUMBER_UANG: &str = "Cuti Diuangkan";
+
+// Jurnal otomatis pembayaran terpisah (v47). Dicatat di transaksi yang SAMA
+// dengan pembayarannya lewat `tulis_jurnal_tx`, id `jrn-reimb-<id_bayar>`,
+// dibalik `balik_jurnal_tx` saat pembayaran dibatalkan. Cermin `hr-pengajuan.ts`.
+pub const AKUN_BEBAN_REIMBURSE: &str = "akun-beban-reimburse";
+pub const AKUN_BEBAN_GAJI: &str = "akun-beban-gaji";
+pub const AKUN_BAYAR_BAWAAN: &str = "akun-kas";
+
+pub fn id_jurnal_reimburse(id_bayar: &str) -> String {
+    format!("jrn-reimb-{id_bayar}")
+}
+
+/// Cermin `barisJurnalReimburse`: debit per sumber (Reimburse → Beban
+/// Reimbursement, Cuti Diuangkan → Beban Gaji), kredit akun bayar sebesar
+/// totalnya. Sumber bernominal nol dilewati; kosong = tidak ada jurnal.
+pub fn baris_jurnal_reimburse(
+    id_jurnal: &str,
+    akun_bayar: &str,
+    dibayar: &[(String, i64)],
+) -> Vec<super::accounting::BarisTulis> {
+    let jumlah = |sumber: &str| -> i64 { dibayar.iter().filter(|(s, _)| s == sumber).map(|(_, n)| n).sum() };
+    let debit: Vec<(&str, i64)> = [(AKUN_BEBAN_REIMBURSE, jumlah(SUMBER_REIMBURSE)), (AKUN_BEBAN_GAJI, jumlah(SUMBER_UANG))]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    let mut baris: Vec<super::accounting::BarisTulis> = debit
+        .iter()
+        .enumerate()
+        .map(|(i, (akun, n))| super::accounting::BarisTulis {
+            id_baris: format!("{id_jurnal}:{}", i + 1),
+            id_akun: (*akun).to_owned(),
+            debit: *n,
+            kredit: 0,
+            keterangan: None,
+            urutan: i as i64 + 1,
+        })
+        .collect();
+    let total: i64 = debit.iter().map(|(_, n)| n).sum();
+    if total > 0 {
+        let urutan = baris.len() + 1;
+        baris.push(super::accounting::BarisTulis {
+            id_baris: format!("{id_jurnal}:{urutan}"),
+            id_akun: akun_bayar.to_owned(),
+            debit: 0,
+            kredit: total,
+            keterangan: None,
+            urutan: urutan as i64,
+        });
+    }
+    baris
+}
 pub const MAKS_KLAIM_PER_BAYAR: usize = 200;
 pub const STATUS_DIBAYAR: &str = "Dibayar";
 pub const STATUS_PROSES_GAJI: &str = "Dalam proses gaji";
@@ -1272,20 +1323,38 @@ impl Default for AturanCuti {
 impl AturanCuti {
     /// Cermin `aturanCutiDariPeta`. Kosong atau di luar batas = bawaan.
     pub fn dari_peta(peta: &HashMap<String, String>) -> Self {
-        let bawaan = Self::default();
+        Self::dari_peta_dengan(peta, "", &Self::default())
+    }
+
+    /// Cermin `aturanCutiKaryawan`: aturan umum, lalu setiap isian jabatan
+    /// karyawan itu yang sah menimpanya. Isian jabatan kosong = ikut umum.
+    pub fn karyawan(peta: &HashMap<String, String>, id_jabatan: &str) -> Self {
+        let umum = Self::dari_peta(peta);
+        let id = id_jabatan.trim();
+        if id.is_empty() {
+            umum
+        } else {
+            Self::dari_peta_dengan(peta, &akhiran_jabatan(id), &umum)
+        }
+    }
+
+    /// Cermin `aturanCutiDariPeta(peta, akhiran, dasar)`: kunci dibaca dengan
+    /// `akhiran`, nilai kosong atau di luar batas = nilai `bawaan`.
+    pub fn dari_peta_dengan(peta: &HashMap<String, String>, akhiran: &str, bawaan: &Self) -> Self {
+        let baca = |kunci: &str| peta.get(&format!("{kunci}{akhiran}"));
         let angka = |kunci: &str, nilai_bawaan: i64| -> i64 {
             let (_, _, min, maks) = BATAS_CUTI
                 .iter()
                 .find(|(k, ..)| *k == kunci)
                 .copied()
                 .unwrap_or((kunci, "", i64::MIN, i64::MAX));
-            peta.get(kunci)
+            baca(kunci)
                 .and_then(|v| v.trim().parse::<i64>().ok())
                 .filter(|n| (min..=maks).contains(n))
                 .unwrap_or(nilai_bawaan)
         };
         let pilih = |kunci: &str, daftar: &[&str], nilai_bawaan: &str| -> String {
-            peta.get(kunci)
+            baca(kunci)
                 .map(|v| v.trim())
                 .filter(|v| daftar.contains(v))
                 .unwrap_or(nilai_bawaan)
@@ -1321,6 +1390,76 @@ pub fn validasi_aturan_cuti(draft: &Value) -> Result<Vec<(&'static str, String)>
                 hasil.push((kunci, (n as i64).to_string()));
             }
             _ => return Err(format!("{label} harus {min} sampai {maks}.")),
+        }
+    }
+    Ok(hasil)
+}
+
+/// Akhiran kunci aturan cuti satu jabatan: `hr_cuti_<isian>:jab:<id>`.
+pub fn akhiran_jabatan(id_jabatan: &str) -> String {
+    format!(":jab:{id_jabatan}")
+}
+
+/// Ketujuh kunci aturan cuti, urutan simpan `validasi_aturan_cuti`.
+pub const KUNCI_ATURAN_CUTI: [&str; 7] = [
+    KUNCI_CUTI_PERIODE,
+    KUNCI_CUTI_SISA,
+    KUNCI_CUTI_HAK,
+    KUNCI_CUTI_SYARAT_BULAN,
+    KUNCI_CUTI_PRORATA,
+    KUNCI_CUTI_BAWA_MAKS,
+    KUNCI_CUTI_BAWA_BULAN,
+];
+
+/// Cermin `aturanCutiJabatan`: jabatan dengan minimal satu isian terisi, urut id.
+pub fn aturan_cuti_jabatan(peta: &HashMap<String, String>) -> std::collections::BTreeMap<String, AturanCuti> {
+    let ids: std::collections::BTreeSet<String> = peta
+        .iter()
+        .filter(|(_, nilai)| !nilai.trim().is_empty())
+        .filter_map(|(kunci, _)| {
+            let (dasar, id) = kunci.split_once(":jab:")?;
+            (KUNCI_ATURAN_CUTI.contains(&dasar) && !id.is_empty()).then(|| id.to_owned())
+        })
+        .collect();
+    ids.into_iter()
+        .map(|id| {
+            let aturan = AturanCuti::karyawan(peta, &id);
+            (id, aturan)
+        })
+        .collect()
+}
+
+/// Cermin `validasiAturanCutiJabatan`: `jabatan` opsional, `{ id: draft kunci
+/// datar }` = aturan sendiri, `{ id: null }` = kosongkan ketujuh kunci (ikut
+/// aturan umum lagi). Pasangan kunci-nilai urut id.
+pub fn validasi_aturan_cuti_jabatan(draft: &Value) -> Result<Vec<(String, String)>, String> {
+    let Some(jabatan) = draft.get("jabatan") else {
+        return Ok(Vec::new());
+    };
+    let peta = jabatan.as_object().ok_or_else(|| "Aturan cuti jabatan tidak valid.".to_owned())?;
+    let mut ids: Vec<&String> = peta.keys().collect();
+    ids.sort();
+    let mut hasil = Vec::new();
+    for id in ids {
+        let id_sah = (1..=80).contains(&id.chars().count())
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !id_sah {
+            return Err("Aturan cuti jabatan tidak valid.".to_owned());
+        }
+        let akhiran = akhiran_jabatan(id);
+        match &peta[id] {
+            Value::Null => {
+                for kunci in KUNCI_ATURAN_CUTI {
+                    hasil.push((format!("{kunci}{akhiran}"), String::new()));
+                }
+            }
+            isi if isi.is_object() => {
+                let sah = validasi_aturan_cuti(isi).map_err(|pesan| format!("Aturan jabatan: {pesan}"))?;
+                for (kunci, nilai) in sah {
+                    hasil.push((format!("{kunci}{akhiran}"), nilai));
+                }
+            }
+            _ => return Err("Aturan cuti jabatan tidak valid.".to_owned()),
         }
     }
     Ok(hasil)
@@ -2677,7 +2816,8 @@ fn status_bayar_uang(conn: &Connection, penyesuaian: &[(Value, bool)]) -> Result
     Ok(hasil)
 }
 
-fn baca_aturan(conn: &Connection) -> Result<AturanCuti, CommandError> {
+/// Semua kunci `hr_cuti_*`, termasuk aturan per jabatan (`:jab:<id>`).
+fn baca_peta_cuti(conn: &Connection) -> Result<HashMap<String, String>, CommandError> {
     let mut st = conn
         .prepare("SELECT key, value FROM setting_gex_system WHERE key LIKE 'hr\\_cuti\\_%' ESCAPE '\\';")
         .map_err(internal)?;
@@ -2686,7 +2826,7 @@ fn baca_aturan(conn: &Connection) -> Result<AturanCuti, CommandError> {
         .map_err(internal)?
         .collect::<Result<HashMap<_, _>, _>>()
         .map_err(internal)?;
-    Ok(AturanCuti::dari_peta(&peta))
+    Ok(peta)
 }
 
 /// Penyesuaian satu karyawan: (baris, dibatalkan).
@@ -2713,16 +2853,17 @@ fn baca_penyesuaian(conn: &Connection, id_karyawan: &str) -> Result<Vec<(Value, 
 
 /// Jatah per periode satu karyawan (§17.7).
 fn hitung_jatah(conn: &Connection, id_karyawan: &str) -> Result<(AturanCuti, Option<String>, Vec<PeriodeCuti>, Vec<(Value, bool)>), CommandError> {
-    let aturan = baca_aturan(conn)?;
-    let masuk: Option<String> = conn
+    let (masuk, id_jabatan): (Option<String>, String) = conn
         .query_row(
-            "SELECT NULLIF(TRIM(tanggal_daftar), '') FROM master_data WHERE id_unik = ?1;",
+            "SELECT NULLIF(TRIM(tanggal_daftar), '') AS t, COALESCE(id_jabatan, '') AS jab FROM master_data WHERE id_unik = ?1;",
             params![id_karyawan],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(internal)?
-        .flatten();
+        .unwrap_or((None, String::new()));
+    // Aturan umum ditimpa aturan jabatan karyawan ini (bila ada).
+    let aturan = AturanCuti::karyawan(&baca_peta_cuti(conn)?, &id_jabatan);
     let berlaku: Vec<PengajuanBerlaku> = muat_berlaku(conn, "0000-01-01", "9999-12-31")?
         .into_iter()
         .filter(|p| p.id_karyawan == id_karyawan && p.potong_jatah)
@@ -2917,10 +3058,14 @@ pub fn proses_akhir_periode(state: &DesktopState, oleh: &str, draft: &Value) -> 
 /// untuk semua karyawan aktif (hanya mode `diuangkan`).
 pub fn akhir_periode(state: &DesktopState) -> Result<Value, CommandError> {
     let conn = super::storage::database(&state.data_dir)?;
-    let aturan = baca_aturan(&conn)?;
+    let peta = baca_peta_cuti(&conn)?;
+    let aturan = AturanCuti::dari_peta(&peta);
+    let aturan_jabatan = aturan_cuti_jabatan(&peta);
     let mut belum = Vec::new();
     let mut uang = Vec::new();
-    if aturan.sisa == "diuangkan" {
+    // Aturan jabatan bisa "diuangkan" walau aturan umum tidak (dan sebaliknya):
+    // periode yang belum diproses dinilai dengan aturan karyawan itu sendiri.
+    if aturan.sisa == "diuangkan" || aturan_jabatan.values().any(|a| a.sisa == "diuangkan") {
         let hari_ini = hris::hari_ini_wib(&conn)?;
         let karyawan: Vec<(String, String)> = {
             let mut st = conn
@@ -2930,8 +3075,9 @@ pub fn akhir_periode(state: &DesktopState) -> Result<Value, CommandError> {
             rows.collect::<Result<_, _>>().map_err(internal)?
         };
         for (id, nama) in karyawan {
-            let (_, _, periode, penyesuaian) = hitung_jatah(&conn, &id)?;
-            for p in periode.iter().filter(|p| !p.sebelum_berhak && p.selesai < hari_ini && p.sisa > 0) {
+            let (aturan_karyawan, _, periode, penyesuaian) = hitung_jatah(&conn, &id)?;
+            let diproses = if aturan_karyawan.sisa == "diuangkan" { periode.as_slice() } else { &[] };
+            for p in diproses.iter().filter(|p| !p.sebelum_berhak && p.selesai < hari_ini && p.sisa > 0) {
                 let kunci = id_uang(&id, &p.mulai);
                 if !penyesuaian.iter().any(|(b, _)| b["id_penyesuaian"] == kunci.as_str()) {
                     belum.push(json!({ "id_karyawan": id, "nama": nama, "periode": p }));
@@ -2949,6 +3095,7 @@ pub fn akhir_periode(state: &DesktopState) -> Result<Value, CommandError> {
     let aturan_lembur = baca_aturan_lembur(&conn)?;
     Ok(json!({
         "aturan": aturan,
+        "aturan_jabatan": aturan_jabatan,
         "aturan_lembur": aturan_lembur,
         "mode_reimburse": baca_mode_reimburse(&conn)?,
         "belum_diproses": belum,
@@ -2961,6 +3108,8 @@ pub fn simpan_aturan(state: &DesktopState, draft: &Value) -> Result<Value, Comma
     let mut isian = validasi_aturan_cuti(draft).map_err(invalid)?;
     isian.extend(validasi_aturan_lembur(draft).map_err(invalid)?);
     isian.extend(validasi_aturan_reimburse(draft).map_err(invalid)?);
+    let mut isian: Vec<(String, String)> = isian.into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+    isian.extend(validasi_aturan_cuti_jabatan(draft).map_err(invalid)?);
     hris::dalam_transaksi(state, |tx, client_id| {
         for (kunci, nilai) in &isian {
             tx.execute(
@@ -3002,6 +3151,10 @@ pub fn catat_bayar_reimburse(state: &DesktopState, oleh: &str, draft: &Value) ->
         let gaji = muat_gaji_reimburse(tx)?;
         let dibayar = periksa_bayar_reimburse(&valid, &klaim, &pembayaran, &baris, &gaji).map_err(invalid)?;
         let total: i64 = dibayar.iter().map(|k| k.nominal).sum();
+        // Jurnal otomatis (v47): akun bayar wajib Aset aktif, diperiksa
+        // sebelum apa pun ditulis.
+        let akun_bayar = payload_text(draft, "id_akun_bayar").unwrap_or_else(|| AKUN_BAYAR_BAWAAN.to_owned());
+        super::accounting::assert_akun_bayar(tx, &akun_bayar)?;
         let id_bayar = new_hex_id("rbb-");
         tx.execute(
             CLOUD_INSERT_BAYAR_REIMBURSE_SQL,
@@ -3016,6 +3169,31 @@ pub fn catat_bayar_reimburse(state: &DesktopState, oleh: &str, draft: &Value) ->
             .map_err(internal)?;
         }
         enqueue_bayar_reimburse(tx, client_id, &id_bayar)?;
+        let id_jurnal = id_jurnal_reimburse(&id_bayar);
+        let pasangan: Vec<(String, i64)> = dibayar.iter().map(|k| (k.sumber.clone(), k.nominal)).collect();
+        let baris_jurnal = baris_jurnal_reimburse(&id_jurnal, &akun_bayar, &pasangan);
+        if !baris_jurnal.is_empty() {
+            let nama: String = tx
+                .query_row("SELECT nama FROM master_data WHERE id_unik = ?1;", params![valid.id_karyawan], |r| r.get(0))
+                .optional()
+                .map_err(internal)?
+                .unwrap_or_else(|| valid.id_karyawan.clone());
+            super::accounting::tulis_jurnal_tx(
+                tx,
+                state,
+                client_id,
+                super::accounting::HeaderTulis {
+                    id_jurnal: id_jurnal.clone(),
+                    tanggal: valid.tanggal.clone(),
+                    keterangan: format!("Pembayaran reimbursement {nama}"),
+                    sumber: "Reimburse",
+                    id_sumber: Some(id_bayar.clone()),
+                    id_jurnal_batal: None,
+                    dibuat_oleh: oleh.to_owned(),
+                },
+                &baris_jurnal,
+            )?;
+        }
         Ok(json!({ "sukses": true, "id_bayar": id_bayar, "total": total }))
     })
 }
@@ -3042,6 +3220,15 @@ pub fn batal_bayar_reimburse(state: &DesktopState, oleh: &str, draft: &Value) ->
         )
         .map_err(internal)?;
         enqueue_bayar_reimburse(tx, client_id, &id)?;
+        // Pembalik jurnal otomatis (v47); pembayaran lama tanpa jurnal dilewati.
+        super::accounting::balik_jurnal_tx(
+            tx,
+            state,
+            client_id,
+            &id_jurnal_reimburse(&id_bayar),
+            "Pembatalan pembayaran reimbursement".to_owned(),
+            oleh,
+        )?;
         Ok(json!({ "sukses": true, "id_bayar": id }))
     })
 }
@@ -3450,6 +3637,57 @@ pub fn cloud_penyesuaian_statements(payload: &Value, entity_key: &str) -> Option
             json!(payload_text(payload, "created_at")),
         ],
     )])
+}
+
+#[cfg(test)]
+mod tests_cuti_jabatan {
+    //! Vektor sama dengan `validations/hr-pengajuan.test.ts` (`hr-cuti-jabatan.vektor.json`).
+    use super::*;
+
+    #[test]
+    fn hr_pengajuan_jurnal_reimburse_vektor() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../../src/lib/validations/hr-jurnal-reimburse.vektor.json")).expect("vektor");
+        for k in v.as_array().expect("kasus") {
+            let dibayar: Vec<(String, i64)> = k["dibayar"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| (d["sumber"].as_str().unwrap().to_owned(), d["nominal"].as_i64().unwrap()))
+                .collect();
+            let hasil: Vec<Value> = baris_jurnal_reimburse(k["id_jurnal"].as_str().unwrap(), k["akun_bayar"].as_str().unwrap(), &dibayar)
+                .into_iter()
+                .map(|b| {
+                    json!({ "id_baris": b.id_baris, "id_akun": b.id_akun, "debit": b.debit, "kredit": b.kredit,
+                            "keterangan": b.keterangan, "urutan": b.urutan })
+                })
+                .collect();
+            assert_eq!(json!(hasil), k["hasil"], "{}", k["nama"]);
+        }
+        assert_eq!(id_jurnal_reimburse("rbb-1"), "jrn-reimb-rbb-1");
+        assert!(super::super::accounting::SUMBER_JURNAL.contains(&"Reimburse"));
+    }
+
+    #[test]
+    fn hr_pengajuan_aturan_cuti_jabatan_vektor() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../../src/lib/validations/hr-cuti-jabatan.vektor.json")).expect("vektor");
+        let peta: HashMap<String, String> = serde_json::from_value(v["peta"].clone()).expect("peta");
+        for k in v["karyawan"].as_array().expect("karyawan") {
+            let hasil = AturanCuti::karyawan(&peta, k["id_jabatan"].as_str().unwrap());
+            assert_eq!(json!(hasil), k["hasil"], "{k}");
+        }
+        assert_eq!(json!(aturan_cuti_jabatan(&peta)), v["jabatan"]);
+        for k in v["validasi"].as_array().expect("validasi") {
+            match validasi_aturan_cuti_jabatan(&k["draft"]) {
+                Ok(pasangan) => {
+                    assert!(k["galat"].is_null(), "{}", k["nama"]);
+                    assert_eq!(json!(pasangan), k["hasil"], "{}", k["nama"]);
+                }
+                Err(pesan) => assert_eq!(Some(pesan.as_str()), k["galat"].as_str(), "{}", k["nama"]),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

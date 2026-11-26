@@ -34,7 +34,7 @@ export default function ForbiddenPage() {
         </p>
         <Link
           href="/"
-          className="mt-7 inline-flex min-h-11 items-center justify-center rounded-xl bg-sky-400 px-5 text-sm font-black text-slate-950 transition hover:bg-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
+          className="mt-7 inline-flex min-h-11 items-center justify-center rounded-xl bg-sky-700 px-5 text-sm font-black text-on-accent transition hover:bg-sky-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
         >
           Kembali ke Home
         </Link>

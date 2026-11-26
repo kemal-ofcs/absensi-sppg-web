@@ -84,7 +84,7 @@ export function LeaderboardPodium3D({
             onClick={() => setFilterMode("jamKerja")}
             className={`rounded-lg px-3 py-1.5 font-bold transition ${
               filterMode === "jamKerja"
-                ? "bg-sky-400 text-slate-950 shadow-md shadow-sky-950/40"
+                ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950/40"
                 : "text-slate-400 hover:text-white"
             }`}
           >

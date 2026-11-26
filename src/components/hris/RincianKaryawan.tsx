@@ -9,6 +9,7 @@ import { RiwayatPelatihanKaryawan } from "@/components/hris/PelatihanWorkspace";
 import { SuratPeringatanPanel } from "@/components/hris/SuratPeringatanPanel";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -50,7 +51,7 @@ type Isian = Record<string, string>;
 const KELAS =
   "min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500";
 const TOMBOL =
-  "min-h-10 rounded-xl bg-sky-500 px-4 text-sm font-bold text-white disabled:opacity-50";
+  "min-h-10 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent disabled:opacity-50";
 const TOMBOL_KEDUA =
   "min-h-9 rounded-xl border border-slate-700 px-3 text-xs font-bold text-slate-200";
 
@@ -254,25 +255,13 @@ export function RincianKaryawan({
           {String(karyawan.divisi || "-")}
         </p>
       </div>
-      <div
-        className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
-        role="tablist"
-        aria-label="Rincian karyawan"
-      >
-        {tabs.map(([t, label]) => (
-          <button
-            key={t}
-            id={`hris-rincian-${t}`}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`min-h-9 shrink-0 rounded-xl px-3 text-xs font-bold ${tab === t ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        ariaLabel="Rincian karyawan"
+        idPrefix="hris-rincian"
+        value={tab}
+        onChange={setTab}
+        tabs={tabs.map(([id, label]) => ({ id, label }))}
+      />
       {tab === "kerja" ? <Kerja karyawan={karyawan} nama={nama} /> : null}
       {tab === "pribadi" || tab === "keuangan" ? (
         <ProfilForm

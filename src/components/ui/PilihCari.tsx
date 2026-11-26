@@ -313,7 +313,7 @@ export function PilihCari({
           // Di HP tombol ini untuk memilih tanpa memunculkan papan ketik.
           if (!pointerKasar()) inputRef.current?.focus();
         }}
-        className="grid w-11 shrink-0 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-60"
+        className="pilih-cari-tombol grid w-11 shrink-0 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-60"
       >
         <svg
           viewBox="0 0 20 20"

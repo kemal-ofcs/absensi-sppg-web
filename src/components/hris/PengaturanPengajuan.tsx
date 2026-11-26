@@ -19,8 +19,14 @@ import {
   simpanAturanCuti,
   simpanJenisPengajuan,
 } from "@/lib/gateways/hr-pengajuan";
+import {
+  ambilOrganisasi,
+  hapusMasterOrganisasi,
+  type Jabatan,
+} from "@/lib/gateways/hris";
 import { SYNC_COMPLETED_EVENT } from "@/lib/gateways/sync-status";
 import { formatRupiah } from "@/lib/validations/accounting";
+import jenisBawaan from "@/lib/validations/hr-jenis-bawaan.json";
 import {
   type AturanCuti,
   type AturanLembur,
@@ -62,6 +68,17 @@ const LABEL_PERIODE: Record<string, string> = {
   ulang_tahun_kerja: "Ulang tahun kerja",
 };
 
+/** Aturan cuti ke bentuk draft kunci datar `validasiAturanCuti`. */
+const draftCuti = (a: AturanCuti) => ({
+  hr_cuti_periode: a.periode,
+  hr_cuti_hak: a.hak,
+  hr_cuti_syarat_bulan: a.syarat_bulan,
+  hr_cuti_prorata: a.prorata ? 1 : 0,
+  hr_cuti_sisa: a.sisa,
+  hr_cuti_bawa_maks: a.bawa_maks,
+  hr_cuti_bawa_bulan: a.bawa_bulan,
+});
+
 export function PengaturanPengajuan() {
   const [jenis, setJenis] = useState<JenisPengajuan[]>([]);
   const [isi, setIsi] = useState<IsianJenis>(JENIS_KOSONG);
@@ -71,6 +88,12 @@ export function PengaturanPengajuan() {
   const [lemburLama, setLemburLama] = useState<AturanLembur | null>(null);
   const [modeReimburse, setModeReimburse] = useState("terpisah");
   const [modeReimburseLama, setModeReimburseLama] = useState("terpisah");
+  // Aturan cuti per jabatan: jabatan yang tidak ada di sini ikut aturan umum.
+  const [perJabatan, setPerJabatan] = useState<Record<string, AturanCuti>>({});
+  const [jabatanAwal, setJabatanAwal] = useState<Record<string, AturanCuti>>(
+    {},
+  );
+  const [daftarJabatan, setDaftarJabatan] = useState<Jabatan[]>([]);
   const [pesan, setPesan] = useState("");
   const [sibuk, setSibuk] = useState(false);
 
@@ -83,12 +106,19 @@ export function PengaturanPengajuan() {
       .then((d) => {
         setAturan(d.aturan);
         setAturanLama(d.aturan);
+        setPerJabatan(d.aturan_jabatan ?? {});
+        setJabatanAwal(d.aturan_jabatan ?? {});
         setLembur(d.aturan_lembur);
         setLemburLama(d.aturan_lembur);
         setModeReimburse(d.mode_reimburse);
         setModeReimburseLama(d.mode_reimburse);
       })
       .catch((error: unknown) => setPesan(pesanGalat(error, "Gagal memuat.")));
+    ambilOrganisasi()
+      .then((o) => setDaftarJabatan(o.jabatan))
+      .catch((error: unknown) =>
+        setPesan(pesanGalat(error, "Daftar jabatan gagal dimuat.")),
+      );
   }, []);
   useEffect(() => {
     muat();
@@ -139,6 +169,29 @@ export function PengaturanPengajuan() {
     }
   };
 
+  const hapusJenis = async (id: string, nama: string) => {
+    const lanjut = await konfirmasiData([
+      { label: "Jenis pengajuan", nilai: nama },
+      {
+        label: "Sesudah ini",
+        nilai:
+          "Dihapus permanen. Hanya bisa bila belum pernah dipakai pengajuan mana pun, termasuk riwayat.",
+        peringatan: true,
+      },
+    ]);
+    if (!lanjut) return;
+    setSibuk(true);
+    try {
+      await hapusMasterOrganisasi("jenis_pengajuan", id);
+      setPesan(`"${nama}" dihapus.`);
+      muat();
+    } catch (error) {
+      setPesan(pesanGalat(error, "Gagal menghapus."));
+    } finally {
+      setSibuk(false);
+    }
+  };
+
   const simpanAturan = async () => {
     if (!aturan || !lembur) return;
     const gantiPeriode = aturanLama && aturanLama.periode !== aturan.periode;
@@ -150,6 +203,13 @@ export function PengaturanPengajuan() {
       { label: "Masa kerja minimum", nilai: `${aturan.syarat_bulan} bulan` },
       { label: "Prorata", nilai: aturan.prorata ? "Ya" : "Tidak" },
       { label: "Sisa cuti", nilai: aturan.sisa },
+      {
+        label: "Aturan per jabatan",
+        nilai:
+          Object.keys(perJabatan).length > 0
+            ? `${Object.keys(perJabatan).length} jabatan beraturan sendiri`
+            : "Semua jabatan ikut aturan umum",
+      },
       ...(aturan.sisa === "dibawa"
         ? [
             { label: "Maks dibawa", nilai: `${aturan.bawa_maks} hari` },
@@ -219,8 +279,19 @@ export function PengaturanPengajuan() {
         hr_lembur_maks_harian: lembur.maks_harian,
         hr_lembur_maks_mingguan: lembur.maks_mingguan,
         hr_reimburse_bayar: modeReimburse,
+        // Hanya jabatan beraturan sendiri, ditambah `null` untuk yang baru
+        // dikembalikan ke aturan umum; jabatan lain tidak ditulis.
+        jabatan: {
+          ...Object.fromEntries(
+            Object.keys(jabatanAwal).map((id) => [id, null]),
+          ),
+          ...Object.fromEntries(
+            Object.entries(perJabatan).map(([id, a]) => [id, draftCuti(a)]),
+          ),
+        },
       });
       setPesan("Aturan cuti, lembur, dan reimbursement tersimpan.");
+      setJabatanAwal(perJabatan);
       setAturanLama(aturan);
       setLemburLama(lembur);
       setModeReimburseLama(modeReimburse);
@@ -294,6 +365,16 @@ export function PengaturanPengajuan() {
                   Ubah
                 </button>
               ) : null}
+              {jenisBawaan.some((b) => b.id_jenis === j.id_jenis) ? null : (
+                <button
+                  type="button"
+                  className="text-xs text-rose-300 underline"
+                  disabled={sibuk}
+                  onClick={() => void hapusJenis(j.id_jenis, j.nama)}
+                >
+                  Hapus
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -637,6 +718,155 @@ export function PengaturanPengajuan() {
             pajak dan BPJS. Pembayaran terpisah tetap tersedia di kedua mode,
             dan cuti diuangkan selalu dibayar terpisah.
           </p>
+          <div className="space-y-2 sm:col-span-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-white">
+                Aturan cuti per jabatan
+              </h3>
+              {Object.keys(perJabatan).length > 0 ? (
+                <button
+                  type="button"
+                  className="text-xs text-sky-300 underline"
+                  onClick={() => setPerJabatan({})}
+                >
+                  Semua jabatan ikut aturan umum
+                </button>
+              ) : null}
+            </div>
+            <p className="text-xs text-slate-400">
+              Jabatan beraturan sendiri menimpa aturan umum di atas untuk
+              karyawan berjabatan itu. Pilihan baru disalin dari aturan umum.
+            </p>
+            <ul className="space-y-2">
+              {daftarJabatan
+                .filter((j) => j.is_aktif === 1 || perJabatan[j.id_jabatan])
+                .map((j) => {
+                  const a = perJabatan[j.id_jabatan];
+                  const id = `cuti-jab-${j.id_jabatan}`;
+                  const ubahJ = (sebagian: Partial<AturanCuti>) =>
+                    setPerJabatan((lama) => ({
+                      ...lama,
+                      [j.id_jabatan]: { ...lama[j.id_jabatan], ...sebagian },
+                    }));
+                  const angkaJ = (
+                    kunci: "hak" | "syarat_bulan" | "bawa_maks" | "bawa_bulan",
+                    label: string,
+                  ) =>
+                    a ? (
+                      <div>
+                        <label className={LABEL} htmlFor={`${id}-${kunci}`}>
+                          {label}
+                        </label>
+                        <input
+                          id={`${id}-${kunci}`}
+                          type="number"
+                          className={INPUT}
+                          value={String(a[kunci])}
+                          onChange={(e) =>
+                            ubahJ({ [kunci]: Number(e.target.value) })
+                          }
+                        />
+                      </div>
+                    ) : null;
+                  return (
+                    <li
+                      key={j.id_jabatan}
+                      className="space-y-2 rounded-xl border border-slate-800 p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label
+                          htmlFor={id}
+                          className="text-sm font-semibold text-white"
+                        >
+                          {j.nama}
+                          {j.is_aktif === 1 ? "" : " (nonaktif)"}
+                        </label>
+                        <select
+                          id={id}
+                          className={`${INPUT} w-auto`}
+                          value={a ? "sendiri" : "umum"}
+                          onChange={(e) =>
+                            setPerJabatan((lama) => {
+                              const baru = { ...lama };
+                              if (e.target.value === "sendiri")
+                                baru[j.id_jabatan] = { ...aturan };
+                              else delete baru[j.id_jabatan];
+                              return baru;
+                            })
+                          }
+                        >
+                          <option value="umum">Ikut aturan umum</option>
+                          <option value="sendiri">Aturan sendiri</option>
+                        </select>
+                      </div>
+                      {a ? (
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <div>
+                            <label className={LABEL} htmlFor={`${id}-periode`}>
+                              Periode
+                            </label>
+                            <select
+                              id={`${id}-periode`}
+                              className={INPUT}
+                              value={a.periode}
+                              onChange={(e) =>
+                                ubahJ({ periode: e.target.value })
+                              }
+                            >
+                              <option value="ulang_tahun_kerja">
+                                Ulang tahun kerja
+                              </option>
+                              <option value="kalender">Tahun kalender</option>
+                            </select>
+                          </div>
+                          {angkaJ("hak", "Hak per periode (hari)")}
+                          {angkaJ("syarat_bulan", "Masa kerja minimum (bulan)")}
+                          <div>
+                            <label className={LABEL} htmlFor={`${id}-sisa`}>
+                              Sisa cuti di akhir periode
+                            </label>
+                            <select
+                              id={`${id}-sisa`}
+                              className={INPUT}
+                              value={a.sisa}
+                              onChange={(e) => ubahJ({ sisa: e.target.value })}
+                            >
+                              <option value="hangus">Hangus</option>
+                              <option value="dibawa">
+                                Dibawa ke periode berikutnya
+                              </option>
+                              <option value="diuangkan">Diuangkan</option>
+                            </select>
+                          </div>
+                          {a.sisa === "dibawa"
+                            ? angkaJ("bawa_maks", "Maks dibawa (hari)")
+                            : null}
+                          {a.sisa === "dibawa"
+                            ? angkaJ("bawa_bulan", "Dipakai dalam (bulan)")
+                            : null}
+                          {a.periode === "kalender" ? (
+                            <label
+                              className="flex items-center gap-2 text-sm text-slate-200"
+                              htmlFor={`${id}-prorata`}
+                            >
+                              <input
+                                id={`${id}-prorata`}
+                                type="checkbox"
+                                checked={a.prorata}
+                                onChange={(e) =>
+                                  ubahJ({ prorata: e.target.checked })
+                                }
+                              />
+                              Prorata di tahun pertama berhak
+                            </label>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+            </ul>
+          </div>
           <div className="sm:col-span-3">
             <button
               type="button"

@@ -16,7 +16,9 @@ import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Sakelar } from "@/components/ui/Sakelar";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { TabBar } from "@/components/ui/TabBar";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { DeviceProfileCard } from "@/components/visual/DeviceProfileCard";
 import { VisualTierControl } from "@/components/visual/VisualTierControl";
@@ -1239,38 +1241,26 @@ export default function SettingsPage() {
       ) : null}
 
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
-        <div
-          role="tablist"
-          aria-label="Bagian pengaturan"
-          className="flex gap-1 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/40 p-1.5 lg:sticky lg:top-20 lg:flex-col"
-        >
-          {visibleTabs.map(({ id, icon, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`settings-tab-${id}`}
-              aria-selected={activeTab === id}
-              aria-controls="settings-panel"
-              onClick={() => selectTab(id)}
-              className={`flex min-h-11 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-xl px-3 text-left text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
-                activeTab === id
-                  ? "bg-sky-400 text-slate-950"
-                  : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
-              }`}
-            >
-              <Icon name={icon} className="size-4 shrink-0" />
-              {label}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          ariaLabel="Bagian pengaturan"
+          idPrefix="settings"
+          panelId="settings-panel"
+          vertikalLg
+          value={activeTab}
+          onChange={selectTab}
+          tabs={visibleTabs.map(({ id, icon, label }) => ({
+            id,
+            label,
+            icon: <Icon name={icon} className="size-4 shrink-0" />,
+          }))}
+        />
 
         {/* Panel disembunyikan dengan `hidden`, bukan dilepas: isian yang belum
             disimpan di kartu lain tetap ada saat berpindah bagian. */}
         <div
           role="tabpanel"
           id="settings-panel"
-          aria-labelledby={`settings-tab-${activeTab}`}
+          aria-labelledby={`tab-settings-${activeTab}`}
           className="flex min-w-0 flex-col gap-7"
         >
           <div
@@ -1310,7 +1300,7 @@ export default function SettingsPage() {
               <div className="mt-5 flex flex-col gap-3 sm:flex-row">
                 <label
                   htmlFor="logo-upload-input"
-                  className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-400 px-4 text-sm font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 focus-within:ring-2 focus-within:ring-sky-200"
+                  className="inline-flex min-h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 text-sm font-black text-on-accent shadow-lg shadow-sky-950/20 transition hover:bg-sky-600 focus-within:ring-2 focus-within:ring-sky-200"
                 >
                   <Icon name="upload" className="size-4" />
                   {logoBusy ? "Menyimpan logo…" : "Pilih logo baru"}
@@ -1752,7 +1742,7 @@ export default function SettingsPage() {
                   <button
                     type="submit"
                     disabled={companyProfileBusy}
-                    className="min-h-11 rounded-xl bg-sky-400 px-6 text-xs font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 disabled:opacity-50 inline-flex items-center gap-2"
+                    className="min-h-11 rounded-xl bg-sky-700 px-6 text-xs font-black text-on-accent shadow-lg shadow-sky-950/20 transition hover:bg-sky-600 disabled:opacity-50 inline-flex items-center gap-2"
                   >
                     <Icon name="check" className="size-4" />
                     <span>
@@ -2278,7 +2268,7 @@ export default function SettingsPage() {
                   <button
                     type="submit"
                     disabled={ipAllowlistBusy}
-                    className="min-h-11 rounded-xl bg-sky-400 px-5 text-sm font-black text-slate-950 disabled:opacity-60"
+                    className="min-h-11 rounded-xl bg-sky-700 px-5 text-sm font-black text-on-accent disabled:opacity-60"
                   >
                     {ipAllowlistBusy
                       ? "Menyimpan..."
@@ -2389,7 +2379,7 @@ export default function SettingsPage() {
                         }
                         className={`rounded-lg px-2 py-0.5 text-[11px] font-bold transition-all ${
                           geofence.radiusMeter === preset
-                            ? "bg-sky-400 text-slate-950 shadow-sm"
+                            ? "bg-sky-700 text-on-accent shadow-sm"
                             : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
                         }`}
                       >
@@ -2473,7 +2463,7 @@ export default function SettingsPage() {
                   <button
                     type="submit"
                     disabled={geofenceBusy}
-                    className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 hover:bg-sky-300 disabled:opacity-50"
+                    className="min-h-11 rounded-xl bg-sky-700 px-5 text-xs font-black text-on-accent hover:bg-sky-600 disabled:opacity-50"
                   >
                     {geofenceBusy
                       ? "Menyimpan..."
@@ -2646,7 +2636,7 @@ export default function SettingsPage() {
                   <button
                     type="submit"
                     disabled={scannerSafetyBusy}
-                    className="min-h-11 rounded-xl bg-sky-400 px-5 text-xs font-black text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-300 disabled:opacity-50"
+                    className="min-h-11 rounded-xl bg-sky-700 px-5 text-xs font-black text-on-accent shadow-lg shadow-sky-950/20 transition hover:bg-sky-600 disabled:opacity-50"
                   >
                     {scannerSafetyBusy
                       ? "Menyimpan..."
@@ -2698,16 +2688,12 @@ export default function SettingsPage() {
                 </div>
                 <div className="flex items-center gap-4">
                   {hasPermission(user, "settings.manage") ? (
-                    <label className="relative inline-flex cursor-pointer items-center">
-                      <input
-                        type="checkbox"
-                        checked={autoAlfaEnabled}
-                        disabled={autoAlfaBusy}
-                        onChange={(e) => handleAutoAlfaToggle(e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="h-6 w-11 rounded-full bg-slate-800 peer peer-checked:bg-amber-400 peer-focus:outline-none after:absolute after:top-0.5 after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white disabled:opacity-50" />
-                    </label>
+                    <Sakelar
+                      checked={autoAlfaEnabled}
+                      disabled={autoAlfaBusy}
+                      onChange={handleAutoAlfaToggle}
+                      label="Otomasi Generate Alfa"
+                    />
                   ) : null}
                 </div>
               </div>
@@ -2771,7 +2757,7 @@ export default function SettingsPage() {
                     type="button"
                     disabled={syncBusy || !isOnline}
                     onClick={() => refreshSync(true)}
-                    className="min-h-10 rounded-xl bg-sky-400 px-4 text-xs font-black text-slate-950 disabled:opacity-50"
+                    className="min-h-10 rounded-xl bg-sky-700 px-4 text-xs font-black text-on-accent disabled:opacity-50"
                   >
                     Sinkronkan sekarang
                   </button>
@@ -2968,7 +2954,7 @@ export default function SettingsPage() {
                   ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
                   : alfaModalResult.status === "LIBUR"
                     ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
-                    : "border-sky-500/20 bg-sky-500/10 text-sky-300"
+                    : "border-cyan-500/20 bg-cyan-500/10 text-cyan-300"
               }`}
             >
               <div className="flex items-center gap-2 font-bold">
@@ -3036,7 +3022,7 @@ export default function SettingsPage() {
               <button
                 type="button"
                 onClick={() => setAlfaModalResult(null)}
-                className="rounded-xl bg-sky-500 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400"
+                className="rounded-xl bg-sky-700 px-5 py-2 text-xs font-bold text-on-accent shadow-lg shadow-sky-500/20 transition hover:bg-sky-600"
               >
                 Tutup Ringkasan
               </button>

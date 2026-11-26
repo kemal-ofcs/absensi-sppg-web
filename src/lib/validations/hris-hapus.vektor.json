@@ -1,0 +1,36 @@
+{
+  "pesan": [
+    { "jenis": "cabang", "bawaan": false, "dipakai": 0, "pesan": null },
+    {
+      "jenis": "jenis_pengajuan",
+      "bawaan": true,
+      "dipakai": 3,
+      "pesan": "Data bawaan tidak bisa dihapus; nonaktifkan saja."
+    },
+    {
+      "jenis": "cabang",
+      "bawaan": false,
+      "dipakai": 2,
+      "pesan": "Cabang masih dipakai 2 karyawan (termasuk yang nonaktif) atau lowongan. Nonaktifkan saja."
+    },
+    {
+      "jenis": "divisi",
+      "bawaan": false,
+      "dipakai": 1,
+      "pesan": "Divisi masih dipakai 1 karyawan (termasuk yang nonaktif), lowongan, atau rencana pelatihan. Nonaktifkan saja."
+    },
+    {
+      "jenis": "jabatan",
+      "bawaan": false,
+      "dipakai": 4,
+      "pesan": "Jabatan masih dipakai 4 karyawan (termasuk yang nonaktif), template atau penilaian kinerja, atau lowongan. Nonaktifkan saja."
+    },
+    {
+      "jenis": "jenis_pengajuan",
+      "bawaan": false,
+      "dipakai": 5,
+      "pesan": "Jenis pengajuan masih dipakai 5 pengajuan, termasuk riwayat. Nonaktifkan saja."
+    },
+    { "jenis": "jabatan", "bawaan": false, "dipakai": -1, "pesan": null }
+  ]
+}

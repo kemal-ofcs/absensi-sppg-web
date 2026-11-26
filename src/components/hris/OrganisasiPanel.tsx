@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import {
   ambilJenisDokumen,
+  hapusMasterOrganisasi,
   type JenisDokumen,
   type Organisasi,
   simpanCabang,
@@ -37,7 +38,7 @@ const ANGKA_PENGINGAT = BATAS_PENGATURAN.filter(([kunci]) =>
 const KELAS =
   "min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500";
 const TOMBOL =
-  "min-h-10 rounded-xl bg-sky-500 px-4 text-sm font-bold text-white disabled:opacity-50";
+  "min-h-10 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent disabled:opacity-50";
 const TOMBOL_KEDUA =
   "min-h-9 rounded-xl border border-slate-700 px-3 text-xs font-bold text-slate-200";
 
@@ -58,6 +59,7 @@ function DaftarMaster({
   simpan,
   onBerubah,
   peringatanGantiNama,
+  hapus,
 }: {
   judul: string;
   idKunci: string;
@@ -65,6 +67,8 @@ function DaftarMaster({
   simpan: Simpan;
   onBerubah: () => void;
   peringatanGantiNama?: string;
+  /** Hapus permanen; hanya berhasil bila belum pernah dipakai. */
+  hapus?: (id: string) => Promise<unknown>;
 }) {
   const [baru, setBaru] = useState("");
   const [ubah, setUbah] = useState<Record<string, string>>({});
@@ -86,6 +90,30 @@ function DaftarMaster({
       onBerubah();
     } catch (error) {
       setPesan(error instanceof Error ? error.message : "Gagal menyimpan.");
+    } finally {
+      setSibuk(false);
+    }
+  };
+
+  const hapusBaris = async (b: Baris) => {
+    if (!hapus) return;
+    const lanjut = await konfirmasiData([
+      { label: judul, nilai: b.nama },
+      {
+        label: "Sesudah ini",
+        nilai:
+          "Dihapus permanen. Hanya bisa bila belum pernah dipakai, termasuk oleh karyawan nonaktif dan riwayat.",
+        peringatan: true,
+      },
+    ]);
+    if (!lanjut) return;
+    setSibuk(true);
+    try {
+      await hapus(b.id);
+      setPesan(`"${b.nama}" dihapus.`);
+      onBerubah();
+    } catch (error) {
+      setPesan(error instanceof Error ? error.message : "Gagal menghapus.");
     } finally {
       setSibuk(false);
     }
@@ -162,6 +190,16 @@ function DaftarMaster({
               >
                 {b.aktif ? "Nonaktifkan" : "Aktifkan"}
               </button>
+              {hapus ? (
+                <button
+                  type="button"
+                  disabled={sibuk}
+                  onClick={() => void hapusBaris(b)}
+                  className={TOMBOL_KEDUA}
+                >
+                  Hapus
+                </button>
+              ) : null}
               <span className="w-full text-xs text-slate-400">
                 {b.aktif ? "" : "Nonaktif • "}
                 {b.keterangan}
@@ -289,6 +327,7 @@ export function OrganisasiPanel({
         }))}
         simpan={simpanDivisi}
         onBerubah={onBerubah}
+        hapus={(id) => hapusMasterOrganisasi("divisi", id)}
         peringatanGantiNama="Nama lama dicadangkan dan tidak bisa dipakai divisi lain. Riwayat tampil dengan nama baru."
       />
       <DaftarMaster
@@ -303,6 +342,7 @@ export function OrganisasiPanel({
         }))}
         simpan={simpanJabatan}
         onBerubah={onBerubah}
+        hapus={(id) => hapusMasterOrganisasi("jabatan", id)}
       />
       <DaftarMaster
         judul="Cabang"
@@ -316,6 +356,7 @@ export function OrganisasiPanel({
         }))}
         simpan={simpanCabang}
         onBerubah={onBerubah}
+        hapus={(id) => hapusMasterOrganisasi("cabang", id)}
       />
       {galatJenis ? (
         <p className="rounded-2xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">

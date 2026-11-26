@@ -556,7 +556,11 @@ async function periodeFilter(
       "Jenis periode harus Bulanan, Kuartal, Semester, atau Tahunan.",
     );
   }
-  const rentang = periodeRentang(jenis, mulai);
+  const rentang = periodeRentang(
+    jenis,
+    mulai,
+    isi(filter.periode_selesai) ?? "",
+  );
   if (!rentang.ok) throw new Error(rentang.pesan);
   return [jenis, rentang.nilai[0], rentang.nilai[1]];
 }

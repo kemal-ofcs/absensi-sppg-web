@@ -8,7 +8,7 @@ import { initDatabaseSchema } from "@/lib/db-schema";
 mock.module("server-only", () => ({}));
 
 const { postJournal } = await import("@/lib/services/accounting");
-const { close, decide, reopen, review, revise, status } = await import(
+const { close, decide, notify, reopen, review, revise, status } = await import(
   "@/lib/services/tutup-buku"
 );
 
@@ -158,5 +158,40 @@ describe("tutup buku Web: Tahap 2", () => {
     const digantikan = riwayat.find((t) => t.id_tutup === berlaku.id_tutup);
     expect(digantikan?.status).toBe("Digantikan");
     expect(digantikan?.diputuskan_oleh).toBe("kepala");
+  });
+});
+
+describe("tutup buku Web: saldo berubah ke Telegram", () => {
+  test("hanya bila Telegram siap, sekali per tutup buku", async () => {
+    // Saldo yang dibekukan sengaja tidak sama dengan saldo sekarang.
+    await client.execute(
+      "INSERT INTO keu_tutup_buku (id_tutup, sampai_tanggal, dibuat_oleh, kode_perangkat, waktu_perangkat, diterima_cloud, saldo_json, status, created_at, updated_at) VALUES ('tb-uji-tg', '2019-06-30', 'bendahara', 'A9F3', '2019-07-01 07:00:00', '2019-07-02 08:00:00', '[[\"akun-kas\",1,0]]', 'Aktif', datetime('now'), datetime('now'));",
+    );
+    expect((await notify(client)).alasan).toBe(
+      "Notifikasi Telegram tutup buku belum dinyalakan atau grup Keuangan belum diatur.",
+    );
+    await client.execute(
+      "INSERT INTO app_telegram_setting (kunci, nilai, updated_at) VALUES ('aktif', '1', datetime('now')), ('bot_token', '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0', datetime('now')), ('kirim:tutup_buku', '1', datetime('now'));",
+    );
+    // Grup Keuangan belum diatur: belum siap.
+    expect((await notify(client)).alasan).not.toBeNull();
+    await client.execute(
+      "INSERT INTO app_telegram_setting (kunci, nilai, updated_at) VALUES ('grup:keuangan', '-1001234567890', datetime('now'));",
+    );
+    const baris = async () =>
+      (
+        await client.execute(
+          "SELECT kejadian, isi_pesan FROM notifikasi_telegram WHERE id_notifikasi = 'tutup-berubah:tb-uji-tg';",
+        )
+      ).rows.map((row) => [String(row.kejadian), String(row.isi_pesan)]);
+    expect((await notify(client)).diantre).toBeGreaterThan(0);
+    expect(await baris()).toEqual([
+      [
+        "tutup_buku",
+        "⚠️ Saldo berubah sesudah tutup buku sampai 30/06/2019\nDitutup oleh: bendahara\nAda transaksi baru di periode yang sudah ditutup. Tinjau di Keuangan, tab Tutup Buku.",
+      ],
+    ]);
+    expect(await notify(client)).toEqual({ diantre: 0, alasan: null });
+    expect(await baris()).toHaveLength(1);
   });
 });

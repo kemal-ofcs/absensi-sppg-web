@@ -50,7 +50,7 @@ export function DatabaseNotConfiguredNotice({
         type="button"
         onClick={onRetry}
         disabled={checking}
-        className="bootstrap-btn-submit min-h-11 w-full rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        className="bootstrap-btn-submit min-h-11 w-full rounded-2xl bg-sky-700 px-4 text-sm font-black text-on-accent disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
       >
         {checking ? "Memeriksa..." : "Periksa lagi"}
       </button>

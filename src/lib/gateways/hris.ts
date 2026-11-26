@@ -138,6 +138,19 @@ export async function simpanDivisi(
   return ubah("divisi", { draft });
 }
 
+/** Hapus master yang tidak pernah dipakai; galat berisi alasan bila ditolak. */
+export async function hapusMasterOrganisasi(
+  jenis: "cabang" | "divisi" | "jabatan" | "jenis_pengajuan",
+  id: string,
+): Promise<Hasil> {
+  if (isDesktopRuntime()) {
+    return laluSinkron(
+      invokeDesktop("desktop_hr_master_delete", { jenis, id }),
+    );
+  }
+  return ubah("hapus-master", { id, draft: { jenis } });
+}
+
 export async function simpanJabatan(
   draft: Isian,
 ): Promise<Hasil<{ id_jabatan: string }>> {

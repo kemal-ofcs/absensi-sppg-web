@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+/* Skala sky = navy identitas; status yang dulu sky kini cyan atau emerald.
+   400 = 6:1 di #0f172a, 700 = navy `.login-hero` (putih 11,6:1). */
+@theme {
+  --color-sky-50: #eef2fc;
+  --color-sky-100: #dce4f9;
+  --color-sky-200: #bccbf3;
+  --color-sky-300: #93a9ea;
+  --color-sky-400: #7b93e3;
+  --color-sky-500: #4a68d4;
+  --color-sky-600: #2f4fbf;
+  --color-sky-700: #10308a;
+  --color-sky-800: #0c2470;
+  --color-sky-900: #0a1a4f;
+  --color-sky-950: #061033;
+}
+
 :root {
   color-scheme: dark;
   --app-background: #07111f;
@@ -7,16 +23,22 @@
   --app-surface: rgba(15, 23, 42, 0.86);
   --app-surface-raised: rgba(30, 41, 59, 0.72);
   --app-border: rgba(255, 255, 255, 0.1);
-  --app-primary: #38bdf8;
-  --app-primary-strong: #0284c7;
+  --app-primary: #7b93e3;
+  --app-primary-strong: #2f4fbf;
+  /* Navy + emas, sama dengan .login-hero. --app-gold-line untuk garis (>= 3:1),
+     --app-gold-text untuk teks (>= 4,5:1); emas bukan warna status. */
+  --app-navy: #0a1a4f;
+  --app-navy-strong: #10308a;
   --app-gold: #f6c453;
+  --app-gold-line: #86682a;
+  --app-gold-text: #f6c453;
   --app-text: #f8fafc;
   --app-text-muted: #94a3b8;
   --app-header-bg: rgba(2, 6, 23, 0.92);
   --app-table-header-bg: #020617;
   --app-card-bg: #0f172a;
   --app-input-bg: #020617;
-  --app-input-border: rgba(255, 255, 255, 0.12);
+  --app-input-border: #56658a;
   --app-input-text: #ffffff;
   font-family:
     var(--font-sans, "Plus Jakarta Sans"), -apple-system, BlinkMacSystemFont,
@@ -31,16 +53,20 @@ html.light {
   --app-surface: #ffffff;
   --app-surface-raised: #ffffff;
   --app-border: #e2e8f0;
-  --app-primary: #0284c7;
-  --app-primary-strong: #0369a1;
+  --app-primary: #2f4fbf;
+  --app-primary-strong: #10308a;
+  /* #d97706 hanya 3,2:1 terhadap putih: cukup untuk garis, tidak untuk teks. */
   --app-gold: #d97706;
+  --app-gold-line: #d97706;
+  --app-gold-text: #92400e;
   --app-text: #0f172a;
   --app-text-muted: #475569;
   --app-header-bg: rgba(255, 255, 255, 0.96);
   --app-table-header-bg: #f8fafc;
   --app-card-bg: #ffffff;
   --app-input-bg: #ffffff;
-  --app-input-border: #cbd5e1;
+  /* Garis kontrol form wajib >= 3:1 terhadap putih (WCAG 1.4.11); #cbd5e1 hanya 1,5:1. */
+  --app-input-border: #8391b5;
   --app-input-text: #0f172a;
 }
 
@@ -64,7 +90,7 @@ body {
   background:
     radial-gradient(
       circle at 12% -10%,
-      rgb(56 189 248 / 14%),
+      rgb(123 147 227 / 14%),
       transparent 32rem
     ),
     radial-gradient(circle at 92% 4%, rgb(246 196 83 / 9%), transparent 28rem),
@@ -79,7 +105,7 @@ html.light body {
   background:
     radial-gradient(
       circle at 12% -10%,
-      rgb(14 165 233 / 10%),
+      rgb(74 104 212 / 10%),
       transparent 32rem
     ),
     radial-gradient(circle at 92% 4%, rgb(245 158 11 / 7%), transparent 28rem),
@@ -100,7 +126,7 @@ a {
 }
 
 ::selection {
-  background: rgb(56 189 248 / 32%);
+  background: rgb(123 147 227 / 32%);
   color: white;
 }
 
@@ -139,8 +165,8 @@ html.light .app-panel {
 }
 
 .app-input:focus {
-  border-color: #38bdf8;
-  box-shadow: 0 0 0 3px rgb(56 189 248 / 20%);
+  border-color: #7b93e3;
+  box-shadow: 0 0 0 3px rgb(123 147 227 / 20%);
 }
 
 .app-input:disabled {
@@ -160,18 +186,77 @@ html.light header.sticky {
   box-shadow: 0 4px 20px rgb(15 23 42 / 4%) !important;
 }
 
-/* Page Header Seamless Typography in Light Mode */
-html[data-theme="light"] .page-header-title,
-html.light .page-header-title {
-  color: #0f172a !important;
+/* PageHeader dan Akses Cepat: kelas semantik, karena utilitas slate/white
+   ditimpa blok tema terang. */
+.page-header {
+  border-bottom: 1px solid var(--app-gold-line);
 }
-html[data-theme="light"] .page-header-eyebrow,
-html.light .page-header-eyebrow {
-  color: #b45309 !important;
+.page-header-dot {
+  background-color: var(--app-gold);
 }
-html[data-theme="light"] .page-header-description,
-html.light .page-header-description {
-  color: #475569 !important;
+.page-header-eyebrow {
+  color: var(--app-gold-text);
+}
+.page-header-title {
+  color: var(--app-text);
+}
+.page-header-description {
+  color: var(--app-text-muted);
+}
+
+.aksi-cepat {
+  border: 1px solid var(--app-gold-line);
+  background-color: rgb(15 23 42 / 80%);
+  color: var(--app-text);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+.aksi-cepat:hover {
+  border-color: var(--app-gold);
+  box-shadow: inset 0 0 0 1px var(--app-gold);
+}
+.aksi-cepat:focus-visible {
+  outline: 2px solid var(--app-gold);
+  outline-offset: 2px;
+}
+.aksi-cepat-ikon {
+  border: 1px solid rgb(246 196 83 / 35%);
+  background: linear-gradient(
+    140deg,
+    var(--app-navy) 0%,
+    var(--app-navy-strong) 100%
+  );
+  color: #f6c453;
+}
+.aksi-cepat-sub {
+  color: var(--app-text-muted);
+}
+html[data-theme="light"] .aksi-cepat,
+html.light .aksi-cepat {
+  background-color: #ffffff;
+}
+/* Tema terang: kotak ikon navy pucat (ikon 8,25:1), navy pekat + emas saat disorot. */
+html[data-theme="light"] .aksi-cepat-ikon,
+html.light .aksi-cepat-ikon {
+  border-color: #c9d4f2;
+  background: linear-gradient(140deg, #eef2fd 0%, #dfe6fa 100%);
+  color: #1d3a9e;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    transform 200ms ease;
+}
+html[data-theme="light"] .aksi-cepat:hover .aksi-cepat-ikon,
+html.light .aksi-cepat:hover .aksi-cepat-ikon {
+  border-color: rgb(246 196 83 / 35%);
+  background: linear-gradient(
+    140deg,
+    var(--app-navy) 0%,
+    var(--app-navy-strong) 100%
+  );
+  color: #f6c453;
 }
 
 /* Inactive navigation links in light mode */
@@ -196,8 +281,8 @@ html[data-theme="light"] #app-sidebar nav a[aria-current="page"],
 html[data-theme="light"] #mobile-all-menu a[aria-current="page"],
 html.light #app-sidebar nav a[aria-current="page"],
 html.light #mobile-all-menu a[aria-current="page"] {
-  background-color: #e0f2fe !important;
-  color: #075985 !important;
+  background-color: #dce4f9 !important;
+  color: #0c2470 !important;
 }
 html[data-theme="light"] #app-sidebar nav > div + div,
 html.light #app-sidebar nav > div + div {
@@ -228,7 +313,7 @@ html.light section.bg-gradient-to-br.from-slate-900 {
   background: linear-gradient(
     135deg,
     #ffffff 0%,
-    #f0f9ff 55%,
+    #eef2fc 55%,
     #fffbeb 100%
   ) !important;
   border: 1px solid #e2e8f0 !important;
@@ -240,27 +325,11 @@ html.light section.bg-gradient-to-br.from-slate-900 h1 {
 }
 html[data-theme="light"] section.bg-gradient-to-br.from-slate-900 h1 span,
 html.light section.bg-gradient-to-br.from-slate-900 h1 span {
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 html[data-theme="light"] section.bg-gradient-to-br.from-slate-900 p,
 html.light section.bg-gradient-to-br.from-slate-900 p {
   color: #475569 !important;
-}
-
-/* "Buka QR Scanner" Hero CTA Button */
-html[data-theme="light"] a[href="/scanner"].bg-sky-400,
-html.light a[href="/scanner"].bg-sky-400 {
-  background-color: #0284c7 !important;
-  color: #ffffff !important;
-  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3) !important;
-}
-html[data-theme="light"] a[href="/scanner"].bg-sky-400:hover,
-html.light a[href="/scanner"].bg-sky-400:hover {
-  background-color: #0369a1 !important;
-}
-html[data-theme="light"] a[href="/scanner"].bg-sky-400 *,
-html.light a[href="/scanner"].bg-sky-400 * {
-  color: #ffffff !important;
 }
 
 /* 3. Containers & Panels */
@@ -333,22 +402,22 @@ html.light div.bg-slate-950.p-1\.5.rounded-2xl {
 
 /* Active Segmented Tab with Gradient or Sky-500 */
 html[data-theme="light"] button.bg-gradient-to-r.from-sky-600,
-html[data-theme="light"] div.bg-slate-950 button.bg-sky-500,
-html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-500,
+html[data-theme="light"] div.bg-slate-950 button.bg-sky-700,
+html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-700,
 html.light button.bg-gradient-to-r.from-sky-600,
-html.light div.bg-slate-950 button.bg-sky-500,
-html.light div.bg-slate-900\/60 button.bg-sky-500 {
-  background: linear-gradient(to right, #0284c7, #0ea5e9) !important;
+html.light div.bg-slate-950 button.bg-sky-700,
+html.light div.bg-slate-900\/60 button.bg-sky-700 {
+  background: linear-gradient(to right, #2f4fbf, #4a68d4) !important;
   color: #ffffff !important;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25) !important;
+  box-shadow: 0 2px 8px rgba(47, 79, 191, 0.25) !important;
   font-weight: 700 !important;
 }
 html[data-theme="light"] button.bg-gradient-to-r.from-sky-600 *,
-html[data-theme="light"] div.bg-slate-950 button.bg-sky-500 *,
-html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-500 *,
+html[data-theme="light"] div.bg-slate-950 button.bg-sky-700 *,
+html[data-theme="light"] div.bg-slate-900\/60 button.bg-sky-700 *,
 html.light button.bg-gradient-to-r.from-sky-600 *,
-html.light div.bg-slate-950 button.bg-sky-500 *,
-html.light div.bg-slate-900\/60 button.bg-sky-500 * {
+html.light div.bg-slate-950 button.bg-sky-700 *,
+html.light div.bg-slate-900\/60 button.bg-sky-700 * {
   color: #ffffff !important;
 }
 
@@ -485,16 +554,16 @@ html[data-theme="light"] button.bg-slate-800 svg,
 html[data-theme="light"] label.bg-slate-800 svg,
 html.light button.bg-slate-800 svg,
 html.light label.bg-slate-800 svg {
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 
 /* Neutral status badges & Nonaktif indicators */
 html[data-theme="light"] span.bg-slate-800,
-html[data-theme="light"] div.bg-slate-800:not(button),
+html[data-theme="light"] div.bg-slate-800:not(button):not(.peer),
 html.light span.bg-slate-800,
-html.light div.bg-slate-800:not(button) {
+html.light div.bg-slate-800:not(button):not(.peer) {
   background-color: #f1f5f9 !important;
-  color: #64748b !important;
+  color: #5b677c !important;
   border-color: #cbd5e1 !important;
 }
 
@@ -518,22 +587,6 @@ html[data-theme="light"] button.bg-gradient-to-r.from-emerald-600 *,
 html[data-theme="light"] button.bg-emerald-950\/80 *,
 html.light button.bg-gradient-to-r.from-emerald-600 *,
 html.light button.bg-emerald-950\/80 * {
-  color: #ffffff !important;
-}
-
-/* "Mulai pindai QR" Button */
-html[data-theme="light"] button.bg-sky-400,
-html.light button.bg-sky-400 {
-  background-color: #0284c7 !important;
-  color: #ffffff !important;
-  box-shadow: 0 2px 10px rgba(2, 132, 199, 0.25) !important;
-}
-html[data-theme="light"] button.bg-sky-400:hover,
-html.light button.bg-sky-400:hover {
-  background-color: #0369a1 !important;
-}
-html[data-theme="light"] button.bg-sky-400 *,
-html.light button.bg-sky-400 * {
   color: #ffffff !important;
 }
 
@@ -661,16 +714,16 @@ html.light .bg-sky-500\/10,
 html.light .bg-sky-400\/25,
 html.light .bg-sky-400\/10,
 html.light .bg-sky-400\/5 {
-  background-color: #e0f2fe !important;
-  border-color: #bae6fd !important;
-  color: #0369a1 !important;
+  background-color: #dce4f9 !important;
+  border-color: #bccbf3 !important;
+  color: #10308a !important;
 }
 html[data-theme="light"] .bg-sky-950:hover,
 html[data-theme="light"] .bg-sky-950\/80:hover,
 html.light .bg-sky-950:hover,
 html.light .bg-sky-950\/80:hover {
-  background-color: #bae6fd !important;
-  color: #0284c7 !important;
+  background-color: #bccbf3 !important;
+  color: #2f4fbf !important;
 }
 html[data-theme="light"] .bg-sky-950 *,
 html[data-theme="light"] .bg-sky-950\/80 *,
@@ -766,17 +819,17 @@ html.light .bg-slate-950\/60.border-white\/10 {
   background-color: #ffffff !important;
   border-color: #cbd5e1 !important;
 }
-html[data-theme="light"] .bg-slate-950\/60 button.bg-sky-500,
-html.light .bg-slate-950\/60 button.bg-sky-500 {
-  background-color: #0284c7 !important;
+html[data-theme="light"] .bg-slate-950\/60 button.bg-sky-700,
+html.light .bg-slate-950\/60 button.bg-sky-700 {
+  background-color: #2f4fbf !important;
   color: #ffffff !important;
 }
-html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-500),
-html.light .bg-slate-950\/60 button:not(.bg-sky-500) {
+html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-700),
+html.light .bg-slate-950\/60 button:not(.bg-sky-700) {
   color: #475569 !important;
 }
-html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-500):hover,
-html.light .bg-slate-950\/60 button:not(.bg-sky-500):hover {
+html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-700):hover,
+html.light .bg-slate-950\/60 button:not(.bg-sky-700):hover {
   color: #0f172a !important;
 }
 
@@ -832,9 +885,10 @@ html[data-theme="light"] .text-slate-400,
 html.light .text-slate-400 {
   color: #475569 !important;
 }
+/* #64748b hanya 4,34:1 di atas permukaan #f1f5f9; #5b677c 5,2:1 (4,6:1 di #e2e8f0). */
 html[data-theme="light"] .text-slate-500,
 html.light .text-slate-500 {
-  color: #64748b !important;
+  color: #5b677c !important;
 }
 html[data-theme="light"] label,
 html.light label {
@@ -888,6 +942,95 @@ html.light .bg-amber-600 * {
   color: #ffffff !important;
 }
 
+/* Teks di atas latar berwarna yang tidak ada di daftar di atas. Putih di kedua
+   tema; `text-white` di sana dipaksa gelap. Dijaga `bun run audit:kontras`. */
+.text-on-accent {
+  color: #ffffff !important;
+}
+
+/* Teks aksen pucat (200-400) di luar blok "Status Text Accents": tanpa ini
+   text-blue-400 hanya 2,4:1 di kartu terang. Semua >= 4,5:1 di #ffffff, #f1f5f9, #e2e8f0. */
+html[data-theme="light"] .text-blue-200,
+html.light .text-blue-200,
+html[data-theme="light"] .text-blue-300,
+html.light .text-blue-300,
+html[data-theme="light"] .text-blue-400,
+html.light .text-blue-400 {
+  color: #1d4ed8 !important;
+}
+html[data-theme="light"] .text-indigo-200,
+html.light .text-indigo-200,
+html[data-theme="light"] .text-indigo-300,
+html.light .text-indigo-300,
+html[data-theme="light"] .text-indigo-400,
+html.light .text-indigo-400 {
+  color: #4338ca !important;
+}
+html[data-theme="light"] .text-violet-200,
+html.light .text-violet-200,
+html[data-theme="light"] .text-violet-300,
+html.light .text-violet-300,
+html[data-theme="light"] .text-violet-400,
+html.light .text-violet-400 {
+  color: #6d28d9 !important;
+}
+html[data-theme="light"] .text-purple-200,
+html.light .text-purple-200,
+html[data-theme="light"] .text-purple-300,
+html.light .text-purple-300,
+html[data-theme="light"] .text-purple-400,
+html.light .text-purple-400 {
+  color: #7e22ce !important;
+}
+html[data-theme="light"] .text-teal-200,
+html.light .text-teal-200,
+html[data-theme="light"] .text-teal-300,
+html.light .text-teal-300,
+html[data-theme="light"] .text-teal-400,
+html.light .text-teal-400 {
+  color: #115e59 !important;
+}
+html[data-theme="light"] .text-cyan-200,
+html.light .text-cyan-200,
+html[data-theme="light"] .text-cyan-300,
+html.light .text-cyan-300,
+html[data-theme="light"] .text-cyan-400,
+html.light .text-cyan-400 {
+  color: #155e75 !important;
+}
+html[data-theme="light"] .text-orange-200,
+html.light .text-orange-200,
+html[data-theme="light"] .text-orange-300,
+html.light .text-orange-300,
+html[data-theme="light"] .text-orange-400,
+html.light .text-orange-400 {
+  color: #9a3412 !important;
+}
+html[data-theme="light"] .text-fuchsia-200,
+html.light .text-fuchsia-200,
+html[data-theme="light"] .text-fuchsia-300,
+html.light .text-fuchsia-300,
+html[data-theme="light"] .text-fuchsia-400,
+html.light .text-fuchsia-400 {
+  color: #a21caf !important;
+}
+html[data-theme="light"] .text-yellow-200,
+html.light .text-yellow-200,
+html[data-theme="light"] .text-yellow-300,
+html.light .text-yellow-300,
+html[data-theme="light"] .text-yellow-400,
+html.light .text-yellow-400 {
+  color: #854d0e !important;
+}
+html[data-theme="light"] .text-red-200,
+html.light .text-red-200,
+html[data-theme="light"] .text-red-300,
+html.light .text-red-300,
+html[data-theme="light"] .text-red-400,
+html.light .text-red-400 {
+  color: #b91c1c !important;
+}
+
 /* Status Text Accents in Light Mode */
 html[data-theme="light"] .text-sky-300,
 html[data-theme="light"] .text-sky-200,
@@ -895,7 +1038,7 @@ html[data-theme="light"] .text-sky-400,
 html.light .text-sky-300,
 html.light .text-sky-200,
 html.light .text-sky-400 {
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 html[data-theme="light"] .text-emerald-300,
 html[data-theme="light"] .text-emerald-200,
@@ -976,25 +1119,47 @@ html.light td.sticky {
   background-color: #f8fafc !important;
 }
 
-/* 12. Form Controls in Light Mode */
+/* 12. Form Controls in Light Mode
+   `:not([hidden])…` hanya menaikkan spesifisitas di atas `.border-slate-700`. */
 html[data-theme="light"]
 input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
-html[data-theme="light"] select,
-html[data-theme="light"] textarea,
+html[data-theme="light"] select:not([hidden]):not([type="hidden"]),
+html[data-theme="light"] textarea:not([hidden]):not([type="hidden"]),
 html.light
   input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent),
-html.light select,
-html.light textarea {
+html.light select:not([hidden]):not([type="hidden"]),
+html.light textarea:not([hidden]):not([type="hidden"]) {
   background-color: #ffffff !important;
   color: #0f172a !important;
-  border: 1px solid #cbd5e1 !important;
+  border: 1px solid var(--app-input-border) !important;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+html[data-theme="light"]
+  input:not([type="checkbox"]):not([type="radio"]):not(
+    .bg-transparent
+  ):hover:not(:focus):not(:disabled),
+html[data-theme="light"]
+  select:not([hidden]):not([type="hidden"]):hover:not(:focus):not(:disabled),
+html[data-theme="light"]
+  textarea:not([hidden]):not([type="hidden"]):hover:not(:focus):not(:disabled),
+html.light
+  input:not([type="checkbox"]):not([type="radio"]):not(
+    .bg-transparent
+  ):hover:not(:focus):not(:disabled),
+html.light
+  select:not([hidden]):not([type="hidden"]):hover:not(:focus):not(:disabled),
+html.light
+  textarea:not([hidden]):not([type="hidden"]):hover:not(:focus):not(:disabled) {
+  border-color: #5b6b94 !important;
 }
 html[data-theme="light"] input.bg-transparent,
 html.light input.bg-transparent {
   background-color: transparent !important;
   border: none !important;
   box-shadow: none !important;
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 html[data-theme="light"] input::placeholder,
 html[data-theme="light"] textarea::placeholder,
@@ -1004,14 +1169,57 @@ html.light textarea::placeholder {
 }
 html[data-theme="light"]
   input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
-html[data-theme="light"] select:focus,
-html[data-theme="light"] textarea:focus,
+html[data-theme="light"] select:not([hidden]):not([type="hidden"]):focus,
+html[data-theme="light"] textarea:not([hidden]):not([type="hidden"]):focus,
 html.light
   input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent):focus,
-html.light select:focus,
-html.light textarea:focus {
-  border-color: #0284c7 !important;
-  box-shadow: 0 0 0 3px rgb(2 132 199 / 15%) !important;
+html.light select:not([hidden]):not([type="hidden"]):focus,
+html.light textarea:not([hidden]):not([type="hidden"]):focus {
+  border-color: #2f4fbf !important;
+  box-shadow: 0 0 0 3px rgb(47 79 191 / 15%) !important;
+}
+
+/* Tema gelap: garis netral input (~1,3:1) dinaikkan ke >= 3:1. Pola awal kelas
+   melewatkan `hover:`/`focus:border-*`; di luar @layer supaya menang atas Tailwind. */
+:is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):is(
+    [class^="border-white/"],
+    [class*=" border-white/"],
+    [class^="border-slate-"],
+    [class*=" border-slate-"]
+  ):not(:focus) {
+  border-color: #56658a;
+}
+:is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):is(
+    [class^="border-white/"],
+    [class*=" border-white/"],
+    [class^="border-slate-"],
+    [class*=" border-slate-"]
+  ):hover:not(:focus):not(:disabled) {
+  border-color: #7584aa;
+}
+
+/* Panah dropdown: panah bawaan browser menempel ke tepi kanan dan posisinya
+   beda per browser. Diganti panah SVG berjarak tetap 0.875rem dari tepi. */
+select:not([multiple]) {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.875rem center;
+  background-size: 1.125rem;
+  padding-right: 2.75rem;
+}
+html[data-theme="light"] select:not([multiple]),
+html.light select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23475569' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E");
+}
+.pilih-cari-tombol {
+  border-color: #56658a;
+}
+
+/* Tombol panah PilihCari bergaris sama dengan kotak isiannya. */
+html[data-theme="light"] .pilih-cari-tombol,
+html.light .pilih-cari-tombol {
+  border-color: var(--app-input-border) !important;
 }
 
 select option {
@@ -1058,8 +1266,8 @@ samp {
    ========================================================================== */
 
 :root {
-  --visual-spotlight: rgb(56 189 248 / 16%);
-  --visual-aurora-primary: rgb(56 189 248 / 26%);
+  --visual-spotlight: rgb(123 147 227 / 16%);
+  --visual-aurora-primary: rgb(123 147 227 / 26%);
   --visual-aurora-accent: rgb(129 140 248 / 20%);
   --visual-aurora-gold: rgb(246 196 83 / 14%);
   --visual-grid-line: rgb(148 163 184 / 7%);
@@ -1069,8 +1277,8 @@ samp {
 
 html[data-theme="light"],
 html.light {
-  --visual-spotlight: rgb(2 132 199 / 12%);
-  --visual-aurora-primary: rgb(2 132 199 / 14%);
+  --visual-spotlight: rgb(47 79 191 / 12%);
+  --visual-aurora-primary: rgb(47 79 191 / 14%);
   --visual-aurora-accent: rgb(99 102 241 / 12%);
   --visual-aurora-gold: rgb(217 119 6 / 10%);
   --visual-grid-line: rgb(15 23 42 / 5%);
@@ -1510,7 +1718,7 @@ html.light
 html.light .app-modal-panel select,
 html.light .app-modal-panel textarea {
   background-color: #ffffff !important;
-  border-color: #cbd5e1 !important;
+  border-color: var(--app-input-border) !important;
   color: #0f172a !important;
 }
 
@@ -1520,9 +1728,9 @@ html[data-theme="light"] .app-modal-panel textarea:focus,
 html.light .app-modal-panel input:focus,
 html.light .app-modal-panel select:focus,
 html.light .app-modal-panel textarea:focus {
-  border-color: #0284c7 !important;
+  border-color: #2f4fbf !important;
   background-color: #ffffff !important;
-  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15) !important;
+  box-shadow: 0 0 0 3px rgba(47, 79, 191, 0.15) !important;
 }
 
 html[data-theme="light"] .app-modal-panel label,
@@ -1562,9 +1770,9 @@ html.light .overtime-tier-row span.text-slate-100 {
 
 html[data-theme="light"] .overtime-multiplier-badge-sky,
 html.light .overtime-multiplier-badge-sky {
-  background-color: #e0f2fe !important;
-  border-color: #bae6fd !important;
-  color: #0284c7 !important;
+  background-color: #dce4f9 !important;
+  border-color: #bccbf3 !important;
+  color: #2f4fbf !important;
 }
 
 html[data-theme="light"] .overtime-multiplier-badge-amber,
@@ -1640,9 +1848,9 @@ html.light .scanner-terminal-clock-date {
 
 html[data-theme="light"] .scanner-terminal-audio.border-sky-500\/40,
 html.light .scanner-terminal-audio.border-sky-500\/40 {
-  background-color: #f0f9ff !important;
-  color: #0284c7 !important;
-  border-color: #bae6fd !important;
+  background-color: #eef2fc !important;
+  color: #2f4fbf !important;
+  border-color: #bccbf3 !important;
 }
 
 html[data-theme="light"] .scanner-terminal-audio.border-slate-700,
@@ -1673,7 +1881,7 @@ html.light .bootstrap-panel-card {
 
 html[data-theme="light"] .bootstrap-panel-eyebrow,
 html.light .bootstrap-panel-eyebrow {
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 
 html[data-theme="light"] .bootstrap-panel-title,
@@ -1709,7 +1917,7 @@ html[data-theme="light"] .bootstrap-server-origin,
 html.light .bootstrap-server-origin {
   background-color: #f8fafc !important;
   border-color: #e2e8f0 !important;
-  color: #0369a1 !important;
+  color: #10308a !important;
 }
 
 html[data-theme="light"] .bootstrap-btn-toggle,
@@ -1742,16 +1950,16 @@ html.light .bootstrap-provider-option.bootstrap-provider-inactive:hover {
 
 html[data-theme="light"] .bootstrap-provider-option.bootstrap-provider-active,
 html.light .bootstrap-provider-option.bootstrap-provider-active {
-  background-color: #f0f9ff !important;
-  border-color: #0284c7 !important;
-  color: #0369a1 !important;
-  box-shadow: 0 0 0 1px #0284c7 !important;
+  background-color: #eef2fc !important;
+  border-color: #2f4fbf !important;
+  color: #10308a !important;
+  box-shadow: 0 0 0 1px #2f4fbf !important;
 }
 html[data-theme="light"]
   .bootstrap-provider-option.bootstrap-provider-active
   span,
 html.light .bootstrap-provider-option.bootstrap-provider-active span {
-  color: #0369a1 !important;
+  color: #10308a !important;
 }
 html[data-theme="light"]
   .bootstrap-provider-option.bootstrap-provider-active
@@ -1759,29 +1967,29 @@ html[data-theme="light"]
 html.light
   .bootstrap-provider-option.bootstrap-provider-active
   span.font-black {
-  color: #0284c7 !important;
+  color: #2f4fbf !important;
 }
 
 /* Info Callout Box (SQLite info) */
 html[data-theme="light"] .bootstrap-info-box,
 html.light .bootstrap-info-box {
-  background-color: #f0f9ff !important;
-  border-color: #bae6fd !important;
-  color: #0369a1 !important;
+  background-color: #ecfeff !important;
+  border-color: #a5f3fc !important;
+  color: #155e75 !important;
 }
 
 /* Check Database Button */
 html[data-theme="light"] .bootstrap-btn-check,
 html.light .bootstrap-btn-check {
-  background-color: #f0f9ff !important;
-  border-color: #38bdf8 !important;
-  color: #0284c7 !important;
+  background-color: #eef2fc !important;
+  border-color: #7b93e3 !important;
+  color: #2f4fbf !important;
 }
 html[data-theme="light"] .bootstrap-btn-check:hover:not(:disabled),
 html.light .bootstrap-btn-check:hover:not(:disabled) {
-  background-color: #e0f2fe !important;
-  border-color: #0284c7 !important;
-  color: #0369a1 !important;
+  background-color: #dce4f9 !important;
+  border-color: #2f4fbf !important;
+  color: #10308a !important;
 }
 
 /* Bingkai pill status (badge vonis wajah, status pendaftaran, StatusBadge).
@@ -1844,8 +2052,8 @@ html.light .bootstrap-form-input {
 }
 html[data-theme="light"] .bootstrap-form-input:focus,
 html.light .bootstrap-form-input:focus {
-  border-color: #0284c7 !important;
-  outline: 2px solid rgba(2, 132, 199, 0.25) !important;
+  border-color: #2f4fbf !important;
+  outline: 2px solid rgba(47, 79, 191, 0.25) !important;
   outline-offset: 1px !important;
 }
 html[data-theme="light"] .bootstrap-input-readonly,
@@ -1858,12 +2066,12 @@ html.light .bootstrap-input-readonly {
 /* Submit & Cancel Buttons */
 html[data-theme="light"] .bootstrap-btn-submit,
 html.light .bootstrap-btn-submit {
-  background-color: #0284c7 !important;
+  background-color: #2f4fbf !important;
   color: #ffffff !important;
 }
 html[data-theme="light"] .bootstrap-btn-submit:hover:not(:disabled),
 html.light .bootstrap-btn-submit:hover:not(:disabled) {
-  background-color: #0369a1 !important;
+  background-color: #10308a !important;
 }
 html[data-theme="light"] .bootstrap-btn-cancel,
 html.light .bootstrap-btn-cancel {
@@ -1958,4 +2166,356 @@ html.light .approval-code-pill {
   border: 1px solid #6ee7b7 !important;
   background-color: #ecfdf5 !important;
   color: #064e3b !important;
+}
+
+/* Login: hero navy di kedua tema, hanya panel form ikut tema. Kelas semantik
+   karena utilitas slate/white dibalik blok tema terang. */
+.login-shell {
+  background:
+    radial-gradient(circle at 15% 10%, rgb(37 99 235 / 18%), transparent 32rem),
+    radial-gradient(circle at 85% 90%, rgb(246 196 83 / 8%), transparent 28rem),
+    #060b1c;
+}
+.login-frame {
+  border: 1px solid rgb(246 196 83 / 18%);
+  box-shadow: 0 40px 90px -40px rgb(0 0 0 / 80%);
+}
+.login-hero {
+  position: relative;
+  isolation: isolate;
+  color: #ffffff;
+  background: linear-gradient(140deg, #0a1a4f 0%, #10308a 48%, #0a1640 100%);
+}
+.login-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(246 196 83 / 9%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(246 196 83 / 9%) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(
+    160deg,
+    transparent 10%,
+    #000 55%,
+    transparent 95%
+  );
+}
+.login-hero::after {
+  content: "";
+  position: absolute;
+  inset: auto auto -30% -20%;
+  z-index: -1;
+  width: 70%;
+  aspect-ratio: 1;
+  pointer-events: none;
+  background: radial-gradient(circle, rgb(246 196 83 / 22%), transparent 65%);
+}
+.login-hero .login-hero-title,
+.login-hero .login-hero-name {
+  color: #ffffff;
+}
+.login-hero .login-hero-sub {
+  color: #f6c453;
+}
+.login-panel {
+  background: #0b1430;
+  color: #e2e8f0;
+}
+.login-panel .login-heading {
+  color: #ffffff;
+}
+.login-panel .login-label {
+  color: #cbd5e1;
+}
+.login-muted {
+  color: #94a3b8;
+}
+.login-field {
+  border: 1px solid #253463;
+  background: #060c20;
+  color: #f1f5f9;
+  transition:
+    border-color 150ms,
+    box-shadow 150ms;
+}
+.login-field:focus-within {
+  border-color: #f6c453;
+  box-shadow: 0 0 0 3px rgb(246 196 83 / 20%);
+}
+.login-field input {
+  color: #f1f5f9 !important;
+}
+.login-field input::placeholder {
+  color: #8391ab !important;
+}
+.login-field-icon {
+  color: #f6c453;
+}
+.login-field-btn {
+  color: #94a3b8;
+}
+.login-field-btn:hover {
+  color: #f1f5f9;
+}
+.login-link {
+  color: #f6c453;
+}
+.login-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.login-check {
+  accent-color: #f6c453;
+}
+.login-chip {
+  border: 1px solid rgb(246 196 83 / 35%);
+  background: rgb(246 196 83 / 8%);
+  color: #e2e8f0;
+}
+.login-btn {
+  border: 1px solid rgb(246 196 83 / 45%);
+  background: linear-gradient(180deg, #2152d9, #1a3a94);
+  color: #ffffff;
+  box-shadow: 0 12px 30px -12px rgb(29 78 216 / 70%);
+}
+.login-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #2a5ff0, #1e44a8);
+}
+.login-btn:focus-visible,
+.login-link:focus-visible,
+.login-field-btn:focus-visible {
+  outline: 2px solid #f6c453;
+  outline-offset: 2px;
+}
+
+html[data-theme="light"] .login-shell {
+  background:
+    radial-gradient(circle at 15% 10%, rgb(37 99 235 / 10%), transparent 32rem),
+    #e9eef7;
+}
+html[data-theme="light"] .login-frame {
+  border-color: rgb(15 23 42 / 8%);
+  box-shadow: 0 40px 90px -45px rgb(15 23 42 / 45%);
+}
+html[data-theme="light"] .login-panel {
+  background: #ffffff;
+  color: #0f172a;
+}
+html[data-theme="light"] .login-panel .login-heading {
+  color: #0b1640;
+}
+html[data-theme="light"] .login-panel .login-label {
+  color: #1e293b !important;
+}
+html[data-theme="light"] .login-muted {
+  color: #475569;
+}
+html[data-theme="light"] .login-field {
+  border-color: #c3cde0;
+  background: #f3f6fc;
+}
+html[data-theme="light"] .login-field:focus-within {
+  border-color: #b45309;
+  box-shadow: 0 0 0 3px rgb(180 83 9 / 16%);
+}
+html[data-theme="light"] .login-field input {
+  color: #0f172a !important;
+}
+html[data-theme="light"] .login-field input::placeholder {
+  color: #64748b !important;
+}
+html[data-theme="light"] .login-field-icon {
+  color: #1e3a8a;
+}
+html[data-theme="light"] .login-field-btn {
+  color: #475569;
+}
+html[data-theme="light"] .login-field-btn:hover {
+  color: #0f172a;
+}
+html[data-theme="light"] .login-link {
+  color: #92400e;
+}
+html[data-theme="light"] .login-check {
+  accent-color: #1e3a8a;
+}
+html[data-theme="light"] .login-panel .login-chip {
+  border-color: #e3cf9f;
+  background: #fdf8ec;
+  color: #1e293b;
+}
+html[data-theme="light"]
+  .login-panel
+  :is(.login-btn, .login-link, .login-field-btn):focus-visible {
+  outline-color: #1e3a8a;
+}
+
+/* Sakelar (components/ui/Sakelar.tsx): warna status, sama di kedua tema.
+   Lintasan >= 3:1 di #0f172a dan #ffffff: aktif #059669, nonaktif #64748b. */
+.sakelar-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+.sakelar {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 2.75rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 9999px;
+  background-color: #64748b;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+/* Area sentuh 44px tanpa memperbesar tampilan. */
+.sakelar::before {
+  content: "";
+  position: absolute;
+  inset: -0.625rem -0.25rem;
+}
+.sakelar[aria-checked="true"] {
+  background-color: #059669;
+}
+.sakelar:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.sakelar:focus-visible {
+  outline: 2px solid #f6c453;
+  outline-offset: 2px;
+}
+.sakelar-kenop {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1px solid rgb(15 23 42 / 12%);
+  border-radius: 9999px;
+  background-color: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 40%);
+  transition: transform 150ms ease;
+}
+.sakelar[aria-checked="true"] .sakelar-kenop {
+  transform: translateX(1.25rem);
+}
+.sakelar-status {
+  min-width: 3.75rem;
+  text-align: right;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+.sakelar-wrap[data-aktif="true"] .sakelar-status {
+  color: #34d399;
+}
+html[data-theme="light"] .sakelar:focus-visible,
+html.light .sakelar:focus-visible {
+  outline-color: #10308a;
+}
+html[data-theme="light"] .sakelar-status,
+html.light .sakelar-status {
+  color: #475569;
+}
+html[data-theme="light"] .sakelar-wrap[data-aktif="true"] .sakelar-status,
+html.light .sakelar-wrap[data-aktif="true"] .sakelar-status {
+  color: #047857;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sakelar,
+  .sakelar-kenop {
+    transition: none;
+  }
+}
+
+/* TabBar (components/ui/TabBar.tsx, disalin ke Mobile): tab aktif navy bergaris emas. */
+.tab-bar {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.875rem;
+  background-color: var(--app-surface);
+  scrollbar-width: thin;
+}
+.tab-bar-tab {
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 0.625rem;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease;
+}
+/* Tab tidak aktif tetap tampak sebagai tombol: garis lembut, bukan teks lepas. */
+.tab-bar-tab:not([aria-selected="true"]) {
+  border-color: rgb(148 163 184 / 22%);
+  background-color: rgb(255 255 255 / 3%);
+}
+.tab-bar-tab:hover {
+  border-color: rgb(148 163 184 / 40%);
+  background-color: rgb(255 255 255 / 6%);
+  color: var(--app-text);
+}
+html[data-theme="light"] .tab-bar-tab:not([aria-selected="true"]),
+html.light .tab-bar-tab:not([aria-selected="true"]) {
+  border-color: #c9d1e6;
+  background-color: #ffffff;
+}
+.tab-bar-tab[aria-selected="true"] {
+  border-color: rgb(246 196 83 / 40%);
+  background: linear-gradient(
+    140deg,
+    var(--app-navy) 0%,
+    var(--app-navy-strong) 100%
+  );
+  box-shadow: inset 0 -2px 0 #f6c453;
+  color: #ffffff;
+}
+/* Offset negatif: wadah overflow-x memotong cincin yang jatuh di luar tombol. */
+.tab-bar-tab:focus-visible {
+  outline: 2px solid var(--app-gold);
+  outline-offset: -2px;
+}
+html[data-theme="light"] .tab-bar-tab:not([aria-selected="true"]):hover,
+html.light .tab-bar-tab:not([aria-selected="true"]):hover {
+  border-color: #8391b5;
+  background-color: #f5f7fc;
+}
+@media (min-width: 1024px) {
+  .tab-bar[data-vertikal-lg] {
+    position: sticky;
+    top: 5rem;
+    flex-direction: column;
+  }
+  .tab-bar[data-vertikal-lg] .tab-bar-tab {
+    justify-content: flex-start;
+  }
+}
+
+.memuat-halaman {
+  background-color: var(--app-background);
+  color: var(--app-text-muted);
+}
+.memuat-halaman-putar {
+  border: 4px solid var(--app-gold-line);
+  border-top-color: transparent;
 }

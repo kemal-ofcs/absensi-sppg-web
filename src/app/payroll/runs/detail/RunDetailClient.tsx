@@ -12,6 +12,7 @@ import { SlipGajiPrintView } from "@/components/payroll/SlipGajiPrintView";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { MemuatHalaman } from "@/components/ui/MemuatHalaman";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
@@ -136,11 +137,7 @@ export default function RunDetailClient() {
   };
 
   if (!isHydrated || authLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Memuat otorisasi...
-      </div>
-    );
+    return <MemuatHalaman />;
   }
 
   const run = detail?.run;
@@ -208,7 +205,7 @@ export default function RunDetailClient() {
                 <button
                   type="button"
                   onClick={() => handleOpenTransition("REVIEWED")}
-                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center gap-2 shadow"
+                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-on-accent transition flex items-center gap-2 shadow"
                 >
                   <Icon name="check" className="w-4 h-4" />
                   Tandai Sudah Direview
@@ -218,7 +215,7 @@ export default function RunDetailClient() {
                 <button
                   type="button"
                   onClick={() => handleOpenTransition("APPROVED")}
-                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-teal-600 hover:bg-teal-500 text-white transition flex items-center gap-2 shadow"
+                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-teal-600 hover:bg-teal-500 text-on-accent transition flex items-center gap-2 shadow"
                 >
                   <Icon name="check" className="w-4 h-4" />
                   Setujui (Approve)
@@ -473,7 +470,7 @@ export default function RunDetailClient() {
               <p>
                 Apakah Anda yakin ingin memindahkan status batch{" "}
                 <strong>{runId}</strong> ke status{" "}
-                <strong className="text-sky-400">{targetStatus}</strong>?
+                <strong className="text-cyan-400">{targetStatus}</strong>?
               </p>
               {targetStatus === "PAID" ? (
                 <div className="space-y-2">

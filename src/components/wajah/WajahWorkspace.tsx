@@ -39,7 +39,7 @@ const INPUT =
   "w-full min-h-11 text-sm rounded-lg px-3 py-2 bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500";
 const LABEL = "block text-xs font-medium text-slate-300 mb-1";
 const TOMBOL_UTAMA =
-  "min-h-11 px-4 py-2 text-sm font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300";
+  "min-h-11 px-4 py-2 text-sm font-semibold rounded-lg bg-sky-700 hover:bg-sky-600 text-on-accent transition-colors disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300";
 const TOMBOL_KEDUA =
   "min-h-11 px-3 py-2 text-sm font-medium rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500";
 const TOMBOL_BAHAYA =

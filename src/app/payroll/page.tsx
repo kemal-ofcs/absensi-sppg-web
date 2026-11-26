@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
@@ -8,8 +7,10 @@ import { VirtualPayrollTable } from "@/components/payroll/VirtualPayrollTable";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { MemuatHalaman } from "@/components/ui/MemuatHalaman";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { QuickActionGrid } from "@/components/ui/QuickActionGrid";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -180,11 +181,7 @@ export default function PayrollDashboardPage() {
   const canManageConfig = hasPermission(user, "payroll.config.manage");
 
   if (!isHydrated || authLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Memuat otorisasi...
-      </div>
-    );
+    return <MemuatHalaman />;
   }
 
   return (
@@ -195,36 +192,34 @@ export default function PayrollDashboardPage() {
           title="Penggajian & Estimasi Upah"
           description="Rekapitulasi jam kerja, perhitungan upah lembur berjenjang (PP 35/2021), potongan PPh 21 & BPJS."
           actions={
-            <div className="flex flex-wrap gap-2">
-              <Link
-                href="/payroll/runs"
-                className="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 transition flex items-center gap-2 border border-slate-700"
+            canCreateRun ? (
+              <button
+                type="button"
+                onClick={() => setModalRunOpen(true)}
+                disabled={loading || data.length === 0}
+                className="px-4 py-2 text-sm font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition flex items-center gap-2 disabled:opacity-50 shadow-md shadow-sky-600/20"
               >
-                <Icon name="history" className="w-4 h-4" />
-                Daftar Batch Runs
-              </Link>
-              {canManageConfig && (
-                <Link
-                  href="/payroll/config"
-                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 transition flex items-center gap-2 border border-slate-700"
-                >
-                  <Icon name="settings" className="w-4 h-4" />
-                  Konfigurasi Gaji
-                </Link>
-              )}
-              {canCreateRun && (
-                <button
-                  type="button"
-                  onClick={() => setModalRunOpen(true)}
-                  disabled={loading || data.length === 0}
-                  className="px-4 py-2 text-sm font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition flex items-center gap-2 disabled:opacity-50 shadow-md shadow-sky-600/20"
-                >
-                  <Icon name="plus" className="w-4 h-4" />
-                  Buat Batch Payroll
-                </button>
-              )}
-            </div>
+                <Icon name="plus" className="w-4 h-4" />
+                Buat Batch Payroll
+              </button>
+            ) : undefined
           }
+        />
+
+        <QuickActionGrid
+          tiles={[
+            {
+              href: "/payroll/runs",
+              icon: "history",
+              title: "Batch Runs",
+            },
+            {
+              href: "/payroll/config",
+              icon: "settings",
+              title: "Konfigurasi Gaji",
+              visible: canManageConfig,
+            },
+          ]}
         />
 
         {feedback ? (

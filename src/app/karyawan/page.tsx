@@ -668,7 +668,7 @@ export default function KaryawanPage() {
               <button
                 type="button"
                 onClick={openAddModal}
-                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-sky-950/60 transition hover:from-sky-500 hover:to-blue-500 active:scale-95"
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 px-4 py-2 text-xs font-bold text-on-accent shadow-lg shadow-sky-950/60 transition hover:from-sky-500 hover:to-blue-500 active:scale-95"
               >
                 <span>+ Tambah Karyawan</span>
               </button>
@@ -707,7 +707,7 @@ export default function KaryawanPage() {
           />
           <button
             type="submit"
-            className="min-h-10 rounded-xl bg-sky-500 px-4 text-xs font-bold text-slate-950 hover:bg-sky-400"
+            className="min-h-10 rounded-xl bg-sky-700 px-4 text-xs font-bold text-on-accent hover:bg-sky-600"
           >
             Cari
           </button>
@@ -1249,7 +1249,7 @@ export default function KaryawanPage() {
             <button
               type="button"
               onClick={handleSaveQrPng}
-              className="rounded-xl bg-sky-500 hover:bg-sky-400 px-5 py-2.5 text-xs font-bold text-slate-950 shadow-lg shadow-sky-950 transition"
+              className="rounded-xl bg-sky-700 hover:bg-sky-600 px-5 py-2.5 text-xs font-bold text-on-accent shadow-lg shadow-sky-950 transition"
             >
               📥 Simpan QR sebagai PNG
             </button>

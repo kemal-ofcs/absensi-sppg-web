@@ -1,0 +1,127 @@
+{
+  "peta": {
+    "hr_cuti_hak": "14",
+    "hr_cuti_hak:jab:jb-a": "20",
+    "hr_cuti_sisa:jab:jb-a": "diuangkan",
+    "hr_cuti_prorata:jab:jb-a": "1",
+    "hr_cuti_bawa_maks:jab:jb-a": "99",
+    "hr_cuti_lain:jab:jb-c": "5",
+    "hr_cuti_hak:jab:jb-d": "  "
+  },
+  "karyawan": [
+    {
+      "id_jabatan": "",
+      "hasil": {
+        "periode": "ulang_tahun_kerja",
+        "hak": 14,
+        "syarat_bulan": 12,
+        "prorata": false,
+        "sisa": "hangus",
+        "bawa_maks": 6,
+        "bawa_bulan": 3
+      }
+    },
+    {
+      "id_jabatan": " jb-a ",
+      "hasil": {
+        "periode": "ulang_tahun_kerja",
+        "hak": 20,
+        "syarat_bulan": 12,
+        "prorata": true,
+        "sisa": "diuangkan",
+        "bawa_maks": 6,
+        "bawa_bulan": 3
+      }
+    },
+    {
+      "id_jabatan": "jb-b",
+      "hasil": {
+        "periode": "ulang_tahun_kerja",
+        "hak": 14,
+        "syarat_bulan": 12,
+        "prorata": false,
+        "sisa": "hangus",
+        "bawa_maks": 6,
+        "bawa_bulan": 3
+      }
+    }
+  ],
+  "jabatan": {
+    "jb-a": {
+      "periode": "ulang_tahun_kerja",
+      "hak": 20,
+      "syarat_bulan": 12,
+      "prorata": true,
+      "sisa": "diuangkan",
+      "bawa_maks": 6,
+      "bawa_bulan": 3
+    }
+  },
+  "validasi": [
+    { "nama": "tanpa jabatan", "draft": {}, "hasil": [], "galat": null },
+    {
+      "nama": "aturan sendiri dan kosongkan, urut id",
+      "draft": {
+        "jabatan": {
+          "jb-b": null,
+          "jb-a": {
+            "hr_cuti_periode": "kalender",
+            "hr_cuti_sisa": "dibawa",
+            "hr_cuti_hak": 15,
+            "hr_cuti_syarat_bulan": 0,
+            "hr_cuti_prorata": 1,
+            "hr_cuti_bawa_maks": 3,
+            "hr_cuti_bawa_bulan": 6
+          }
+        }
+      },
+      "hasil": [
+        ["hr_cuti_periode:jab:jb-a", "kalender"],
+        ["hr_cuti_sisa:jab:jb-a", "dibawa"],
+        ["hr_cuti_hak:jab:jb-a", "15"],
+        ["hr_cuti_syarat_bulan:jab:jb-a", "0"],
+        ["hr_cuti_prorata:jab:jb-a", "1"],
+        ["hr_cuti_bawa_maks:jab:jb-a", "3"],
+        ["hr_cuti_bawa_bulan:jab:jb-a", "6"],
+        ["hr_cuti_periode:jab:jb-b", ""],
+        ["hr_cuti_sisa:jab:jb-b", ""],
+        ["hr_cuti_hak:jab:jb-b", ""],
+        ["hr_cuti_syarat_bulan:jab:jb-b", ""],
+        ["hr_cuti_prorata:jab:jb-b", ""],
+        ["hr_cuti_bawa_maks:jab:jb-b", ""],
+        ["hr_cuti_bawa_bulan:jab:jb-b", ""]
+      ],
+      "galat": null
+    },
+    {
+      "nama": "id berspasi",
+      "draft": { "jabatan": { "jb a": null } },
+      "hasil": null,
+      "galat": "Aturan cuti jabatan tidak valid."
+    },
+    {
+      "nama": "bukan objek",
+      "draft": { "jabatan": [] },
+      "hasil": null,
+      "galat": "Aturan cuti jabatan tidak valid."
+    },
+    {
+      "nama": "isian di luar batas",
+      "draft": {
+        "jabatan": {
+          "jb-a": {
+            "hr_cuti_periode": "kalender",
+            "hr_cuti_sisa": "dibawa",
+            "hr_cuti_hak": 99,
+            "hr_cuti_syarat_bulan": 0,
+            "hr_cuti_prorata": 1,
+            "hr_cuti_bawa_maks": 3,
+            "hr_cuti_bawa_bulan": 6
+          }
+        }
+      },
+      "hasil": null,
+      "galat": "Aturan jabatan: Hak cuti tahunan harus 0 sampai 60."
+    }
+  ]
+}

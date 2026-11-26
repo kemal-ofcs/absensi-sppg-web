@@ -48,7 +48,7 @@ const KELAS =
   "min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-white outline-none focus:border-sky-500";
 const LABEL = "mb-1 block text-xs font-semibold text-slate-400";
 const TOMBOL =
-  "min-h-10 rounded-xl bg-sky-500 px-4 text-sm font-bold text-white disabled:opacity-50";
+  "min-h-10 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent disabled:opacity-50";
 const TOMBOL_KEDUA =
   "min-h-9 rounded-xl border border-slate-700 px-3 text-xs font-bold text-slate-200 disabled:opacity-50";
 const KARTU = "rounded-2xl border border-slate-800 bg-slate-900 p-4";
@@ -701,7 +701,7 @@ function PanelLowongan({
                 <span className="flex flex-wrap items-baseline gap-x-2">
                   <span className="font-semibold text-white">{p.nama}</span>
                   <span
-                    className={`text-xs ${WARNA_TAHAP[p.status ?? ""] ?? "text-sky-200"}`}
+                    className={`text-xs ${WARNA_TAHAP[p.status ?? ""] ?? "text-cyan-200"}`}
                   >
                     {p.status ?? "-"}
                   </span>

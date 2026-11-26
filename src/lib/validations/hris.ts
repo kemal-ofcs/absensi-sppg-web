@@ -160,6 +160,79 @@ export const SELARASKAN_JABATAN_SQL = [
   "UPDATE master_data SET jabatan_status = (SELECT nama FROM hr_jabatan WHERE id_jabatan = ?1) WHERE id_jabatan = ?1;",
 ] as const;
 
+// Hapus master (cermin `hapus_master` di hris.rs). Hanya baris yang bukan
+// bawaan dan tidak pernah dirujuk (karyawan termasuk nonaktif, riwayat,
+// kinerja, pelatihan); selain itu nonaktifkan. Penjaga rujukan ada di DELETE
+// itu sendiri, jadi cloud yang tahu rujukan lain cukup tidak menghapus dan
+// tarikan berikutnya mengembalikan barisnya. `_CLOUD_` menambah tabel yang
+// hanya ada di cloud. Penyebarannya lewat `delete_missing`.
+export const JENIS_MASTER_HAPUS = [
+  "cabang",
+  "divisi",
+  "jabatan",
+  "jenis_pengajuan",
+] as const;
+export type JenisMasterHapus = (typeof JENIS_MASTER_HAPUS)[number];
+
+export const HAPUS_CABANG_SQL = [
+  "DELETE FROM hr_cabang WHERE id_cabang = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_cabang = ?1);",
+] as const;
+export const HAPUS_CABANG_CLOUD_SQL = [
+  "DELETE FROM hr_cabang WHERE id_cabang = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_cabang = ?1) AND NOT EXISTS (SELECT 1 FROM hr_lowongan l WHERE l.id_cabang = ?1);",
+] as const;
+export const HAPUS_DIVISI_SQL = [
+  "DELETE FROM hr_divisi_nama WHERE id_divisi = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_divisi = ?1);",
+  "DELETE FROM hr_divisi WHERE id_divisi = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_divisi = ?1);",
+] as const;
+export const HAPUS_DIVISI_CLOUD_SQL = [
+  "DELETE FROM hr_divisi_nama WHERE id_divisi = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_lowongan l WHERE l.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_pelatihan_anggaran a WHERE a.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_pelatihan_rencana r WHERE r.id_divisi = ?1);",
+  "DELETE FROM hr_divisi WHERE id_divisi = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_lowongan l WHERE l.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_pelatihan_anggaran a WHERE a.id_divisi = ?1) AND NOT EXISTS (SELECT 1 FROM hr_pelatihan_rencana r WHERE r.id_divisi = ?1);",
+] as const;
+export const HAPUS_JABATAN_SQL = [
+  "DELETE FROM hr_jabatan WHERE id_jabatan = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_jabatan = ?1) AND NOT EXISTS (SELECT 1 FROM hr_kinerja_jabatan k WHERE k.id_jabatan = ?1) AND NOT EXISTS (SELECT 1 FROM hr_kinerja_penilaian p WHERE p.id_jabatan = ?1);",
+] as const;
+export const HAPUS_JABATAN_CLOUD_SQL = [
+  "DELETE FROM hr_jabatan WHERE id_jabatan = ?1 AND NOT EXISTS (SELECT 1 FROM master_data m WHERE m.id_jabatan = ?1) AND NOT EXISTS (SELECT 1 FROM hr_kinerja_jabatan k WHERE k.id_jabatan = ?1) AND NOT EXISTS (SELECT 1 FROM hr_kinerja_penilaian p WHERE p.id_jabatan = ?1) AND NOT EXISTS (SELECT 1 FROM hr_lowongan l WHERE l.id_jabatan = ?1);",
+] as const;
+export const HAPUS_JENIS_PENGAJUAN_SQL = [
+  "DELETE FROM hr_jenis_pengajuan WHERE id_jenis = ?1 AND id_jenis NOT IN ('jns-cuti-tahunan', 'jns-cuti-menikah', 'jns-cuti-acara-anak', 'jns-cuti-istri-melahirkan', 'jns-cuti-duka-inti', 'jns-cuti-duka-rumah', 'jns-cuti-melahirkan', 'jns-cuti-keguguran', 'jns-izin-haid', 'jns-sakit', 'jns-izin-dibayar', 'jns-izin-tanpa-upah', 'jns-lembur', 'jns-tukar-shift', 'jns-dinas-luar', 'jns-rmb-transport', 'jns-rmb-kesehatan', 'jns-rmb-makan', 'jns-rmb-dinas', 'jns-rmb-lainnya') AND NOT EXISTS (SELECT 1 FROM hr_pengajuan p WHERE p.id_jenis = ?1);",
+] as const;
+
+export const DIPAKAI_CABANG_SQL =
+  "SELECT COUNT(*) AS n FROM master_data WHERE id_cabang = ?1;";
+export const DIPAKAI_CABANG_CLOUD_SQL =
+  "SELECT (SELECT COUNT(*) FROM master_data WHERE id_cabang = ?1) + (SELECT COUNT(*) FROM hr_lowongan WHERE id_cabang = ?1) AS n;";
+export const DIPAKAI_DIVISI_SQL =
+  "SELECT COUNT(*) AS n FROM master_data WHERE id_divisi = ?1;";
+export const DIPAKAI_DIVISI_CLOUD_SQL =
+  "SELECT (SELECT COUNT(*) FROM master_data WHERE id_divisi = ?1) + (SELECT COUNT(*) FROM hr_lowongan WHERE id_divisi = ?1) + (SELECT COUNT(*) FROM hr_pelatihan_anggaran WHERE id_divisi = ?1) + (SELECT COUNT(*) FROM hr_pelatihan_rencana WHERE id_divisi = ?1) AS n;";
+export const DIPAKAI_JABATAN_SQL =
+  "SELECT (SELECT COUNT(*) FROM master_data WHERE id_jabatan = ?1) + (SELECT COUNT(*) FROM hr_kinerja_jabatan WHERE id_jabatan = ?1) + (SELECT COUNT(*) FROM hr_kinerja_penilaian WHERE id_jabatan = ?1) AS n;";
+export const DIPAKAI_JABATAN_CLOUD_SQL =
+  "SELECT (SELECT COUNT(*) FROM master_data WHERE id_jabatan = ?1) + (SELECT COUNT(*) FROM hr_kinerja_jabatan WHERE id_jabatan = ?1) + (SELECT COUNT(*) FROM hr_kinerja_penilaian WHERE id_jabatan = ?1) + (SELECT COUNT(*) FROM hr_lowongan WHERE id_jabatan = ?1) AS n;";
+export const DIPAKAI_JENIS_PENGAJUAN_SQL =
+  "SELECT COUNT(*) AS n FROM hr_pengajuan WHERE id_jenis = ?1;";
+
+/** Alasan penolakan hapus, `null` = boleh. Cermin `pesan_hapus_master`. */
+export function pesanHapusMaster(
+  jenis: JenisMasterHapus,
+  bawaan: boolean,
+  dipakai: number,
+): string | null {
+  if (bawaan) return "Data bawaan tidak bisa dihapus; nonaktifkan saja.";
+  if (dipakai <= 0) return null;
+  switch (jenis) {
+    case "cabang":
+      return `Cabang masih dipakai ${dipakai} karyawan (termasuk yang nonaktif) atau lowongan. Nonaktifkan saja.`;
+    case "divisi":
+      return `Divisi masih dipakai ${dipakai} karyawan (termasuk yang nonaktif), lowongan, atau rencana pelatihan. Nonaktifkan saja.`;
+    case "jabatan":
+      return `Jabatan masih dipakai ${dipakai} karyawan (termasuk yang nonaktif), template atau penilaian kinerja, atau lowongan. Nonaktifkan saja.`;
+    case "jenis_pengajuan":
+      return `Jenis pengajuan masih dipakai ${dipakai} pengajuan, termasuk riwayat. Nonaktifkan saja.`;
+  }
+}
+
 export const CLOUD_ORG_KARYAWAN_SQL = [
   `UPDATE master_data SET
         id_divisi = COALESCE((SELECT d.id_divisi FROM hr_divisi d WHERE d.id_divisi = NULLIF(?1, '')), (SELECT n.id_divisi FROM hr_divisi_nama n WHERE LOWER(TRIM(n.nama)) = LOWER(TRIM(master_data.divisi)) ORDER BY n.created_at, n.id_nama LIMIT 1)),

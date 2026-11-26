@@ -7,6 +7,7 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import type { Organisasi } from "@/lib/gateways/hris";
 import { LABEL_TANDA_HRIS } from "@/lib/validations/hris";
 import {
@@ -29,7 +30,6 @@ const LEBAR_BAGAN = "(min-width: 1024px)";
 /** Lebih dari ini bawahan langsung ditumpuk ke bawah, bukan ke samping. */
 const ANAK_KOLOM = 8;
 
-const TOMBOL = "min-h-10 rounded-xl px-4 text-sm font-bold transition-colors";
 const TOMBOL_KECIL =
   "min-h-9 rounded-lg border border-slate-700 px-3 text-xs font-semibold text-slate-300 hover:bg-slate-800";
 const KARTU = "rounded-2xl border border-slate-800 bg-slate-900 p-4";
@@ -128,30 +128,18 @@ export function BaganOrganisasi({
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div
-          className="flex shrink-0 gap-2 overflow-x-auto"
-          role="tablist"
-          aria-label="Tampilan struktur"
-        >
-          {(
-            [
-              ["bagan", "Bagan"],
-              ["fokus", "Fokus"],
-              ["unit", "Menurut unit"],
-            ] as Array<[Tampilan, string]>
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              id={`hris-bagan-tampilan-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={tampilan === id}
-              onClick={() => setTampilan(id)}
-              className={`${TOMBOL} shrink-0 ${tampilan === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="shrink-0">
+          <TabBar
+            ariaLabel="Tampilan struktur"
+            idPrefix="hris-bagan"
+            value={tampilan}
+            onChange={setTampilan}
+            tabs={[
+              { id: "bagan", label: "Bagan" },
+              { id: "fokus", label: "Fokus" },
+              { id: "unit", label: "Menurut unit" },
+            ]}
+          />
         </div>
         <div className="min-w-0 flex-1">
           <PilihCari
@@ -462,7 +450,7 @@ function TombolRincian({ onKlik }: { onKlik: () => void }) {
     <button
       type="button"
       onClick={onKlik}
-      className="mt-2 min-h-9 w-full rounded-lg bg-sky-500 px-3 text-xs font-bold text-white"
+      className="mt-2 min-h-9 w-full rounded-lg bg-sky-700 px-3 text-xs font-bold text-on-accent"
     >
       Lihat rincian
     </button>

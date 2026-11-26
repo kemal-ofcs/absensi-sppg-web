@@ -20,6 +20,7 @@ import {
 } from "@/components/inventory/gaya";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
@@ -368,25 +369,13 @@ export function PengajuanWorkspace() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-2">
-        <div
-          className="flex flex-wrap gap-2"
-          role="tablist"
-          aria-label="Saring pengajuan"
-        >
-          {pilihanSaring.map(([id, label]) => (
-            <button
-              key={id}
-              id={`pengajuan-saring-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={saring === id}
-              onClick={() => setSaring(id)}
-              className={`min-h-10 rounded-xl px-3 text-sm font-bold ${saring === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          ariaLabel="Saring pengajuan"
+          idPrefix="pengajuan-saring"
+          value={saring}
+          onChange={setSaring}
+          tabs={pilihanSaring.map(([id, label]) => ({ id, label }))}
+        />
         <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"

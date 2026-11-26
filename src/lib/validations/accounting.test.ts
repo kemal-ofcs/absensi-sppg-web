@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   AKUN_BAWAAN,
+  AKUN_BISA_DIHAPUS_SQL,
   AKUN_SISTEM_IDS,
+  AKUN_TAMPIL_SQL,
   type AkunValid,
   aturanUbahAkun,
   formatNomorJurnal,
@@ -420,5 +424,24 @@ describe("laporan keuangan perusahaan", () => {
     expect(arus.total_masuk).toBe(600_000);
     expect(arus.total_keluar).toBe(300_000);
     expect(arus.saldo_akhir).toBe(400_000);
+  });
+});
+
+// Salinan Mobile tidak membawa berkas Rust desktop; di sana dilewati.
+let rust = "";
+try {
+  rust = readFileSync(
+    join(import.meta.dir, "../../../src-tauri/src/desktop/accounting.rs"),
+    "utf8",
+  );
+} catch {
+  rust = "";
+}
+
+describe("kembaran Rust", () => {
+  test.skipIf(!rust)("SQL hapus akun dieja sama persis", () => {
+    for (const sql of [AKUN_TAMPIL_SQL, AKUN_BISA_DIHAPUS_SQL]) {
+      expect(rust).toContain(`"${sql}"`);
+    }
   });
 });

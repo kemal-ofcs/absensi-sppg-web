@@ -266,7 +266,7 @@ export default function SetupPage() {
           <button
             type="button"
             onClick={() => void loadStatus()}
-            className={`bootstrap-btn-submit min-h-11 rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 ${FOCUS_RING}`}
+            className={`bootstrap-btn-submit min-h-11 rounded-2xl bg-sky-700 px-4 text-sm font-black text-on-accent ${FOCUS_RING}`}
           >
             Periksa lagi
           </button>
@@ -286,7 +286,7 @@ export default function SetupPage() {
       >
         <Link
           href="/login"
-          className={`bootstrap-btn-submit mt-5 flex min-h-11 w-full items-center justify-center rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 ${FOCUS_RING}`}
+          className={`bootstrap-btn-submit mt-5 flex min-h-11 w-full items-center justify-center rounded-2xl bg-sky-700 px-4 text-sm font-black text-on-accent ${FOCUS_RING}`}
         >
           Buka halaman masuk
         </Link>
@@ -320,7 +320,7 @@ export default function SetupPage() {
           <button
             type="button"
             onClick={() => void loadStatus()}
-            className={`bootstrap-btn-submit min-h-11 rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 ${FOCUS_RING}`}
+            className={`bootstrap-btn-submit min-h-11 rounded-2xl bg-sky-700 px-4 text-sm font-black text-on-accent ${FOCUS_RING}`}
           >
             Periksa lagi
           </button>
@@ -466,7 +466,7 @@ export default function SetupPage() {
         <button
           type="submit"
           disabled={submitting}
-          className={`bootstrap-btn-submit min-h-12 rounded-2xl bg-sky-400 px-4 text-sm font-black text-slate-950 disabled:opacity-50 ${FOCUS_RING}`}
+          className={`bootstrap-btn-submit min-h-12 rounded-2xl bg-sky-700 px-4 text-sm font-black text-on-accent disabled:opacity-50 ${FOCUS_RING}`}
         >
           {submitting ? "Membuat akun..." : "Buat Superadmin"}
         </button>

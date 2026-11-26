@@ -20,7 +20,7 @@ use super::{
 /// `CURRENT_SCHEMA_VERSION` di `web-desktop/src/lib/db-schema.ts` setiap kali
 /// migrasi baru ditambahkan, karena keduanya membaca tabel `schema_migration`
 /// yang sama di Turso.
-pub const CLIENT_SCHEMA_VERSION: i64 = 45;
+pub const CLIENT_SCHEMA_VERSION: i64 = 47;
 
 /// Hanya `cloud > client` yang berbahaya; `cloud <= client` adalah kondisi normal.
 fn is_client_schema_outdated(cloud_version: i64) -> bool {
@@ -868,9 +868,9 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
     },
     // ── v21: Akuntansi ──
     //
-    // Ketiganya `delete_missing: false`: akun hanya dinonaktifkan dan jurnal
-    // append-only (koreksi = jurnal pembalik), jadi ketiadaan baris di
-    // snapshot tidak pernah berarti "dihapus".
+    // Ketiganya `delete_missing: false`: akun yang dihapus tetap ada barisnya
+    // bertanda `dihapus_pada` (v46) dan jurnal append-only (koreksi = jurnal
+    // pembalik), jadi ketiadaan baris di snapshot tidak pernah berarti "dihapus".
     SnapshotTable {
         payload_key: "accountingAccounts",
         domain: "accounting-account",
@@ -884,6 +884,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
             "is_aktif",
             "created_at",
             "updated_at",
+            "dihapus_pada",
         ],
         conflict_column: "id_akun",
         entity_column: "id_akun",
@@ -1227,8 +1228,9 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         entity_column: "id_baris",
         delete_missing: false,
     },
-    // HRIS fase 1 (v36): organisasi dan kontrak. Tidak ada baris yang
-    // dihapus (nonaktif = hapus, kontrak dibatalkan lewat `batal-<id>`).
+    // HRIS fase 1 (v36): organisasi dan kontrak. Kontrak dibatalkan lewat
+    // `batal-<id>`. Master yang tidak pernah dipakai boleh dihapus
+    // (`hapus_master`); penghapusannya menyebar lewat `delete_missing`.
     SnapshotTable {
         payload_key: "hrBranches",
         domain: "hr-branch",
@@ -1236,7 +1238,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         columns: &["id_cabang", "nama", "alamat", "is_aktif", "created_at", "updated_at"],
         conflict_column: "id_cabang",
         entity_column: "id_cabang",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "hrDivisions",
@@ -1245,7 +1247,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         columns: &["id_divisi", "nama", "is_aktif", "created_at", "updated_at"],
         conflict_column: "id_divisi",
         entity_column: "id_divisi",
-        delete_missing: false,
+        delete_missing: true,
     },
     // Append-only; menumpang event `hr-division`.
     SnapshotTable {
@@ -1255,7 +1257,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         columns: &["id_nama", "id_divisi", "nama", "created_at"],
         conflict_column: "id_nama",
         entity_column: "id_nama",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "hrPositions",
@@ -1264,7 +1266,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         columns: &["id_jabatan", "nama", "is_aktif", "created_at", "updated_at"],
         conflict_column: "id_jabatan",
         entity_column: "id_jabatan",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "hrContracts",
@@ -1312,7 +1314,7 @@ const SNAPSHOT_TABLES: &[SnapshotTable] = &[
         ],
         conflict_column: "id_jenis",
         entity_column: "id_jenis",
-        delete_missing: false,
+        delete_missing: true,
     },
     SnapshotTable {
         payload_key: "hrRequests",
@@ -1600,10 +1602,14 @@ const CANONICAL_SYNC_ROUTES: &[(&str, &str)] = &[
     ("trip-report-photo", "save"),
     ("trip-payment", "create"),
     ("hr-branch", "save"),
+    ("hr-branch", "delete"),
     ("hr-division", "save"),
+    ("hr-division", "delete"),
     ("hr-position", "save"),
+    ("hr-position", "delete"),
     ("hr-contract", "create"),
     ("hr-request-type", "save"),
+    ("hr-request-type", "delete"),
     ("hr-request", "save"),
     ("hr-request-decision", "create"),
     ("hr-leave-adjustment", "create"),

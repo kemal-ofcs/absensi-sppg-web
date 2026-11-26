@@ -46,8 +46,8 @@ function SvgDonutFallback({
         key: "hadir",
         label: "Tepat Waktu",
         count: tepatWaktu,
-        color: "#0ea5e9",
-        textColor: "text-sky-400",
+        color: "#10b981",
+        textColor: "text-emerald-400",
       },
       {
         key: "terlambat",

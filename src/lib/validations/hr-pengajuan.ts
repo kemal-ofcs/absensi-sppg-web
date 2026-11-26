@@ -937,6 +937,65 @@ export const MODE_REIMBURSE = ["gaji", "terpisah"] as const;
 export const MODE_REIMBURSE_BAWAAN = "terpisah";
 export const SUMBER_REIMBURSE = "Reimburse";
 export const SUMBER_UANG = "Cuti Diuangkan";
+
+// Jurnal otomatis pembayaran terpisah (v47). Dicatat di transaksi yang SAMA
+// dengan pembayarannya lewat `tulisJurnalTx`, id `jrn-reimb-<id_bayar>`,
+// dibalik `balikJurnalTx` saat pembayaran dibatalkan. Cermin `hr_pengajuan.rs`.
+export const AKUN_BEBAN_REIMBURSE = "akun-beban-reimburse";
+export const AKUN_BEBAN_GAJI = "akun-beban-gaji";
+export const AKUN_BAYAR_BAWAAN = "akun-kas";
+export const idJurnalReimburse = (idBayar: string) => `jrn-reimb-${idBayar}`;
+
+export interface BarisJurnalReimburse {
+  id_baris: string;
+  id_akun: string;
+  debit: number;
+  kredit: number;
+  keterangan: string | null;
+  urutan: number;
+}
+
+/**
+ * Cermin `baris_jurnal_reimburse`: debit per sumber (Reimburse → Beban
+ * Reimbursement, Cuti Diuangkan → Beban Gaji), kredit akun bayar sebesar
+ * totalnya. Sumber bernominal nol dilewati; kosong = tidak ada jurnal.
+ */
+export function barisJurnalReimburse(
+  idJurnal: string,
+  akunBayar: string,
+  dibayar: ReadonlyArray<{ sumber: string; nominal: number }>,
+): BarisJurnalReimburse[] {
+  const jumlah = (sumber: string) =>
+    dibayar
+      .filter((k) => k.sumber === sumber)
+      .reduce((n, k) => n + k.nominal, 0);
+  const debit = (
+    [
+      [AKUN_BEBAN_REIMBURSE, jumlah(SUMBER_REIMBURSE)],
+      [AKUN_BEBAN_GAJI, jumlah(SUMBER_UANG)],
+    ] as const
+  ).filter(([, n]) => n > 0);
+  const baris: BarisJurnalReimburse[] = debit.map(([akun, n], i) => ({
+    id_baris: `${idJurnal}:${i + 1}`,
+    id_akun: akun,
+    debit: n,
+    kredit: 0,
+    keterangan: null,
+    urutan: i + 1,
+  }));
+  const total = debit.reduce((n, [, x]) => n + x, 0);
+  if (total > 0) {
+    baris.push({
+      id_baris: `${idJurnal}:${baris.length + 1}`,
+      id_akun: akunBayar,
+      debit: 0,
+      kredit: total,
+      keterangan: null,
+      urutan: baris.length + 1,
+    });
+  }
+  return baris;
+}
 export const MAKS_KLAIM_PER_BAYAR = 200;
 export const STATUS_DIBAYAR = "Dibayar";
 export const STATUS_PROSES_GAJI = "Dalam proses gaji";
@@ -1365,14 +1424,20 @@ export const ATURAN_CUTI_BAWAAN: AturanCuti = {
   bawa_bulan: 3,
 };
 
-/** Cermin `AturanCuti::dari_peta`. Kosong atau di luar batas = bawaan. */
+/**
+ * Cermin `AturanCuti::dari_peta_dengan`. Kosong atau di luar batas = nilai
+ * `dasar`. `akhiran` `:jab:<id>` membaca aturan satu jabatan di atas aturan
+ * umum; tanpa keduanya perilakunya sama seperti sebelumnya.
+ */
 export function aturanCutiDariPeta(
   peta: ReadonlyMap<string, string> | Record<string, string>,
+  akhiran = "",
+  dasar: AturanCuti = ATURAN_CUTI_BAWAAN,
 ): AturanCuti {
   const baca = (kunci: string) =>
     peta instanceof Map
-      ? peta.get(kunci)
-      : (peta as Record<string, string>)[kunci];
+      ? peta.get(`${kunci}${akhiran}`)
+      : (peta as Record<string, string>)[`${kunci}${akhiran}`];
   const angka = (kunci: string, bawaan: number) => {
     const batas = BATAS_CUTI.find(([k]) => k === kunci);
     const teksNilai = baca(kunci)?.trim() ?? "";
@@ -1384,7 +1449,7 @@ export function aturanCutiDariPeta(
     const nilai = baca(kunci)?.trim() ?? "";
     return daftar.includes(nilai) ? nilai : bawaan;
   };
-  const b = ATURAN_CUTI_BAWAAN;
+  const b = dasar;
   return {
     periode: pilih(KUNCI_CUTI_PERIODE, PERIODE_CUTI, b.periode),
     hak: angka(KUNCI_CUTI_HAK, b.hak),
@@ -1423,6 +1488,82 @@ export function validasiAturanCuti(
       return gagal(`${label} harus ${min} sampai ${maks}.`);
     }
     hasil.push([kunci, String(nilai)]);
+  }
+  return ok(hasil);
+}
+
+/** Akhiran kunci aturan cuti satu jabatan: `hr_cuti_<isian>:jab:<id>`. */
+export const akhiranJabatan = (idJabatan: string) => `:jab:${idJabatan}`;
+
+/** Ketujuh kunci aturan cuti, urutan simpan `validasiAturanCuti`. */
+export const KUNCI_ATURAN_CUTI = [
+  KUNCI_CUTI_PERIODE,
+  KUNCI_CUTI_SISA,
+  ...BATAS_CUTI.map(([kunci]) => kunci),
+] as const;
+
+/**
+ * Cermin `AturanCuti::karyawan`: aturan umum, lalu setiap isian jabatan
+ * karyawan itu yang sah menimpanya. Isian jabatan kosong = ikut aturan umum.
+ */
+export function aturanCutiKaryawan(
+  peta: ReadonlyMap<string, string>,
+  idJabatan: string,
+): AturanCuti {
+  const umum = aturanCutiDariPeta(peta);
+  const id = idJabatan.trim();
+  return id === "" ? umum : aturanCutiDariPeta(peta, akhiranJabatan(id), umum);
+}
+
+/** Cermin `aturan_cuti_jabatan`: jabatan dengan minimal satu isian terisi, urut id. */
+export function aturanCutiJabatan(
+  peta: ReadonlyMap<string, string>,
+): Record<string, AturanCuti> {
+  const ids = new Set<string>();
+  for (const [kunci, nilai] of peta) {
+    const pisah = kunci.indexOf(":jab:");
+    if (pisah < 0 || nilai.trim() === "") continue;
+    const id = kunci.slice(pisah + 5);
+    if (
+      id !== "" &&
+      (KUNCI_ATURAN_CUTI as readonly string[]).includes(kunci.slice(0, pisah))
+    )
+      ids.add(id);
+  }
+  return Object.fromEntries(
+    [...ids].sort().map((id) => [id, aturanCutiKaryawan(peta, id)]),
+  );
+}
+
+/**
+ * Cermin `validasi_aturan_cuti_jabatan`: `jabatan` opsional, `{ id: draft
+ * kunci datar }` = aturan sendiri, `{ id: null }` = kosongkan ketujuh kunci
+ * (ikut aturan umum lagi). Pasangan kunci-nilai urut id.
+ */
+export function validasiAturanCutiJabatan(
+  draft: Draft,
+): Hasil<Array<[string, string]>> {
+  const jabatan = draft.jabatan;
+  if (jabatan === undefined) return ok([]);
+  if (typeof jabatan !== "object" || jabatan === null || Array.isArray(jabatan))
+    return gagal("Aturan cuti jabatan tidak valid.");
+  const hasil: Array<[string, string]> = [];
+  for (const id of Object.keys(jabatan).sort()) {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id))
+      return gagal("Aturan cuti jabatan tidak valid.");
+    const akhiran = akhiranJabatan(id);
+    const isi = (jabatan as Draft)[id];
+    if (isi === null) {
+      for (const kunci of KUNCI_ATURAN_CUTI)
+        hasil.push([`${kunci}${akhiran}`, ""]);
+      continue;
+    }
+    if (typeof isi !== "object" || Array.isArray(isi))
+      return gagal("Aturan cuti jabatan tidak valid.");
+    const sah = validasiAturanCuti(isi as Draft);
+    if (!sah.ok) return gagal(`Aturan jabatan: ${sah.pesan}`);
+    for (const [kunci, nilai] of sah.nilai)
+      hasil.push([`${kunci}${akhiran}`, nilai]);
   }
   return ok(hasil);
 }

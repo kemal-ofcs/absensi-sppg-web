@@ -17,6 +17,7 @@ import { PengaturanPengajuan } from "@/components/hris/PengaturanPengajuan";
 import { PerluPerhatian } from "@/components/hris/PerluPerhatian";
 import { RekrutmenWorkspace } from "@/components/hris/RekrutmenWorkspace";
 import { RincianKaryawan } from "@/components/hris/RincianKaryawan";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import { getDaftarKaryawan } from "@/lib/gateways/employee";
@@ -43,9 +44,6 @@ type Tab =
   | "pelatihan"
   | "organisasi";
 export type BarisKaryawan = Record<string, unknown>;
-
-const TOMBOL_TAB =
-  "min-h-10 shrink-0 rounded-xl px-4 text-sm font-bold transition-colors";
 
 export function HrisWorkspace() {
   const { user } = useAuth();
@@ -154,12 +152,15 @@ export function HrisWorkspace() {
 
   return (
     <div className="space-y-4">
-      <div
-        className="flex flex-nowrap gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0"
-        role="tablist"
-        aria-label="Bagian HRIS"
-      >
-        {(
+      <TabBar
+        ariaLabel="Bagian HRIS"
+        idPrefix="hris"
+        value={tab}
+        onChange={(id) => {
+          setMulaiKeluar(null);
+          setTab(id);
+        }}
+        tabs={(
           [
             ["karyawan", "Karyawan"],
             ["struktur", "Struktur"],
@@ -169,23 +170,8 @@ export function HrisWorkspace() {
             ...(bolehPelatihan ? [["pelatihan", "Pelatihan"]] : []),
             ...(bolehOrg ? [["organisasi", "Organisasi"]] : []),
           ] as Array<[Tab, string]>
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            id={`hris-tab-${id}`}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => {
-              setMulaiKeluar(null);
-              setTab(id);
-            }}
-            className={`${TOMBOL_TAB} ${tab === id ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+        ).map(([id, label]) => ({ id, label }))}
+      />
 
       {galat ? <p className="text-sm text-rose-200">{galat}</p> : null}
 

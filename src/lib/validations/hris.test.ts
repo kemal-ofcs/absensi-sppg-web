@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import jenisPengajuanBawaan from "./hr-jenis-bawaan.json";
+import * as Hapus from "./hris";
 import {
   BATAS_PENGATURAN,
   bulanPenuhTerakhir,
@@ -51,6 +53,7 @@ import {
   validasiPengaturan,
   validasiPribadi,
 } from "./hris";
+import vektorHapus from "./hris-hapus.vektor.json";
 
 // Vektor yang sama diuji di `desktop/hris.rs` (modul `tests`).
 
@@ -466,6 +469,20 @@ describe("hris (cermin tes Rust)", () => {
     expect(divisiKini("x")).not.toContain("{kolom}");
   });
 
+  test("hapus master: pesan kembar dan seed bawaan", () => {
+    for (const k of vektorHapus.pesan) {
+      expect(
+        Hapus.pesanHapusMaster(
+          k.jenis as Hapus.JenisMasterHapus,
+          k.bawaan,
+          k.dipakai,
+        ),
+      ).toBe(k.pesan);
+    }
+    for (const j of jenisPengajuanBawaan)
+      expect(Hapus.HAPUS_JENIS_PENGAJUAN_SQL[0]).toContain(`'${j.id_jenis}'`);
+  });
+
   test("SQL disalin harfiah ke hris.rs (Desktop dan Mobile)", () => {
     for (const dir of ["desktop", "mobile"]) {
       const lokasi = [
@@ -501,6 +518,20 @@ describe("hris (cermin tes Rust)", () => {
         `"${INGAT_MENUNGGU_SQL}"`,
         `"${INGAT_JAM_SQL}"`,
         `"${PESAN_INGAT_KONTRAK}"`,
+        ...Hapus.HAPUS_CABANG_SQL,
+        ...Hapus.HAPUS_CABANG_CLOUD_SQL,
+        ...Hapus.HAPUS_DIVISI_SQL,
+        ...Hapus.HAPUS_DIVISI_CLOUD_SQL,
+        ...Hapus.HAPUS_JABATAN_SQL,
+        ...Hapus.HAPUS_JABATAN_CLOUD_SQL,
+        ...Hapus.HAPUS_JENIS_PENGAJUAN_SQL,
+        Hapus.DIPAKAI_CABANG_SQL,
+        Hapus.DIPAKAI_CABANG_CLOUD_SQL,
+        Hapus.DIPAKAI_DIVISI_SQL,
+        Hapus.DIPAKAI_DIVISI_CLOUD_SQL,
+        Hapus.DIPAKAI_JABATAN_SQL,
+        Hapus.DIPAKAI_JABATAN_CLOUD_SQL,
+        Hapus.DIPAKAI_JENIS_PENGAJUAN_SQL,
       ]) {
         expect(rust.includes(sql)).toBe(true);
       }

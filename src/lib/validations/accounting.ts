@@ -29,6 +29,7 @@ export const SUMBER_JURNAL = [
   "Payroll",
   "Inventaris",
   "Cicilan",
+  "Reimburse",
   "Pembatalan",
 ] as const;
 
@@ -73,6 +74,23 @@ export const AKUN_SISTEM_IDS: ReadonlySet<string> = new Set(
 /** Cermin `SEED_AKUN_SQL`. Idempoten: akun yang sudah diganti nama tidak ditimpa. */
 export const SEED_AKUN_SQL =
   "INSERT OR IGNORE INTO keu_akun (id_akun, kode, nama, kelompok, saldo_normal, is_aktif) VALUES (?, ?, ?, ?, ?, 1);";
+
+/**
+ * Akun yang tampil di daftar dan laporan (alias tabel `a`): belum dihapus, atau
+ * sudah dihapus tetapi dipakai jurnal dari perangkat yang offline saat
+ * penghapusan, supaya neraca tetap seimbang. Cermin `AKUN_TAMPIL_SQL` di
+ * `accounting.rs`.
+ */
+export const AKUN_TAMPIL_SQL =
+  "(a.dihapus_pada IS NULL OR EXISTS(SELECT 1 FROM keu_jurnal_baris jb WHERE jb.id_akun = a.id_akun))";
+
+/**
+ * Akun (alias `a`) yang boleh dihapus permanen: belum dipakai jurnal dan tidak
+ * dirujuk cicilan atau kasbon. Akun sistem diperiksa terpisah. Cermin
+ * `AKUN_BISA_DIHAPUS_SQL` di `accounting.rs`.
+ */
+export const AKUN_BISA_DIHAPUS_SQL =
+  "(NOT EXISTS(SELECT 1 FROM keu_jurnal_baris jb WHERE jb.id_akun = a.id_akun) AND NOT EXISTS(SELECT 1 FROM keu_cicilan c WHERE a.id_akun IN (c.id_akun_utang, c.id_akun_bunga, c.id_akun_denda)) AND NOT EXISTS(SELECT 1 FROM keu_cicilan_bayar cb WHERE cb.id_akun_bayar = a.id_akun) AND NOT EXISTS(SELECT 1 FROM keu_pinjaman k WHERE k.id_akun_kas = a.id_akun))";
 
 function panjang(value: string): number {
   return Array.from(value).length;
@@ -521,6 +539,8 @@ export function labelSumberKas(sumber: string): string {
       return "Pembelian barang dan servis";
     case "Cicilan":
       return "Pembayaran cicilan pembelian";
+    case "Reimburse":
+      return "Pembayaran reimbursement";
     case "Manual":
       return "Jurnal umum";
     default:

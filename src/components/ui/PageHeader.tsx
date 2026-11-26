@@ -19,20 +19,23 @@ export function PageHeader({
 }: PageHeaderProps) {
   return (
     <div
-      className={`visual-fade-in flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-end sm:justify-between ${className}`}
+      className={`page-header visual-fade-in flex flex-col gap-4 pb-6 sm:flex-row sm:items-end sm:justify-between ${className}`}
     >
       <div className="max-w-3xl space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-block size-2 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />
-          <p className="page-header-eyebrow text-[11px] font-bold uppercase tracking-[0.2em] text-amber-300 font-mono">
+          <span
+            aria-hidden="true"
+            className="page-header-dot inline-block size-2 rounded-full"
+          />
+          <p className="page-header-eyebrow font-bold font-mono text-[11px] uppercase tracking-[0.2em]">
             {eyebrow}
           </p>
           {badge}
         </div>
-        <h1 className="page-header-title text-2xl font-black tracking-tight text-white sm:text-3xl">
+        <h1 className="page-header-title font-black text-2xl tracking-tight sm:text-3xl">
           {title}
         </h1>
-        <p className="page-header-description text-sm leading-relaxed text-slate-400">
+        <p className="page-header-description text-sm leading-relaxed">
           {description}
         </p>
       </div>

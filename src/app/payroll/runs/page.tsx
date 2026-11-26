@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { RunStatusBadge } from "@/components/payroll/RunStatusBadge";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
+import { MemuatHalaman } from "@/components/ui/MemuatHalaman";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { canAccessArea } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -65,11 +66,7 @@ export default function PayrollRunsListPage() {
   }, [isHydrated, authLoading, isAuthenticated, user, loadRuns, router]);
 
   if (!isHydrated || authLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Memuat otorisasi...
-      </div>
-    );
+    return <MemuatHalaman />;
   }
 
   return (

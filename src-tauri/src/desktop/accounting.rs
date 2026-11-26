@@ -23,7 +23,7 @@ use super::{config::DesktopState, license, models::CommandError, storage, sync};
 pub const KELOMPOK_AKUN: [&str; 5] = ["Aset", "Kewajiban", "Ekuitas", "Pendapatan", "Beban"];
 pub const SALDO_NORMAL: [&str; 2] = ["Debit", "Kredit"];
 /// WAJIB sama dengan CHECK `keu_jurnal.sumber` di ketiga DDL.
-pub const SUMBER_JURNAL: [&str; 6] = ["Manual", "Kasbon", "Payroll", "Inventaris", "Cicilan", "Pembatalan"];
+pub const SUMBER_JURNAL: [&str; 7] = ["Manual", "Kasbon", "Payroll", "Inventaris", "Cicilan", "Reimburse", "Pembatalan"];
 
 pub const MAKS_NOMINAL: i64 = 1_000_000_000_000;
 pub const MAKS_BARIS_JURNAL: usize = 100;
@@ -66,6 +66,18 @@ pub fn is_akun_sistem(id_akun: &str) -> bool {
 
 /// Cermin `SEED_AKUN_SQL`. Idempoten: akun yang sudah diganti nama tidak ditimpa.
 pub const SEED_AKUN_SQL: &str = "INSERT OR IGNORE INTO keu_akun (id_akun, kode, nama, kelompok, saldo_normal, is_aktif) VALUES (?, ?, ?, ?, ?, 1);";
+
+/// Akun yang tampil di daftar dan laporan (alias tabel `a`): belum dihapus,
+/// atau sudah dihapus tetapi dipakai jurnal dari perangkat yang offline saat
+/// penghapusan, supaya neraca tetap seimbang. Cermin `AKUN_TAMPIL_SQL` di
+/// `validations/accounting.ts`.
+pub const AKUN_TAMPIL_SQL: &str = "(a.dihapus_pada IS NULL OR EXISTS(SELECT 1 FROM keu_jurnal_baris jb WHERE jb.id_akun = a.id_akun))";
+
+/// Akun (alias `a`) yang boleh dihapus permanen: belum dipakai jurnal dan tidak
+/// dirujuk cicilan atau kasbon. Akun sistem diperiksa terpisah
+/// (`is_akun_sistem`). Cermin `AKUN_BISA_DIHAPUS_SQL` di
+/// `validations/accounting.ts`.
+pub const AKUN_BISA_DIHAPUS_SQL: &str = "(NOT EXISTS(SELECT 1 FROM keu_jurnal_baris jb WHERE jb.id_akun = a.id_akun) AND NOT EXISTS(SELECT 1 FROM keu_cicilan c WHERE a.id_akun IN (c.id_akun_utang, c.id_akun_bunga, c.id_akun_denda)) AND NOT EXISTS(SELECT 1 FROM keu_cicilan_bayar cb WHERE cb.id_akun_bayar = a.id_akun) AND NOT EXISTS(SELECT 1 FROM keu_pinjaman k WHERE k.id_akun_kas = a.id_akun))";
 
 /// Menanam bagan akun bawaan ke SQLite lokal. Barisnya TIDAK masuk outbox:
 /// cloud menanam seed yang sama, jadi mendorongnya hanya akan menimpa nama
@@ -466,7 +478,8 @@ fn db_error(_: rusqlite::Error) -> CommandError {
 fn akun_json(connection: &Connection, id_akun: &str) -> Result<Option<Value>, CommandError> {
     connection
         .query_row(
-            "SELECT id_akun, kode, nama, kelompok, saldo_normal, is_aktif, created_at, updated_at
+            "SELECT id_akun, kode, nama, kelompok, saldo_normal, is_aktif, created_at, updated_at,
+                    dihapus_pada
              FROM keu_akun WHERE id_akun = ?;",
             params![id_akun],
             |row| {
@@ -479,6 +492,7 @@ fn akun_json(connection: &Connection, id_akun: &str) -> Result<Option<Value>, Co
                     "is_aktif": row.get::<_, i64>(5)?,
                     "created_at": row.get::<_, String>(6)?,
                     "updated_at": row.get::<_, String>(7)?,
+                    "dihapus_pada": row.get::<_, Option<String>>(8)?,
                 }))
             },
         )
@@ -489,19 +503,23 @@ fn akun_json(connection: &Connection, id_akun: &str) -> Result<Option<Value>, Co
 pub fn list_accounts(state: &DesktopState) -> Result<Value, CommandError> {
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT a.id_akun, a.kode, a.nama, a.kelompok, a.saldo_normal, a.is_aktif,
-                    EXISTS(SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = a.id_akun) AS punya_jurnal
+                    EXISTS(SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = a.id_akun) AS punya_jurnal,
+                    a.dihapus_pada IS NOT NULL, {AKUN_BISA_DIHAPUS_SQL}
              FROM keu_akun a
+             WHERE {AKUN_TAMPIL_SQL}
              ORDER BY a.kode, a.id_akun
-             LIMIT 1000;",
-        )
+             LIMIT 1000;"
+        ))
         .map_err(db_error)?;
     let items = statement
         .query_map([], |row| {
             let id: String = row.get(0)?;
+            let sistem = is_akun_sistem(&id);
+            let dihapus = row.get::<_, i64>(7)? == 1;
             Ok(json!({
-                "sistem": is_akun_sistem(&id),
+                "sistem": sistem,
                 "id_akun": id,
                 "kode": row.get::<_, String>(1)?,
                 "nama": row.get::<_, String>(2)?,
@@ -509,6 +527,8 @@ pub fn list_accounts(state: &DesktopState) -> Result<Value, CommandError> {
                 "saldo_normal": row.get::<_, String>(4)?,
                 "is_aktif": row.get::<_, i64>(5)? == 1,
                 "punya_jurnal": row.get::<_, i64>(6)? == 1,
+                "dihapus": dihapus,
+                "bisa_dihapus": !sistem && !dihapus && row.get::<_, i64>(8)? == 1,
             }))
         })
         .map_err(db_error)?
@@ -528,15 +548,18 @@ pub fn save_account(state: &DesktopState, draft: Value) -> Result<Value, Command
 
     let id_akun = match bersih(&draft.id_akun) {
         Some(id) => {
-            let lama: (String, String) = transaction
+            let lama: (String, String, bool) = transaction
                 .query_row(
-                    "SELECT kelompok, saldo_normal FROM keu_akun WHERE id_akun = ?;",
+                    "SELECT kelompok, saldo_normal, dihapus_pada IS NOT NULL FROM keu_akun WHERE id_akun = ?;",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(db_error)?
                 .ok_or_else(|| invalid("Akun tidak ditemukan."))?;
+            if lama.2 {
+                return Err(invalid("Akun ini sudah dihapus."));
+            }
             let punya_jurnal: bool = transaction
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM keu_jurnal_baris WHERE id_akun = ?);",
@@ -559,9 +582,12 @@ pub fn save_account(state: &DesktopState, draft: Value) -> Result<Value, Command
         None => new_id("akun-"),
     };
 
+    // Kode akun yang sudah dihapus boleh dipakai lagi.
     let kode_dipakai: bool = transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM keu_akun WHERE LOWER(kode) = LOWER(?) AND id_akun <> ?);",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM keu_akun a WHERE LOWER(a.kode) = LOWER(?) AND a.id_akun <> ? AND {AKUN_TAMPIL_SQL});"
+            ),
             params![valid.kode, id_akun],
             |row| row.get(0),
         )
@@ -605,6 +631,62 @@ pub fn save_account(state: &DesktopState, draft: Value) -> Result<Value, Command
     )?;
     transaction.commit().map_err(db_error)?;
     Ok(json!({ "sukses": true, "id_akun": id_akun }))
+}
+
+/// Hapus permanen akun yang belum pernah dipakai. Barisnya tetap ada bertanda
+/// `dihapus_pada`, bukan dibuang: snapshot `delete_missing: false` tidak
+/// menyebarkan baris yang hilang, jadi akun itu akan hidup lagi dari perangkat
+/// lain. Ikut outbox `accounting-account/save`; cloud tidak pernah mencabut
+/// tandanya. Cermin `deleteAccount` di `services/accounting.ts`.
+pub fn delete_account(state: &DesktopState, id_akun: &str) -> Result<Value, CommandError> {
+    let id_akun = id_akun.trim();
+    if is_akun_sistem(id_akun) {
+        return Err(invalid("Akun sistem tidak bisa dihapus."));
+    }
+    let client_id = sync::ensure_client_id(state)?;
+    let mut connection = storage::database(&state.data_dir)?;
+    let transaction = connection.transaction().map_err(db_error)?;
+
+    let (dihapus, bisa): (bool, bool) = transaction
+        .query_row(
+            &format!(
+                "SELECT a.dihapus_pada IS NOT NULL, {AKUN_BISA_DIHAPUS_SQL} FROM keu_akun a WHERE a.id_akun = ?;"
+            ),
+            params![id_akun],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(db_error)?
+        .ok_or_else(|| invalid("Akun tidak ditemukan."))?;
+    if dihapus {
+        return Err(invalid("Akun ini sudah dihapus."));
+    }
+    if !bisa {
+        return Err(invalid(
+            "Akun sudah dipakai jurnal atau transaksi, jadi hanya bisa dinonaktifkan.",
+        ));
+    }
+
+    transaction
+        .execute(
+            "UPDATE keu_akun
+             SET dihapus_pada = datetime('now'), is_aktif = 0, updated_at = datetime('now')
+             WHERE id_akun = ?;",
+            params![id_akun],
+        )
+        .map_err(db_error)?;
+    let payload = akun_json(&transaction, id_akun)?.ok_or_else(CommandError::internal)?;
+    sync::enqueue(
+        &transaction,
+        &client_id,
+        "accounting-account",
+        "save",
+        id_akun,
+        &payload,
+        None,
+    )?;
+    transaction.commit().map_err(db_error)?;
+    Ok(json!({ "sukses": true }))
 }
 
 pub struct HeaderTulis {
@@ -1221,7 +1303,7 @@ pub fn trial_balance(state: &DesktopState, sampai: &str) -> Result<Value, Comman
     }
     let connection = storage::database(&state.data_dir)?;
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT a.id_akun, a.kode, a.nama, a.kelompok, a.saldo_normal, a.is_aktif,
                     COALESCE(t.debit, 0), COALESCE(t.kredit, 0)
              FROM keu_akun a
@@ -1232,9 +1314,10 @@ pub fn trial_balance(state: &DesktopState, sampai: &str) -> Result<Value, Comman
                  WHERE j.tanggal <= ?
                  GROUP BY b.id_akun
              ) t ON t.id_akun = a.id_akun
+             WHERE {AKUN_TAMPIL_SQL}
              ORDER BY a.kode, a.id_akun
-             LIMIT 1000;",
-        )
+             LIMIT 1000;"
+        ))
         .map_err(db_error)?;
     let mut total_debit = 0i64;
     let mut total_kredit = 0i64;
@@ -1359,6 +1442,7 @@ pub fn label_sumber_kas(sumber: &str) -> &'static str {
         "Kasbon" => "Kasbon karyawan",
         "Inventaris" => "Pembelian barang dan servis",
         "Cicilan" => "Pembayaran cicilan pembelian",
+        "Reimburse" => "Pembayaran reimbursement",
         "Manual" => "Jurnal umum",
         _ => "Pembatalan",
     }
@@ -1405,7 +1489,7 @@ fn saldo_per_akun(
     sampai: &str,
 ) -> Result<Vec<AkunSaldo>, CommandError> {
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT a.id_akun, a.kode, a.nama, a.kelompok, a.saldo_normal,
                     COALESCE(t.debit, 0), COALESCE(t.kredit, 0)
              FROM keu_akun a
@@ -1416,9 +1500,10 @@ fn saldo_per_akun(
                  WHERE j.tanggal >= ?1 AND j.tanggal <= ?2
                  GROUP BY b.id_akun
              ) t ON t.id_akun = a.id_akun
+             WHERE {AKUN_TAMPIL_SQL}
              ORDER BY a.kode, a.id_akun
-             LIMIT 1000;",
-        )
+             LIMIT 1000;"
+        ))
         .map_err(db_error)?;
     let rows = statement
         .query_map(params![dari, sampai], |row| {
@@ -1562,9 +1647,12 @@ fn payload_text(row: &Value, key: &str) -> Option<String> {
 /// (cermin `aturan_ubah_akun`). Perangkat hanya memeriksa jurnal yang sudah
 /// ia tarik, jadi suntingan offline bisa memindahkan akun yang di cloud sudah
 /// dipakai, dan seluruh laporan lamanya ikut berpindah kelompok.
+/// `dihapus_pada` tidak pernah dicabut dan akun yang dihapus selalu nonaktif,
+/// jadi simpanan dari perangkat yang belum menarik penghapusan tidak
+/// menghidupkannya lagi.
 pub const CLOUD_UPSERT_ACCOUNT_SQL: &str = "INSERT INTO keu_akun (
-        id_akun, kode, nama, kelompok, saldo_normal, is_aktif, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))
+        id_akun, kode, nama, kelompok, saldo_normal, is_aktif, created_at, updated_at, dihapus_pada
+    ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?)
     ON CONFLICT(id_akun) DO UPDATE SET
         kode = excluded.kode,
         nama = excluded.nama,
@@ -1572,8 +1660,12 @@ pub const CLOUD_UPSERT_ACCOUNT_SQL: &str = "INSERT INTO keu_akun (
             THEN keu_akun.kelompok ELSE excluded.kelompok END,
         saldo_normal = CASE WHEN EXISTS (SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = keu_akun.id_akun)
             THEN keu_akun.saldo_normal ELSE excluded.saldo_normal END,
-        is_aktif = excluded.is_aktif,
-        updated_at = excluded.updated_at;";
+        is_aktif = CASE
+            WHEN COALESCE(keu_akun.dihapus_pada, excluded.dihapus_pada) IS NULL THEN excluded.is_aktif
+            ELSE 0
+        END,
+        updated_at = excluded.updated_at,
+        dihapus_pada = COALESCE(keu_akun.dihapus_pada, excluded.dihapus_pada);";
 
 /// Nilai `keu_akun` dari payload event `accounting-account/save`.
 pub fn cloud_account_values(row: &Value, entity_key: &str) -> Option<Vec<Value>> {
@@ -1587,7 +1679,9 @@ pub fn cloud_account_values(row: &Value, entity_key: &str) -> Option<Vec<Value>>
     if id.is_empty() {
         return None;
     }
+    let dihapus_pada = payload_text(row, "dihapus_pada");
     let is_aktif = match row.get("is_aktif").and_then(Value::as_i64) {
+        _ if dihapus_pada.is_some() => 0,
         Some(0) => 0,
         _ => 1,
     };
@@ -1600,6 +1694,7 @@ pub fn cloud_account_values(row: &Value, entity_key: &str) -> Option<Vec<Value>>
         json!(is_aktif),
         json!(payload_text(row, "created_at")),
         json!(payload_text(row, "updated_at")),
+        json!(dihapus_pada),
     ])
 }
 
@@ -2247,6 +2342,134 @@ mod tests {
             galat.message,
             "Baris 2: akun tidak ditemukan atau nonaktif."
         );
+    }
+
+    fn cari_akun(state: &DesktopState, id: &str) -> Option<Value> {
+        list_accounts(state).expect("daftar")["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["id_akun"] == id)
+            .cloned()
+    }
+
+    // Cermin "hapus akun hanya yang belum dipakai" di `services/accounting.test.ts`.
+    #[test]
+    fn hapus_akun_hanya_yang_belum_dipakai() {
+        let (_dir, state) = state_uji();
+        let akun = |kode: &str| {
+            save_account(
+                &state,
+                json!({ "kode": kode, "nama": "Beban Salah", "kelompok": "Beban", "saldo_normal": "Debit" }),
+            )
+            .expect("akun")["id_akun"]
+                .as_str()
+                .expect("id")
+                .to_owned()
+        };
+        let salah = akun("5-9800");
+        let dipakai = akun("5-9801");
+        post_journal(
+            &state,
+            "bendahara",
+            json!({
+                "tanggal": "2026-10-12",
+                "keterangan": "Ongkos",
+                "baris": [
+                    { "id_akun": "akun-kas", "kredit": 1_000 },
+                    { "id_akun": dipakai, "debit": 1_000 }
+                ]
+            }),
+        )
+        .expect("jurnal");
+
+        assert_eq!(cari_akun(&state, &salah).expect("salah")["bisa_dihapus"], json!(true));
+        assert_eq!(cari_akun(&state, &dipakai).expect("dipakai")["bisa_dihapus"], json!(false));
+        assert_eq!(cari_akun(&state, "akun-kas").expect("kas")["bisa_dihapus"], json!(false));
+        assert_eq!(
+            delete_account(&state, "akun-kas").expect_err("sistem").message,
+            "Akun sistem tidak bisa dihapus."
+        );
+        assert_eq!(
+            delete_account(&state, &dipakai).expect_err("dipakai").message,
+            "Akun sudah dipakai jurnal atau transaksi, jadi hanya bisa dinonaktifkan."
+        );
+
+        delete_account(&state, &salah).expect("hapus");
+        let events = outbox(&state, "accounting-account");
+        let terakhir = events.last().expect("event hapus");
+        assert!(terakhir["dihapus_pada"].is_string());
+        assert_eq!(terakhir["is_aktif"], json!(0));
+        assert_eq!(cloud_account_values(terakhir, "").expect("sah di cloud")[5], json!(0));
+
+        assert!(cari_akun(&state, &salah).is_none());
+        let neraca = trial_balance(&state, "2099-12-31").expect("neraca");
+        assert!(!neraca["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|item| item["id_akun"] == salah.as_str()));
+        assert_eq!(
+            delete_account(&state, &salah).expect_err("dua kali").message,
+            "Akun ini sudah dihapus."
+        );
+        let ubah = save_account(
+            &state,
+            json!({ "id_akun": salah, "kode": "5-9800", "nama": "x", "kelompok": "Beban", "saldo_normal": "Debit" }),
+        )
+        .expect_err("disunting");
+        assert_eq!(ubah.message, "Akun ini sudah dihapus.");
+        akun("5-9800");
+
+        // Jurnal dari perangkat yang offline saat penghapusan: akunnya tampil
+        // lagi sebagai nonaktif supaya neraca tetap seimbang.
+        storage::database(&state.data_dir)
+            .expect("db")
+            .execute(
+                "UPDATE keu_jurnal_baris SET id_akun = ? WHERE id_akun = ?;",
+                params![salah, dipakai],
+            )
+            .expect("pindah baris");
+        let muncul = cari_akun(&state, &salah).expect("tampil lagi");
+        assert_eq!(muncul["dihapus"], json!(true));
+        assert_eq!(muncul["is_aktif"], json!(false));
+        assert_eq!(muncul["bisa_dihapus"], json!(false));
+    }
+
+    #[test]
+    fn cloud_tidak_mencabut_tanda_hapus() {
+        let (_dir, state) = state_uji();
+        let connection = storage::database(&state.data_dir).expect("db");
+        let terapkan = |payload: Value| {
+            let nilai: Vec<rusqlite::types::Value> = cloud_account_values(&payload, "")
+                .expect("payload sah")
+                .into_iter()
+                .map(|nilai| match nilai {
+                    Value::String(teks) => teks.into(),
+                    Value::Number(angka) => angka.as_i64().expect("i64").into(),
+                    _ => rusqlite::types::Value::Null,
+                })
+                .collect();
+            connection
+                .execute(CLOUD_UPSERT_ACCOUNT_SQL, rusqlite::params_from_iter(nilai))
+                .expect("upsert");
+        };
+        let dasar = json!({ "id_akun": "akun-x", "kode": "5-9900", "nama": "X", "kelompok": "Beban", "saldo_normal": "Debit", "is_aktif": 1 });
+        terapkan(dasar.clone());
+        let mut hapus = dasar.clone();
+        hapus["dihapus_pada"] = json!("2026-11-21 01:00:00");
+        terapkan(hapus);
+        // Perangkat yang belum menarik penghapusan menyimpan ulang akun aktif.
+        terapkan(dasar);
+        let (dihapus_pada, is_aktif): (Option<String>, i64) = connection
+            .query_row(
+                "SELECT dihapus_pada, is_aktif FROM keu_akun WHERE id_akun = 'akun-x';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("baris");
+        assert_eq!(dihapus_pada.as_deref(), Some("2026-11-21 01:00:00"));
+        assert_eq!(is_aktif, 0);
     }
 
     #[test]

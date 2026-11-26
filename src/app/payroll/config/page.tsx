@@ -7,9 +7,11 @@ import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
 import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { MemuatHalaman } from "@/components/ui/MemuatHalaman";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { QuickActionGrid } from "@/components/ui/QuickActionGrid";
 import { hasPermission } from "@/lib/auth/access";
 import { DAILY_RATE_MAX, DAILY_RATE_MIN } from "@/lib/constants/payroll";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -365,11 +367,7 @@ export default function PayrollConfigPage() {
   };
 
   if (!isHydrated || authLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
-        Memuat otorisasi...
-      </div>
-    );
+    return <MemuatHalaman />;
   }
 
   return (
@@ -414,59 +412,29 @@ export default function PayrollConfigPage() {
         ) : null}
 
         {/* Sub-modul Navigasi */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Link
-            href="/payroll/config/overtime-rules"
-            className="p-4 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition flex items-center justify-between group"
-          >
-            <div>
-              <div className="text-sm font-semibold text-slate-200 group-hover:text-sky-400 transition">
-                Jenjang Lembur PP 35/2021
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                Pengali Hari Kerja vs Hari Libur
-              </div>
-            </div>
-            <Icon
-              name="arrow-right"
-              className="w-4 h-4 text-slate-500 group-hover:text-sky-400 transition"
-            />
-          </Link>
-          <Link
-            href="/payroll/config/tax-rules"
-            className="p-4 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition flex items-center justify-between group"
-          >
-            <div>
-              <div className="text-sm font-semibold text-slate-200 group-hover:text-sky-400 transition">
-                PPh 21 (TER & Pasal 17)
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                Tarif Efektif PMK 168/2023 & UU HPP
-              </div>
-            </div>
-            <Icon
-              name="arrow-right"
-              className="w-4 h-4 text-slate-500 group-hover:text-sky-400 transition"
-            />
-          </Link>
-          <Link
-            href="/payroll/config/bpjs-rules"
-            className="p-4 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition flex items-center justify-between group"
-          >
-            <div>
-              <div className="text-sm font-semibold text-slate-200 group-hover:text-sky-400 transition">
-                Aturan Iuran BPJS
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                JHT, JP, JKK, JKM, BPJS Kesehatan
-              </div>
-            </div>
-            <Icon
-              name="arrow-right"
-              className="w-4 h-4 text-slate-500 group-hover:text-sky-400 transition"
-            />
-          </Link>
-        </div>
+        <QuickActionGrid
+          kolom={3}
+          tiles={[
+            {
+              href: "/payroll/config/overtime-rules",
+              icon: "clock",
+              title: "Jenjang Lembur PP 35/2021",
+              subtitle: "Pengali Hari Kerja vs Hari Libur",
+            },
+            {
+              href: "/payroll/config/tax-rules",
+              icon: "document",
+              title: "PPh 21 (TER & Pasal 17)",
+              subtitle: "Tarif Efektif PMK 168/2023 & UU HPP",
+            },
+            {
+              href: "/payroll/config/bpjs-rules",
+              icon: "users",
+              title: "Aturan Iuran BPJS",
+              subtitle: "JHT, JP, JKK, JKM, BPJS Kesehatan",
+            },
+          ]}
+        />
 
         {/* Tabs */}
         <div className="flex border-b border-slate-800 gap-4">

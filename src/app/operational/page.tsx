@@ -16,6 +16,7 @@ import { Icon } from "@/components/ui/Icon";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { PilihCari } from "@/components/ui/PilihCari";
+import { TabBar } from "@/components/ui/TabBar";
 import { canAccessArea, hasPermission } from "@/lib/auth/access";
 import { parseCsv } from "@/lib/client/xlsx";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -622,29 +623,21 @@ export default function OperationalPage() {
         </div>
       ) : null}
 
-      {/* Tab Switcher */}
-      <div className="flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-slate-900/60 p-2 font-mono text-xs">
-        {(["correction", "backup", "import"] as Tab[]).map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => {
-              setTab(value);
-              setRecords([]);
-              void load(value, false, false);
-            }}
-            className={`rounded-xl px-4 py-2.5 font-bold transition ${
-              tab === value
-                ? "bg-sky-400 text-slate-950 shadow-md shadow-sky-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-          >
-            {value === "correction" && "Koreksi Admin"}
-            {value === "backup" && "Penugasan Backup"}
-            {value === "import" && "Import Manual"}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        ariaLabel="Bagian operasional"
+        idPrefix="operational"
+        value={tab}
+        onChange={(value) => {
+          setTab(value);
+          setRecords([]);
+          void load(value, false, false);
+        }}
+        tabs={[
+          { id: "correction", label: "Koreksi Admin" },
+          { id: "backup", label: "Penugasan Backup" },
+          { id: "import", label: "Import Manual" },
+        ]}
+      />
 
       {/* TAB 1: KOREKSI ADMIN */}
       {tab === "correction" && hasPermission(user, "corrections.manage") ? (
@@ -793,7 +786,7 @@ export default function OperationalPage() {
             type="button"
             disabled={busy}
             onClick={submitCorrection}
-            className="min-h-11 w-full rounded-xl bg-sky-400 font-black text-slate-950 transition hover:bg-sky-300 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm shadow-md flex items-center justify-center gap-2"
+            className="min-h-11 w-full rounded-xl bg-sky-700 font-black text-on-accent transition hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm shadow-md flex items-center justify-center gap-2"
           >
             {busy ? (
               <>
@@ -920,7 +913,7 @@ export default function OperationalPage() {
             type="button"
             disabled={busy}
             onClick={submitBackup}
-            className="min-h-11 w-full rounded-xl bg-sky-400 font-black text-slate-950 transition hover:bg-sky-300 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm shadow-md flex items-center justify-center gap-2"
+            className="min-h-11 w-full rounded-xl bg-sky-700 font-black text-on-accent transition hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm shadow-md flex items-center justify-center gap-2"
           >
             {busy ? (
               <>

@@ -112,6 +112,8 @@ export interface JatahCuti {
 
 export interface AkhirPeriode {
   aturan: AturanCuti;
+  /** Jabatan beraturan cuti sendiri (`aturanCutiJabatan`). */
+  aturan_jabatan?: Record<string, AturanCuti>;
   aturan_lembur: AturanLembur;
   mode_reimburse: string;
   belum_diproses: Array<{

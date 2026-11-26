@@ -85,7 +85,7 @@ const LABEL_TOMBOL: Record<JenisDriver, string> = {
 const GALAT_KOTAK =
   "p-3 rounded-lg border border-rose-500/30 bg-rose-500/20 text-sm text-rose-100";
 const TOMBOL_BESAR =
-  "w-full min-h-16 rounded-2xl bg-sky-600 px-4 py-4 text-lg font-bold text-white hover:bg-sky-500 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300";
+  "w-full min-h-16 rounded-2xl bg-sky-700 px-4 py-4 text-lg font-bold text-on-accent hover:bg-sky-600 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300";
 
 function tanggalWib(selisihHari: number): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(

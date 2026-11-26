@@ -393,11 +393,30 @@ function bulanPeriode(jenis: string): number | null {
   }
 }
 
-/** Cermin `periode_rentang`. */
+/** Periode bebas penilaian (v47): tanggal mulai dan selesai dari layar. */
+export const PERIODE_RENTANG = "Rentang Tanggal";
+export const MAKS_HARI_PERIODE = 366;
+/** Jenis periode PENILAIAN; periode bawaan pengaturan tetap `PERIODE_JENIS`. */
+export const JENIS_PERIODE_PENILAIAN = [
+  ...PERIODE_JENIS,
+  PERIODE_RENTANG,
+] as const;
+
+/** Cermin `periode_rentang`. `selesai` hanya dipakai `Rentang Tanggal`. */
 export function periodeRentang(
   jenis: string,
   mulai: string,
+  selesai = "",
 ): Hasil<[string, string]> {
+  if (jenis === PERIODE_RENTANG) {
+    if (!isValidDate(mulai) || !isValidDate(selesai))
+      return gagal("Rentang tanggal periode tidak valid.");
+    if (selesai < mulai)
+      return gagal("Tanggal selesai periode sebelum tanggal mulai.");
+    if (selesai > tambahHari(mulai, MAKS_HARI_PERIODE - 1))
+      return gagal(`Periode paling panjang ${MAKS_HARI_PERIODE} hari.`);
+    return ok([mulai, selesai]);
+  }
   const n = bulanPeriode(jenis);
   if (n === null) {
     return gagal(
@@ -542,7 +561,11 @@ export function validasiPenilaian(masukan: unknown): Hasil<PenilaianSah> {
   const id_karyawan = teks(draft, "id_karyawan");
   if (id_karyawan === "") return gagal("Pilih karyawan.");
   const periode_jenis = teks(draft, "periode_jenis");
-  const periode = periodeRentang(periode_jenis, teks(draft, "periode_mulai"));
+  const periode = periodeRentang(
+    periode_jenis,
+    teks(draft, "periode_mulai"),
+    teks(draft, "periode_selesai"),
+  );
   if (!periode.ok) return periode;
   const catatan = opsional(draft, "catatan", "Catatan penilaian", MAKS_CATATAN);
   if (!catatan.ok) return catatan;

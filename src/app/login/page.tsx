@@ -11,7 +11,9 @@ import {
   DatabaseNotConfiguredNotice,
 } from "@/components/DatabaseNotConfiguredNotice";
 import { LicenseActivationPanel } from "@/components/license/LicenseActivationPanel";
+import { BrandLogo } from "@/components/ui/BrandLogo";
 import { Icon } from "@/components/ui/Icon";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { LoginSceneGate } from "@/components/visual/LoginSceneGate";
 import { VisualProvider } from "@/components/visual/VisualProvider";
 import { BRANDING } from "@/lib/constants/branding";
@@ -29,6 +31,57 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useLicenseStatus } from "@/lib/hooks/useLicenseStatus";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 import { isDesktopRuntime } from "@/lib/runtime/app-runtime";
+import packageJson from "../../../package.json";
+
+/** Hanya username yang diingat, dan hanya bila pengguna mencentangnya. */
+const REMEMBER_USERNAME_KEY = "sppg_ingat_username";
+
+/**
+ * Hero navy di kiri (atas pada layar sempit) dan panel yang ikut tema.
+ * Dipakai juga oleh layar lisensi dan "database belum diatur" supaya semua
+ * pintu masuk tampil sama.
+ */
+function LoginFrame({
+  appName,
+  companyName,
+  children,
+}: {
+  appName: string;
+  companyName: string | null;
+  children: React.ReactNode;
+}) {
+  const hasCompany =
+    Boolean(companyName) && companyName !== BRANDING.defaultCompanyName;
+  return (
+    <main className="login-shell min-h-screen flex items-center justify-center p-4 sm:p-6 lg:p-10 font-sans">
+      <div className="login-frame w-full max-w-5xl overflow-hidden rounded-3xl grid lg:grid-cols-[1.1fr_1fr]">
+        <section className="login-hero overflow-hidden px-6 py-7 sm:px-10 lg:py-10 flex flex-col lg:min-h-[600px]">
+          {/* Konstelasi 3D: hanya dimuat bila perangkat sanggup. */}
+          <LoginSceneGate className="pointer-events-none absolute inset-0 -z-10 opacity-70" />
+          <div className="flex items-center gap-3">
+            <BrandLogo size={48} />
+            {hasCompany ? (
+              <p className="login-hero-name text-base sm:text-lg font-bold leading-tight">
+                {companyName}
+              </p>
+            ) : null}
+          </div>
+          <div className="mt-8 lg:my-auto">
+            <h1 className="login-hero-title text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight">
+              {appName}
+            </h1>
+            <p className="login-hero-sub mt-2 lg:mt-4 text-sm sm:text-base lg:text-lg">
+              Sistem Absensi & Manajemen Operator
+            </p>
+          </div>
+        </section>
+        <section className="login-panel flex flex-col px-6 py-7 sm:px-10 lg:py-10">
+          {children}
+        </section>
+      </div>
+    </main>
+  );
+}
 
 export default function LoginPage() {
   const isHydrated = useHydrated();
@@ -41,6 +94,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [rememberUsername, setRememberUsername] = useState<boolean>(false);
   // Kolom kode baru muncul setelah server menyatakan password sudah benar dan
   // tinggal kode 2FA-nya. Menampilkannya lebih awal akan membocorkan akun mana
   // yang memakai verifikasi dua langkah.
@@ -68,6 +122,18 @@ export default function LoginPage() {
   useEffect(() => {
     refreshBootstrapStatus();
   }, [refreshBootstrapStatus]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(REMEMBER_USERNAME_KEY);
+      if (saved) {
+        setUsername(saved);
+        setRememberUsername(true);
+      }
+    } catch {
+      // Penyimpanan diblokir: form tetap jalan tanpa username tersimpan.
+    }
+  }, []);
 
   // `null` pada build Web yang tidak menegakkan lisensi. Dibaca setelah database siap:
   // database yang belum diprovisioning meminta lisensinya di BootstrapPanel.
@@ -124,6 +190,15 @@ export default function LoginPage() {
         needsTotp ? totpCode : undefined,
       );
       if (res.sukses) {
+        try {
+          if (rememberUsername) {
+            localStorage.setItem(REMEMBER_USERNAME_KEY, username.trim());
+          } else {
+            localStorage.removeItem(REMEMBER_USERNAME_KEY);
+          }
+        } catch {
+          // Gagal menyimpan username tidak boleh menggagalkan login.
+        }
         router.replace("/");
       } else {
         if (res.requiresTotp) setNeedsTotp(true);
@@ -147,10 +222,10 @@ export default function LoginPage() {
 
   if (!isHydrated || authLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+      <div className="login-shell min-h-screen flex flex-col items-center justify-center p-6 font-sans">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-xs text-slate-400 font-mono animate-pulse">
+          <div className="w-10 h-10 border-4 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+          <p className="login-muted text-xs animate-pulse">
             Memuat Sistem Otentikasi...
           </p>
         </div>
@@ -163,8 +238,8 @@ export default function LoginPage() {
   // dipakai, dan menampilkannya membuat aplikasi tampak rusak.
   if (webProvisioning?.databaseConfigured === false) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 sm:p-6 font-sans">
-        <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <LoginFrame appName={appName} companyName={companyName}>
+        <div className="my-auto">
           <h1 className="text-base font-bold text-white">
             {DATABASE_NOT_CONFIGURED_TITLE}
           </h1>
@@ -177,7 +252,7 @@ export default function LoginPage() {
             checking={checkingProvisioning}
           />
         </div>
-      </main>
+      </LoginFrame>
     );
   }
   if (
@@ -187,8 +262,8 @@ export default function LoginPage() {
     isLicenseBlocking(licenseStatus)
   ) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 sm:p-6 font-sans">
-        <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <LoginFrame appName={appName} companyName={companyName}>
+        <div className="my-auto">
           <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">
             Langkah 1 dari 2 · setelah lisensi aktif, lanjut ke pengaturan
             database
@@ -205,7 +280,7 @@ export default function LoginPage() {
             Perangkat ini bergabung ke database lembaga yang sudah berlisensi
           </button>
         </div>
-      </main>
+      </LoginFrame>
     );
   }
   if (bootstrapStatus?.required) {
@@ -227,8 +302,8 @@ export default function LoginPage() {
   }
   if (licenseStatus && isLicenseBlocking(licenseStatus)) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 sm:p-6 font-sans">
-        <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl">
+      <LoginFrame appName={appName} companyName={companyName}>
+        <div className="my-auto">
           <LicenseActivationPanel
             status={licenseStatus}
             onInstalled={(next) => {
@@ -250,49 +325,34 @@ export default function LoginPage() {
             </button>
           ) : null}
         </div>
-      </main>
+      </LoginFrame>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8 font-sans relative overflow-hidden select-none">
-      {/* Background Decorative Glow */}
-      <div className="absolute -top-40 -left-40 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none"></div>
-      <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-sky-600/15 rounded-full blur-3xl pointer-events-none"></div>
-
-      {/* Konstelasi 3D: hanya dimuat bila perangkat sanggup, dan tidak pernah
-          menghalangi form login karena berada di lapisan paling belakang. */}
+    <LoginFrame appName={appName} companyName={companyName}>
       <VisualProvider />
-      <LoginSceneGate className="pointer-events-none absolute inset-0 z-0 opacity-80" />
+      <div className="flex items-center justify-end gap-2">
+        <span className="login-chip inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium">
+          <span
+            aria-hidden="true"
+            className={`size-2 rounded-full ${
+              isOnline ? "bg-emerald-400" : "bg-amber-400"
+            }`}
+          />
+          {isOnline ? "Jaringan tersedia" : "Tidak ada jaringan"}
+        </span>
+        <ThemeToggle variant="compact" />
+      </div>
 
-      {/* Main Glass Card Container */}
-      <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 backdrop-blur-2xl rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 relative z-10">
-        {/* Header Branding */}
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center gap-2 px-3 py-1 bg-slate-800/80 border border-slate-700/80 rounded-full text-xs font-mono">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isOnline ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-              }`}
-            ></span>
-            <span className="text-slate-300">
-              {isOnline ? "Jaringan tersedia" : "Tidak ada jaringan"}
-            </span>
-          </div>
-
-          <div className="pt-2">
-            <div className="w-12 h-12 bg-gradient-to-tr from-emerald-600 to-sky-500 rounded-2xl mx-auto flex items-center justify-center shadow-lg shadow-emerald-950/60 font-bold text-white text-xl">
-              🔑
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight mt-3">
-              {companyName && companyName !== BRANDING.defaultCompanyName
-                ? `${appName} — ${companyName}`
-                : appName}
-            </h1>
-            <p className="text-xs text-slate-400">
-              Masuk ke Sistem Absensi & Manajemen Operator
-            </p>
-          </div>
+      <div className="my-auto w-full max-w-md mx-auto lg:mx-0 pt-8 space-y-6">
+        <div>
+          <h2 className="login-heading text-2xl sm:text-3xl font-extrabold tracking-tight">
+            Masuk ke Aplikasi
+          </h2>
+          <p className="login-muted mt-1 text-sm">
+            Masukkan username dan kata sandi operator Anda.
+          </p>
         </div>
 
         {/* Database cloud tersimpan tetapi tidak menjawab: tawarkan konfigurasi
@@ -369,133 +429,140 @@ export default function LoginPage() {
           </div>
         ) : null}
 
-        {/* Error Alert Message */}
         {errorMsg && (
-          <div className="p-3.5 bg-rose-950/60 border border-rose-800/80 rounded-2xl text-rose-300 text-xs flex items-start gap-2.5 animate-fadeIn">
-            <span className="text-base leading-none">⚠️</span>
+          <div
+            role="alert"
+            className="p-3.5 bg-rose-950/60 border border-rose-800/80 rounded-2xl text-rose-300 text-xs flex items-start gap-2.5 animate-fadeIn"
+          >
             <div className="flex-1 font-medium">{errorMsg}</div>
           </div>
         )}
 
-        {/* Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
+          <div>
             <label
               htmlFor="username-input"
-              className="text-xs font-semibold text-slate-300 uppercase tracking-wider block"
+              className="login-label mb-1.5 block text-sm font-medium"
             >
               Username / Kode Operator
             </label>
-            <div className="relative">
+            <div className="login-field flex items-center gap-3 rounded-xl px-4">
+              <Icon name="user" className="login-field-icon size-5 shrink-0" />
               <input
                 id="username-input"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Masukkan username atau kode operator"
+                placeholder="username atau kode"
                 autoComplete="username"
-                className="w-full bg-slate-950/90 border border-slate-800 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white px-4 py-3 rounded-xl text-xs sm:text-sm font-mono transition outline-none"
+                className="min-h-12 w-full min-w-0 bg-transparent text-sm outline-none"
               />
             </div>
           </div>
 
-          <div className="space-y-1.5">
+          <div>
             <label
               htmlFor="password-input"
-              className="text-xs font-semibold text-slate-300 uppercase tracking-wider block"
+              className="login-label mb-1.5 block text-sm font-medium"
             >
               Kata Sandi / PIN
             </label>
-            <div className="relative">
+            <div className="login-field flex items-center gap-3 rounded-xl pl-4 pr-1">
+              <Icon name="lock" className="login-field-icon size-5 shrink-0" />
               <input
                 id="password-input"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Masukkan kata sandi..."
+                placeholder="kata sandi"
                 autoComplete="current-password"
-                className="w-full bg-slate-950/90 border border-slate-800 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white px-4 py-3 pr-12 rounded-xl text-xs sm:text-sm font-mono transition outline-none"
+                className="min-h-12 w-full min-w-0 bg-transparent text-sm outline-none"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs px-2 py-1 rounded transition flex items-center gap-1.5"
-                aria-label={
-                  showPassword ? "Sembunyikan kata sandi" : "Lihat kata sandi"
-                }
-                title={
-                  showPassword ? "Sembunyikan kata sandi" : "Lihat kata sandi"
-                }
+                aria-label="Tampilkan kata sandi"
+                aria-pressed={showPassword}
+                className="login-field-btn grid size-10 shrink-0 place-items-center rounded-lg transition"
               >
                 <Icon
                   name={showPassword ? "eye-off" : "eye"}
-                  className="size-4"
+                  className="size-5"
                 />
-                <span className="text-[11px] font-medium">
-                  {showPassword ? "Sembunyikan" : "Lihat"}
-                </span>
               </button>
             </div>
           </div>
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 active:scale-[0.99] text-white font-bold text-sm rounded-xl transition shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isSubmitting ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                <span>Memverifikasi Login...</span>
-              </>
-            ) : (
-              <span>Masuk Aplikasi →</span>
-            )}
-          </button>
-
           {needsTotp ? (
-            <div className="space-y-1.5">
+            <div>
               <label
                 htmlFor="totp-input"
-                className="text-xs font-semibold text-slate-300 uppercase tracking-wider block"
+                className="login-label mb-1.5 block text-sm font-medium"
               >
                 Kode Verifikasi 2FA
               </label>
-              <input
-                id="totp-input"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={16}
-                value={totpCode}
-                onChange={(e) => setTotpCode(e.target.value)}
-                placeholder="123456 atau kode cadangan"
-                className="w-full bg-slate-950/90 border border-slate-800 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-white px-4 py-3 rounded-xl text-sm font-mono tracking-[0.3em] transition outline-none"
-              />
-              <p className="text-[11px] text-slate-500">
+              <div className="login-field rounded-xl px-4">
+                <input
+                  id="totp-input"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={16}
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  placeholder="123456 atau kode cadangan"
+                  className="min-h-12 w-full min-w-0 bg-transparent text-sm font-mono tracking-[0.3em] outline-none"
+                />
+              </div>
+              <p className="login-muted mt-1.5 text-xs">
                 Buka aplikasi autentikator Anda, atau masukkan salah satu kode
                 cadangan.
               </p>
             </div>
           ) : null}
 
-          <div className="text-center">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+            <label className="login-label inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={rememberUsername}
+                onChange={(e) => setRememberUsername(e.target.checked)}
+                className="login-check size-4"
+              />
+              Ingat username
+            </label>
             <Link
               href="/lupa-password"
-              className="text-xs font-semibold text-slate-400 transition hover:text-emerald-300"
+              className="login-link rounded text-sm font-semibold"
             >
               Lupa Password?
             </Link>
           </div>
-        </form>
 
-        {/* Footer info */}
-        <div className="text-center text-[10px] text-slate-600 font-mono space-y-0.5">
-          {licenseStatus?.license ? (
-            <p>Berlisensi untuk {licenseStatus.license.holder}</p>
-          ) : null}
-          <p>{appName} v0.1.0 • KOS</p>
-        </div>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="login-btn w-full min-h-12 px-4 font-bold text-sm rounded-xl transition active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSubmitting ? (
+              <>
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                <span>Memverifikasi Login...</span>
+              </>
+            ) : (
+              <span>Masuk Aplikasi</span>
+            )}
+          </button>
+        </form>
       </div>
-    </main>
+
+      <footer className="login-muted mt-8 text-center text-xs space-y-0.5">
+        {licenseStatus?.license ? (
+          <p>Berlisensi untuk {licenseStatus.license.holder}</p>
+        ) : null}
+        <p>
+          {appName} v{packageJson.version} • KOS
+        </p>
+      </footer>
+    </LoginFrame>
   );
 }

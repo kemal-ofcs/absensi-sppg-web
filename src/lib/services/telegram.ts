@@ -245,6 +245,18 @@ export async function bacaPengaturan(client: Client) {
   );
 }
 
+/**
+ * Cermin `tutup_buku_siap`: Telegram aktif, sakelar `tutup_buku` menyala,
+ * dan grup Keuangan sudah diatur. Dipakai pemberitahuan saldo berubah di
+ * `tutup-buku.ts`.
+ */
+export async function tutupBukuSiap(client: Client) {
+  const pengaturan = await bacaPengaturan(client);
+  return (
+    pengaturan.aktif && pengaturan.token !== "" && pengaturan.siap("tutup_buku")
+  );
+}
+
 function teks(nilai: unknown) {
   return nilai == null ? "" : String(nilai).trim();
 }

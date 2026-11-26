@@ -63,7 +63,7 @@ type Aksi =
 
 const WARNA_STATUS: Record<StatusCicilan, string> = {
   Draf: "text-slate-300",
-  "Menunggu barang": "text-sky-300",
+  "Menunggu barang": "text-cyan-300",
   "Menunggu ACC ulang": "text-amber-300",
   Berjalan: "text-sky-300",
   Menunggak: "text-rose-300",

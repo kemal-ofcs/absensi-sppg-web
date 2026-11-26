@@ -6,6 +6,7 @@ import { AutoAlfaRunner } from "./AutoAlfaRunner";
 import { AutoFotoCleanupRunner } from "./AutoFotoCleanupRunner";
 import { AutoSyncRunner } from "./AutoSyncRunner";
 import { AutoTelegramRunner } from "./AutoTelegramRunner";
+import { AutoTutupBukuRunner } from "./AutoTutupBukuRunner";
 import { HeaderBar } from "./HeaderBar";
 import { LicenseNotice } from "./license/LicenseNotice";
 import { AuroraBackground } from "./visual/AuroraBackground";
@@ -48,6 +49,7 @@ export function AppShell({ children, contentClassName = "" }: AppShellProps) {
       <AutoAlfaRunner />
       <AutoSyncRunner />
       <AutoTelegramRunner />
+      <AutoTutupBukuRunner />
       <AutoFotoCleanupRunner />
       <a
         href="#main-content"

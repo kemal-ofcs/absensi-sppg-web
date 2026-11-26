@@ -153,7 +153,7 @@ fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
     let Some(existing) = existing else {
         return Ok(());
     };
-    if existing.contains("'Cicilan'") {
+    if existing.contains("'Reimburse'") {
         return Ok(());
     }
 
@@ -174,7 +174,7 @@ fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
           nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
           nomor TEXT NOT NULL,
           keterangan TEXT NOT NULL,
-          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
+          sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Reimburse', 'Pembatalan')),
           id_sumber TEXT,
           id_jurnal_batal TEXT,
           dibuat_oleh TEXT NOT NULL,
@@ -189,6 +189,48 @@ fn ensure_journal_source_values(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(&script)
         .map_err(|_| "Tabel keu_jurnal tidak dapat dibangun ulang.".to_string())?;
+    Ok(())
+}
+
+/// v47: periode kinerja `Rentang Tanggal` masuk CHECK `periode_jenis`. DDL lama
+/// disalin apa adanya dan hanya daftarnya yang diperluas (pola
+/// `ensure_import_manual_source` di cloud), supaya kolom hasil ALTER ikut.
+pub(crate) const PERIODE_KINERJA_LAMA: &str = "'Semester', 'Tahunan')";
+pub(crate) const PERIODE_KINERJA_BARU: &str = "'Semester', 'Tahunan', 'Rentang Tanggal')";
+
+fn ensure_periode_kinerja_values(connection: &Connection) -> Result<(), String> {
+    let ddl: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hr_kinerja_penilaian';",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| "Skema hr_kinerja_penilaian tidak dapat diperiksa.".to_string())?;
+    let Some(ddl) = ddl.filter(|ddl| ddl.contains(PERIODE_KINERJA_LAMA)) else {
+        return Ok(());
+    };
+    let turunan = definisi_turunan(connection, "hr_kinerja_penilaian")?
+        .into_iter()
+        .map(|sql| format!("{sql};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let baru = ddl
+        .replacen("hr_kinerja_penilaian", "hr_kinerja_penilaian__rebuild", 1)
+        .replacen(PERIODE_KINERJA_LAMA, PERIODE_KINERJA_BARU, 1);
+    let script = format!(
+        "BEGIN;
+        DROP TABLE IF EXISTS hr_kinerja_penilaian__rebuild;
+        {baru};
+        INSERT INTO hr_kinerja_penilaian__rebuild SELECT * FROM hr_kinerja_penilaian;
+        DROP TABLE hr_kinerja_penilaian;
+        ALTER TABLE hr_kinerja_penilaian__rebuild RENAME TO hr_kinerja_penilaian;
+        {turunan}
+        COMMIT;"
+    );
+    connection
+        .execute_batch(&script)
+        .map_err(|_| "Tabel hr_kinerja_penilaian tidak dapat dibangun ulang.".to_string())?;
     Ok(())
 }
 
@@ -949,7 +991,8 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         saldo_normal TEXT NOT NULL CHECK (saldo_normal IN ('Debit', 'Kredit')),
         is_aktif INTEGER NOT NULL DEFAULT 1 CHECK (is_aktif IN (0, 1)),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        dihapus_pada TEXT
       );
       CREATE TABLE IF NOT EXISTS keu_jurnal (
         id_jurnal TEXT PRIMARY KEY,
@@ -958,7 +1001,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         nomor_urut INTEGER NOT NULL CHECK (nomor_urut > 0),
         nomor TEXT NOT NULL,
         keterangan TEXT NOT NULL,
-        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Pembatalan')),
+        sumber TEXT NOT NULL CHECK (sumber IN ('Manual', 'Kasbon', 'Payroll', 'Inventaris', 'Cicilan', 'Reimburse', 'Pembatalan')),
         id_sumber TEXT,
         id_jurnal_batal TEXT,
         dibuat_oleh TEXT NOT NULL,
@@ -1368,7 +1411,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         id_karyawan TEXT NOT NULL,
         id_ref TEXT,
         alasan_koreksi TEXT,
-        periode_jenis TEXT NOT NULL CHECK (periode_jenis IN ('Bulanan', 'Kuartal', 'Semester', 'Tahunan')),
+        periode_jenis TEXT NOT NULL CHECK (periode_jenis IN ('Bulanan', 'Kuartal', 'Semester', 'Tahunan', 'Rentang Tanggal')),
         periode_mulai TEXT NOT NULL,
         periode_selesai TEXT NOT NULL,
         id_template TEXT NOT NULL,
@@ -1616,6 +1659,13 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "dihapus_pada",
         "ALTER TABLE inventory_barang ADD COLUMN dihapus_pada TEXT;",
     )?;
+    // Hapus permanen akun yang belum dipakai (v46). NULL = belum dihapus.
+    ensure_column(
+        &connection,
+        "keu_akun",
+        "dihapus_pada",
+        "ALTER TABLE keu_akun ADD COLUMN dihapus_pada TEXT;",
+    )?;
     // Sumber jurnal `Inventaris` (v28).
     // Cara bayar pengajuan (v31). Baris lama otomatis Tunai.
     ensure_column(
@@ -1625,6 +1675,7 @@ pub fn initialize(path: &Path) -> Result<(), String> {
         "ALTER TABLE inventory_pengajuan ADD COLUMN cara_bayar TEXT NOT NULL DEFAULT 'Tunai' CHECK (cara_bayar IN ('Tunai', 'Cicilan'));",
     )?;
     ensure_journal_source_values(&connection)?;
+    ensure_periode_kinerja_values(&connection)?;
 
     // Hari kerja mingguan shift (v24), teks kanonik
     // `hari_kerja::validate_hari_kerja`. Bawaan tujuh hari: shift lama tidak

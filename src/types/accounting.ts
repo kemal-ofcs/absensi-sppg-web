@@ -19,6 +19,9 @@ export interface AkunItem {
   is_aktif: boolean;
   sistem: boolean;
   punya_jurnal: boolean;
+  /** Terhapus tetapi tampil karena dipakai jurnal dari perangkat yang offline. */
+  dihapus: boolean;
+  bisa_dihapus: boolean;
 }
 
 export interface JurnalItem {

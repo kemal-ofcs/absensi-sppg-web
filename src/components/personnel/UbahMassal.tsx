@@ -172,7 +172,7 @@ export function UbahMassal({
           type="button"
           disabled={berjalan || sibuk || menunggu}
           onClick={minta}
-          className={`${TOMBOL} bg-sky-400 text-slate-950 hover:bg-sky-300`}
+          className={`${TOMBOL} bg-sky-700 text-on-accent hover:bg-sky-600`}
         >
           Terapkan ke {jumlah} {satuan}
         </button>

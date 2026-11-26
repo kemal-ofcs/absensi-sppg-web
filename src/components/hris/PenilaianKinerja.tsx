@@ -18,6 +18,7 @@ import {
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
 import { konfirmasiData } from "@/components/ui/KonfirmasiData";
+import { TabBar } from "@/components/ui/TabBar";
 import { hasPermission } from "@/lib/auth/access";
 import { useAuth } from "@/lib/context/AuthContext";
 import {
@@ -35,8 +36,9 @@ import { SYNC_COMPLETED_EVENT, syncNow } from "@/lib/gateways/sync-status";
 import {
   awalPeriode,
   formatNilai,
+  JENIS_PERIODE_PENILAIAN,
   nilaiAkhir,
-  PERIODE_JENIS,
+  PERIODE_RENTANG,
   predikatNilai,
   TIPE_DISIPLIN,
 } from "@/lib/validations/hr-kinerja";
@@ -85,6 +87,8 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
   const bolehNilai = hasPermission(user, "hr.performance.assess");
   const [jenis, setJenis] = useState("");
   const [tanggal, setTanggal] = useState(hariIniWib());
+  // Hanya untuk `Rentang Tanggal`: `tanggal` = mulai, `sampai` = selesai.
+  const [sampai, setSampai] = useState(hariIniWib());
   const [data, setData] = useState<DaftarKinerja | null>(null);
   const [saring, setSaring] = useState<Saring>("saya");
   const [dipilih, setDipilih] = useState<string | null>(null);
@@ -93,16 +97,26 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
 
   const muat = useCallback(async () => {
     try {
-      const filter = jenis
-        ? { periode_jenis: jenis, periode_mulai: periodeDari(jenis, tanggal) }
-        : {};
+      const filter =
+        jenis === PERIODE_RENTANG
+          ? {
+              periode_jenis: jenis,
+              periode_mulai: tanggal,
+              periode_selesai: sampai,
+            }
+          : jenis
+            ? {
+                periode_jenis: jenis,
+                periode_mulai: periodeDari(jenis, tanggal),
+              }
+            : {};
       const hasil = await ambilDaftarKinerja(filter);
       setData(hasil);
       if (!jenis) setJenis(hasil.periode.jenis);
     } catch (error) {
       setPesan(pesanGalat(error, "Penilaian gagal dimuat."));
     }
-  }, [jenis, tanggal]);
+  }, [jenis, tanggal, sampai]);
 
   useEffect(() => {
     void muat();
@@ -141,6 +155,7 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
         id_karyawan: k.id_karyawan,
         periode_jenis: data.periode.jenis,
         periode_mulai: data.periode.mulai,
+        periode_selesai: data.periode.selesai,
         nilai: [],
       });
       setPesan("Draf penilaian dibuat.");
@@ -175,7 +190,7 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
             value={jenis}
             onChange={(e) => setJenis(e.target.value)}
           >
-            {PERIODE_JENIS.map((j) => (
+            {JENIS_PERIODE_PENILAIAN.map((j) => (
               <option key={j} value={j}>
                 {j}
               </option>
@@ -184,7 +199,9 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
         </div>
         <div className="min-w-0">
           <label className={LABEL} htmlFor="kinerja-periode-tanggal">
-            Periode yang memuat tanggal
+            {jenis === PERIODE_RENTANG
+              ? "Dari tanggal"
+              : "Periode yang memuat tanggal"}
           </label>
           <input
             id="kinerja-periode-tanggal"
@@ -194,6 +211,21 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
             onChange={(e) => e.target.value && setTanggal(e.target.value)}
           />
         </div>
+        {jenis === PERIODE_RENTANG ? (
+          <div className="min-w-0">
+            <label className={LABEL} htmlFor="kinerja-periode-sampai">
+              Sampai tanggal (paling panjang 366 hari)
+            </label>
+            <input
+              id="kinerja-periode-sampai"
+              type="date"
+              className={INPUT}
+              value={sampai}
+              min={tanggal}
+              onChange={(e) => e.target.value && setSampai(e.target.value)}
+            />
+          </div>
+        ) : null}
         <button
           type="button"
           id="kinerja-muat-ulang"
@@ -226,25 +258,13 @@ export function PenilaianKinerja({ modeHp = false }: { modeHp?: boolean }) {
         onKembali={() => setDipilih(null)}
         daftar={
           <div className="min-w-0 space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-            <div
-              className="flex flex-wrap gap-2"
-              role="tablist"
-              aria-label="Saring penilaian"
-            >
-              {saringan.map(([id, label]) => (
-                <button
-                  key={id}
-                  id={`kinerja-saring-${id}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={saring === id}
-                  onClick={() => setSaring(id)}
-                  className={`min-h-9 rounded-xl px-3 text-xs font-bold ${saring === id ? "bg-sky-500 text-white" : "bg-slate-950 text-slate-300"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <TabBar
+              ariaLabel="Saring penilaian"
+              idPrefix="kinerja-saring"
+              value={saring}
+              onChange={setSaring}
+              tabs={saringan.map(([id, label]) => ({ id, label }))}
+            />
             {penilaian.length === 0 && belum.length === 0 ? (
               <p className="text-sm text-slate-400">
                 Tidak ada di saringan ini.
@@ -397,6 +417,7 @@ function RincianPenilaian({
     id_karyawan: p.id_karyawan,
     periode_jenis: p.periode_jenis,
     periode_mulai: p.periode_mulai,
+    periode_selesai: p.periode_selesai,
     id_ref: p.id_ref,
     alasan_koreksi: p.alasan_koreksi,
     catatan,
@@ -506,6 +527,7 @@ function RincianPenilaian({
         id_karyawan: p.id_karyawan,
         periode_jenis: p.periode_jenis,
         periode_mulai: p.periode_mulai,
+        periode_selesai: p.periode_selesai,
         id_ref: r.id_akar,
         alasan_koreksi: alasan,
         nilai: [],

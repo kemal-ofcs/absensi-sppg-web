@@ -436,7 +436,7 @@ export function VirtualPayrollTable({
               <button
                 type="button"
                 onClick={() => setSelectedRow(null)}
-                className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-xs transition"
+                className="px-4 py-2 rounded-xl bg-sky-700 hover:bg-sky-600 text-on-accent font-black text-xs transition"
               >
                 Tutup
               </button>

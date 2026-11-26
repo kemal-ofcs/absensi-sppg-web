@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 
 use super::{
     accounting, config::DesktopState, inventory, license, models::CommandError, storage, sync,
+    telegram,
 };
 
 /// WAJIB sama dengan CHECK `keu_tutup_buku.status` di ketiga DDL. `Digantikan`
@@ -738,6 +739,53 @@ pub fn cloud_reopen_values(row: &Value) -> Option<Vec<Value>> {
     ])
 }
 
+// ── Tahap 3: pemberitahuan saldo berubah ke grup Telegram Keuangan ─────────
+
+/// Desktop/Mobile menghitung "saldo berubah" dari data LOKAL, jadi hanya bila
+/// sinkronisasi terakhir masih segar: perangkat yang belum menarik jurnal
+/// perangkat lain melihat saldo "berubah" padahal tidak, dan pesan yang
+/// terlanjur terkirim tidak bisa ditarik.
+pub const MAKS_DETIK_SINKRON_PEMBERITAHUAN: i64 = 900;
+pub const ALASAN_PEMBERITAHUAN_MATI: &str =
+    "Notifikasi Telegram tutup buku belum dinyalakan atau grup Keuangan belum diatur.";
+const ALASAN_SINKRON_BASI: &str = "Sinkronisasi terakhir lebih dari 15 menit lalu.";
+
+/// Detik sejak tarikan sinkron operasional terakhir; `None` = belum pernah.
+fn detik_sejak_sync(connection: &Connection) -> Option<i64> {
+    use rusqlite::OptionalExtension;
+    let terakhir: Option<i64> = connection
+        .query_row(
+            "SELECT updated_at FROM desktop_sync_cursor WHERE domain = 'operational';",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    terakhir.map(|detik| (storage::now_epoch_seconds() - detik).max(0))
+}
+
+/// Catat tutup buku yang saldonya berubah ke antrean Telegram (kejadian
+/// `tutup_buku`, grup Keuangan); `telegram::drain` yang mengirimnya. Versi
+/// `Menunggu` tidak di sini: pesannya sudah dicatat `catat_kejadian` saat
+/// tutup buku itu masuk cloud. Cermin `notify` di TS.
+pub async fn notify(state: &DesktopState) -> Result<Value, CommandError> {
+    {
+        let connection = storage::database(&state.data_dir)?;
+        if !detik_sejak_sync(&connection).is_some_and(|detik| detik <= MAKS_DETIK_SINKRON_PEMBERITAHUAN) {
+            return Ok(json!({ "diantre": 0, "alasan": ALASAN_SINKRON_BASI }));
+        }
+    }
+    let turso = state.get_turso_client()?;
+    if !telegram::tutup_buku_siap(&turso).await? {
+        return Ok(json!({ "diantre": 0, "alasan": ALASAN_PEMBERITAHUAN_MATI }));
+    }
+    let status = status(state)?;
+    let antrean = telegram::antrean_tutup_berubah(status["riwayat"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+    let diantre = telegram::antrekan_tutup_berubah(&turso, &antrean).await?;
+    Ok(json!({ "diantre": diantre, "alasan": null }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,5 +1045,22 @@ mod tests {
             json!("kepala")
         );
         assert_eq!(status(&state).expect("status")["batas"], json!("2020-01-31"));
+    }
+
+    #[test]
+    fn detik_sejak_sync_dari_kursor() {
+        let (_dir, state) = state_uji();
+        let connection = storage::database(&state.data_dir).expect("db");
+        connection.execute("DELETE FROM desktop_sync_cursor;", []).expect("kosongkan");
+        assert_eq!(detik_sejak_sync(&connection), None);
+        connection
+            .execute(
+                "INSERT INTO desktop_sync_cursor (domain, last_revision, updated_at) VALUES ('operational', 0, ?1);",
+                params![storage::now_epoch_seconds() - 120],
+            )
+            .expect("kursor");
+        let detik = detik_sejak_sync(&connection).expect("ada");
+        assert!((120..=130).contains(&detik), "{detik}");
+        assert!(detik <= MAKS_DETIK_SINKRON_PEMBERITAHUAN);
     }
 }

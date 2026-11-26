@@ -203,7 +203,7 @@ export default function AuditAbsensiPage() {
               type="button"
               onClick={() => void loadData(tanggal)}
               disabled={loading}
-              className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-sky-500 px-4 text-sm font-bold text-white shadow-lg shadow-sky-500/20 transition hover:bg-sky-400 disabled:opacity-50"
+              className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-sky-700 px-4 text-sm font-bold text-on-accent shadow-lg shadow-sky-500/20 transition hover:bg-sky-600 disabled:opacity-50"
             >
               <Icon
                 name="refresh"

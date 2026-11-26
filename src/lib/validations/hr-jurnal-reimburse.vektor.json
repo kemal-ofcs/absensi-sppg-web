@@ -1,0 +1,69 @@
+[
+  {
+    "nama": "klaim dan cuti diuangkan dari bank",
+    "id_jurnal": "jrn-reimb-rbb-1",
+    "akun_bayar": "akun-bank",
+    "dibayar": [
+      { "sumber": "Reimburse", "nominal": 100000 },
+      { "sumber": "Cuti Diuangkan", "nominal": 200000 },
+      { "sumber": "Reimburse", "nominal": 50000 }
+    ],
+    "hasil": [
+      {
+        "id_baris": "jrn-reimb-rbb-1:1",
+        "id_akun": "akun-beban-reimburse",
+        "debit": 150000,
+        "kredit": 0,
+        "keterangan": null,
+        "urutan": 1
+      },
+      {
+        "id_baris": "jrn-reimb-rbb-1:2",
+        "id_akun": "akun-beban-gaji",
+        "debit": 200000,
+        "kredit": 0,
+        "keterangan": null,
+        "urutan": 2
+      },
+      {
+        "id_baris": "jrn-reimb-rbb-1:3",
+        "id_akun": "akun-bank",
+        "debit": 0,
+        "kredit": 350000,
+        "keterangan": null,
+        "urutan": 3
+      }
+    ]
+  },
+  {
+    "nama": "hanya cuti diuangkan dari kas",
+    "id_jurnal": "jrn-reimb-rbb-2",
+    "akun_bayar": "akun-kas",
+    "dibayar": [{ "sumber": "Cuti Diuangkan", "nominal": 80000 }],
+    "hasil": [
+      {
+        "id_baris": "jrn-reimb-rbb-2:1",
+        "id_akun": "akun-beban-gaji",
+        "debit": 80000,
+        "kredit": 0,
+        "keterangan": null,
+        "urutan": 1
+      },
+      {
+        "id_baris": "jrn-reimb-rbb-2:2",
+        "id_akun": "akun-kas",
+        "debit": 0,
+        "kredit": 80000,
+        "keterangan": null,
+        "urutan": 2
+      }
+    ]
+  },
+  {
+    "nama": "total nol tanpa jurnal",
+    "id_jurnal": "jrn-reimb-rbb-3",
+    "akun_bayar": "akun-kas",
+    "dibayar": [{ "sumber": "Reimburse", "nominal": 0 }],
+    "hasil": []
+  }
+]

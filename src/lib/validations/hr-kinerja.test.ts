@@ -32,6 +32,7 @@ import {
   namaGanda,
   namaTemplateDipakai,
   nilaiAkhir,
+  PERIODE_RENTANG,
   PESAN_AMBANG,
   PESAN_DIRI_SENDIRI,
   PESAN_DISIPLIN_BERUBAH,
@@ -474,6 +475,29 @@ describe("hr-kinerja", () => {
   });
 
   test("periode dan rentang aktif", () => {
+    // Rentang Tanggal (v47), kembar `periode_dan_rentang_aktif` di Rust.
+    const rt = (m: string, s: string) => periodeRentang(PERIODE_RENTANG, m, s);
+    expect(rt("2024-01-01", "2024-12-31")).toEqual({
+      ok: true,
+      nilai: ["2024-01-01", "2024-12-31"],
+    });
+    expect(rt("2026-02-28", "2026-02-28")).toEqual({
+      ok: true,
+      nilai: ["2026-02-28", "2026-02-28"],
+    });
+    for (const [m, s, pesan] of [
+      ["2024-01-01", "2025-01-01", "Periode paling panjang 366 hari."],
+      [
+        "2026-03-31",
+        "2026-01-01",
+        "Tanggal selesai periode sebelum tanggal mulai.",
+      ],
+      ["2026-02-30", "2026-03-31", "Rentang tanggal periode tidak valid."],
+      ["2026-01-01", "", "Rentang tanggal periode tidak valid."],
+    ]) {
+      expect(rt(m, s)).toEqual({ ok: false, pesan });
+    }
+    expect(awalPeriode(PERIODE_RENTANG, "2026-05-31")).toBeNull();
     expect(periodeRentang("Bulanan", "2026-02-01")).toEqual({
       ok: true,
       nilai: ["2026-02-01", "2026-02-28"],

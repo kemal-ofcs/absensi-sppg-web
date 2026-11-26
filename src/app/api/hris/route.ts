@@ -17,6 +17,7 @@ import {
   catatKontrak,
   hapusBerkas,
   hapusDokumen,
+  hapusMasterOrganisasi,
   MASTER_CABANG,
   MASTER_DIVISI,
   MASTER_JABATAN,
@@ -36,6 +37,7 @@ const IZIN = {
   cabang: "hr.org.manage",
   divisi: "hr.org.manage",
   jabatan: "hr.org.manage",
+  "hapus-master": "hr.org.manage",
   pengaturan: "hr.org.manage",
   "jenis-dokumen": "hr.org.manage",
   kontrak: "hr.contract.manage",
@@ -80,6 +82,8 @@ export async function POST(request: NextRequest) {
         return noStoreJson(await simpanMaster(db, MASTER_DIVISI, draft));
       case "jabatan":
         return noStoreJson(await simpanMaster(db, MASTER_JABATAN, draft));
+      case "hapus-master":
+        return noStoreJson(await hapusMasterOrganisasi(db, draft.jenis, id));
       case "pengaturan":
         return noStoreJson(await simpanPengaturan(db, draft));
       case "jenis-dokumen":

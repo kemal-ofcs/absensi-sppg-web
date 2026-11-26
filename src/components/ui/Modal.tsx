@@ -154,7 +154,7 @@ export function Modal({
             <button
               type="button"
               onClick={onClose}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-95 text-slate-950 font-black text-xs transition shadow-md shadow-sky-500/20"
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-sky-700 hover:bg-sky-600 active:scale-95 text-on-accent font-black text-xs transition shadow-md shadow-sky-500/20"
             >
               Tutup
             </button>

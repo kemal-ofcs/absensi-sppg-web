@@ -801,6 +801,67 @@ pub fn pesan_tutup_buku(sampai_tanggal: &str, oleh: &str, menunggu: bool) -> Str
     baris.join("\n")
 }
 
+/// Cermin `pesanTutupBerubah`.
+pub fn pesan_tutup_berubah(sampai_tanggal: &str, oleh: &str) -> String {
+    [
+        format!(
+            "⚠️ Saldo berubah sesudah tutup buku sampai {}",
+            tanggal_tampil(sampai_tanggal)
+        ),
+        format!("Ditutup oleh: {oleh}"),
+        "Ada transaksi baru di periode yang sudah ditutup. Tinjau di Keuangan, tab Tutup Buku.".to_owned(),
+    ]
+    .join("\n")
+}
+
+/// Tutup buku berlaku yang saldonya berubah sejak ditutup (`perlu_ditinjau`
+/// dari `tutup_buku::status`), sebagai pasangan (id antrean, isi). Satu pesan
+/// per tutup buku: menutup ulang membuat baris tutup buku baru, jadi id baru.
+/// Tidak lewat `catat_kejadian` karena `perlu_ditinjau` diturunkan dari
+/// neraca, bukan kolom. Cermin `antreanTutupBerubah`.
+pub fn antrean_tutup_berubah(riwayat: &[Value]) -> Vec<(String, String)> {
+    riwayat
+        .iter()
+        .filter(|baris| baris["status"] == "Aktif" && baris["perlu_ditinjau"] == true)
+        .filter_map(|baris| {
+            Some((
+                format!("tutup-berubah:{}", baris["id_tutup"].as_str()?),
+                pesan_tutup_berubah(
+                    baris["sampai_tanggal"].as_str()?,
+                    baris["dibuat_oleh"].as_str().unwrap_or(""),
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Apakah kejadian `tutup_buku` akan dikirim: Telegram aktif, sakelarnya
+/// menyala, dan grup Keuangan sudah diatur. Cermin `tutupBukuSiap`.
+pub async fn tutup_buku_siap(turso: &TursoClient) -> Result<bool, CommandError> {
+    let pengaturan = baca_pengaturan(turso).await?;
+    Ok(pengaturan.aktif() && !pengaturan.token().is_empty() && pengaturan.siap("tutup_buku"))
+}
+
+/// Catat antrean ke `notifikasi_telegram` sebagai kejadian `tutup_buku`.
+/// `INSERT OR IGNORE` atas id deterministik: perangkat lain yang mencatat
+/// pesan yang sama tidak menggandakannya. Hasil = baris yang benar-benar baru.
+pub async fn antrekan_tutup_berubah(
+    turso: &TursoClient,
+    antrean: &[(String, String)],
+) -> Result<u64, CommandError> {
+    let mut baru = 0;
+    for (id, isi) in antrean {
+        baru += turso
+            .query_one(
+                INSERT_ANTREAN_SQL,
+                vec![json!(id), json!("tutup_buku"), json!(isi)],
+            )
+            .await?
+            .rows_affected;
+    }
+    Ok(baru)
+}
+
 /// Cermin `pesanBukaBuku`.
 pub fn pesan_buka_buku(sampai_tanggal: &str, oleh: &str, alasan: &str) -> String {
     let mut baris = vec![
@@ -1166,7 +1227,7 @@ pub fn periode_kinerja_berakhir(jenis: &str, hari_ini: &str) -> Option<(String, 
     }
     let sebelum = hris::tambah_bulan(&awal, -1)?;
     let mulai = hr_kinerja::awal_periode(jenis, &sebelum)?;
-    hr_kinerja::periode_rentang(jenis, &mulai).ok()
+    hr_kinerja::periode_rentang(jenis, &mulai, "").ok()
 }
 
 /// Satu baris `SQL_HR_KINERJA_MENUNGGU`. Cermin `PenilaianTunggu`.
@@ -2881,6 +2942,23 @@ mod tests {
         assert_eq!(
             pesan_buka_buku("2026-09-30", "Kepala TU", " "),
             "🔓 Buku dibuka kembali (tutup sampai 30/09/2026)\nOleh: Kepala TU"
+        );
+    }
+
+    #[test]
+    fn tutup_berubah_kembar() {
+        let riwayat = vec![
+            json!({"id_tutup": "tb-1", "status": "Menunggu", "sampai_tanggal": "2026-09-30", "dibuat_oleh": "bendahara", "perlu_ditinjau": false}),
+            json!({"id_tutup": "tb-2", "status": "Aktif", "sampai_tanggal": "2026-08-31", "dibuat_oleh": "kepala", "perlu_ditinjau": true}),
+            json!({"id_tutup": "tb-3", "status": "Aktif", "sampai_tanggal": "2026-07-31", "dibuat_oleh": "kepala", "perlu_ditinjau": false}),
+            json!({"id_tutup": "tb-4", "status": "Dibuka", "sampai_tanggal": "2026-06-30", "dibuat_oleh": "kepala", "perlu_ditinjau": true}),
+        ];
+        assert_eq!(
+            antrean_tutup_berubah(&riwayat),
+            vec![(
+                "tutup-berubah:tb-2".to_owned(),
+                "⚠️ Saldo berubah sesudah tutup buku sampai 31/08/2026\nDitutup oleh: kepala\nAda transaksi baru di periode yang sudah ditutup. Tinjau di Keuangan, tab Tutup Buku.".to_owned()
+            )]
         );
     }
 

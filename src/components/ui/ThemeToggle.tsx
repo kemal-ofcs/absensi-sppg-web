@@ -72,7 +72,7 @@ export function ThemeToggle({
             onClick={() => setTheme(opt.value)}
             className={`group flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-xl px-3 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
               isSelected
-                ? "bg-sky-500 text-white shadow-md shadow-sky-950/40"
+                ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950/40"
                 : "text-slate-300 hover:bg-white/[0.08] hover:text-white"
             }`}
           >

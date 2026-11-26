@@ -166,7 +166,7 @@ export function TwoFactorCard() {
               type="button"
               onClick={() => void startSetup()}
               disabled={busy}
-              className="min-h-11 rounded-xl bg-violet-500 px-5 text-sm font-black text-white disabled:opacity-50"
+              className="min-h-11 rounded-xl bg-violet-500 px-5 text-sm font-black text-on-accent disabled:opacity-50"
             >
               {busy ? "Menyiapkan..." : "Aktifkan 2FA"}
             </button>
@@ -215,7 +215,7 @@ export function TwoFactorCard() {
               type="button"
               onClick={() => void confirmSetup()}
               disabled={busy}
-              className="min-h-11 rounded-xl bg-violet-500 px-5 text-sm font-black text-white disabled:opacity-50"
+              className="min-h-11 rounded-xl bg-violet-500 px-5 text-sm font-black text-on-accent disabled:opacity-50"
             >
               {busy ? "Memeriksa..." : "Aktifkan sekarang"}
             </button>

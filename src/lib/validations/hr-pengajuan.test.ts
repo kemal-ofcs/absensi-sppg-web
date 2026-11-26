@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import vektorCutiJabatan from "./hr-cuti-jabatan.vektor.json";
+import vektorJurnalReimburse from "./hr-jurnal-reimburse.vektor.json";
+import * as PJ from "./hr-pengajuan";
 import {
   aturanCutiDariPeta,
   aturanLemburDariPeta,
@@ -830,5 +833,39 @@ describe("hr-pengajuan", () => {
     expect(gagalDengan(validasiPenyesuaian({ ...dasar, periode: "x" }))).toBe(
       "Periode tidak valid.",
     );
+  });
+});
+
+describe("hr-pengajuan: aturan cuti per jabatan (vektor kembar)", () => {
+  test("aturan karyawan, daftar jabatan, validasi simpan", () => {
+    const peta = new Map(Object.entries(vektorCutiJabatan.peta));
+    for (const k of vektorCutiJabatan.karyawan) {
+      expect(PJ.aturanCutiKaryawan(peta, k.id_jabatan)).toEqual(k.hasil);
+    }
+    expect(PJ.aturanCutiJabatan(peta)).toEqual(vektorCutiJabatan.jabatan);
+    expect(PJ.aturanCutiDariPeta(peta)).toEqual(
+      vektorCutiJabatan.karyawan[0].hasil,
+    );
+    for (const k of vektorCutiJabatan.validasi) {
+      const hasil = PJ.validasiAturanCutiJabatan(
+        k.draft as Record<string, unknown>,
+      );
+      expect(hasil.ok ? null : hasil.pesan, k.nama).toBe(k.galat);
+      expect(hasil.ok ? hasil.nilai : null, k.nama).toEqual(
+        k.hasil as [string, string][] | null,
+      );
+    }
+  });
+});
+
+describe("hr-pengajuan: jurnal pembayaran reimbursement (vektor kembar)", () => {
+  test("debit per sumber, kredit akun bayar", () => {
+    for (const k of vektorJurnalReimburse) {
+      expect(
+        PJ.barisJurnalReimburse(k.id_jurnal, k.akun_bayar, k.dibayar),
+        k.nama,
+      ).toEqual(k.hasil);
+    }
+    expect(PJ.idJurnalReimburse("rbb-1")).toBe("jrn-reimb-rbb-1");
   });
 });

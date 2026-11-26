@@ -417,7 +417,7 @@ export default function MasterOperatorPage() {
               onClick={() => setActiveTab(tab)}
               className={`min-h-11 rounded-lg px-4 text-xs font-black transition ${
                 activeTab === tab
-                  ? "bg-sky-400 text-slate-950"
+                  ? "bg-sky-700 text-on-accent"
                   : "text-slate-400 hover:text-white"
               }`}
             >
@@ -984,7 +984,9 @@ function OperatorTable({
                 <td className="p-4">
                   <p className="font-bold text-white">{operator.name}</p>
                   {operator.id === currentUserId ? (
-                    <span className="text-[10px] text-sky-300">Akun aktif</span>
+                    <span className="text-[10px] text-emerald-300">
+                      Akun aktif
+                    </span>
                   ) : null}
                   {operator.idKaryawan ? (
                     <p className="text-[11px] text-slate-400">
@@ -1188,7 +1190,7 @@ function ModalActions({
       <button
         type="submit"
         disabled={saving}
-        className="min-h-11 rounded-xl bg-sky-400 px-5 text-sm font-black text-slate-950 disabled:opacity-50"
+        className="min-h-11 rounded-xl bg-sky-700 px-5 text-sm font-black text-on-accent disabled:opacity-50"
       >
         {saving ? "Menyimpan..." : "Simpan"}
       </button>

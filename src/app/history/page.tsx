@@ -728,7 +728,7 @@ export default function HistoryPage() {
               }}
               className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 ${
                 tab === "scan"
-                  ? "bg-sky-500 text-slate-950 shadow-md shadow-sky-950"
+                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950"
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -743,7 +743,7 @@ export default function HistoryPage() {
               }}
               className={`px-4 py-2 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 ${
                 tab === "daily"
-                  ? "bg-sky-500 text-slate-950 shadow-md shadow-sky-950"
+                  ? "bg-sky-700 text-on-accent shadow-md shadow-sky-950"
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -1053,7 +1053,7 @@ export default function HistoryPage() {
                             row.jenis_scan === "Masuk"
                               ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
                               : row.jenis_scan === "Pulang"
-                                ? "bg-sky-950 text-sky-300 border border-sky-800"
+                                ? "bg-cyan-500/15 text-cyan-300 border border-cyan-500/40"
                                 : "bg-rose-950 text-rose-300 border border-rose-800"
                           }`}
                         >
@@ -1230,7 +1230,7 @@ export default function HistoryPage() {
                               row.status_absen === "Lengkap"
                                 ? "text-emerald-400"
                                 : row.status_absen === "Belum Pulang"
-                                  ? "text-sky-400"
+                                  ? "text-cyan-400"
                                   : row.status_absen === "Perlu Verifikasi"
                                     ? "text-amber-400"
                                     : "text-rose-400"

@@ -2,6 +2,7 @@ import "server-only";
 
 import { formatTanggalOperasional } from "@/lib/attendance/time-policy";
 import { db, ensureDbInitialized } from "@/lib/db";
+import { auditKualitasAbsensi } from "@/lib/services/attendance-audit";
 import {
   LAPORAN_PENGAJUAN_SQL,
   LAPORAN_TUKAR_SQL,
@@ -19,6 +20,12 @@ export interface DashboardMetrics {
   sakitIzinHariIni: number;
   alfaHariIni: number;
   persentaseKehadiran: number;
+  /** Dijadwalkan masuk hari ini: hari kerja shift / Hari Sekolah, bukan libur. */
+  wajibAbsenHariIni: number;
+  /** Wajib masuk, belum ada baris absensi, tidak ditutup pengajuan berlaku. */
+  belumAbsenHariIni: number;
+  /** Aktif tetapi tidak dijadwalkan masuk hari ini. */
+  liburHariIni: number;
 }
 
 export interface RekapBulananItem {
@@ -142,8 +149,23 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const sakitIzinHariIni = hariIni?.sakit_izin ?? 0;
   const alfaHariIni = hariIni?.alfa ?? 0;
 
+  // Jadwal masuk dari audit kualitas absensi (kembar `get_attendance_audit`):
+  // satu aturan shift, Hari Sekolah, libur, dan pengajuan untuk dasbor dan audit.
+  const { ringkasan } = await auditKualitasAbsensi(todayStr);
+  const wajibAbsenHariIni = ringkasan.wajibAbsen;
+  const belumAbsenHariIni =
+    ringkasan.belumScanMasuk + ringkasan.menungguJamAbsen;
+  const liburHariIni = Math.max(
+    0,
+    ringkasan.totalKaryawanAktif -
+      wajibAbsenHariIni -
+      ringkasan.shiftTidakValid,
+  );
+
   const persentaseKehadiran =
-    totalKaryawan > 0 ? Math.round((hadirHariIni / totalKaryawan) * 100) : 0;
+    wajibAbsenHariIni > 0
+      ? Math.min(100, Math.round((hadirHariIni / wajibAbsenHariIni) * 100))
+      : 0;
 
   return {
     totalKaryawan,
@@ -152,6 +174,9 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     sakitIzinHariIni,
     alfaHariIni,
     persentaseKehadiran,
+    wajibAbsenHariIni,
+    belumAbsenHariIni,
+    liburHariIni,
   };
 }
 

@@ -4,7 +4,9 @@ import { randomBytes } from "node:crypto";
 import type { Client, InStatement, Transaction } from "@libsql/client";
 import { assertPeriodeTerbuka } from "@/lib/services/tutup-buku";
 import {
+  AKUN_BISA_DIHAPUS_SQL,
   AKUN_SISTEM_IDS,
+  AKUN_TAMPIL_SQL,
   type AkunSaldo,
   akunDraftSchema,
   aturanUbahAkun,
@@ -87,23 +89,67 @@ export async function listAccounts(
 ): Promise<{ items: AkunItem[] }> {
   const result = await client.execute(
     `SELECT a.id_akun, a.kode, a.nama, a.kelompok, a.saldo_normal, a.is_aktif,
-            EXISTS(SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = a.id_akun) AS punya_jurnal
+            EXISTS(SELECT 1 FROM keu_jurnal_baris b WHERE b.id_akun = a.id_akun) AS punya_jurnal,
+            a.dihapus_pada IS NOT NULL AS dihapus, ${AKUN_BISA_DIHAPUS_SQL} AS bisa
      FROM keu_akun a
+     WHERE ${AKUN_TAMPIL_SQL}
      ORDER BY a.kode, a.id_akun
      LIMIT 1000;`,
   );
   return {
-    items: result.rows.map((row) => ({
-      id_akun: String(row.id_akun),
-      kode: String(row.kode),
-      nama: String(row.nama),
-      kelompok: String(row.kelompok) as AkunItem["kelompok"],
-      saldo_normal: String(row.saldo_normal) as SaldoNormal,
-      is_aktif: Number(row.is_aktif) === 1,
-      sistem: AKUN_SISTEM_IDS.has(String(row.id_akun)),
-      punya_jurnal: Number(row.punya_jurnal) === 1,
-    })),
+    items: result.rows.map((row) => {
+      const sistem = AKUN_SISTEM_IDS.has(String(row.id_akun));
+      const dihapus = Number(row.dihapus) === 1;
+      return {
+        id_akun: String(row.id_akun),
+        kode: String(row.kode),
+        nama: String(row.nama),
+        kelompok: String(row.kelompok) as AkunItem["kelompok"],
+        saldo_normal: String(row.saldo_normal) as SaldoNormal,
+        is_aktif: Number(row.is_aktif) === 1,
+        sistem,
+        punya_jurnal: Number(row.punya_jurnal) === 1,
+        dihapus,
+        bisa_dihapus: !sistem && !dihapus && Number(row.bisa) === 1,
+      };
+    }),
   };
+}
+
+/**
+ * Hapus permanen akun yang belum pernah dipakai. Barisnya tetap ada bertanda
+ * `dihapus_pada` supaya perangkat yang belum menarik penghapusan tidak
+ * menghidupkannya lagi. Cermin `delete_account` di `accounting.rs`.
+ */
+export async function deleteAccount(
+  client: Client,
+  idAkun: string,
+): Promise<{ sukses: true }> {
+  const id = idAkun.trim();
+  if (AKUN_SISTEM_IDS.has(id))
+    throw new Error("Akun sistem tidak bisa dihapus.");
+  return withTransaction(client, async (tx) => {
+    const result = await tx.execute({
+      sql: `SELECT a.dihapus_pada IS NOT NULL AS dihapus, ${AKUN_BISA_DIHAPUS_SQL} AS bisa
+            FROM keu_akun a WHERE a.id_akun = ?;`,
+      args: [id],
+    });
+    const row = result.rows[0];
+    if (!row) throw new Error("Akun tidak ditemukan.");
+    if (Number(row.dihapus) === 1) throw new Error("Akun ini sudah dihapus.");
+    if (Number(row.bisa) !== 1) {
+      throw new Error(
+        "Akun sudah dipakai jurnal atau transaksi, jadi hanya bisa dinonaktifkan.",
+      );
+    }
+    await tx.execute({
+      sql: `UPDATE keu_akun
+            SET dihapus_pada = datetime('now'), is_aktif = 0, updated_at = datetime('now')
+            WHERE id_akun = ?;`,
+      args: [id],
+    });
+    return { sukses: true as const };
+  });
 }
 
 export async function saveAccount(
@@ -120,11 +166,12 @@ export async function saveAccount(
     let idAkun = parsed.data.id_akun?.trim() ?? "";
     if (idAkun) {
       const lama = await tx.execute({
-        sql: "SELECT kelompok, saldo_normal FROM keu_akun WHERE id_akun = ?;",
+        sql: "SELECT kelompok, saldo_normal, dihapus_pada IS NOT NULL AS dihapus FROM keu_akun WHERE id_akun = ?;",
         args: [idAkun],
       });
       const row = lama.rows[0];
       if (!row) throw new Error("Akun tidak ditemukan.");
+      if (Number(row.dihapus) === 1) throw new Error("Akun ini sudah dihapus.");
       const dipakai = await tx.execute({
         sql: "SELECT EXISTS(SELECT 1 FROM keu_jurnal_baris WHERE id_akun = ?) AS ada;",
         args: [idAkun],
@@ -143,8 +190,9 @@ export async function saveAccount(
       idAkun = newId("akun-");
     }
 
+    // Kode akun yang sudah dihapus boleh dipakai lagi.
     const kode = await tx.execute({
-      sql: "SELECT EXISTS(SELECT 1 FROM keu_akun WHERE LOWER(kode) = LOWER(?) AND id_akun <> ?) AS ada;",
+      sql: `SELECT EXISTS(SELECT 1 FROM keu_akun a WHERE LOWER(a.kode) = LOWER(?) AND a.id_akun <> ? AND ${AKUN_TAMPIL_SQL}) AS ada;`,
       args: [valid.kode, idAkun],
     });
     if (Number(kode.rows[0]?.ada) === 1) {
@@ -659,6 +707,7 @@ export async function trialBalance(
               WHERE j.tanggal <= ?
               GROUP BY b.id_akun
           ) t ON t.id_akun = a.id_akun
+          WHERE ${AKUN_TAMPIL_SQL}
           ORDER BY a.kode, a.id_akun
           LIMIT 1000;`,
     args: [sampai],
@@ -710,6 +759,7 @@ async function saldoPerAkun(
               WHERE j.tanggal >= ?1 AND j.tanggal <= ?2
               GROUP BY b.id_akun
           ) t ON t.id_akun = a.id_akun
+          WHERE ${AKUN_TAMPIL_SQL}
           ORDER BY a.kode, a.id_akun
           LIMIT 1000;`,
     args: [dari, sampai],
