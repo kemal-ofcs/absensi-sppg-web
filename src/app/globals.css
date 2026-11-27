@@ -51,13 +51,13 @@
 html[data-theme="light"],
 html.light {
   color-scheme: light;
-  --app-background: #eef2f7;
-  --app-background-soft: #e6ecf4;
+  --app-background: #f1f5f9;
+  --app-background-soft: #e8eef6;
   --app-surface: #ffffff;
   --app-surface-raised: #ffffff;
-  --app-group-bg: #e7edf5;
-  --app-tab-track: #dfe7f2;
-  --app-border: #d8e1ee;
+  --app-group-bg: #e5ecf5;
+  --app-tab-track: #dae3ef;
+  --app-border: #cbd5e1;
   --app-border-hover: #94a3b8;
   --app-divider: #e2e8f0;
   --app-primary: #2f4fbf;
@@ -71,8 +71,8 @@ html.light {
   --app-table-header-bg: #f8fafc;
   --app-card-bg: #ffffff;
   --app-input-bg: #ffffff;
-  /* Garis kontrol form >= 3:1 di putih (3,66:1) dan di latar grup #e7edf5 (3,11:1). */
-  --app-input-border: #7685ab;
+  /* Garis kontrol form >= 3:1 di putih (3,72:1) dan di latar grup #e5ecf5 (3,08:1). */
+  --app-input-border: #7584aa;
   --app-input-text: #0f172a;
 }
 
@@ -340,84 +340,173 @@ html.light section.bg-gradient-to-br.from-slate-900 p {
   color: #475569 !important;
 }
 
-/* 3. Containers & Panels (Tone-on-Tone 3-Tier Surface) */
-/* Tier 1: Kartu data utama & pembungkus tabel (#ffffff bersih di atas kanvas #eef2f7) */
+/* 3. Containers & Panels (Tone-on-Tone 3-Tier Surface)
+   Seluruh kartu utama & panel daftar memakai putih bersih (#ffffff) tanpa menimpa
+   border warna semantik (emerald/amber/rose/sky). Spesifisitas :where dijaga rendah
+   agar kelas .app-group-bar dan sub-kotak bersarang tetap menang. */
+.app-group-bar {
+  background-color: var(--app-group-bg);
+  border-color: var(--app-border);
+}
+
 html[data-theme="light"]
-:is(
-  .bg-slate-900,
-  .bg-slate-950,
-  .bg-slate-900\/98,
-  .bg-slate-900\/95,
-  .bg-slate-900\/90,
-  .bg-slate-900\/85,
-  .bg-slate-950\/96,
-  .bg-slate-950\/90,
-  .bg-slate-950\/80,
-  .from-slate-900\/90,
-  .to-slate-950,
-  .bg-white\/\[0\.05\],
-  .bg-white\/\[0\.06\]
-):not(input):not(select):not(textarea):not(.pilih-cari-tombol),
-html.light
-  :is(
+  :where(
     .bg-slate-900,
     .bg-slate-950,
     .bg-slate-900\/98,
     .bg-slate-900\/95,
     .bg-slate-900\/90,
     .bg-slate-900\/85,
-    .bg-slate-950\/96,
-    .bg-slate-950\/90,
-    .bg-slate-950\/80,
-    .from-slate-900\/90,
-    .to-slate-950,
-    .bg-white\/\[0\.05\],
-    .bg-white\/\[0\.06\]
-  ):not(input):not(select):not(textarea):not(.pilih-cari-tombol),
-html[data-theme="light"]
-  :is(
-    .bg-slate-900\/80,
-    .bg-slate-900\/70,
-    .bg-slate-900\/60,
-    .bg-slate-900\/50,
-    .bg-slate-900\/40
-  ):has(table),
-html.light
-  :is(
-    .bg-slate-900\/80,
-    .bg-slate-900\/70,
-    .bg-slate-900\/60,
-    .bg-slate-900\/50,
-    .bg-slate-900\/40
-  ):has(table) {
-  background-color: #ffffff !important;
-  border-color: var(--app-border) !important;
-}
-
-/* Tier 2: Bilah filter/grup & sub-kotak di dalam kartu (#e7edf5 teduh tanpa bayangan berat) */
-html[data-theme="light"]
-:is(
-  .bg-slate-900\/80,
-  .bg-slate-900\/70,
-  .bg-slate-900\/60,
-  .bg-slate-900\/50,
-  .bg-slate-900\/40,
-  .bg-slate-950\/70,
-  .bg-slate-950\/60,
-  .bg-slate-950\/50,
-  .bg-slate-950\/40,
-  dl.bg-slate-950\/50,
-  .bg-white\/\[0\.02\],
-  .bg-white\/\[0\.03\],
-  .bg-white\/\[0\.04\]
-):not(input):not(select):not(textarea):not(button):not(a):not(:has(table)),
-html.light
-  :is(
     .bg-slate-900\/80,
     .bg-slate-900\/70,
     .bg-slate-900\/60,
     .bg-slate-900\/50,
     .bg-slate-900\/40,
+    .bg-slate-950\/96,
+    .bg-slate-950\/90,
+    .bg-slate-950\/80,
+    .bg-slate-950\/70,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-950\/40,
+    .from-slate-900\/90,
+    .to-slate-950,
+    .bg-white\/\[0\.02\],
+    .bg-white\/\[0\.03\],
+    .bg-white\/\[0\.04\],
+    .bg-white\/\[0\.05\],
+    .bg-white\/\[0\.06\]
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        .pilih-cari-tombol,
+        .visual-modal-backdrop
+      )
+  ),
+html.light
+  :where(
+    .bg-slate-900,
+    .bg-slate-950,
+    .bg-slate-900\/98,
+    .bg-slate-900\/95,
+    .bg-slate-900\/90,
+    .bg-slate-900\/85,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-900\/40,
+    .bg-slate-950\/96,
+    .bg-slate-950\/90,
+    .bg-slate-950\/80,
+    .bg-slate-950\/70,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-950\/40,
+    .from-slate-900\/90,
+    .to-slate-950,
+    .bg-white\/\[0\.02\],
+    .bg-white\/\[0\.03\],
+    .bg-white\/\[0\.04\],
+    .bg-white\/\[0\.05\],
+    .bg-white\/\[0\.06\]
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        .pilih-cari-tombol,
+        .visual-modal-backdrop
+      )
+  ) {
+  background-color: #ffffff !important;
+}
+
+html[data-theme="light"]
+  :where(
+    .bg-slate-900,
+    .bg-slate-900\/98,
+    .bg-slate-900\/95,
+    .bg-slate-900\/90,
+    .bg-slate-900\/85,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-950\/60
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        tr,
+        td,
+        th,
+        thead,
+        header,
+        nav,
+        .app-modal-panel
+      )
+  ),
+html.light
+  :where(
+    .bg-slate-900,
+    .bg-slate-900\/98,
+    .bg-slate-900\/95,
+    .bg-slate-900\/90,
+    .bg-slate-900\/85,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-950\/60
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        tr,
+        td,
+        th,
+        thead,
+        header,
+        nav,
+        .app-modal-panel
+      )
+  ) {
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03) !important;
+}
+
+/* Tier 2: Bilah filter (.app-group-bar) & sub-kotak bersarang di dalam kartu utama */
+html[data-theme="light"] .app-group-bar,
+html.light .app-group-bar,
+html[data-theme="light"]
+  :is(
+    .app-panel,
+    .app-modal-panel,
+    .visual-glass,
+    .bg-slate-900,
+    .bg-slate-900\/95,
+    .bg-slate-900\/90,
+    .bg-slate-900\/85,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70
+  )
+  :where(
+    .bg-slate-950,
+    .bg-slate-950\/80,
     .bg-slate-950\/70,
     .bg-slate-950\/60,
     .bg-slate-950\/50,
@@ -426,19 +515,61 @@ html.light
     .bg-white\/\[0\.02\],
     .bg-white\/\[0\.03\],
     .bg-white\/\[0\.04\]
-  ):not(input):not(select):not(textarea):not(button):not(a):not(:has(table)),
-html[data-theme="light"]
-  :is(.bg-slate-900, .bg-slate-900\/95, .bg-slate-900\/90)
-  :is(.bg-slate-950, .bg-slate-950\/60, .bg-slate-950\/50):not(input):not(
-    select
-  ):not(textarea):not(button):not(a),
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        tr,
+        td,
+        th,
+        thead,
+        table,
+        :has(table)
+      )
+  ),
 html.light
-  :is(.bg-slate-900, .bg-slate-900\/95, .bg-slate-900\/90)
-  :is(.bg-slate-950, .bg-slate-950\/60, .bg-slate-950\/50):not(input):not(
-    select
-  ):not(textarea):not(button):not(a) {
+  :is(
+    .app-panel,
+    .app-modal-panel,
+    .visual-glass,
+    .bg-slate-900,
+    .bg-slate-900\/95,
+    .bg-slate-900\/90,
+    .bg-slate-900\/85,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70
+  )
+  :where(
+    .bg-slate-950,
+    .bg-slate-950\/80,
+    .bg-slate-950\/70,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-950\/40,
+    dl.bg-slate-950\/50,
+    .bg-white\/\[0\.02\],
+    .bg-white\/\[0\.03\],
+    .bg-white\/\[0\.04\]
+  ):where(
+    :not(
+        input,
+        select,
+        textarea,
+        button,
+        a,
+        tr,
+        td,
+        th,
+        thead,
+        table,
+        :has(table)
+      )
+  ) {
   background-color: var(--app-group-bg) !important;
-  border-color: #dae3f0 !important;
+  border-color: var(--app-border) !important;
   box-shadow: none !important;
 }
 
@@ -990,8 +1121,10 @@ html.light label {
 
 html[data-theme="light"] .divide-slate-800 > * + *,
 html[data-theme="light"] .divide-white\/10 > * + *,
+html[data-theme="light"] .divide-white\/5 > * + *,
 html.light .divide-slate-800 > * + *,
-html.light .divide-white\/10 > * + * {
+html.light .divide-white\/10 > * + *,
+html.light .divide-white\/5 > * + * {
   border-color: var(--app-divider) !important;
 }
 
@@ -1807,10 +1940,28 @@ html.light .border-amber-700\/40.from-stone-900\/90 h4 {
   color: #7c2d12 !important;
 }
 
+/* Bingkai semantik kartu KPI & pill status pada tema terang */
+html[data-theme="light"] .border-emerald-500\/40,
+html.light .border-emerald-500\/40 {
+  border-color: #6ee7b7 !important;
+}
+html[data-theme="light"] .border-amber-500\/40,
+html.light .border-amber-500\/40 {
+  border-color: #fcd34d !important;
+}
+html[data-theme="light"] .border-rose-500\/40,
+html.light .border-rose-500\/40 {
+  border-color: #fda4af !important;
+}
+html[data-theme="light"] .border-sky-400\/30,
+html.light .border-sky-400\/30 {
+  border-color: #93a9ea !important;
+}
+
 /* Weekly Trend Bar Track in Light Mode */
 html[data-theme="light"] .bg-slate-950\/80,
 html.light .bg-slate-950\/80 {
-  background-color: #f1f5f9 !important;
+  background-color: var(--app-group-bg) !important;
   border-color: var(--app-border) !important;
 }
 

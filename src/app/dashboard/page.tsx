@@ -629,7 +629,7 @@ export default function DashboardPage() {
 
           {/* Date Filter Controls Bar */}
           {activeTab === "harian" ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-1.5">
+            <div className="app-group-bar flex flex-wrap items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-1.5">
               <div className="inline-flex rounded-xl bg-slate-950/60 p-0.5 text-[11px]">
                 <button
                   type="button"
@@ -736,7 +736,7 @@ export default function DashboardPage() {
 
         {/* Search, Filter & Controls Bar for Tables */}
         {activeTab !== "leaderboard" ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/60 bg-slate-900/70 p-3">
+          <div className="app-group-bar flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/60 bg-slate-900/70 p-3">
             <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
               {/* Search Bar */}
               <div className="relative flex-1 min-w-[200px] max-w-md">

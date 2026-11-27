@@ -232,7 +232,7 @@ export default function RiwayatResetPasswordPage() {
         />
       </div>
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="app-group-bar flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-1 flex-col gap-3 sm:flex-row">
           <label className="flex-1">
             <span className="sr-only">Cari akun</span>

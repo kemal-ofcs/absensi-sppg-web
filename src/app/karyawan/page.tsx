@@ -695,7 +695,7 @@ export default function KaryawanPage() {
           event.preventDefault();
           setAppliedSearch(search.trim());
         }}
-        className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-md sm:flex-row font-mono text-xs"
+        className="app-group-bar flex flex-col items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 sm:flex-row font-mono text-xs"
       >
         <div className="flex w-full gap-2 sm:max-w-md">
           <input

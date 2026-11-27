@@ -257,7 +257,7 @@ export default function FotoAbsensiPage() {
         />
       </div>
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 lg:flex-row lg:items-end lg:justify-between">
+      <div className="app-group-bar flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="grid flex-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <label className="space-y-1.5 text-xs font-bold text-slate-300">
             Dari tanggal

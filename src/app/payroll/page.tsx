@@ -232,7 +232,7 @@ export default function PayrollDashboardPage() {
         ) : null}
 
         {/* Filter Rentang Tanggal & Preset */}
-        <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-wrap gap-4 items-center justify-between shadow-sm">
+        <div className="app-group-bar p-4 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-wrap gap-4 items-center justify-between">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               Periode Rekap:

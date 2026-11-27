@@ -184,7 +184,7 @@ export function WajahWorkspace() {
         </output>
       ) : null}
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+      <div className="app-group-bar flex flex-col gap-3 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-3 sm:flex-row sm:items-end">
         <div className="flex-1">
           <label htmlFor="wajah-cari" className={LABEL}>
             Cari karyawan

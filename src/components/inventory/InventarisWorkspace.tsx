@@ -850,7 +850,7 @@ function DaftarBarang({
 
   return (
     <div className="space-y-3">
-      <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="app-group-bar p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div>
           <label htmlFor="inv-cari" className={LABEL}>
             {kolomAktif.length > 0
@@ -2841,7 +2841,7 @@ function PanelKartuStok({
 
   return (
     <div className="space-y-3">
-      <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="app-group-bar p-3 rounded-xl border border-slate-800 bg-slate-900/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <div>
           <label htmlFor="inv-kartu-barang" className={LABEL}>
             Barang
