@@ -341,7 +341,7 @@ export default function PayrollDashboardPage() {
               Mengikuti perkalian PP 35/2021
             </div>
           </div>
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl border-emerald-900/40 bg-emerald-950/10">
+          <div className="p-4 rounded-xl border border-emerald-900/40 bg-emerald-950/10">
             <div className="text-xs font-semibold uppercase text-emerald-400">
               Estimasi Total Payout
             </div>
