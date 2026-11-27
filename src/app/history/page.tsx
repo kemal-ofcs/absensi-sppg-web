@@ -715,8 +715,8 @@ export default function HistoryPage() {
         )}
       </div>
 
-      <div className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/80 p-4 sm:p-5">
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+      <div className="space-y-4 rounded-3xl border border-slate-800/60 bg-slate-900/70 p-4 sm:p-5">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
           <div className="self-start">
             <TabBar
               ariaLabel="Jenis riwayat"
@@ -732,19 +732,19 @@ export default function HistoryPage() {
                 {
                   id: "scan",
                   label: "Log Scan",
-                  icon: <span aria-hidden="true">🔍</span>,
+                  icon: <Icon name="scanner" className="size-4" />,
                 },
                 {
                   id: "daily",
                   label: "Absensi Harian",
-                  icon: <span aria-hidden="true">📋</span>,
+                  icon: <Icon name="calendar" className="size-4" />,
                 },
               ]}
             />
           </div>
 
           {/* Quick Date Presets */}
-          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+          <div className="inline-flex flex-wrap items-center gap-1 self-start rounded-xl bg-slate-950/60 p-1 text-xs">
             <button
               type="button"
               onClick={() => {
@@ -752,10 +752,10 @@ export default function HistoryPage() {
                 setTanggalSelesai(today());
                 setPage(0);
               }}
-              className={`px-3 py-1.5 rounded-lg border transition ${
+              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
                 tanggalMulai === today() && tanggalSelesai === today()
-                  ? "bg-sky-500/20 text-sky-300 border-sky-500/50"
-                  : "bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800"
+                  ? "bg-sky-700 text-on-accent shadow-sm"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               Hari Ini
@@ -767,11 +767,11 @@ export default function HistoryPage() {
                 setTanggalSelesai(today());
                 setPage(0);
               }}
-              className={`px-3 py-1.5 rounded-lg border transition ${
+              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
                 tanggalMulai === getRelativeDate(-6) &&
                 tanggalSelesai === today()
-                  ? "bg-sky-500/20 text-sky-300 border-sky-500/50"
-                  : "bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800"
+                  ? "bg-sky-700 text-on-accent shadow-sm"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               7 Hari Terakhir
@@ -783,11 +783,11 @@ export default function HistoryPage() {
                 setTanggalSelesai(today());
                 setPage(0);
               }}
-              className={`px-3 py-1.5 rounded-lg border transition ${
+              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
                 tanggalMulai === getFirstDayOfMonth() &&
                 tanggalSelesai === today()
-                  ? "bg-sky-500/20 text-sky-300 border-sky-500/50"
-                  : "bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800"
+                  ? "bg-sky-700 text-on-accent shadow-sm"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               Bulan Ini
@@ -796,7 +796,7 @@ export default function HistoryPage() {
         </div>
 
         {/* Date Range & Secondary Filters */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 text-xs font-mono pt-2 border-t border-slate-800/80">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
           {/* Tanggal Mulai */}
           <div className="flex flex-col gap-1">
             <span className="text-[11px] text-slate-400 font-semibold">
@@ -809,7 +809,7 @@ export default function HistoryPage() {
                 setTanggalMulai(e.target.value);
                 setPage(0);
               }}
-              className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-slate-200 outline-none focus:border-sky-500"
+              className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 font-mono text-slate-200 outline-none focus:border-sky-500"
             />
           </div>
 
@@ -825,7 +825,7 @@ export default function HistoryPage() {
                 setTanggalSelesai(e.target.value);
                 setPage(0);
               }}
-              className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 text-slate-200 outline-none focus:border-sky-500"
+              className="min-h-10 w-full rounded-xl border border-slate-800 bg-slate-950 px-3 font-mono text-slate-200 outline-none focus:border-sky-500"
             />
           </div>
 
@@ -891,7 +891,7 @@ export default function HistoryPage() {
                 <>
                   <option value="Berhasil">Status: Berhasil</option>
                   <option value="Perlu Verifikasi">
-                    ⚠️ Status: Perlu Verifikasi
+                    Status: Perlu Verifikasi
                   </option>
                   <option value="Ditolak">Status: Ditolak</option>
                   <option value="Masuk">Scan: Masuk</option>
@@ -903,7 +903,7 @@ export default function HistoryPage() {
                   <option value="Lengkap">Absen: Lengkap</option>
                   <option value="Belum Pulang">Absen: Belum Pulang</option>
                   <option value="Perlu Verifikasi">
-                    ⚠️ Absen: Perlu Verifikasi
+                    Absen: Perlu Verifikasi
                   </option>
                   <option value="Terlambat">Terlambat Masuk</option>
                   <option value="JamKurang">
@@ -920,9 +920,9 @@ export default function HistoryPage() {
 
           {/* Sorting Filter: ASC / DESC / Name */}
           <div className="flex flex-col gap-1 sm:col-span-2 md:col-span-3 lg:col-span-5 pt-1">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/60 pt-2">
-              <span className="text-[11px] text-slate-400 font-semibold flex items-center gap-1.5">
-                <span>🔄</span> Urutan Data (Sort Order):
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-400 font-semibold">
+                Urutan Data
               </span>
               <div className="flex flex-wrap items-center gap-2">
                 <select
@@ -937,22 +937,26 @@ export default function HistoryPage() {
                         | "division_asc",
                     )
                   }
-                  className="min-h-9 rounded-xl border border-slate-700 bg-slate-950 px-3 text-xs font-mono text-sky-300 font-bold outline-none focus:border-sky-500 shadow-sm"
+                  className="min-h-9 rounded-xl border border-slate-700 bg-slate-950 px-3 text-xs font-semibold text-slate-200 outline-none focus:border-sky-500"
                 >
-                  <option value="time_desc">⬇️ Terbaru (DESC)</option>
-                  <option value="time_asc">⬆️ Terlama (ASC)</option>
-                  <option value="name_asc">🔤 Nama (A - Z)</option>
-                  <option value="name_desc">🔤 Nama (Z - A)</option>
-                  <option value="division_asc">🏢 Divisi (A - Z)</option>
+                  <option value="time_desc">Terbaru (DESC)</option>
+                  <option value="time_asc">Terlama (ASC)</option>
+                  <option value="name_asc">Nama (A - Z)</option>
+                  <option value="name_desc">Nama (Z - A)</option>
+                  <option value="division_asc">Divisi (A - Z)</option>
                 </select>
 
                 <button
                   type="button"
                   onClick={() => handleManualRefresh()}
                   disabled={loading}
-                  className="min-h-9 px-3.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded-xl font-bold border border-slate-700 transition disabled:opacity-50 flex items-center gap-1.5"
+                  className="min-h-9 px-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-semibold border border-slate-700 transition disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  <span>🔄</span> Muat Ulang
+                  <Icon
+                    name="refresh"
+                    className={`size-3.5 ${loading ? "animate-spin" : ""}`}
+                  />
+                  Muat Ulang
                 </button>
               </div>
             </div>

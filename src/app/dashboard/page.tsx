@@ -629,8 +629,8 @@ export default function DashboardPage() {
 
           {/* Date Filter Controls Bar */}
           {activeTab === "harian" ? (
-            <div className="flex flex-wrap items-center gap-2 bg-slate-900/60 border border-slate-800 p-1.5 rounded-2xl">
-              <div className="inline-flex rounded-xl border border-white/10 bg-slate-950/60 p-0.5 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-1.5">
+              <div className="inline-flex rounded-xl bg-slate-950/60 p-0.5 text-[11px]">
                 <button
                   type="button"
                   onClick={() => setFilterMode("single")}
@@ -693,7 +693,7 @@ export default function DashboardPage() {
                     setEndDate(today);
                     setFilterMode("single");
                   }}
-                  className="px-2 py-1 text-[10px] font-bold rounded-lg border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                  className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:bg-white/10"
                 >
                   Hari Ini
                 </button>
@@ -708,7 +708,7 @@ export default function DashboardPage() {
                     setEndDate(now.toLocaleDateString("en-CA"));
                     setFilterMode("range");
                   }}
-                  className="px-2 py-1 text-[10px] font-bold rounded-lg border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                  className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:bg-white/10"
                 >
                   7 Hari
                 </button>
@@ -725,7 +725,7 @@ export default function DashboardPage() {
                     setEndDate(now.toLocaleDateString("en-CA"));
                     setFilterMode("range");
                   }}
-                  className="px-2 py-1 text-[10px] font-bold rounded-lg border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/10"
+                  className="rounded-lg bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition hover:bg-white/10"
                 >
                   Bulan Ini
                 </button>
@@ -736,7 +736,7 @@ export default function DashboardPage() {
 
         {/* Search, Filter & Controls Bar for Tables */}
         {activeTab !== "leaderboard" ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-3 shadow-md">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/60 bg-slate-900/70 p-3">
             <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
               {/* Search Bar */}
               <div className="relative flex-1 min-w-[200px] max-w-md">

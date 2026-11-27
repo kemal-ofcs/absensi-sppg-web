@@ -26,7 +26,7 @@ function labelSisa(sisa: number) {
 
 function Bagian({ judul, children }: { judul: string; children: ReactNode }) {
   return (
-    <section className="min-w-0 space-y-2 rounded-xl border border-slate-800 bg-slate-950 p-3">
+    <section className="min-w-0 space-y-2 rounded-xl bg-slate-950/60 p-3">
       <h3 className="text-sm font-bold text-white">{judul}</h3>
       <ul className="max-h-60 space-y-1 overflow-y-auto">{children}</ul>
     </section>

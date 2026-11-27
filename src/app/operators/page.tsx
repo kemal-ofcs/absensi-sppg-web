@@ -409,7 +409,7 @@ export default function MasterOperatorPage() {
         </FeedbackBanner>
       ) : null}
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <TabBar
           ariaLabel="Bagian operator"
           idPrefix="operator"

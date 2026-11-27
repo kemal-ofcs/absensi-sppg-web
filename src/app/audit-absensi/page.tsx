@@ -305,11 +305,6 @@ export default function AuditAbsensiPage() {
               <StatusBadge tone="neutral">
                 Shift Fleksibel {ringkasan.fleksibel}
               </StatusBadge>
-              {ringkasan.menungguJamAbsen > 0 ? (
-                <StatusBadge tone="neutral">
-                  Menunggu Jam Absen {ringkasan.menungguJamAbsen}
-                </StatusBadge>
-              ) : null}
               {ringkasan.tanpaData > 0 ? (
                 <StatusBadge tone="danger">
                   Tanpa Data {ringkasan.tanpaData}
@@ -340,16 +335,16 @@ export default function AuditAbsensiPage() {
                   placeholder="Cari nama / divisi / kategori..."
                   className="min-h-10 w-56 rounded-xl border border-slate-800 bg-slate-950 px-3 text-sm text-white outline-none focus:border-amber-500"
                 />
-                <div className="flex flex-wrap gap-1.5">
+                <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-900/60 p-1">
                   {FILTER_OPTIONS.map((option) => (
                     <button
                       key={option.value}
                       type="button"
                       onClick={() => setFilter(option.value)}
-                      className={`min-h-8 rounded-lg border px-2.5 text-[11px] font-bold transition ${
+                      className={`min-h-8 rounded-lg px-2.5 text-[11px] font-bold transition ${
                         filter === option.value
-                          ? "border-sky-400/40 bg-sky-500/20 text-sky-200"
-                          : "border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200"
+                          ? "bg-sky-700 text-on-accent shadow-sm"
+                          : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
                       }`}
                     >
                       {option.label}

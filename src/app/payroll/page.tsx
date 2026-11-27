@@ -267,39 +267,39 @@ export default function PayrollDashboardPage() {
             </button>
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
+          <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-950/50 p-1">
             <button
               type="button"
               onClick={() => setPresetRange("today")}
-              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
             >
               Hari Ini
             </button>
             <button
               type="button"
               onClick={() => setPresetRange("week")}
-              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
             >
               Minggu Ini
             </button>
             <button
               type="button"
               onClick={() => setPresetRange("thisMonth")}
-              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition font-medium text-sky-400"
+              className="rounded-lg px-2.5 py-1 text-xs font-semibold text-sky-400 transition hover:bg-white/10"
             >
               Bulan Ini
             </button>
             <button
               type="button"
               onClick={() => setPresetRange("lastMonth")}
-              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
             >
               Bulan Lalu
             </button>
             <button
               type="button"
               onClick={() => setPresetRange("last30")}
-              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
             >
               30 Hari Terakhir
             </button>

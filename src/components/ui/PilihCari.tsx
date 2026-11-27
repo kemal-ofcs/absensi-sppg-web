@@ -14,10 +14,10 @@ import {
 import { createPortal } from "react-dom";
 
 /**
- * Pengganti `<select>` untuk daftar yang bisa panjang: satu baris berisi kotak
- * cari dan tombol daftar, dengan daftar yang dibatasi tingginya dan bisa
- * digulir. Props dan anak `<option>`-nya sama dengan `<select>`, jadi pemanggil
- * cukup mengganti nama tag. Dipakai Web/Desktop dan Mobile (`filesToCopy`).
+ * Pengganti `<select>` untuk daftar yang bisa panjang: satu kotak cari terpadu
+ * dengan panah daftar di tepi kanan, serta panel pilihan yang dibatasi tingginya
+ * dan bisa digulir. Props dan anak `<option>`-nya sama dengan `<select>`, jadi
+ * pemanggil cukup mengganti nama tag. Dipakai Web/Desktop dan Mobile (`filesToCopy`).
  *
  * Daftarnya dirender lewat portal: panel Modal memakai `overflow-hidden` dan
  * `backdrop-filter`, yang memotong anak ber-`position: fixed`.
@@ -248,7 +248,7 @@ export function PilihCari({
       : terpilih.label;
 
   return (
-    <div ref={wadahRef} className={`flex gap-1 ${wadah}`}>
+    <div ref={wadahRef} className={`relative flex items-center ${wadah}`}>
       <input
         ref={inputRef}
         id={id}
@@ -297,7 +297,7 @@ export function PilihCari({
             bukaDaftar();
           }
         }}
-        className={`min-w-0 flex-1 ${isian}`}
+        className={`pilih-cari-input min-w-0 w-full ${isian}`}
       />
       <button
         type="button"
@@ -313,19 +313,19 @@ export function PilihCari({
           // Di HP tombol ini untuk memilih tanpa memunculkan papan ketik.
           if (!pointerKasar()) inputRef.current?.focus();
         }}
-        className="pilih-cari-tombol grid w-11 shrink-0 place-items-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-60"
+        className="pilih-cari-tombol absolute inset-y-1 right-1.5 grid w-8 place-items-center rounded-md text-slate-400 transition-colors hover:text-slate-200 disabled:opacity-50"
       >
         <svg
           viewBox="0 0 20 20"
           aria-hidden="true"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="1.8"
           strokeLinecap="round"
           strokeLinejoin="round"
           className={`size-4 transition-transform ${buka ? "rotate-180" : ""}`}
         >
-          <path d="m5 8 5 5 5-5" />
+          <path d="m5 7.5 5 5 5-5" />
         </svg>
       </button>
       {buka && posisi
@@ -334,7 +334,7 @@ export function PilihCari({
               ref={daftarRef}
               data-no-pull-refresh
               style={{ position: "fixed", ...posisi }}
-              className="z-[200] flex flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-2xl shadow-black/40"
+              className="z-[200] flex flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl shadow-black/30"
             >
               <div
                 id={idDaftar}
