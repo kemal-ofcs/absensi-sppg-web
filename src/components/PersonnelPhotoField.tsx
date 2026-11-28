@@ -187,7 +187,7 @@ export function PersonnelPhotoField({
     : "P";
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-slate-700 bg-slate-800/40 p-4">
+    <div className="app-group-bar flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
           Foto Personil (ID Card)
@@ -204,7 +204,7 @@ export function PersonnelPhotoField({
       </div>
 
       <div className="flex items-center gap-4">
-        <div className="relative flex h-20 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-slate-600 bg-slate-700 shadow-inner">
+        <div className="relative flex h-20 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-sky-400/30 bg-sky-500/15">
           {isLoading ? (
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
           ) : photoDataUrl ? (
@@ -215,7 +215,7 @@ export function PersonnelPhotoField({
               className="h-full w-full object-cover"
             />
           ) : (
-            <span className="text-lg font-bold text-slate-300">{initials}</span>
+            <span className="text-lg font-bold text-sky-300">{initials}</span>
           )}
 
           {isSaving ? (
@@ -240,7 +240,7 @@ export function PersonnelPhotoField({
               type="button"
               disabled={disabled || isSaving || isLoading}
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-sky-500 disabled:opacity-50"
+              className="inline-flex min-h-9 items-center rounded-xl bg-sky-700 px-3.5 py-1.5 text-xs font-bold text-on-accent shadow-sm transition hover:bg-sky-600 disabled:opacity-50"
             >
               {photoDataUrl ? "Ganti Foto" : "Unggah Foto"}
             </button>

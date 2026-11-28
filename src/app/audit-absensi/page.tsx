@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FeedbackBanner } from "@/components/ui/FeedbackBanner";
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { canAccessArea } from "@/lib/auth/access";
@@ -58,33 +58,77 @@ function formatTanggalPanjang(value: string) {
   }
 }
 
-function skorTone(skor: number) {
-  if (skor >= 90) return "text-emerald-400";
-  if (skor >= 70) return "text-amber-400";
-  return "text-rose-400";
+type StatVariant = "emerald" | "sky" | "amber" | "rose" | "clean";
+
+const STAT_CARD_STYLE: Record<
+  StatVariant,
+  { card: string; label: string; value: string; icon: string }
+> = {
+  emerald: {
+    card: "border-emerald-500/30 border-l-4 border-l-emerald-500 bg-emerald-500/10",
+    label: "text-emerald-300",
+    value: "text-emerald-300",
+    icon: "text-emerald-400",
+  },
+  sky: {
+    card: "border-sky-500/30 border-l-4 border-l-sky-600 bg-sky-500/10",
+    label: "text-sky-300",
+    value: "text-white",
+    icon: "text-sky-400",
+  },
+  amber: {
+    card: "border-amber-500/30 border-l-4 border-l-amber-500 bg-amber-500/10",
+    label: "text-amber-300",
+    value: "text-amber-300",
+    icon: "text-amber-400",
+  },
+  rose: {
+    card: "border-rose-500/30 border-l-4 border-l-rose-500 bg-rose-500/10",
+    label: "text-rose-300",
+    value: "text-rose-300",
+    icon: "text-rose-400",
+  },
+  clean: {
+    card: "border-slate-800 bg-slate-900",
+    label: "text-slate-400",
+    value: "text-slate-400",
+    icon: "text-slate-500",
+  },
+};
+
+function skorVariant(skor: number): StatVariant {
+  if (skor >= 90) return "emerald";
+  if (skor >= 70) return "amber";
+  return "rose";
 }
 
 function StatCard({
   label,
   value,
   hint,
-  tone = "text-white",
+  icon,
+  variant = "clean",
 }: {
   label: string;
   value: number | string;
   hint?: string;
-  tone?: string;
+  icon: IconName;
+  variant?: StatVariant;
 }) {
+  const style = STAT_CARD_STYLE[variant];
   return (
-    <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-        {label}
-      </div>
-      <div className={`mt-1 text-2xl font-black ${tone}`}>{value}</div>
-      {hint ? (
-        <div className="mt-0.5 text-[11px] leading-4 text-slate-500">
-          {hint}
+    <div className={`rounded-2xl border p-4 transition-colors ${style.card}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div
+          className={`text-[11px] font-bold uppercase tracking-wide ${style.label}`}
+        >
+          {label}
         </div>
+        <Icon name={icon} className={`size-4 shrink-0 ${style.icon}`} />
+      </div>
+      <div className={`mt-1 text-2xl font-black ${style.value}`}>{value}</div>
+      {hint ? (
+        <div className="mt-1 text-[11px] leading-4 text-slate-500">{hint}</div>
       ) : null}
     </div>
   );
@@ -231,12 +275,13 @@ export default function AuditAbsensiPage() {
       {audit && ringkasan ? (
         <>
           <section className="space-y-3">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wide text-slate-400">
                 Ringkasan {formatTanggalPanjang(audit.tanggal)}
               </h2>
-              <span className="text-[11px] text-slate-500">
-                Diaudit pada {audit.waktuAudit} WIB
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                <span className="size-2 rounded-full bg-emerald-500" />
+                Terakhir diaudit: {audit.waktuAudit} WIB
               </span>
             </div>
 
@@ -252,36 +297,43 @@ export default function AuditAbsensiPage() {
                 label="Skor Kualitas"
                 value={`${ringkasan.skorKualitas}%`}
                 hint={`${ringkasan.wajibAbsen - ringkasan.karyawanBermasalah} dari ${ringkasan.wajibAbsen} karyawan bersih`}
-                tone={skorTone(ringkasan.skorKualitas)}
+                icon="check"
+                variant={skorVariant(ringkasan.skorKualitas)}
               />
               <StatCard
                 label="Wajib Absen"
                 value={ringkasan.wajibAbsen}
                 hint={`${ringkasan.totalKaryawanAktif} karyawan aktif`}
+                icon="users"
+                variant="sky"
               />
               <StatCard
                 label="Belum Scan Masuk"
                 value={ringkasan.belumScanMasuk}
                 hint="Jam absen sudah lewat"
-                tone="text-rose-400"
+                icon="clock"
+                variant={ringkasan.belumScanMasuk > 0 ? "rose" : "clean"}
               />
               <StatCard
                 label="Belum Scan Pulang"
                 value={ringkasan.belumScanPulang}
                 hint="Sesi menggantung"
-                tone="text-amber-400"
+                icon="clock"
+                variant={ringkasan.belumScanPulang > 0 ? "amber" : "clean"}
               />
               <StatCard
                 label="Perlu Verifikasi"
                 value={ringkasan.perluVerifikasi}
                 hint={`${ringkasan.scanDitolak} scan ditolak`}
-                tone="text-amber-400"
+                icon="check"
+                variant={ringkasan.perluVerifikasi > 0 ? "amber" : "clean"}
               />
               <StatCard
                 label="Alfa"
                 value={ringkasan.alfa}
                 hint={`${ringkasan.hadir} hadir, ${ringkasan.izinSakit} izin/sakit`}
-                tone="text-rose-400"
+                icon="alert"
+                variant={ringkasan.alfa > 0 ? "rose" : "clean"}
               />
             </div>
 
@@ -335,7 +387,7 @@ export default function AuditAbsensiPage() {
                   placeholder="Cari nama / divisi / kategori..."
                   className="min-h-10 w-56 rounded-xl border border-slate-800 bg-slate-950 px-3 text-sm text-white outline-none focus:border-amber-500"
                 />
-                <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-900/60 p-1">
+                <div className="app-segment-track inline-flex flex-wrap gap-1 rounded-xl p-1">
                   {FILTER_OPTIONS.map((option) => (
                     <button
                       key={option.value}

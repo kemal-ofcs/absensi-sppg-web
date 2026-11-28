@@ -17,10 +17,14 @@ interface QuickActionGridProps {
   tiles?: QuickActionItem[];
   className?: string;
   /** Kolom di layar >= 640px; HP selalu 2 kolom supaya label tidak terpotong. */
-  kolom?: 3 | 4;
+  kolom?: 2 | 3 | 4;
 }
 
-const KOLOM_SM = { 3: "sm:grid-cols-3", 4: "sm:grid-cols-4" };
+const KOLOM_SM = {
+  2: "sm:grid-cols-2",
+  3: "sm:grid-cols-3",
+  4: "sm:grid-cols-4",
+};
 
 const DEFAULT_TILES: QuickActionItem[] = [
   {

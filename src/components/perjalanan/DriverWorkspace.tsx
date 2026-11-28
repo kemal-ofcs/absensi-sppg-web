@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   INPUT,
@@ -8,6 +9,7 @@ import {
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
+import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import {
   ambilPosisi,
@@ -133,17 +135,39 @@ export function DriverWorkspace() {
 
   if (!isDesktopRuntime()) {
     return (
-      <p className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-300">
-        Laporan perjalanan dikirim dari aplikasi di HP, karena butuh kamera dan
-        GPS dan harus tetap bisa dicatat tanpa sinyal.
-      </p>
+      <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-4">
+            <div className="aksi-cepat-ikon flex size-12 shrink-0 items-center justify-center rounded-2xl">
+              <Icon name="phone" className="size-6" />
+            </div>
+            <div className="space-y-1.5">
+              <h2 className="text-base font-bold text-white sm:text-lg">
+                Pelaporan Lapangan dari Aplikasi HP Driver
+              </h2>
+              <p className="max-w-2xl text-sm leading-relaxed text-slate-400">
+                Laporan perjalanan dikirim langsung dari aplikasi di HP karena
+                membutuhkan kamera berstempel waktu, koordinat GPS, serta
+                antrean lokal agar tetap bisa dicatat tanpa sinyal.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/perjalanan"
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 text-xs font-bold text-slate-200 transition hover:bg-slate-700"
+          >
+            Buka Surat Jalan &amp; Armada
+            <Icon name="arrow-right" className="size-4" />
+          </Link>
+        </div>
+      </div>
     );
   }
 
   const item = data?.saya.find((s) => s.id_perjalanan === dipilih) ?? null;
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-3xl space-y-4">
       {tertunda > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
           <span>{tertunda} data belum terkirim ke server.</span>

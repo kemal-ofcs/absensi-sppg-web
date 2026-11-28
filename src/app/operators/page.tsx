@@ -410,17 +410,19 @@ export default function MasterOperatorPage() {
       ) : null}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <TabBar
-          ariaLabel="Bagian operator"
-          idPrefix="operator"
-          panelId="panel-operator"
-          value={activeTab}
-          onChange={setActiveTab}
-          tabs={[
-            { id: "operators", label: `Pengguna (${operators.length})` },
-            { id: "roles", label: `Role & Akses (${roles.length})` },
-          ]}
-        />
+        <div className="w-full sm:w-auto">
+          <TabBar
+            ariaLabel="Bagian operator"
+            idPrefix="operator"
+            panelId="panel-operator"
+            value={activeTab}
+            onChange={setActiveTab}
+            tabs={[
+              { id: "operators", label: `Pengguna (${operators.length})` },
+              { id: "roles", label: `Role & Akses (${roles.length})` },
+            ]}
+          />
+        </div>
         <button
           type="button"
           onClick={activeTab === "operators" ? openNewOperator : openNewRole}

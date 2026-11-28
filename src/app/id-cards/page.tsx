@@ -1320,8 +1320,8 @@ export default function IdCardsPage() {
                   onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
                   className={`rounded-lg px-2.5 py-1.5 text-xs font-bold transition flex items-center gap-1.5 border ${
                     showBoundingBoxes
-                      ? "border-sky-400 bg-sky-500/15 text-sky-300"
-                      : "border-white/10 bg-slate-800 text-slate-400 hover:text-white"
+                      ? "border-sky-700 bg-sky-700 text-on-accent shadow-sm"
+                      : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
                   }`}
                   title="Tampilkan / Sembunyikan garis pembatas kotak elemen di preview"
                 >
@@ -1395,12 +1395,18 @@ export default function IdCardsPage() {
                 }
                 className={`rounded-2xl border p-3 text-xs font-bold transition text-left ${
                   template.orientation === "landscape"
-                    ? "border-sky-400 bg-sky-400/10 text-white"
-                    : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-800"
+                    ? "border-sky-700 bg-sky-700 text-on-accent shadow-sm"
+                    : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
                 }`}
               >
                 <div className="font-bold">Landscape (Mendatar)</div>
-                <div className="text-[10px] text-slate-500">
+                <div
+                  className={`text-[10px] ${
+                    template.orientation === "landscape"
+                      ? "text-on-accent opacity-80"
+                      : "text-slate-500"
+                  }`}
+                >
                   Standar CR80 85.6 × 54 mm
                 </div>
               </button>
@@ -1411,12 +1417,18 @@ export default function IdCardsPage() {
                 }
                 className={`rounded-2xl border p-3 text-xs font-bold transition text-left ${
                   template.orientation === "portrait"
-                    ? "border-sky-400 bg-sky-400/10 text-white"
-                    : "border-white/10 bg-slate-950 text-slate-400 hover:bg-slate-800"
+                    ? "border-sky-700 bg-sky-700 text-on-accent shadow-sm"
+                    : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
                 }`}
               >
                 <div className="font-bold">Portrait (Tegak)</div>
-                <div className="text-[10px] text-slate-500">
+                <div
+                  className={`text-[10px] ${
+                    template.orientation === "portrait"
+                      ? "text-on-accent opacity-80"
+                      : "text-slate-500"
+                  }`}
+                >
                   Standar CR80 54 × 85.6 mm
                 </div>
               </button>
@@ -2085,7 +2097,7 @@ export default function IdCardsPage() {
                   <div className="text-xs font-medium text-slate-400">
                     Perataan Teks
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="app-segment-track grid grid-cols-3 gap-1 rounded-xl p-1">
                     {(["left", "center", "right"] as const).map((align) => (
                       <button
                         key={align}
@@ -2093,10 +2105,10 @@ export default function IdCardsPage() {
                         onClick={() =>
                           handleUpdateSelectedElement({ textAlign: align })
                         }
-                        className={`rounded-xl py-1.5 text-xs font-bold capitalize transition border ${
+                        className={`rounded-lg py-1.5 text-xs font-bold capitalize transition ${
                           (selectedElement.textAlign || "left") === align
-                            ? "border-sky-400 bg-sky-400/10 text-sky-300"
-                            : "border-white/5 bg-slate-900 text-slate-400 hover:bg-slate-800"
+                            ? "bg-sky-700 text-on-accent shadow-sm"
+                            : "text-slate-400 hover:bg-white/10 hover:text-white"
                         }`}
                       >
                         {align === "left"
@@ -2133,8 +2145,8 @@ export default function IdCardsPage() {
                         key={el.id}
                         className={`flex items-center justify-between rounded-xl border p-2 text-xs transition ${
                           isSelected
-                            ? "border-sky-400 bg-sky-500/10 text-white"
-                            : "border-white/5 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                            ? "border-sky-500/60 bg-sky-500/20 text-white"
+                            : "border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800"
                         }`}
                       >
                         <button

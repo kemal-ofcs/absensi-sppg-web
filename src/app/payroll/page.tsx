@@ -42,6 +42,9 @@ export default function PayrollDashboardPage() {
 
   const [periodStart, setPeriodStart] = useState(firstDay);
   const [periodEnd, setPeriodEnd] = useState(today);
+  const [activePreset, setActivePreset] = useState<
+    "today" | "week" | "thisMonth" | "lastMonth" | "last30" | "custom"
+  >("thisMonth");
   const [data, setData] = useState<PayrollRecapRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -120,6 +123,7 @@ export default function PayrollDashboardPage() {
   const setPresetRange = (
     preset: "today" | "week" | "thisMonth" | "lastMonth" | "last30",
   ) => {
+    setActivePreset(preset);
     const d = new Date();
     const todayStr = d.toLocaleDateString("en-CA");
 
@@ -197,9 +201,9 @@ export default function PayrollDashboardPage() {
                 type="button"
                 onClick={() => setModalRunOpen(true)}
                 disabled={loading || data.length === 0}
-                className="px-4 py-2 text-sm font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition flex items-center gap-2 disabled:opacity-50 shadow-md shadow-sky-600/20"
+                className="min-h-10 px-4 text-xs font-bold rounded-xl bg-sky-700 hover:bg-sky-600 text-on-accent transition flex items-center gap-2 disabled:opacity-50 shadow-sm"
               >
-                <Icon name="plus" className="w-4 h-4" />
+                <Icon name="plus" className="size-4" />
                 Buat Batch Payroll
               </button>
             ) : undefined
@@ -207,16 +211,19 @@ export default function PayrollDashboardPage() {
         />
 
         <QuickActionGrid
+          kolom={2}
           tiles={[
             {
               href: "/payroll/runs",
               icon: "history",
               title: "Batch Runs",
+              subtitle: "Riwayat proses & arsip slip gaji resmi",
             },
             {
               href: "/payroll/config",
               icon: "settings",
               title: "Konfigurasi Gaji",
+              subtitle: "Komponen upah, lembur, PPh 21 & BPJS",
               visible: canManageConfig,
             },
           ]}
@@ -232,33 +239,39 @@ export default function PayrollDashboardPage() {
         ) : null}
 
         {/* Filter Rentang Tanggal & Preset */}
-        <div className="app-group-bar p-4 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-wrap gap-4 items-center justify-between">
-          <div className="flex flex-wrap items-center gap-3">
+        <div className="app-group-bar p-3.5 bg-slate-900/80 border border-slate-800 rounded-2xl flex flex-wrap gap-3 items-center justify-between">
+          <div className="flex flex-wrap items-center gap-2.5">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Periode Rekap:
+              Periode Rekap
             </span>
             <input
               type="date"
               value={periodStart}
-              onChange={(e) => setPeriodStart(e.target.value)}
-              className="px-3 py-1.5 text-sm bg-slate-800 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500"
+              onChange={(e) => {
+                setPeriodStart(e.target.value);
+                setActivePreset("custom");
+              }}
+              className="min-h-10 px-3 text-xs font-mono bg-slate-950 border border-slate-700 rounded-xl text-slate-200 focus:outline-none focus:border-sky-500"
             />
-            <span className="text-slate-500 text-sm">s.d.</span>
+            <span className="text-slate-500 text-xs font-medium">s.d.</span>
             <input
               type="date"
               value={periodEnd}
-              onChange={(e) => setPeriodEnd(e.target.value)}
-              className="px-3 py-1.5 text-sm bg-slate-800 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500"
+              onChange={(e) => {
+                setPeriodEnd(e.target.value);
+                setActivePreset("custom");
+              }}
+              className="min-h-10 px-3 text-xs font-mono bg-slate-950 border border-slate-700 rounded-xl text-slate-200 focus:outline-none focus:border-sky-500"
             />
             <button
               type="button"
               onClick={loadData}
               disabled={loading}
-              className="px-3.5 py-1.5 text-sm bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-medium transition shadow-sm disabled:opacity-50 flex items-center gap-1.5"
+              className="min-h-10 px-4 text-xs bg-sky-700 hover:bg-sky-600 text-on-accent rounded-xl font-bold transition shadow-sm disabled:opacity-50 flex items-center gap-1.5"
             >
               {loading ? (
                 <>
-                  <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  <span className="size-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
                   Memuat...
                 </>
               ) : (
@@ -267,42 +280,29 @@ export default function PayrollDashboardPage() {
             </button>
           </div>
 
-          <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-950/50 p-1">
-            <button
-              type="button"
-              onClick={() => setPresetRange("today")}
-              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-            >
-              Hari Ini
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetRange("week")}
-              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-            >
-              Minggu Ini
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetRange("thisMonth")}
-              className="rounded-lg px-2.5 py-1 text-xs font-semibold text-sky-400 transition hover:bg-white/10"
-            >
-              Bulan Ini
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetRange("lastMonth")}
-              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-            >
-              Bulan Lalu
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetRange("last30")}
-              className="rounded-lg px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-            >
-              30 Hari Terakhir
-            </button>
+          <div className="app-segment-track inline-flex flex-wrap gap-1 rounded-xl p-1">
+            {(
+              [
+                ["today", "Hari Ini"],
+                ["week", "Minggu Ini"],
+                ["thisMonth", "Bulan Ini"],
+                ["lastMonth", "Bulan Lalu"],
+                ["last30", "30 Hari Terakhir"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setPresetRange(key)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  activePreset === key
+                    ? "bg-sky-700 text-on-accent shadow-sm"
+                    : "text-slate-400 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
 

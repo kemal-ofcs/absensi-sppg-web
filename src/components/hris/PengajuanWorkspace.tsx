@@ -368,15 +368,51 @@ export function PengajuanWorkspace() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-2">
-        <TabBar
-          ariaLabel="Saring pengajuan"
-          idPrefix="pengajuan-saring"
-          value={saring}
-          onChange={setSaring}
-          tabs={pilihanSaring.map(([id, label]) => ({ id, label }))}
-        />
-        <div className="ml-auto flex flex-wrap gap-2">
+      <TabBar
+        ariaLabel="Saring pengajuan"
+        idPrefix="pengajuan-saring"
+        value={saring}
+        onChange={setSaring}
+        tabs={pilihanSaring.map(([id, label]) => ({ id, label }))}
+      />
+
+      <div className="app-group-bar flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-3">
+        {saring !== "diuangkan" && saring !== "pembayaran" ? (
+          <div className="grid flex-1 grid-cols-2 gap-2.5 sm:max-w-md">
+            <div>
+              <label className={LABEL} htmlFor="pengajuan-dari">
+                Dari
+              </label>
+              <input
+                id="pengajuan-dari"
+                type="date"
+                className={INPUT}
+                value={dari}
+                onChange={(e) => setDari(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={LABEL} htmlFor="pengajuan-sampai">
+                Sampai
+              </label>
+              <input
+                id="pengajuan-sampai"
+                type="date"
+                className={INPUT}
+                value={sampai}
+                onChange={(e) => setSampai(e.target.value)}
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="self-center text-xs font-medium text-slate-400">
+            {saring === "diuangkan"
+              ? "Daftar pengajuan pencairan sisa cuti tahunan."
+              : "Antrean pembayaran reimburse yang sudah disetujui."}
+          </p>
+        )}
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <button
             type="button"
             id="pengajuan-muat-ulang"
@@ -405,35 +441,6 @@ export function PengajuanWorkspace() {
           ) : null}
         </div>
       </div>
-
-      {saring !== "diuangkan" && saring !== "pembayaran" ? (
-        <div className="grid grid-cols-2 gap-2 sm:max-w-md">
-          <div>
-            <label className={LABEL} htmlFor="pengajuan-dari">
-              Dari
-            </label>
-            <input
-              id="pengajuan-dari"
-              type="date"
-              className={INPUT}
-              value={dari}
-              onChange={(e) => setDari(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className={LABEL} htmlFor="pengajuan-sampai">
-              Sampai
-            </label>
-            <input
-              id="pengajuan-sampai"
-              type="date"
-              className={INPUT}
-              value={sampai}
-              onChange={(e) => setSampai(e.target.value)}
-            />
-          </div>
-        </div>
-      ) : null}
 
       {pesan ? (
         <output className="block text-sm text-slate-300">{pesan}</output>

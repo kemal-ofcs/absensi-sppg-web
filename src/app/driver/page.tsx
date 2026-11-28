@@ -17,8 +17,8 @@ export default function DriverPage() {
   }
 
   return (
-    <AppShell contentClassName="mx-auto w-full max-w-3xl px-4 sm:px-6">
-      <div className="space-y-6 py-6 md:py-8">
+    <AppShell contentClassName="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6 md:py-8 lg:px-8">
+      <div className="space-y-6">
         <PageHeader
           eyebrow="Perjalanan"
           title="Lapor Perjalanan"

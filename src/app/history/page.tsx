@@ -717,7 +717,7 @@ export default function HistoryPage() {
 
       <div className="app-group-bar space-y-4 rounded-3xl border border-slate-800/60 bg-slate-900/70 p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-          <div className="self-start">
+          <div className="w-full lg:w-auto">
             <TabBar
               ariaLabel="Jenis riwayat"
               idPrefix="riwayat"

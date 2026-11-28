@@ -489,9 +489,32 @@ html.light
     0 1px 2px rgba(15, 23, 42, 0.03) !important;
 }
 
-/* Tier 2: Bilah filter (.app-group-bar) & sub-kotak bersarang di dalam kartu utama */
+/* Tier 2: Bilah filter (.app-group-bar), panel slate-800 transparan, & sub-kotak bersarang */
+.app-segment-track {
+  background-color: var(--app-tab-track);
+}
+html[data-theme="light"] .app-segment-track,
+html.light .app-segment-track {
+  background-color: var(--app-tab-track) !important;
+  border-color: transparent !important;
+}
+
 html[data-theme="light"] .app-group-bar,
 html.light .app-group-bar,
+html[data-theme="light"]
+  :where(
+    .bg-slate-800\/40,
+    .bg-slate-800\/50,
+    .bg-slate-800\/60,
+    .bg-slate-800\/70
+  ):where(:not(input, select, textarea, button, a, label)),
+html.light
+  :where(
+    .bg-slate-800\/40,
+    .bg-slate-800\/50,
+    .bg-slate-800\/60,
+    .bg-slate-800\/70
+  ):where(:not(input, select, textarea, button, a, label)),
 html[data-theme="light"]
   :is(
     .app-panel,
@@ -671,21 +694,31 @@ html.light .hover\:text-slate-950:hover {
   color: #0f172a !important;
 }
 
-/* 6. Action Buttons (CSV, Excel, Scanner Primary/Stop, Refresh, Labels, Steppers) */
-/* Secondary button & labels (Ekspor CSV, Refresh, Label upload, Pratinjau, Reset logo, Steppers) */
-html[data-theme="light"] button.bg-slate-800:not(.pilih-cari-tombol),
-html[data-theme="light"] button.bg-slate-800\/90:not(.pilih-cari-tombol),
-html[data-theme="light"] button.bg-slate-800\/80:not(.pilih-cari-tombol),
+/* 6. Action Buttons, Card Buttons, Links & Labels (CSV, Refresh, Upload, Pilihan Kartu) */
+html[data-theme="light"]
+:is(button, a, label):is(
+  .bg-slate-950,
+  .bg-slate-950\/80,
+  .bg-slate-950\/60,
+  .bg-slate-950\/50,
+  .bg-slate-900,
+  .bg-slate-900\/90,
+  .bg-slate-900\/80,
+  .bg-slate-900\/70,
+  .bg-slate-900\/60,
+  .bg-slate-900\/50,
+  .bg-slate-800,
+  .bg-slate-800\/90,
+  .bg-slate-800\/80,
+  .bg-slate-800\/70,
+  .bg-slate-800\/60,
+  .bg-white\/5,
+  .bg-white\/\[0\.05\],
+  .bg-white\/\[0\.06\]
+):not(.pilih-cari-tombol):not(.tab-bar-tab),
 html[data-theme="light"] .bg-slate-800\/90:not(.pilih-cari-tombol),
 html[data-theme="light"] .bg-slate-800\/80:not(.pilih-cari-tombol),
-html[data-theme="light"] label.bg-slate-800,
-html[data-theme="light"] a.bg-slate-800,
 html[data-theme="light"] .bg-slate-800.border-slate-700:not(.pilih-cari-tombol),
-html[data-theme="light"] button.bg-white\/5,
-html[data-theme="light"] button.bg-white\/\[0\.05\],
-html[data-theme="light"] button.bg-white\/\[0\.06\],
-html[data-theme="light"] a.bg-white\/\[0\.05\],
-html[data-theme="light"] a.bg-white\/\[0\.06\],
 html[data-theme="light"]
   button.border-slate-700:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
@@ -694,19 +727,30 @@ html[data-theme="light"]
   button.border-slate-800:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
   ),
-html.light button.bg-slate-800:not(.pilih-cari-tombol),
-html.light button.bg-slate-800\/90:not(.pilih-cari-tombol),
-html.light button.bg-slate-800\/80:not(.pilih-cari-tombol),
+html.light
+  :is(button, a, label):is(
+    .bg-slate-950,
+    .bg-slate-950\/80,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-900,
+    .bg-slate-900\/90,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-800,
+    .bg-slate-800\/90,
+    .bg-slate-800\/80,
+    .bg-slate-800\/70,
+    .bg-slate-800\/60,
+    .bg-white\/5,
+    .bg-white\/\[0\.05\],
+    .bg-white\/\[0\.06\]
+  ):not(.pilih-cari-tombol):not(.tab-bar-tab),
 html.light .bg-slate-800\/90:not(.pilih-cari-tombol),
 html.light .bg-slate-800\/80:not(.pilih-cari-tombol),
-html.light label.bg-slate-800,
-html.light a.bg-slate-800,
 html.light .bg-slate-800.border-slate-700:not(.pilih-cari-tombol),
-html.light button.bg-white\/5,
-html.light button.bg-white\/\[0\.05\],
-html.light button.bg-white\/\[0\.06\],
-html.light a.bg-white\/\[0\.05\],
-html.light a.bg-white\/\[0\.06\],
 html.light
   button.border-slate-700:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
@@ -720,16 +764,27 @@ html.light
   color: #1e293b !important;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
 }
-html[data-theme="light"] button.bg-slate-800:not(.pilih-cari-tombol):hover,
-html[data-theme="light"] button.bg-slate-800\/90:not(.pilih-cari-tombol):hover,
-html[data-theme="light"] button.bg-slate-800\/80:not(.pilih-cari-tombol):hover,
-html[data-theme="light"] label.bg-slate-800:hover,
-html[data-theme="light"] a.bg-slate-800:hover,
-html[data-theme="light"] button.bg-white\/5:hover,
-html[data-theme="light"] button.bg-white\/\[0\.05\]:hover,
-html[data-theme="light"] button.bg-white\/\[0\.06\]:hover,
-html[data-theme="light"] a.bg-white\/\[0\.05\]:hover,
-html[data-theme="light"] a.bg-white\/\[0\.06\]:hover,
+html[data-theme="light"]
+  :is(button, a, label):is(
+    .bg-slate-950,
+    .bg-slate-950\/80,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-900,
+    .bg-slate-900\/90,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-800,
+    .bg-slate-800\/90,
+    .bg-slate-800\/80,
+    .bg-slate-800\/70,
+    .bg-slate-800\/60,
+    .bg-white\/5,
+    .bg-white\/\[0\.05\],
+    .bg-white\/\[0\.06\]
+  ):not(.pilih-cari-tombol):not(.tab-bar-tab):hover,
 html[data-theme="light"]
   button.border-slate-700:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
@@ -738,16 +793,27 @@ html[data-theme="light"]
   button.border-slate-800:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
   ):hover,
-html.light button.bg-slate-800:not(.pilih-cari-tombol):hover,
-html.light button.bg-slate-800\/90:not(.pilih-cari-tombol):hover,
-html.light button.bg-slate-800\/80:not(.pilih-cari-tombol):hover,
-html.light label.bg-slate-800:hover,
-html.light a.bg-slate-800:hover,
-html.light button.bg-white\/5:hover,
-html.light button.bg-white\/\[0\.05\]:hover,
-html.light button.bg-white\/\[0\.06\]:hover,
-html.light a.bg-white\/\[0\.05\]:hover,
-html.light a.bg-white\/\[0\.06\]:hover,
+html.light
+  :is(button, a, label):is(
+    .bg-slate-950,
+    .bg-slate-950\/80,
+    .bg-slate-950\/60,
+    .bg-slate-950\/50,
+    .bg-slate-900,
+    .bg-slate-900\/90,
+    .bg-slate-900\/80,
+    .bg-slate-900\/70,
+    .bg-slate-900\/60,
+    .bg-slate-900\/50,
+    .bg-slate-800,
+    .bg-slate-800\/90,
+    .bg-slate-800\/80,
+    .bg-slate-800\/70,
+    .bg-slate-800\/60,
+    .bg-white\/5,
+    .bg-white\/\[0\.05\],
+    .bg-white\/\[0\.06\]
+  ):not(.pilih-cari-tombol):not(.tab-bar-tab):hover,
 html.light
   button.border-slate-700:not([class^="bg-"]):not([class*=" bg-"]):not(
     .pilih-cari-tombol
@@ -1036,24 +1102,30 @@ html.light .text-violet-200 {
 }
 
 /* 8. Date Range Switcher & Presets */
-html[data-theme="light"] .bg-slate-950\/60.border-white\/10,
-html.light .bg-slate-950\/60.border-white\/10 {
+html[data-theme="light"] div.inline-flex.bg-slate-950\/60,
+html.light div.inline-flex.bg-slate-950\/60 {
   background-color: var(--app-tab-track) !important;
   border-color: transparent !important;
 }
 html[data-theme="light"] .bg-slate-950\/60 button.bg-sky-700,
-html.light .bg-slate-950\/60 button.bg-sky-700 {
-  background-color: #2f4fbf !important;
+html[data-theme="light"] .app-segment-track button.bg-sky-700,
+html.light .bg-slate-950\/60 button.bg-sky-700,
+html.light .app-segment-track button.bg-sky-700 {
+  background-color: #10308a !important;
   color: #ffffff !important;
 }
 html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-700),
-html.light .bg-slate-950\/60 button:not(.bg-sky-700) {
+html[data-theme="light"] .app-segment-track button:not(.bg-sky-700),
+html.light .bg-slate-950\/60 button:not(.bg-sky-700),
+html.light .app-segment-track button:not(.bg-sky-700) {
   color: #475569 !important;
 }
 html[data-theme="light"] .bg-slate-950\/60 button:not(.bg-sky-700):hover,
-html.light .bg-slate-950\/60 button:not(.bg-sky-700):hover {
+html[data-theme="light"] .app-segment-track button:not(.bg-sky-700):hover,
+html.light .bg-slate-950\/60 button:not(.bg-sky-700):hover,
+html.light .app-segment-track button:not(.bg-sky-700):hover {
   color: #0f172a !important;
-  background-color: rgba(255, 255, 255, 0.7) !important;
+  background-color: rgba(255, 255, 255, 0.78) !important;
 }
 
 /* Presets: "Hari Ini", "7 Hari", "Bulan Ini" */
@@ -1259,18 +1331,22 @@ html.light .text-red-400 {
   color: #b91c1c !important;
 }
 
-/* Status Text Accents in Light Mode */
+/* Status Text Accents in Light Mode (termasuk nada -100 agar tidak hilang di atas tint) */
+html[data-theme="light"] .text-sky-100,
 html[data-theme="light"] .text-sky-300,
 html[data-theme="light"] .text-sky-200,
 html[data-theme="light"] .text-sky-400,
+html.light .text-sky-100,
 html.light .text-sky-300,
 html.light .text-sky-200,
 html.light .text-sky-400 {
   color: #2f4fbf !important;
 }
+html[data-theme="light"] .text-emerald-100,
 html[data-theme="light"] .text-emerald-300,
 html[data-theme="light"] .text-emerald-200,
 html[data-theme="light"] .text-emerald-400,
+html.light .text-emerald-100,
 html.light .text-emerald-300,
 html.light .text-emerald-200,
 html.light .text-emerald-400 {
@@ -1284,13 +1360,23 @@ html.light .text-amber-200,
 html.light .text-amber-400 {
   color: #b45309 !important;
 }
+html[data-theme="light"] .text-rose-100,
 html[data-theme="light"] .text-rose-300,
 html[data-theme="light"] .text-rose-200,
 html[data-theme="light"] .text-rose-400,
+html.light .text-rose-100,
 html.light .text-rose-300,
 html.light .text-rose-200,
 html.light .text-rose-400 {
   color: #be123c !important;
+}
+html[data-theme="light"] .text-cyan-100,
+html.light .text-cyan-100 {
+  color: #155e75 !important;
+}
+html[data-theme="light"] .text-violet-100,
+html.light .text-violet-100 {
+  color: #6d28d9 !important;
 }
 
 /* 10. Borders & Dividers (spesifisitas :where rendah agar tidak mengalahkan tombol/form) */
@@ -1940,22 +2026,46 @@ html.light .border-amber-700\/40.from-stone-900\/90 h4 {
   color: #7c2d12 !important;
 }
 
-/* Bingkai semantik kartu KPI & pill status pada tema terang */
+/* Bingkai semantik kartu KPI & aksen tepi kiri 4px pada tema terang */
 html[data-theme="light"] .border-emerald-500\/40,
-html.light .border-emerald-500\/40 {
+html[data-theme="light"] .border-emerald-500\/30,
+html.light .border-emerald-500\/40,
+html.light .border-emerald-500\/30 {
   border-color: #6ee7b7 !important;
 }
 html[data-theme="light"] .border-amber-500\/40,
-html.light .border-amber-500\/40 {
+html[data-theme="light"] .border-amber-500\/30,
+html.light .border-amber-500\/40,
+html.light .border-amber-500\/30 {
   border-color: #fcd34d !important;
 }
 html[data-theme="light"] .border-rose-500\/40,
-html.light .border-rose-500\/40 {
+html[data-theme="light"] .border-rose-500\/30,
+html.light .border-rose-500\/40,
+html.light .border-rose-500\/30 {
   border-color: #fda4af !important;
 }
 html[data-theme="light"] .border-sky-400\/30,
-html.light .border-sky-400\/30 {
+html[data-theme="light"] .border-sky-500\/30,
+html.light .border-sky-400\/30,
+html.light .border-sky-500\/30 {
   border-color: #93a9ea !important;
+}
+html[data-theme="light"] .border-l-emerald-500,
+html.light .border-l-emerald-500 {
+  border-left-color: #10b981 !important;
+}
+html[data-theme="light"] .border-l-sky-600,
+html.light .border-l-sky-600 {
+  border-left-color: #10308a !important;
+}
+html[data-theme="light"] .border-l-amber-500,
+html.light .border-l-amber-500 {
+  border-left-color: #f59e0b !important;
+}
+html[data-theme="light"] .border-l-rose-500,
+html.light .border-l-rose-500 {
+  border-left-color: #f43f5e !important;
 }
 
 /* Weekly Trend Bar Track in Light Mode */
@@ -2758,9 +2868,8 @@ html.light .sakelar-wrap[data-aktif="true"] .sakelar-status {
   }
 }
 
-/* TabBar (components/ui/TabBar.tsx, disalin ke Mobile): rel segmen lembut tanpa
-   garis bertumpuk. Tab pasif transparan tanpa border; hanya tab aktif yang terangkat
-   sebagai pil navy beraksen emas 2px di bawahnya. */
+/* TabBar (components/ui/TabBar.tsx, disalin ke Mobile): rel segmen lembut Pas Lebar
+   (width: 100%) sehingga deretan tab merata dari tepi kiri ke kanan kontainer. */
 .tab-bar {
   display: flex;
   width: 100%;
@@ -2771,12 +2880,6 @@ html.light .sakelar-wrap[data-aktif="true"] .sakelar-status {
   border-radius: 0.875rem;
   background-color: var(--app-tab-track);
   scrollbar-width: thin;
-}
-@media (min-width: 640px) {
-  .tab-bar:not([data-vertikal-lg]) {
-    width: fit-content;
-    max-width: 100%;
-  }
 }
 .tab-bar-tab {
   display: inline-flex;

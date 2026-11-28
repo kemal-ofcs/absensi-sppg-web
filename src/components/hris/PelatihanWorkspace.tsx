@@ -132,17 +132,19 @@ export function PelatihanWorkspace({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <TabBar
-          ariaLabel="Bagian pelatihan"
-          idPrefix="pelatihan-mode"
-          value={mode}
-          onChange={setMode}
-          tabs={[
-            { id: "pelatihan", label: "Pelatihan" },
-            { id: "rencana", label: "Rencana dan anggaran" },
-          ]}
-        />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="w-full sm:w-auto">
+          <TabBar
+            ariaLabel="Bagian pelatihan"
+            idPrefix="pelatihan-mode"
+            value={mode}
+            onChange={setMode}
+            tabs={[
+              { id: "pelatihan", label: "Pelatihan" },
+              { id: "rencana", label: "Rencana dan anggaran" },
+            ]}
+          />
+        </div>
         <div>
           <label htmlFor="pelatihan-tahun" className={LABEL}>
             Tahun
