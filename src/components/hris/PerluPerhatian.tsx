@@ -8,8 +8,10 @@
 
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { ambilPerhatian } from "@/lib/gateways/hris";
 import { syncNow } from "@/lib/gateways/sync-status";
+import type { StatTone } from "@/lib/utils/stat-card";
 import {
   type PerhatianHr,
   sisaHari,
@@ -24,10 +26,28 @@ function labelSisa(sisa: number) {
   return sisa < 0 ? `lewat ${-sisa} hari` : sisaHari(sisa);
 }
 
-function Bagian({ judul, children }: { judul: string; children: ReactNode }) {
+function Bagian({
+  judul,
+  ikon,
+  nada,
+  children,
+}: {
+  judul: string;
+  ikon: IconName;
+  nada: Exclude<StatTone, "clean">;
+  children: ReactNode;
+}) {
   return (
-    <section className="min-w-0 space-y-2 rounded-xl bg-slate-950/60 p-3">
-      <h3 className="text-sm font-bold text-white">{judul}</h3>
+    <section
+      data-tone={nada}
+      className="stat-card min-w-0 space-y-2 rounded-2xl p-3.5"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="stat-card-label text-xs font-bold uppercase tracking-wider">
+          {judul}
+        </h3>
+        <Icon name={ikon} className="stat-card-icon size-4 shrink-0" />
+      </div>
       <ul className="max-h-60 space-y-1 overflow-y-auto">{children}</ul>
     </section>
   );
@@ -180,7 +200,11 @@ export function PerluPerhatian({
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {kontrak.length > 0 ? (
-            <Bagian judul="Kontrak">
+            <Bagian
+              judul="Kontrak"
+              ikon="document"
+              nada={kontrak.some((k) => k.sisa <= 0) ? "rose" : "amber"}
+            >
               {kontrak.map((k) => (
                 <Butir
                   key={`${k.jenis}:${k.id_karyawan}:${k.tanggal}`}
@@ -193,7 +217,11 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {dokumen.length > 0 ? (
-            <Bagian judul="Dokumen">
+            <Bagian
+              judul="Dokumen"
+              ikon="document"
+              nada={dokumen.some((d) => d.sisa <= 0) ? "rose" : "amber"}
+            >
               {dokumen.map((d) => (
                 <Butir
                   key={`${d.id_karyawan}:${d.jenis_dokumen}:${d.tanggal}`}
@@ -206,7 +234,11 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {sp.length > 0 ? (
-            <Bagian judul="Surat peringatan">
+            <Bagian
+              judul="Surat peringatan"
+              ikon="alert"
+              nada={sp.some((s) => s.sisa <= 0) ? "rose" : "amber"}
+            >
               {sp.map((s) => (
                 <Butir
                   key={`${s.id_karyawan}:${s.tingkat}:${s.tanggal}`}
@@ -219,7 +251,11 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {pengajuan && adaPengajuan ? (
-            <Bagian judul="Pengajuan">
+            <Bagian
+              judul="Pengajuan"
+              ikon="clock"
+              nada={pengajuan.urgent > 0 ? "rose" : "amber"}
+            >
               {totalMenunggu > 0 ? (
                 <Butir
                   nama={`${totalMenunggu} menunggu lebih dari ${pengajuan.menunggu[0]?.hari ?? 0} hari`}
@@ -247,7 +283,7 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {kinerja && adaKinerja ? (
-            <Bagian judul="Kinerja">
+            <Bagian judul="Kinerja" ikon="check" nada="amber">
               {kinerja.menunggu > 0 ? (
                 <Butir
                   nama={`${kinerja.menunggu} penilaian menunggu Final`}
@@ -279,7 +315,7 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {ultah.length > 0 ? (
-            <Bagian judul="Ulang tahun kerja">
+            <Bagian judul="Ulang tahun kerja" ikon="users" nada="emerald">
               {ultah.map((u) => (
                 <Butir
                   key={`${u.id_karyawan}:${u.tanggal}`}
@@ -291,7 +327,7 @@ export function PerluPerhatian({
             </Bagian>
           ) : null}
           {rekrutmen.length > 0 ? (
-            <Bagian judul="Rekrutmen">
+            <Bagian judul="Rekrutmen" ikon="users" nada="sky">
               {rekrutmen.map((r) => (
                 <Butir
                   key={r.id_lowongan}

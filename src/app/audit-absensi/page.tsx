@@ -60,42 +60,6 @@ function formatTanggalPanjang(value: string) {
 
 type StatVariant = "emerald" | "sky" | "amber" | "rose" | "clean";
 
-const STAT_CARD_STYLE: Record<
-  StatVariant,
-  { card: string; label: string; value: string; icon: string }
-> = {
-  emerald: {
-    card: "border-emerald-500/30 border-l-4 border-l-emerald-500 bg-emerald-500/10",
-    label: "text-emerald-300",
-    value: "text-emerald-300",
-    icon: "text-emerald-400",
-  },
-  sky: {
-    card: "border-sky-500/30 border-l-4 border-l-sky-600 bg-sky-500/10",
-    label: "text-sky-300",
-    value: "text-white",
-    icon: "text-sky-400",
-  },
-  amber: {
-    card: "border-amber-500/30 border-l-4 border-l-amber-500 bg-amber-500/10",
-    label: "text-amber-300",
-    value: "text-amber-300",
-    icon: "text-amber-400",
-  },
-  rose: {
-    card: "border-rose-500/30 border-l-4 border-l-rose-500 bg-rose-500/10",
-    label: "text-rose-300",
-    value: "text-rose-300",
-    icon: "text-rose-400",
-  },
-  clean: {
-    card: "border-slate-800 bg-slate-900",
-    label: "text-slate-400",
-    value: "text-slate-400",
-    icon: "text-slate-500",
-  },
-};
-
 function skorVariant(skor: number): StatVariant {
   if (skor >= 90) return "emerald";
   if (skor >= 70) return "amber";
@@ -115,18 +79,15 @@ function StatCard({
   icon: IconName;
   variant?: StatVariant;
 }) {
-  const style = STAT_CARD_STYLE[variant];
   return (
-    <div className={`rounded-2xl border p-4 transition-colors ${style.card}`}>
+    <div data-tone={variant} className="stat-card rounded-2xl p-4">
       <div className="flex items-start justify-between gap-2">
-        <div
-          className={`text-[11px] font-bold uppercase tracking-wide ${style.label}`}
-        >
+        <div className="stat-card-label text-[11px] font-bold uppercase tracking-wide">
           {label}
         </div>
-        <Icon name={icon} className={`size-4 shrink-0 ${style.icon}`} />
+        <Icon name={icon} className="stat-card-icon size-4 shrink-0" />
       </div>
-      <div className={`mt-1 text-2xl font-black ${style.value}`}>{value}</div>
+      <div className="stat-card-value mt-1 text-2xl font-black">{value}</div>
       {hint ? (
         <div className="mt-1 text-[11px] leading-4 text-slate-500">{hint}</div>
       ) : null}

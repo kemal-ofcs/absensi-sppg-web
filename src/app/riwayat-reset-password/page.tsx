@@ -217,11 +217,13 @@ export default function RiwayatResetPasswordPage() {
           label="Pengajuan tampil"
           value={String(entries.length)}
           hint="Sesuai filter aktif"
+          tone={entries.length > 0 ? "sky" : "clean"}
         />
         <SummaryTile
           label="Menyimpan foto"
           value={String(withPhoto)}
           hint="Bukti wajah tersedia"
+          tone={withPhoto > 0 ? "amber" : "clean"}
         />
         <SummaryTile
           label="Berhasil ganti password"
@@ -229,6 +231,11 @@ export default function RiwayatResetPasswordPage() {
             entries.filter((entry) => entry.status === "Terpakai").length,
           )}
           hint="Status Terpakai"
+          tone={
+            entries.some((entry) => entry.status === "Terpakai")
+              ? "emerald"
+              : "clean"
+          }
         />
       </div>
 
@@ -462,17 +469,19 @@ function SummaryTile({
   label,
   value,
   hint,
+  tone = "clean",
 }: {
   label: string;
   value: string;
   hint: string;
+  tone?: "clean" | "sky" | "emerald" | "amber" | "rose";
 }) {
   return (
-    <div className="app-panel rounded-2xl p-4">
-      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+    <div data-tone={tone} className="stat-card rounded-2xl p-4">
+      <p className="stat-card-label text-[11px] font-bold uppercase tracking-wider">
         {label}
       </p>
-      <p className="mt-1 text-2xl font-black text-white">{value}</p>
+      <p className="stat-card-value mt-1 text-2xl font-black">{value}</p>
       <p className="text-xs text-slate-500">{hint}</p>
     </div>
   );

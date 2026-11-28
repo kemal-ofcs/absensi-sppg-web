@@ -19,6 +19,7 @@ import {
   type PayrollRecapRow,
 } from "@/lib/gateways/payroll";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { nadaStat } from "@/lib/utils/stat-card";
 import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const IDR = new Intl.NumberFormat("id-ID", {
@@ -308,44 +309,71 @@ export default function PayrollDashboardPage() {
 
         {/* Ringkasan Metrics */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-            <div className="text-xs font-semibold uppercase text-slate-400">
-              Total Karyawan Aktif
+          <div
+            data-tone={nadaStat(data.length, "sky")}
+            className="stat-card rounded-2xl p-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="stat-card-label text-xs font-bold uppercase">
+                Total Karyawan Aktif
+              </div>
+              <Icon name="users" className="stat-card-icon size-4 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-slate-100 mt-1">
+            <div className="stat-card-value text-2xl font-black mt-1">
               {data.length} Personil
             </div>
             <div className="text-xs text-slate-500 mt-1">
               Terjadwal dalam database
             </div>
           </div>
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-            <div className="text-xs font-semibold uppercase text-slate-400">
-              Total Jam Reguler
+          <div
+            data-tone={nadaStat(totalRegular, "sky")}
+            className="stat-card rounded-2xl p-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="stat-card-label text-xs font-bold uppercase">
+                Total Jam Reguler
+              </div>
+              <Icon name="clock" className="stat-card-icon size-4 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-sky-400 mt-1">
+            <div className="stat-card-value text-2xl font-black mt-1">
               {totalRegular.toFixed(1)} Jam
             </div>
             <div className="text-xs text-slate-500 mt-1">
               Akumulasi jam kerja efektif
             </div>
           </div>
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-            <div className="text-xs font-semibold uppercase text-slate-400">
-              Total Jam Lembur
+          <div
+            data-tone={nadaStat(totalLembur, "amber")}
+            className="stat-card rounded-2xl p-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="stat-card-label text-xs font-bold uppercase">
+                Total Jam Lembur
+              </div>
+              <Icon name="clock" className="stat-card-icon size-4 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-amber-400 mt-1">
+            <div className="stat-card-value text-2xl font-black mt-1">
               {totalLembur.toFixed(1)} Jam
             </div>
             <div className="text-xs text-slate-500 mt-1">
               Mengikuti perkalian PP 35/2021
             </div>
           </div>
-          <div className="p-4 rounded-xl border border-emerald-900/40 bg-emerald-950/10">
-            <div className="text-xs font-semibold uppercase text-emerald-400">
-              Estimasi Total Payout
+          <div
+            data-tone={nadaStat(totalTakeHome, "emerald")}
+            className="stat-card rounded-2xl p-4"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="stat-card-label text-xs font-bold uppercase">
+                Estimasi Total Payout
+              </div>
+              <Icon
+                name="document"
+                className="stat-card-icon size-4 shrink-0"
+              />
             </div>
-            <div className="text-2xl font-bold text-emerald-400 mt-1">
+            <div className="stat-card-value text-2xl font-black mt-1">
               {IDR.format(totalTakeHome)}
             </div>
             <div className="text-xs text-slate-500 mt-1">

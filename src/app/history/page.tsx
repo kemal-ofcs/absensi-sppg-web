@@ -22,6 +22,7 @@ import {
 import { syncNow } from "@/lib/gateways/sync-status";
 import { useDebounce } from "@/lib/hooks/useDebounce";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { nadaStat } from "@/lib/utils/stat-card";
 import { tanggalTampil } from "@/lib/validations/tutup-buku";
 
 const SCAN_PAGE_SIZE = 500;
@@ -644,70 +645,131 @@ export default function HistoryPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
         {tab === "scan" ? (
           <>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-slate-400 block uppercase">
-                Total Log Scan
-              </span>
-              <span className="text-lg font-bold text-white">
+            <div
+              data-tone={nadaStat(metrics.total, "sky")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Total Log Scan
+                </span>
+                <Icon
+                  name="scanner"
+                  className="stat-card-icon size-4 shrink-0"
+                />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.total}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-emerald-400 block uppercase">
-                Scan Masuk
-              </span>
-              <span className="text-lg font-bold text-emerald-300">
+            <div
+              data-tone={nadaStat(metrics.masuk, "emerald")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Scan Masuk
+                </span>
+                <Icon name="check" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.masuk}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-sky-400 block uppercase">
-                Scan Pulang
-              </span>
-              <span className="text-lg font-bold text-sky-300">
+            <div
+              data-tone={nadaStat(metrics.pulang, "sky")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Scan Pulang
+                </span>
+                <Icon name="clock" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.pulang}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-rose-400 block uppercase">
-                Scan Ditolak
-              </span>
-              <span className="text-lg font-bold text-rose-300">
+            <div
+              data-tone={nadaStat(metrics.ditolak, "rose")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Scan Ditolak
+                </span>
+                <Icon name="alert" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.ditolak}
               </span>
             </div>
           </>
         ) : (
           <>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-slate-400 block uppercase">
-                Total Absensi
-              </span>
-              <span className="text-lg font-bold text-white">
+            <div
+              data-tone={nadaStat(metrics.total, "sky")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Total Absensi
+                </span>
+                <Icon
+                  name="calendar"
+                  className="stat-card-icon size-4 shrink-0"
+                />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.total}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-emerald-400 block uppercase">
-                Hadir Lengkap
-              </span>
-              <span className="text-lg font-bold text-emerald-300">
+            <div
+              data-tone={nadaStat(metrics.lengkap, "emerald")}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Hadir Lengkap
+                </span>
+                <Icon name="check" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {metrics.lengkap}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-amber-400 block uppercase">
-                Terlambat / Jam Kurang
-              </span>
-              <span className="text-lg font-bold text-amber-300">
+            <div
+              data-tone={nadaStat(
+                (metrics.terlambat || 0) + (metrics.jamKurang || 0),
+                "amber",
+              )}
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Terlambat / Jam Kurang
+                </span>
+                <Icon name="clock" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {(metrics.terlambat || 0) + (metrics.jamKurang || 0)}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] text-rose-400 block uppercase">
-                Alfa / Izin / Sakit
-              </span>
-              <span className="text-lg font-bold text-rose-300">
+            <div
+              data-tone={
+                (metrics.alfa || 0) > 0
+                  ? "rose"
+                  : nadaStat(metrics.izinSakit || 0, "amber")
+              }
+              className="stat-card rounded-2xl p-3.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="stat-card-label text-[10px] font-bold block uppercase">
+                  Alfa / Izin / Sakit
+                </span>
+                <Icon name="alert" className="stat-card-icon size-4 shrink-0" />
+              </div>
+              <span className="stat-card-value mt-1 block text-xl font-black">
                 {(metrics.alfa || 0) + (metrics.izinSakit || 0)}
               </span>
             </div>

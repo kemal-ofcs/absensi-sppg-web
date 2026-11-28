@@ -29,6 +29,7 @@ import {
 } from "@/lib/gateways/report";
 import { useCompanyName } from "@/lib/hooks/useCompanyName";
 import { useHydrated } from "@/lib/hooks/useHydrated";
+import { nadaStat } from "@/lib/utils/stat-card";
 
 export default function DashboardPage() {
   const isHydrated = useHydrated();
@@ -422,11 +423,20 @@ export default function DashboardPage() {
           <FadeIn className="h-full" delaySeconds={0}>
             <TiltCard maxTilt={8} className="h-full">
               <SpotlightCard>
-                <div className="h-full bg-slate-900/80 border border-slate-800 rounded-3xl p-5 space-y-2">
-                  <span className="text-slate-400 text-xs font-medium uppercase tracking-wider">
-                    Total Karyawan Aktif
-                  </span>
-                  <div className="text-2xl font-bold text-white">
+                <div
+                  data-tone={nadaStat(metrics?.totalKaryawan ?? 0, "sky")}
+                  className="stat-card h-full rounded-3xl p-5 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
+                      Total Karyawan Aktif
+                    </span>
+                    <Icon
+                      name="users"
+                      className="stat-card-icon size-4 shrink-0"
+                    />
+                  </div>
+                  <div className="stat-card-value text-2xl font-black">
                     {metricsPending ? (
                       <Skeleton className="h-7 w-28" />
                     ) : (
@@ -447,16 +457,21 @@ export default function DashboardPage() {
           <FadeIn className="h-full" delaySeconds={0.06}>
             <TiltCard maxTilt={8} className="h-full">
               <SpotlightCard>
-                <div className="h-full bg-slate-900/80 border border-emerald-500/40 rounded-3xl p-5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-emerald-400 text-xs font-medium uppercase tracking-wider">
+                <div
+                  data-tone={nadaStat(metrics?.hadirHariIni ?? 0, "emerald")}
+                  className="stat-card h-full rounded-3xl p-5 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
                       Hadir Hari Ini
                     </span>
-                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-full text-[10px] font-mono font-bold">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${(metrics?.hadirHariIni ?? 0) > 0 ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40" : "bg-slate-800/70 text-slate-400"}`}
+                    >
                       {metrics?.persentaseKehadiran || 0}% Rate
                     </span>
                   </div>
-                  <div className="text-2xl font-bold text-emerald-300">
+                  <div className="stat-card-value text-2xl font-black">
                     {metricsPending ? (
                       <Skeleton className="h-7 w-28" />
                     ) : (
@@ -477,11 +492,20 @@ export default function DashboardPage() {
           <FadeIn className="h-full" delaySeconds={0.12}>
             <TiltCard maxTilt={8} className="h-full">
               <SpotlightCard>
-                <div className="h-full bg-slate-900/80 border border-amber-500/40 rounded-3xl p-5 space-y-2">
-                  <span className="text-amber-400 text-xs font-medium uppercase tracking-wider">
-                    Terlambat Hari Ini
-                  </span>
-                  <div className="text-2xl font-bold text-amber-300">
+                <div
+                  data-tone={nadaStat(metrics?.terlambatHariIni ?? 0, "amber")}
+                  className="stat-card h-full rounded-3xl p-5 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
+                      Terlambat Hari Ini
+                    </span>
+                    <Icon
+                      name="clock"
+                      className="stat-card-icon size-4 shrink-0"
+                    />
+                  </div>
+                  <div className="stat-card-value text-2xl font-black">
                     {metricsPending ? (
                       <Skeleton className="h-7 w-28" />
                     ) : (
@@ -502,11 +526,24 @@ export default function DashboardPage() {
           <FadeIn className="h-full" delaySeconds={0.18}>
             <TiltCard maxTilt={8} className="h-full">
               <SpotlightCard>
-                <div className="h-full bg-slate-900/80 border border-rose-500/40 rounded-3xl p-5 space-y-2">
-                  <span className="text-rose-400 text-xs font-medium uppercase tracking-wider">
-                    Alfa / Tidak Hadir
-                  </span>
-                  <div className="text-2xl font-bold text-rose-300">
+                <div
+                  data-tone={
+                    (metrics?.alfaHariIni ?? 0) > 0
+                      ? "rose"
+                      : nadaStat(metrics?.sakitIzinHariIni ?? 0, "amber")
+                  }
+                  className="stat-card h-full rounded-3xl p-5 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
+                      Alfa / Tidak Hadir
+                    </span>
+                    <Icon
+                      name="alert"
+                      className="stat-card-icon size-4 shrink-0"
+                    />
+                  </div>
+                  <div className="stat-card-value text-2xl font-black">
                     {metricsPending ? (
                       <Skeleton className="h-7 w-28" />
                     ) : (

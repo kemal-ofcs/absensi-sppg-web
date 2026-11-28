@@ -244,16 +244,19 @@ export default function FotoAbsensiPage() {
           label="Foto tampil"
           value={String(entries.length)}
           hint="Sesuai filter aktif"
+          tone={entries.length > 0 ? "sky" : "clean"}
         />
         <SummaryTile
           label="Karyawan berbeda"
           value={String(new Set(entries.map((entry) => entry.idKaryawan)).size)}
           hint="Pada rentang tanggal ini"
+          tone={entries.length > 0 ? "emerald" : "clean"}
         />
         <SummaryTile
           label="Perkiraan ukuran"
           value={formatSize(totalUkuran)}
           hint="Isi foto hanya diunduh saat dibuka"
+          tone={totalUkuran > 0 ? "sky" : "clean"}
         />
       </div>
 
@@ -571,17 +574,19 @@ function SummaryTile({
   label,
   value,
   hint,
+  tone = "clean",
 }: {
   label: string;
   value: string;
   hint: string;
+  tone?: "clean" | "sky" | "emerald" | "amber" | "rose";
 }) {
   return (
-    <div className="app-panel rounded-2xl p-4">
-      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+    <div data-tone={tone} className="stat-card rounded-2xl p-4">
+      <p className="stat-card-label text-[11px] font-bold uppercase tracking-wider">
         {label}
       </p>
-      <p className="mt-1 text-2xl font-black text-white">{value}</p>
+      <p className="stat-card-value mt-1 text-2xl font-black">{value}</p>
       <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>
     </div>
   );

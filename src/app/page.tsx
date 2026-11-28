@@ -23,6 +23,7 @@ import { requestSyncNow } from "@/lib/gateways/sync-status";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useOnlineStatus } from "@/lib/hooks/useOnlineStatus";
 import { useVisualTier } from "@/lib/stores/visual-store";
+import { nadaStat } from "@/lib/utils/stat-card";
 import { IZIN_PERHATIAN } from "@/lib/validations/telegram";
 import type { VisualTier } from "@/lib/visual/gpu-tier";
 
@@ -267,24 +268,27 @@ export default function Home() {
           {canViewDashboard ? (
             <TiltCard maxTilt={5}>
               <SpotlightCard className="h-full rounded-2xl">
-                <article className="app-panel relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-lg">
+                <article
+                  data-tone={nadaStat(metrics?.totalKaryawan ?? 0, "sky")}
+                  className="stat-card relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5"
+                >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
                       Total Karyawan
                     </span>
-                    <span className="grid size-8 place-items-center rounded-xl border border-sky-400/25 bg-sky-400/10 text-sky-300">
-                      <Icon name="users" className="size-4" />
-                    </span>
+                    <Icon name="users" className="stat-card-icon size-5" />
                   </div>
                   <div className="mt-4">
-                    <p className="text-3xl font-black tracking-tight text-white sm:text-4xl">
+                    <p className="stat-card-value text-3xl font-black tracking-tight sm:text-4xl">
                       <AnimatedCounter
                         value={metrics?.totalKaryawan ?? 0}
                         durationSeconds={0.9}
                       />
                     </p>
                     <div className="mt-2 flex items-center gap-2">
-                      <span className="inline-block size-1.5 rounded-full bg-sky-400" />
+                      <span
+                        className={`inline-block size-1.5 rounded-full ${(metrics?.totalKaryawan ?? 0) > 0 ? "bg-sky-400" : "bg-slate-400"}`}
+                      />
                       <p className="text-xs font-medium text-slate-400">
                         Personil terdaftar aktif
                       </p>
@@ -299,24 +303,27 @@ export default function Home() {
           {canViewDashboard ? (
             <TiltCard maxTilt={5}>
               <SpotlightCard className="h-full rounded-2xl">
-                <article className="app-panel relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-lg">
+                <article
+                  data-tone={nadaStat(metrics?.hadirHariIni ?? 0, "emerald")}
+                  className="stat-card relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5"
+                >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
                       Hadir Hari Ini
                     </span>
-                    <span className="grid size-8 place-items-center rounded-xl border border-emerald-400/25 bg-emerald-400/10 text-emerald-300">
-                      <Icon name="check" className="size-4" />
-                    </span>
+                    <Icon name="check" className="stat-card-icon size-5" />
                   </div>
                   <div className="mt-4">
                     <div className="flex items-baseline justify-between gap-2">
-                      <p className="text-3xl font-black tracking-tight text-white sm:text-4xl">
+                      <p className="stat-card-value text-3xl font-black tracking-tight sm:text-4xl">
                         <AnimatedCounter
                           value={metrics?.hadirHariIni ?? 0}
                           durationSeconds={0.9}
                         />
                       </p>
-                      <span className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-xs font-black text-emerald-300">
+                      <span
+                        className={`rounded-lg px-2 py-0.5 text-xs font-black ${(metrics?.hadirHariIni ?? 0) > 0 ? "border border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "bg-slate-800/70 text-slate-400"}`}
+                      >
                         <AnimatedCounter
                           value={metrics?.persentaseKehadiran ?? 0}
                           suffix="%"
@@ -325,7 +332,7 @@ export default function Home() {
                       </span>
                     </div>
                     {/* Visual Percentage Bar */}
-                    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800/60">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-sky-400 transition-all duration-1000"
                         style={{
@@ -343,24 +350,27 @@ export default function Home() {
           {canViewDashboard ? (
             <TiltCard maxTilt={5}>
               <SpotlightCard className="h-full rounded-2xl">
-                <article className="app-panel relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-lg">
+                <article
+                  data-tone={nadaStat(metrics?.terlambatHariIni ?? 0, "amber")}
+                  className="stat-card relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5"
+                >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
                       Terlambat
                     </span>
-                    <span className="grid size-8 place-items-center rounded-xl border border-amber-300/25 bg-amber-300/10 text-amber-200">
-                      <Icon name="clock" className="size-4" />
-                    </span>
+                    <Icon name="clock" className="stat-card-icon size-5" />
                   </div>
                   <div className="mt-4">
-                    <p className="text-3xl font-black tracking-tight text-white sm:text-4xl">
+                    <p className="stat-card-value text-3xl font-black tracking-tight sm:text-4xl">
                       <AnimatedCounter
                         value={metrics?.terlambatHariIni ?? 0}
                         durationSeconds={0.9}
                       />
                     </p>
                     <div className="mt-2 flex items-center gap-2">
-                      <span className="inline-block size-1.5 rounded-full bg-amber-400" />
+                      <span
+                        className={`inline-block size-1.5 rounded-full ${(metrics?.terlambatHariIni ?? 0) > 0 ? "bg-amber-400" : "bg-slate-400"}`}
+                      />
                       <p className="text-xs font-medium text-slate-400">
                         Melewati batas toleransi shift
                       </p>
@@ -374,9 +384,12 @@ export default function Home() {
           {/* Card 4: Status Koneksi & Sync Pulse */}
           <TiltCard maxTilt={5}>
             <SpotlightCard className="h-full rounded-2xl">
-              <article className="app-panel relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-lg">
+              <article
+                data-tone={isOnline ? "emerald" : "amber"}
+                className="stat-card relative flex h-full flex-col justify-between overflow-hidden rounded-2xl p-5"
+              >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <span className="stat-card-label text-xs font-bold uppercase tracking-wider">
                     Koneksi & Sinkronisasi
                   </span>
                   <SyncPulse />
@@ -386,9 +399,7 @@ export default function Home() {
                     <span
                       className={`size-2.5 rounded-full ${isOnline ? "bg-emerald-400 shadow-sm animate-pulse" : "bg-amber-400"}`}
                     />
-                    <p
-                      className={`text-base font-black sm:text-lg ${isOnline ? "text-emerald-200" : "text-amber-200"}`}
-                    >
+                    <p className="stat-card-value text-base font-black sm:text-lg">
                       {isOnline ? "Jaringan Terhubung" : "Mode Offline Lokal"}
                     </p>
                   </div>

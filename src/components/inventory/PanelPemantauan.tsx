@@ -27,6 +27,7 @@ import {
 } from "@/lib/gateways/inventory";
 import { isMobileRuntime } from "@/lib/runtime/app-runtime";
 import { audioSynth } from "@/lib/utils/audio";
+import type { StatTone } from "@/lib/utils/stat-card";
 import {
   aksiPindaiOpname,
   asciiLower,
@@ -147,7 +148,7 @@ export function PanelRingkasan({
     label: string;
     nilai: string;
     keterangan: string;
-    gawat: boolean;
+    aktifTone: Exclude<StatTone, "clean">;
     tujuan: TujuanRingkasan;
   }[] = [
     {
@@ -157,7 +158,7 @@ export function PanelRingkasan({
           .length,
       ),
       keterangan: "Masih punya stok. Catat pemusnahannya.",
-      gawat: batch.some((b) => b.posisi.status_kedaluwarsa === "Kedaluwarsa"),
+      aktifTone: "rose",
       tujuan: { tab: "kedaluwarsa", filter: "kedaluwarsa" },
     },
     {
@@ -166,7 +167,7 @@ export function PanelRingkasan({
         batch.filter((b) => b.posisi.status_kedaluwarsa === "Waspada").length,
       ),
       keterangan: "Kedaluwarsa dalam 30 hari.",
-      gawat: false,
+      aktifTone: "amber",
       tujuan: { tab: "kedaluwarsa", filter: "perhatian" },
     },
     {
@@ -175,7 +176,7 @@ export function PanelRingkasan({
         data.barang.filter((b) => b.status_aktif && b.stok_menipis).length,
       ),
       keterangan: "Stok baik di bawah stok minimum.",
-      gawat: false,
+      aktifTone: "amber",
       tujuan: { tab: "barang", filter: "menipis" },
     },
     {
@@ -184,7 +185,7 @@ export function PanelRingkasan({
         data.barang.filter((b) => b.posisi.some((p) => p.saldo < 0)).length,
       ),
       keterangan: "Catatan tidak cocok. Perlu opname.",
-      gawat: data.barang.some((b) => b.posisi.some((p) => p.saldo < 0)),
+      aktifTone: "rose",
       tujuan: { tab: "barang", filter: "minus" },
     },
     {
@@ -197,7 +198,7 @@ export function PanelRingkasan({
       keterangan: pinjamanGalat
         ? "Daftar peminjaman tidak bisa dimuat."
         : "Peminjaman yang belum kembali penuh.",
-      gawat: false,
+      aktifTone: pinjamanGalat ? "rose" : "sky",
       tujuan: { tab: "dipinjam" },
     },
     {
@@ -211,7 +212,9 @@ export function PanelRingkasan({
           ? `${lama} sudah ${HARI_SERVIS_LAMA} hari atau lebih.`
           : "Barang yang dibawa ke tukang servis.";
       })(),
-      gawat: data.servis.some((s) => s.lama_hari >= HARI_SERVIS_LAMA),
+      aktifTone: data.servis.some((s) => s.lama_hari >= HARI_SERVIS_LAMA)
+        ? "rose"
+        : "amber",
       tujuan: { tab: "servis" },
     },
   ];
@@ -228,35 +231,30 @@ export function PanelRingkasan({
   return (
     <div className="space-y-6">
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {kartu.map((item) => (
-          <li key={item.label}>
-            <button
-              type="button"
-              onClick={() => onBuka(item.tujuan)}
-              className={`w-full h-full min-h-11 p-4 rounded-xl border text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-                item.gawat && item.nilai !== "0"
-                  ? "border-rose-500/30 bg-rose-500/20 hover:bg-rose-500/30"
-                  : "border-slate-800 bg-slate-900/60 hover:bg-slate-800"
-              }`}
-            >
-              <span
-                className={`block text-3xl font-bold ${
-                  item.gawat && item.nilai !== "0"
-                    ? "text-rose-100"
-                    : "text-slate-100"
-                }`}
+        {kartu.map((item) => {
+          const aktif = item.nilai !== "0" && item.nilai !== "...";
+          const tone: StatTone = aktif ? item.aktifTone : "clean";
+          return (
+            <li key={item.label}>
+              <button
+                type="button"
+                data-tone={tone}
+                onClick={() => onBuka(item.tujuan)}
+                className="stat-card w-full h-full min-h-11 rounded-2xl p-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
               >
-                {item.nilai}
-              </span>
-              <span className="block mt-1 text-sm font-semibold text-slate-200">
-                {item.label}
-              </span>
-              <span className="block mt-1 text-xs text-slate-400">
-                {item.keterangan}
-              </span>
-            </button>
-          </li>
-        ))}
+                <span className="stat-card-value block text-3xl font-black">
+                  {item.nilai}
+                </span>
+                <span className="stat-card-label mt-1 block text-sm font-bold">
+                  {item.label}
+                </span>
+                <span className="mt-1 block text-xs text-slate-400">
+                  {item.keterangan}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
       <RekapPengadaanPanel
         hariIni={data.hari_ini}

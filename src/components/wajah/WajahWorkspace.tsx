@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { hasPermission } from "@/lib/auth/access";
 import {
@@ -18,6 +19,7 @@ import {
   saveFaceTemplate,
 } from "@/lib/gateways/face-template";
 import { ambilFotoPersonil } from "@/lib/gateways/personnel-photo";
+import { nadaStat } from "@/lib/utils/stat-card";
 import { FACE_MODEL_ID } from "@/lib/validations/face-match";
 
 /**
@@ -158,16 +160,28 @@ export function WajahWorkspace() {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-2">
-        {(["terdaftar", "belum", "ulang"] as const).map((key) => (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {(
+          [
+            ["terdaftar", "emerald", "check"],
+            ["belum", "amber", "clock"],
+            ["ulang", "rose", "alert"],
+          ] as const
+        ).map(([key, aktifNada, ikon]) => (
           <div
             key={key}
-            className="rounded-2xl border border-white/10 bg-slate-900/70 p-3"
+            data-tone={nadaStat(counts[key], aktifNada)}
+            className="stat-card rounded-2xl p-3.5"
           >
-            <p className="text-[11px] font-semibold text-slate-400">
-              {STATUS_TEXT[key]}
+            <div className="flex items-start justify-between gap-2">
+              <p className="stat-card-label text-[11px] font-bold uppercase tracking-wider">
+                {STATUS_TEXT[key]}
+              </p>
+              <Icon name={ikon} className="stat-card-icon size-4 shrink-0" />
+            </div>
+            <p className="stat-card-value mt-1 text-2xl font-black">
+              {counts[key]}
             </p>
-            <p className="mt-1 text-xl font-black text-white">{counts[key]}</p>
           </div>
         ))}
       </div>
