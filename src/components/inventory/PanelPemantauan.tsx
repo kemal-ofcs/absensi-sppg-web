@@ -54,6 +54,7 @@ import {
   LABEL,
   pesanGalat,
   TOMBOL_BAHAYA,
+  TOMBOL_EKSPOR,
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "./gaya";
@@ -352,7 +353,7 @@ function RekapPengadaanPanel({
           <button
             type="button"
             onClick={() => void ekspor()}
-            className={TOMBOL_KEDUA}
+            className={TOMBOL_EKSPOR}
           >
             Ekspor Excel
           </button>
@@ -505,7 +506,7 @@ export function PanelKedaluwarsa({
 
   return (
     <div className="space-y-3">
-      <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 sm:max-w-sm">
+      <div className="app-group-bar p-3 rounded-xl border border-slate-800 bg-slate-900/60 sm:max-w-sm">
         <label htmlFor="inv-filter-kedaluwarsa" className={LABEL}>
           Tampilkan
         </label>

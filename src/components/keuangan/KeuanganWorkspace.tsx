@@ -376,7 +376,7 @@ function PanelJurnal({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+      <div className="app-group-bar grid gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
         <div>
           <label className={LABEL} htmlFor="jurnal-dari">
             Dari tanggal
@@ -1023,7 +1023,7 @@ function PanelBukuBesar({ akun }: { akun: AkunItem[] }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
+      <div className="app-group-bar grid gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:grid-cols-[2fr_1fr_1fr]">
         <div>
           <label className={LABEL} htmlFor="buku-akun">
             Akun
@@ -1216,7 +1216,7 @@ function PanelNeracaSaldo() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
+      <div className="app-group-bar flex flex-wrap items-end gap-x-6 gap-y-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
         <div className="w-full max-w-xs">
           <label className={LABEL} htmlFor="neraca-sampai">
             Per tanggal

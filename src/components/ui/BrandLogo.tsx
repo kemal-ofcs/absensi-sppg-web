@@ -17,7 +17,7 @@ export function BrandLogo({ className = "", size = 40 }: BrandLogoProps) {
   if (customLogo) {
     return (
       <span
-        className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-sky-300/30 bg-slate-900/90 p-1.5 shadow-lg shadow-sky-950/20 ${className}`}
+        className={`brand-logo-frame relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-2xl p-1.5 ${className}`}
         style={{
           height: size,
           maxHeight: size,

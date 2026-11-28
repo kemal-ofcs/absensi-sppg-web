@@ -36,6 +36,7 @@ import {
   LABEL,
   pesanGalat,
   TOMBOL_BAHAYA,
+  TOMBOL_EKSPOR,
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "./gaya";
@@ -741,7 +742,7 @@ export function PanelServis({
             <button
               type="button"
               onClick={() => void ekspor()}
-              className={TOMBOL_KEDUA}
+              className={TOMBOL_EKSPOR}
             >
               Ekspor Excel
             </button>

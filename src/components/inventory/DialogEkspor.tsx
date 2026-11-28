@@ -14,7 +14,7 @@ import {
   PRESET_LEMBAR_VALIDASI,
   presetRekapStok,
 } from "./ekspor";
-import { INPUT, LABEL, pesanGalat, TOMBOL_KEDUA, TOMBOL_UTAMA } from "./gaya";
+import { INPUT, LABEL, pesanGalat, TOMBOL_EKSPOR, TOMBOL_KEDUA } from "./gaya";
 
 const KUNCI_PILIHAN = "kos.inventaris.ekspor";
 
@@ -235,7 +235,7 @@ export function DialogEkspor({
             type="button"
             disabled={menyimpan}
             onClick={() => void ekspor()}
-            className={TOMBOL_UTAMA}
+            className={TOMBOL_EKSPOR}
           >
             {menyimpan ? "Menyimpan..." : "Ekspor"}
           </button>

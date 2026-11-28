@@ -6,6 +6,7 @@ import {
   INPUT,
   LABEL,
   pesanGalat,
+  TOMBOL_EKSPOR,
   TOMBOL_KEDUA,
 } from "@/components/inventory/gaya";
 import {
@@ -101,7 +102,7 @@ export function BarisEkspor({ aksi }: { aksi: AksiEkspor[] }) {
         <button
           key={item.label}
           type="button"
-          className={TOMBOL_KEDUA}
+          className={item.jenis === "Excel" ? TOMBOL_EKSPOR : TOMBOL_KEDUA}
           disabled={sibuk}
           onClick={() => void jalankan(item)}
         >
@@ -171,7 +172,7 @@ export function LaporanKeuangan({ akun }: { akun: AkunItem[] }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
+      <div className="app-group-bar grid gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:grid-cols-[2fr_1fr_1fr]">
         <div>
           <label className={LABEL} htmlFor="laporan-jenis">
             Laporan

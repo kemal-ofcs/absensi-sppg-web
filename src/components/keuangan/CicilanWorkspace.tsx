@@ -13,6 +13,7 @@ import {
   LABEL,
   pesanGalat,
   TOMBOL_BAHAYA,
+  TOMBOL_EKSPOR,
   TOMBOL_KEDUA,
   TOMBOL_UTAMA,
 } from "@/components/inventory/gaya";
@@ -34,6 +35,7 @@ import {
   tutupCicilan,
 } from "@/lib/gateways/cicilan";
 import { subscribeSyncCompleted } from "@/lib/gateways/sync-status";
+import { nadaStat } from "@/lib/utils/stat-card";
 import { formatRupiah } from "@/lib/validations/accounting";
 import {
   bagiPokokBunga,
@@ -603,7 +605,7 @@ function KartuKontrak({
           <button
             type="button"
             onClick={() => void eksporKartu(k)}
-            className={TOMBOL_KEDUA}
+            className={TOMBOL_EKSPOR}
           >
             Ekspor Excel
           </button>
@@ -923,14 +925,17 @@ export function CicilanWorkspace({
         >
           Proyeksi kas keluar
         </h2>
-        <dl className="grid gap-2 sm:grid-cols-3">
+        <dl className="grid gap-2.5 sm:grid-cols-3">
           {proyeksi.map((p) => (
             <div
               key={p.bulan}
-              className="rounded-lg border border-slate-800 bg-slate-950/40 p-3"
+              data-tone={nadaStat(p.jumlah, "sky")}
+              className="stat-card rounded-xl p-3.5"
             >
-              <dt className="text-xs text-slate-400">{namaBulan(p.bulan)}</dt>
-              <dd className="text-lg font-semibold text-slate-100">
+              <dt className="stat-card-label text-xs font-bold uppercase tracking-wider">
+                {namaBulan(p.bulan)}
+              </dt>
+              <dd className="stat-card-value mt-1 text-lg font-black">
                 <Rp nilai={p.jumlah} />
               </dd>
             </div>
@@ -977,7 +982,7 @@ export function CicilanWorkspace({
               type="button"
               disabled={tampil.length === 0}
               onClick={() => void eksporDaftar(daftar, tampil)}
-              className={TOMBOL_KEDUA}
+              className={TOMBOL_EKSPOR}
             >
               Ekspor Excel
             </button>
